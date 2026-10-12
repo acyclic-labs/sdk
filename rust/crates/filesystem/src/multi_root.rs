@@ -859,9 +859,9 @@ where
         let projected = target.generation(projected_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = original
             .diff_to(&projected, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map_err(|failure| failure.error)?
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?
             .changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
         let paths = changed
             .iter()
             .map(|change| {

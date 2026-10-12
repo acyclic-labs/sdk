@@ -93,7 +93,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         parent
             .fork(
                 "measured-child",
-                ForkOptions::from_generation(pinned, key).empty(), acyclic_fs::PublicationPermit::Unrestricted,
+                ForkOptions::from_generation(pinned, key).inherit_paths(Vec::new()), acyclic_fs::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
             |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))

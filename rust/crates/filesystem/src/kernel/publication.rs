@@ -819,7 +819,7 @@ pub(crate) fn permit_context_with_accounting(
         }
         PublicationPermit::Reservation { .. } => {
             usize_to_u64(b"acyclic-fs-publication-reservation-v1\0".len()) + 1 + 16 + 8 + 8 + 8 + 32
-                + if context.is_some() { 32 } else { 0 },
+                + if context.is_some() { 32 } else { 0 }
     }
     };
     let hashing = WorkCounters { bytes_hashed: permit_hash_bytes, ..WorkCounters::UNCHARGED };

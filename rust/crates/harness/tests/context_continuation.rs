@@ -612,16 +612,17 @@ impl acyclic_harness::context::ContextStage for InputDependentStage {
     fn name(&self) -> &str {
         "input-dependent"
     }
-    fn contract(&self) -> serde_json::Value {
-        serde_json::json!({ "name": self.name(), "revision": self.revision })
+    fn contract(&self, _: Option<&acyclic_harness::conversation::ContentIo>) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({ "name": self.name(), "revision": self.revision }))
     }
     fn apply<'a>(
         &'a self,
         input: &'a acyclic_harness::context::ContextInput,
         mut context: Context,
         _: Limits,
-    ) -> BoxProviderFuture<'a, Result<Context>> {
-        Box::pin(async move {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Context>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             context.messages.push(ModelMessage {
                 role: ModelRole::System,
@@ -1180,7 +1181,7 @@ async fn assert_checkpoint_tail_source(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        acyclic_harness::core::SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let prepared_summary = acyclic_harness::fork::prepare_summary_fork_context(
@@ -2333,7 +2334,7 @@ async fn append_private_checkpoint_metadata(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        acyclic_harness::core::SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let mut metadata_ids = Vec::new();

@@ -593,14 +593,14 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "effects",
+                "effects".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
              &mut None)?,
-            "requests/request.json",
-            "generation-1",
+            "requests/request.json".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
-            "request.json",
+            "request.json".into(),
          &mut None)
     }
     fn schema_file(schema: &Value) -> Result<FileRef> {
@@ -608,10 +608,10 @@ mod tests {
             serde_json::to_vec(schema).map_err(|error| Error::Invalid(error.to_string()))?;
         FileRef::new(
             request_file(b"null")?.volume().clone(),
-            "schemas/result.json",
-            "generation-1",
+            "schemas/result.json".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(&bytes, "application/schema+json", &mut None)?,
-            "result.json",
+            "result.json".into(),
          &mut None)
     }
 

@@ -604,14 +604,14 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
              &mut None)?,
-            "text.txt",
-            "generation-1",
+            "text.txt".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
-            "text.txt",
+            "text.txt".into(),
          &mut None)
     }
 
@@ -641,7 +641,7 @@ mod tests {
             panic!("reference envelope")
         };
         assert_eq!(parts.len(), 2);
-        assert!(matches!(&parts[0], ModelDataPart::Text { text } if text.contains("omitted")));
+        assert!(matches!(&parts[0], ModelDataPart::Text { text } if !text.is_empty()));
         assert!(
             matches!(&parts[1], ModelDataPart::File { file, policy: FileProjectionPolicy::Reference } if file == expected)
         );

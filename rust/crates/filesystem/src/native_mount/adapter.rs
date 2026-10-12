@@ -39,10 +39,14 @@ use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::Poll;
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+mod runtime;
+pub(super) use runtime::{CallbackRuntime, CallbackWait};
+pub use runtime::initialize_native_mount_services;
 const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 const CAPTURE_PENDING: u8 = 0;
@@ -1011,7 +1015,7 @@ impl<A, O> Drop for CaptureWorkerResources<A, O> {
 
 pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
     match crate::demand::native_demand_error(error) {
-        crate::DemandError::Io(error) => MountSourceError::Engine(error.to_string()),
+        crate::DemandError::Io(error) => MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string())),
         error => super::lazy::mount_demand_error(error),
     }
 }
@@ -1081,234 +1085,6 @@ pub(super) fn retain_namespace_lineage(
         lazy_owner: lineage.lazy_owner.clone(),
         lazy_root, _custody: scratch.retain(),
     })
-}
-
-/// Blocking bridge from native driver threads into the shared async runtime.
-#[derive(Clone)]
-pub(super) struct CallbackRuntime {
-    handle: tokio::runtime::Handle,
-}
-
-// Existing-only access must not implicitly initialize a bounded invocation.
-static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> = OnceLock::new();
-
-struct ParkedCallback {
-    woken: StdMutex<bool>,
-    changed: std::sync::Condvar,
-    _native_allocation: Option<crate::NativeAllocation>,
-}
-
-impl Wake for ParkedCallback {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        *self.woken.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        self.changed.notify_one();
-    }
-}
-
-impl ParkedCallback {
-    fn poll_to_completion_measured<F: Future + Unpin>(
-        future: F, meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<F::Output> {
-        let bytes = u64::try_from(std::mem::size_of::<Self>()).map_err(std::io::Error::other)?;
-        if let Some(meter) = meter { meter.allocate(bytes)?; }
-        let _allocation = CaptureRuntimeAllocation { meter, bytes };
-        let parked = Arc::new(Self {
-            woken: StdMutex::new(false),
-            changed: std::sync::Condvar::new(),
-            _native_allocation: None,
-        });
-        Ok(Self::poll_with_parked(future, parked))
-    }
-
-    fn poll_with_parked<F: Future + Unpin>(mut future: F, parked: Arc<Self>) -> F::Output {
-        let waker = Waker::from(Arc::clone(&parked));
-        let mut context = Context::from_waker(&waker);
-        loop {
-            if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
-                drop(future);
-                return output;
-            }
-            let mut woken = parked.woken.lock().unwrap_or_else(PoisonError::into_inner);
-            while !*woken {
-                woken = parked.changed.wait(woken).unwrap_or_else(PoisonError::into_inner);
-            }
-            *woken = false;
-        }
-    }
-}
-
-/// Actual wake owner admitted before a future borrows the invocation meter.
-pub(super) struct PreparedCallbackWait {
-    parked: Arc<ParkedCallback>,
-    bytes: u64,
-}
-
-impl PreparedCallbackWait {
-    pub(super) fn logical_owned_bytes(&self) -> u64 { self.bytes }
-}
-
-struct CaptureRuntimeAllocation<'a> {
-    meter: Option<&'a dyn acyclic_native_runtime::NativeReadMeter>,
-    bytes: u64,
-}
-
-impl Drop for CaptureRuntimeAllocation<'_> {
-    fn drop(&mut self) {
-        if let Some(meter) = self.meter { meter.release(self.bytes); }
-    }
-}
-
-/// Initializes the process-shared mount callback runtime outside a bounded preparation invocation.
-pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
-    CallbackRuntime::create().map(|_| ())
-}
-
-impl CallbackRuntime {
-    pub(super) fn create() -> Result<Self, NativeMountError> {
-        CALLBACK_RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .thread_name("acyclic-fs-mount")
-                .build()
-                .map_err(Arc::new)
-        });
-        Self::existing()
-    }
-
-    pub(super) fn existing() -> Result<Self, NativeMountError> {
-        Self::existing_startup().map_err(Into::into)
-    }
-
-    pub(super) fn existing_startup() -> Result<Self, super::NativeMountStartupAdmissionError> {
-        let runtime = CALLBACK_RUNTIME.get()
-            .ok_or(super::NativeMountStartupAdmissionError::ServicesCold)?;
-        match runtime {
-            Ok(runtime) => Ok(Self { handle: runtime.handle().clone() }),
-            Err(error) => Err(super::NativeMountStartupAdmissionError::ServiceUnavailable(Arc::clone(error))),
-        }
-    }
-
-    pub(super) fn prepare_wait(
-        &self, work: &mut crate::demand::DemandWork,
-    ) -> Result<PreparedCallbackWait, MountSourceError> {
-        work.check().map_err(super::lazy::mount_demand_error)?;
-        let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.allocate(bytes).map_err(super::lazy::mount_demand_error)?;
-        Ok(PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false), changed: std::sync::Condvar::new(),
-                _native_allocation: None,
-            }),
-            bytes,
-        })
-    }
-
-    /// Polls the original producer in place, retaining its cancellation and quiescence protocol.
-    pub(super) fn wait_prepared<F: Future>(
-        &self, prepared: PreparedCallbackWait, create: impl FnOnce() -> F,
-    ) -> F::Output {
-        let poll = || {
-            let _runtime = self.handle.enter();
-            let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            ParkedCallback::poll_with_parked(future.as_mut(), prepared.parked)
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-            {
-                tokio::task::block_in_place(poll)
-            }
-            _ => poll(),
-        }
-    }
-
-    /// Checks authentic callback authority on this existing runtime before the provider allocates its exchange frame or starts a source effect.
-    pub(super) fn verify_native_callback_guard(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.verify_native_callback_role(guard, work, false)
-    }
-
-    /// Checks authored WRITE on the same runtime and original callback binding.
-    pub(super) fn verify_native_callback_write_guard(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.verify_native_callback_role(guard, work, true)
-    }
-
-    fn verify_native_callback_role(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork, authored_write: bool,
-    ) -> Result<(), NativeMountError> {
-        let allocation = work.claim(
-            std::mem::size_of::<ParkedCallback>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
-        let prepared = PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false),
-                changed: std::sync::Condvar::new(),
-                _native_allocation: Some(allocation),
-            }),
-            bytes: 0,
-        };
-        self.wait_prepared(prepared, || async {
-            let mut verification = if authored_write { guard.check_write(work)? }
-                else { guard.check(work)? };
-            (&mut verification).await
-        })
-    }
-
-    pub(super) fn block_on_measured<F: Future>(
-        &self, create: impl FnOnce() -> F, meter: &dyn acyclic_native_runtime::NativeReadMeter,
-    ) -> std::io::Result<F::Output> {
-        let _runtime = self.handle.enter();
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        let mut allocation = CaptureRuntimeAllocation { meter: Some(meter), bytes: 0 };
-        let (future, _) = crate::heap_future::in_heap_admitted(
-            (create, &mut allocation),
-            |(_, allocation), bytes| {
-                meter.allocate(bytes)?;
-                allocation.bytes = bytes;
-                Ok::<_, std::io::Error>(())
-            },
-            |(create, _)| tokio::task::unconstrained(create()),
-        )?;
-        ParkedCallback::poll_to_completion_measured(future, Some(meter))
-    }
-
-    fn block_on<F: Future>(&self, create: impl FnOnce() -> F) -> F::Output {
-        let poll = || {
-            // Built inside the runtime's context, which timers need.
-            let _runtime = self.handle.enter();
-            // This thread serves exactly this callback until it completes.
-            let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            ParkedCallback::poll_to_completion_measured(tokio::task::unconstrained(in_heap(create)), None)
-                .expect("unmetered callback has no denied allocations")
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(current)
-                if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-            {
-                tokio::task::block_in_place(poll)
-            }
-            _ => poll(),
-        }
-    }
-
-    /// Runs one callback's complete future under the finite callback deadline.
-    pub(super) fn wait<T, F: Future<Output = Result<T, MountSourceError>>>(
-        &self,
-        create: impl FnOnce() -> F,
-    ) -> Result<T, MountSourceError> {
-        self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, create()))
-            .map_err(|_| MountSourceError::Stale)?
-    }
 }
 
 struct DetachedMountState<A, O> {
@@ -2467,10 +2243,7 @@ impl<A, O> SharedCheckout<A, O> {
         use super::lazy::{mount_demand_error, mount_engine_error, mount_items};
         let original = carrier.original_native_work();
         let Some(end) = offset.checked_add(range.logical_bytes) else {
-            return Err(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "sparse range overflows the file address space",
-            });
+            return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse range overflows the file address space")));
         };
         let record = {
             let observation = self.observe_owned_with_carrier(
@@ -2530,10 +2303,7 @@ impl<A, O> SharedCheckout<A, O> {
                 return Err(MountSourceError::Stale);
             }
             let Some(destination) = offset.checked_add(span.relative_offset) else {
-                return Err(MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Invalid,
-                    text: "sparse span offset overflows",
-                });
+                return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse span offset overflows")));
             };
             let copied = crate::WorkCounters {
                 bytes_copied: std::mem::size_of::<OwnedBytes>() as u64,
@@ -2592,7 +2362,7 @@ impl<A, O> SharedCheckout<A, O> {
         let bytes = match &*carrier {
             NativeDemandCarrier::Native(_) => 0,
             NativeDemandCarrier::Borrowed(_) | NativeDemandCarrier::Shared(_) => {
-                name.retained_bytes() as u64,
+                name.retained_bytes() as u64
         }
         };
         let mut input = NativeCarrierOwned { value: Some((name, value)), carrier, bytes };
@@ -4119,17 +3889,13 @@ macro_rules! read_sparse_spans {
                 let Some(data) = $seek.await.map_err(MountSourceError::Filesystem)? else { break; };
                 if data >= $end { break; }
                 if data < cursor {
-                    return Err(MountSourceError::NativeText {
-                        kind: super::NativeSourceTextKind::Engine, text: $backwards,
-                    });
+                    return Err(MountSourceError::Engine(std::borrow::Cow::Borrowed($backwards)));
                 }
                 let $position = data;
                 let $target = ExtentSeekTarget::Hole;
                 let hole = $seek.await.map_err(MountSourceError::Filesystem)?.unwrap_or($end).min($end);
                 if hole <= data {
-                    return Err(MountSourceError::NativeText {
-                        kind: super::NativeSourceTextKind::Engine, text: "sparse seek made no forward progress",
-                    });
+                    return Err(MountSourceError::Engine(std::borrow::Cow::Borrowed("sparse seek made no forward progress")));
                 }
                 if $spans.len() == $spans.capacity() {
                     let requested = $growth;
@@ -4640,10 +4406,7 @@ where
     ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError> {
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
-            let end = offset.checked_add(u64::from(length)).ok_or(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "sparse range overflows the file address space",
-            })?;
+            let end = offset.checked_add(u64::from(length)).ok_or(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse range overflows the file address space")))?;
             let original = work.clone();
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = carrier.cancellation();
@@ -4680,9 +4443,7 @@ where
         self.runtime.block_on_measured(|| async {
             let carrier = &mut carrier;
             let range = &range.0;
-            let end = offset.checked_add(range.logical_bytes).ok_or(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid, text: "sparse range overflows the file address space",
-            })?;
+            let end = offset.checked_add(range.logical_bytes).ok_or(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse range overflows the file address space")))?;
             let cancellation = carrier.cancellation();
             let mut state = await_lock(
                 self.state.lock(), carrier, &cancellation, Some(&self.cancellation),
@@ -4700,9 +4461,7 @@ where
                 original.charge(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }).map_err(MountSourceError::NativeWork)?;
-                let destination = offset.checked_add(span.relative_offset).ok_or(MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Invalid, text: "sparse span offset overflows",
-                })?;
+                let destination = offset.checked_add(span.relative_offset).ok_or(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse span offset overflows")))?;
                 self.change_content_locked_with_carrier(
                     &mut state, ContentChange::Write { offset: destination, bytes: span.bytes.clone() },
                     carrier, &cancellation,
@@ -4848,7 +4607,7 @@ where
                                 }
                                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
                         => {
-                                    crate::NativeTreeMaterializationError::InvalidLayout,
+                                    crate::NativeTreeMaterializationError::InvalidLayout
                     }
                             })
                         })?;
@@ -5241,10 +5000,7 @@ where
         self.runtime.block_on_measured(|| async {
             use super::lazy::mount_demand_error;
             let logical_bytes = u64::from(length);
-            let end = offset.checked_add(logical_bytes).ok_or(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "sparse range overflows the file address space",
-            })?;
+            let end = offset.checked_add(logical_bytes).ok_or(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse range overflows the file address space")))?;
             let (_view, mut observer) = self.observer(work).await?;
             let cancellation = meter.lock().cancellation().clone();
             let original = work.clone();
@@ -5341,7 +5097,9 @@ fn native_mount_name_with_scratch<S: CaptureInputScratch>(
             Ok(bytes)
         }
         (NameEncoding::Utf8, "windows") => {
-            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: "authenticated UTF-8 name is malformed" })?;
+            let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
+                MountSourceError::Invalid(std::borrow::Cow::Borrowed("authenticated UTF-8 name is malformed"))
+            })?;
             let mut length = 0_usize;
             for scalar in text.chars() {
                 scratch.items(1)?;
@@ -5360,7 +5118,7 @@ fn native_mount_name_with_scratch<S: CaptureInputScratch>(
             }
             Ok(bytes)
         }
-        _ => Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text: "authenticated name encoding is incompatible with this native mount" }),
+        _ => Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("authenticated name encoding is incompatible with this native mount"))),
     }
 }
 
@@ -5373,7 +5131,7 @@ fn native_attribute_name(
 ) -> Result<(AttributeName, crate::NativeAllocation), MountSourceError> {
     let mut scratch = NativeCaptureScratchAllocation::new(original)?;
     if profile != FilesystemProfile::Posix {
-        return Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text: "native POSIX attributes require a POSIX volume profile" });
+        return Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("native POSIX attributes require a POSIX volume profile")));
     }
     let mut owned = scratch.vec::<u8>(bytes.len())?;
     let owned_bytes = owned.capacity() as u64;
@@ -5398,7 +5156,7 @@ fn native_attribute_name(
         Ok(name) => Ok((name, scratch.retain())),
         Err(_) => {
             scratch.release(owned_bytes)?;
-            Err(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: "attribute name is invalid" })
+            Err(MountSourceError::Engine(std::borrow::Cow::Borrowed("attribute name is invalid")))
         }
     }
 }
@@ -5426,10 +5184,7 @@ fn native_attribute_page(
             ..crate::WorkCounters::UNCHARGED
         })?;
         if entry.name.class() != AttributeClass::PosixXattr {
-            return Err(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Unsupported,
-                text: "POSIX mount encountered a non-POSIX named attribute",
-            });
+            return Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("POSIX mount encountered a non-POSIX named attribute")));
         }
         let name = entry.name.bytes;
         scratch.absorb(source_allocation.split_off(name.capacity() as u64)
@@ -5694,12 +5449,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             }).map_err(MountSourceError::NativeWork)?;
-            output.0
-                    .created_file_ids
-                    .first().copied().flatten()
-                .ok_or_else(|| {
-                        MountSourceError::Engine("create omitted file identity".to_owned())
-                    })
+            output.0.created_file_ids.first().copied().flatten()
+                .ok_or_else(|| MountSourceError::Engine(std::borrow::Cow::Owned("create omitted file identity".to_owned())))
         });
         let path = match input.0.first().expect("native create input is live") {
             AuthoredMutation::CreateDirectory { path, .. }
@@ -6151,10 +5902,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         observer.proof_data_take_completed_work();
         let (record, metadata) = accepted.map_err(MountSourceError::Filesystem)?.ok_or(MountSourceError::NotFound)?;
         if record.kind != FileKind::Regular {
-            return Err(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Unsupported,
-                text: "only regular files can own native file handles",
-            });
+            return Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("only regular files can own native file handles")));
         }
         if metadata.is_some() {
             original.charge(crate::WorkCounters {
@@ -6175,10 +5923,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         if created.node.kind != MountNodeKind::Regular {
-            return Err(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "only regular files can own native file handles",
-            });
+            return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("only regular files can own native file handles")));
         }
         let pending = {
             let held = self.checkout.pending.lock().unwrap_or_else(PoisonError::into_inner);
@@ -6245,10 +5990,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         observer.proof_data_take_completed_work();
         let lookup = lookup?.ok_or(MountSourceError::NotFound)?;
         if lookup.record.kind != FileKind::Regular {
-            return Err(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Unsupported,
-                text: "only regular files can own detached native handles",
-            });
+            return Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("only regular files can own detached native handles")));
         }
         let file = observer.detached_from_record(
             lookup.record, &original, &cancellation,
@@ -7282,7 +7024,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     ) -> Result<CaptureInputs, MountSourceError> {
         let mut scratch = NativeCaptureScratchAllocation::new(work)?;
         if matches!(scope, HostCaptureScope::ExactPaths) && paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS {
-            return Err(MountSourceError::Invalid("capture path set exceeds the native per-operation limit".to_owned()));
+            return Err(MountSourceError::Invalid(std::borrow::Cow::Owned("capture path set exceeds the native per-operation limit".to_owned())));
         }
         let mut rooted = scratch.vec::<NamespacePath>(paths.len())?;
         for path in paths {
@@ -7561,7 +7303,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                         std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
                         options, &crate::CapturePolicy::default(),
                         cancellation, baseline, &work,
-                    ).await,
+                    ).await
                 }
                 }
                 .map_err(|failure| capture_mount_error(failure.error))
@@ -7607,10 +7349,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             ).await?;
             checkout.ensure_publication_resolved()?;
             if request.is_some() && checkout.publishes_at_native_boundary() {
-                return Err(MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Invalid,
-                    text: "lifecycle capture requires manual publication",
-                });
+                return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("lifecycle capture requires manual publication")));
             }
             (self.checkout.view_gate.generation(), self.checkout.ledger.stamp())
         };
@@ -7770,7 +7509,7 @@ where
                         )), &original, &cancellation).await
             }
             None => {
-                candidate.checkout.change_named_attribute_by_id(node, &attribute, None, &original, &cancellation).await,
+                candidate.checkout.change_named_attribute_by_id(node, &attribute, None, &original, &cancellation).await
         }
         }
         .map_err(MountSourceError::Filesystem);
@@ -7828,7 +7567,7 @@ where
         let mut target = NativeCarrierOwned { value: Some(target), carrier, bytes };
         let packet = target.value.take().expect("symbolic-link packet is live");
         let logical_bytes = u64::try_from(packet.bytes.len()).map_err(|_| {
-            MountSourceError::Unsupported("symbolic-link target is too large".to_owned())
+            MountSourceError::Unsupported(std::borrow::Cow::Owned("symbolic-link target is too large".to_owned()))
         })?;
         self.create_authored_async_with_carrier(
             path, metadata, MountNodeKind::SymbolicLink, logical_bytes, None, target.carrier,
@@ -7851,11 +7590,7 @@ where
             (MountNodeKind::Socket, None) => FileKind::Socket,
             (MountNodeKind::CharacterDevice, Some(_)) => FileKind::CharacterDevice,
             (MountNodeKind::BlockDevice, Some(_)) => FileKind::BlockDevice,
-            _ => {
-                return Err(MountSourceError::Unsupported(
-                "special-file kind and device identity disagree".to_owned(),
-            ));
-            }
+            _ => return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("special-file kind and device identity disagree".to_owned(),))),
         };
         self.create_authored_async_with_carrier(
             path, metadata, kind, 0, device, carrier,
@@ -7865,7 +7600,7 @@ where
                     path, kind: file_kind, major, minor, metadata,
                 },
                 None => AuthoredMutation::CreateEmptySpecial { path, kind: file_kind, metadata },
-            },
+            }
             },
         ).await
     }
@@ -9112,9 +8847,7 @@ fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH).ok()
         .and_then(|since| i64::try_from(since.as_nanos()).ok())
-        .ok_or(MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine, text: "the clock is outside file time",
-        })
+        .ok_or(MountSourceError::Engine(std::borrow::Cow::Borrowed("the clock is outside file time")))
 }
 
 fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> ContentChange<F> {
@@ -9136,7 +8869,7 @@ fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> Con
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
 }
 
 fn fs_error(error: FsError) -> MountSourceError {
@@ -10523,7 +10256,7 @@ mod tests {
 
         acyclic_native_runtime::initialize_native_io_services()?;
         let borrowed = source(FilesystemProfile::Portable)?;
-        let workspace_id = crate::WorkspaceId::from_volume_id(borrowed.volume_id()?);
+        let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let context = crate::lazy_workspace::NativeSnapshotContext::Authored { workspace_id, config };
         let path = native_test_path("qualified-guard-original");
@@ -12745,7 +12478,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name)), std::time::Duration::from_secs(120))?;
         assert!(write_status.success());
         // Captures of external operations are deferred until callbacks flush.
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let first = windows_path(first_name);
         assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
@@ -12759,7 +12492,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(first_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name)), std::time::Duration::from_secs(120))?;
         assert!(rename_status.success());
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let second = windows_path(second_name);
         assert_eq!(source.lookup(&first)?, None);
         assert!(source.lookup(&second)?.is_some());
@@ -12774,7 +12507,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(second_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name)), std::time::Duration::from_secs(120))?;
         assert!(link_status.success());
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let linked = windows_path(linked_name);
         let second_id = source
             .lookup(&second)?
@@ -12802,7 +12535,7 @@ mod tests {
             std::time::Duration::from_secs(120),
         )?;
         assert!(delete_status.success());
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(source.lookup(&second)?, None);
         assert!(source.lookup(&linked)?.is_some());
         assert!(session.stop()?);
@@ -13645,10 +13378,7 @@ fn capture_name_layout<S: CaptureInputScratch>(
         }
         (FilesystemProfile::Windows, "windows") => Ok((NameEncoding::WindowsUtf16Le, bytes.len())),
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "linux" | "macos") => {
-            let value = std::str::from_utf8(bytes).map_err(|_| MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Unsupported,
-                text: "portable volume cannot represent a non-UTF-8 native name",
-            })?;
+            let value = std::str::from_utf8(bytes).map_err(|_| MountSourceError::Unsupported(std::borrow::Cow::Borrowed("portable volume cannot represent a non-UTF-8 native name")))?;
             let length = LogicalName::validate_unicode(NameEncoding::Utf8, value, limits.maximum_component_bytes)
                 .map_err(|error| {
                 MountSourceError::Filesystem(crate::kernel::NamespacePathError::Name(error).into())
@@ -13656,26 +13386,17 @@ fn capture_name_layout<S: CaptureInputScratch>(
             Ok((NameEncoding::Utf8, length))
         }
         (FilesystemProfile::Portable | FilesystemProfile::Browser, "windows") => {
-            let units = crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::NativeText {
-                kind: super::NativeSourceTextKind::Invalid,
-                text: "native UTF-16 name has an odd byte length",
-            })?;
+            let units = crate::kernel::types::utf16le_units(bytes).ok_or(MountSourceError::Invalid(std::borrow::Cow::Borrowed("native UTF-16 name has an odd byte length")))?;
             let mut length = 0_usize;
             for value in char::decode_utf16(units) {
                 scratch.items(1)?;
-                let value = value.map_err(|_| MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Unsupported,
-                    text: "portable volume cannot represent an unpaired UTF-16 native name",
-                })?;
+                let value = value.map_err(|_| MountSourceError::Unsupported(std::borrow::Cow::Borrowed("portable volume cannot represent an unpaired UTF-16 native name")))?;
                 length = length.checked_add(value.len_utf8())
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
             }
             Ok((NameEncoding::Utf8, length))
         }
-        _ => Err(MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Unsupported,
-            text: "volume name profile is incompatible with this native mount",
-        }),
+        _ => Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("volume name profile is incompatible with this native mount"))),
     }
 }
 

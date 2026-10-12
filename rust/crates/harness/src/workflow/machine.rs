@@ -221,7 +221,7 @@ impl MachineRegistry {
         crate::contract::validate_json_schema_value(machine.state_schema(), &transition.state, "machine state", io)?;
         validate_commands(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
-        let next = MachineCheckpoint { machine: checkpoint.machine.copy(io)?, revision: next_revision(checkpoint.revision, io)?,
+        let next = MachineCheckpoint { machine: workflow_copy_identity(&checkpoint.machine, io)?, revision: next_revision(checkpoint.revision, io)?,
             state: crate::model::clone_value(&transition.state, io)? };
         Ok((next, transition, workflow_owned_bytes(io)? - before, transition_retained))
     }
