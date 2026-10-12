@@ -15,12 +15,7 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
     let (source, _) = shared_sources(posix_config())?;
     let mut policy = FINITE_HANDLER_POLICY;
     policy.bytes_copied = 0;
-    let core = crate::native_mount::fuse::ProjectionCore::new(
-        Arc::new(source),
-        empty_projection_state(),
-        policy,
-        &crate::CancellationToken::new(),
-    )?;
+    let core = projection_core(Arc::new(source), policy, &crate::CancellationToken::new())?;
     let replied = std::cell::Cell::new(false);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {
@@ -296,7 +291,7 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
         deferred,
         ..Default::default()
     };
-    let copied = work.native_read_meter().lock().work.bytes_copied;
+    let copied = work.state.lock().work.bytes_copied;
     let mut in_flight = queue.take_deferred();
     assert_eq!(in_flight.next(), Some(KernelCacheItem::Inode(10)));
     let mut denied_budget = FINITE_CACHE_BUDGET;
@@ -309,7 +304,7 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
         Some(through),
         Err((
             crate::NativeMountError::from(failure),
-            denied.native_read_meter().lock().work,
+            denied.state.lock().work,
         )),
     );
     assert_eq!(queue.processed, Some(held));
@@ -320,7 +315,7 @@ pub(super) fn original_invalidation_tail_survives_refusal_without_copying_or_ove
     assert_eq!(tail.next(), Some(KernelCacheItem::Inode(11)));
     assert_eq!(tail.next(), None);
     assert_eq!(queue.deferred.as_slice(), &[KernelCacheItem::Inode(12)]);
-    assert_eq!(work.native_read_meter().lock().work.bytes_copied, copied);
+    assert_eq!(work.state.lock().work.bytes_copied, copied);
 }
 
 #[test]
@@ -574,7 +569,10 @@ pub(super) fn a_reused_identity_gets_a_fresh_inode() -> Result<(), i32> {
         "the old inode names no file"
     );
     assert_eq!(by_path.get(&name("created")), Some(&created));
-    assert_eq!(by_file.get(&reused.node.file_id), Some(&created));
+    assert_eq!(
+        by_file.get(&reused.node.file_id).map(|(inode, _)| *inode),
+        Some(created)
+    );
     Ok(())
 }
 
@@ -766,17 +764,13 @@ pub(super) fn directory_streams_wait_at_their_offset_and_evict_the_oldest() {
         confirmed: HashMap::new(),
         emitted,
         parked: 0,
-        park_replacement: None,
-        storage: None,
     };
     let mut streams = crate::native_mount::fuse::DirectoryStreams::default();
     let park = |streams: &mut crate::native_mount::fuse::DirectoryStreams,
-                mut stream: crate::native_mount::fuse::DirectoryStream| {
+                stream: crate::native_mount::fuse::DirectoryStream| {
         let work = fuse_fixture_work();
-        streams
-            .prepare_park(&mut stream, &work)
-            .expect("park capacity");
-        streams.park(ROOT_INODE, stream);
+        let parking = streams.prepare_park(&work).expect("park capacity");
+        streams.park(ROOT_INODE, stream, parking);
     };
     for offset in 0..crate::native_mount::fuse::MAXIMUM_DIRECTORY_STREAMS as u64 {
         park(&mut streams, stream(offset));
@@ -806,7 +800,7 @@ pub(super) fn revalidation_waits_for_deferred_notifications_in_flight() {
         processed: target,
         ..Default::default()
     };
-    assert!(queue.is_idle());
+    assert!(!queue.is_pending(queue.notified));
     queue.deferred.push(KernelCacheItem::Inode(ROOT_INODE));
     assert!(queue.is_pending(target));
     let items = queue.take_deferred();
@@ -816,7 +810,7 @@ pub(super) fn revalidation_waits_for_deferred_notifications_in_flight() {
         queue.is_pending(target),
         "kernel notifications have not finished"
     );
-    assert!(!queue.is_idle());
+    assert!(queue.is_pending(queue.notified));
     queue.deferred.push(KernelCacheItem::Inode(ROOT_INODE));
     queue.finish(target, Ok(()));
     assert!(
@@ -825,22 +819,20 @@ pub(super) fn revalidation_waits_for_deferred_notifications_in_flight() {
     );
     assert_eq!(queue.take_deferred().len(), 1);
     queue.finish(target, Ok(()));
-    assert!(queue.is_idle());
+    assert!(!queue.is_pending(queue.notified));
 }
 
 #[test]
 pub(super) fn releasing_deferred_items_wakes_the_invalidator()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::native_mount::fuse::ProjectionCore;
     use std::sync::PoisonError;
     for finishing in [false, true] {
         let (source, _) = shared_sources(posix_config())?;
-        let core = Arc::new(ProjectionCore::new(
+        let core = projection_core(
             Arc::new(source),
-            empty_projection_state(),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-        )?);
+        )?;
         let waiting = core.state.lock().map_err(|_| "poisoned")?;
         let invalidator = std::thread::spawn({
             let core = Arc::clone(&core);
@@ -1060,7 +1052,15 @@ pub(super) fn root_inode_survives_checkout_identity_changes() -> Result<(), i32>
         )
         .unwrap(),
     )]);
-    let mut inode_by_file = HashMap::from([(old_file, ROOT_INODE)]);
+    let work = fuse_fixture_work();
+    let storage = work
+        .claim(
+            std::mem::size_of::<(FileId, (u64, crate::NativeAllocation))>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )
+        .map_err(|error| fuse_fixture_errno(error.into()))?;
+    let mut inode_by_file = HashMap::from([(old_file, (ROOT_INODE, storage))]);
 
     replace_root_lookup(
         &mut by_inode,
@@ -1072,7 +1072,10 @@ pub(super) fn root_inode_survives_checkout_identity_changes() -> Result<(), i32>
 
     assert_eq!(by_inode[&ROOT_INODE].lookup.node.file_id, new_file);
     assert_eq!(by_inode[&ROOT_INODE].anchor(), &MountPath::root());
-    assert_eq!(inode_by_file.get(&new_file), Some(&ROOT_INODE));
+    assert_eq!(
+        inode_by_file.get(&new_file).map(|(inode, _)| *inode),
+        Some(ROOT_INODE)
+    );
     assert!(!inode_by_file.contains_key(&old_file));
     assert_eq!(
         replace_root_lookup(
@@ -1151,7 +1154,7 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
     assert_eq!(by_inode.len(), retained_by_inode_count);
     assert_eq!(inode_by_file.len(), retained_inode_by_file_count);
     assert_eq!(by_inode[&enumerated].lookup_references, 1);
-    assert_eq!(inode_by_file[&lookup.node.file_id], enumerated);
+    assert_eq!(inode_by_file[&lookup.node.file_id].0, enumerated);
     Ok(())
 }
 

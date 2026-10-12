@@ -1,7 +1,7 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
-use crate::kernel::allocation::KernelAccounting;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::FileId;
+use crate::kernel::allocation::KernelAccounting;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
     FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, encode_tree_page, tree_page_id,
@@ -23,11 +23,17 @@ async fn put_tree_page(
         kind: FileKind::Regular,
     }]);
     let object = tree_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        object,
+    {
+        let __object_args = (
+            object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -220,11 +226,17 @@ async fn post_read_budget_failure_releases_every_decoded_allocation()
         kind: FileKind::Regular,
     }]);
     let object = tree_page_id(&page, 8)?;
-    AsyncObjectStore::put(
-        &store,
-        object,
+    {
+        let __object_args = (
+            object,
         OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let mut budget = WorkBudget::UNBOUNDED;
@@ -264,7 +276,19 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    AsyncObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            malformed_id,
+            malformed,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let mut allocations = AllocationLedger::default();
     let mut malformed_work = WorkCounters::default();
     let failure = (read_page_with_accounting::<_, TreeFormat>(&store, malformed_id, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut malformed_work, WorkBudget::UNBOUNDED, &cancellation), &cancellation, None)).await.map(|(page, _)| page)
@@ -292,11 +316,20 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    AsyncObjectStore::put(
-        &store,
-        object,
-        OwnedBytes::from(malformed),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            OwnedBytes::from(malformed),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(
+        &store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let mut allocations = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let failure = (read_page_with_accounting::<_, TreeFormat>(&store, object, DecodeLimits::default(), &mut KernelAccounting::borrowed_standalone(&mut allocations, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new()), &CancellationToken::new(), None)).await.map(|(page, _)| page)
@@ -427,7 +460,19 @@ async fn late_batch_decode_failure_releases_every_pending_allocation()
         kind: ObjectKind::TreePage,
         digest: object_digest(ObjectKind::TreePage, &malformed),
     };
-    AsyncObjectStore::put(&store, second, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            second,
+            malformed,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let limits = DecodeLimits::default();
     let cancellation = CancellationToken::new();
     let mut allocations = AllocationLedger::default();

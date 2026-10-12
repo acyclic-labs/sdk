@@ -21,10 +21,6 @@ pub(super) struct InvalidationQueue {
 }
 
 impl InvalidationQueue {
-    pub(super) fn is_idle(&self) -> bool {
-        !self.is_pending(self.notified)
-    }
-
     pub(super) fn is_pending(&self, target: Option<ViewStamp>) -> bool {
         self.processed < target
             || !self.deferred.is_empty()
@@ -90,17 +86,14 @@ pub(super) fn stale_kernel_items(
     for (inode, entry) in by_inode.iter() {
         fuse_item(work)?;
         let file_id = entry.lookup.node.file_id;
-        let anchor = entry
-            .bindings
-            .first()
-            .map_or(&ROOT_PATH, |binding| &*binding.path);
-        if let Some(held) = entry.kernel {
-            if !unchanged_since(anchor, Some(file_id), held)? {
-                fuse_reserve(&mut items, 1, work)?;
-                fuse_reserve(&mut actions, 1, work)?;
-                items.push(KernelCacheItem::Inode(*inode));
-                actions.push(Action::Inode(*inode));
-            }
+        let anchor = entry.anchor();
+        if let Some(held) = entry.kernel
+            && !unchanged_since(anchor, Some(file_id), held)?
+        {
+            fuse_reserve(&mut items, 1, work)?;
+            fuse_reserve(&mut actions, 1, work)?;
+            items.push(KernelCacheItem::Inode(*inode));
+            actions.push(Action::Inode(*inode));
         }
         for (name, held) in &entry.negative_children {
             fuse_item(work)?;
@@ -121,27 +114,27 @@ pub(super) fn stale_kernel_items(
         }
         for (index, binding) in entry.bindings.iter().enumerate() {
             fuse_item(work)?;
-            if let Some(held) = binding.kernel {
-                if !unchanged_since(&binding.path, Some(file_id), held)? {
-                    if let Some(parent) = fuse_parent(&binding.path, work)? {
-                        if let Some(parent_inode) = inode_by_path.get(&*parent).copied() {
-                            let name = fuse_copy_bytes(
-                                binding.path.components().last().ok_or(libc::ESTALE)?,
-                                work,
-                            )?;
-                            fuse_reserve(&mut items, 1, work)?;
-                            items.push(KernelCacheItem::Entry {
-                                parent: parent_inode,
-                                name,
-                            });
-                        }
-                    }
-                    fuse_reserve(&mut actions, 1, work)?;
-                    actions.push(Action::Binding {
-                        inode: *inode,
-                        index,
+            if let Some(held) = binding.kernel
+                && !unchanged_since(&binding.path, Some(file_id), held)?
+            {
+                if let Some(parent) = fuse_parent(&binding.path, work)?
+                    && let Some(parent_inode) = inode_by_path.get(&*parent).copied()
+                {
+                    let name = fuse_copy_bytes(
+                        binding.path.components().last().ok_or(libc::ESTALE)?,
+                        work,
+                    )?;
+                    fuse_reserve(&mut items, 1, work)?;
+                    items.push(KernelCacheItem::Entry {
+                        parent: parent_inode,
+                        name,
                     });
                 }
+                fuse_reserve(&mut actions, 1, work)?;
+                actions.push(Action::Binding {
+                    inode: *inode,
+                    index,
+                });
             }
         }
     }
@@ -162,15 +155,13 @@ pub(super) fn stale_kernel_items(
             }
             Action::Negative { inode, item } => {
                 let KernelCacheItem::Entry { name, .. } = &items[*item] else {
-                    unreachable!("planned negative entry")
+                    unreachable!("planned negative entry");
                 };
-                drop(
-                    by_inode
-                        .get_mut(inode)
-                        .expect("planned directory remains locked")
-                        .negative_children
-                        .remove(name.as_slice()),
-                );
+                by_inode
+                    .get_mut(inode)
+                    .expect("planned directory remains locked")
+                    .negative_children
+                    .remove(name.as_slice());
             }
         }
     }
@@ -184,13 +175,14 @@ pub(super) struct FuseInvalidationBatch<'a> {
 
 impl Drop for FuseInvalidationBatch<'_> {
     fn drop(&mut self) {
-        let items = std::mem::replace(&mut self.items, FuseOwned::empty(Vec::new().into_iter()));
+        let items = std::mem::take(&mut self.items);
         self.core
             .state_to_finish()
             .invalidation
             .retain_pending_tail(items);
     }
 }
+
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
     let mut blocked: Option<(
         Option<ViewStamp>,
@@ -216,8 +208,8 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                     || (Weak::new(), None),
                     |work| {
                         (
-                            Arc::downgrade(work.native_read_meter()),
-                            work.resource_allowance().map(Arc::downgrade),
+                            Arc::downgrade(&work.state),
+                            work.resource.as_ref().map(Arc::downgrade),
                         )
                     },
                 );
@@ -231,7 +223,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                         _ => false,
                     }
             });
-            if !state.invalidation.is_idle() && !denied {
+            if state.invalidation.is_pending(state.invalidation.notified) && !denied {
                 break identity;
             }
             state = core
@@ -270,9 +262,9 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                         &mut state.by_inode,
                         &state.inode_by_path,
                         |path, file_id, stamp| {
-                            core.source
-                                .unchanged_since_with_meter(path, file_id, stamp, work)
-                                .map_err(NativeMountError::from)
+                            Ok(core
+                                .source
+                                .unchanged_since_with_meter(path, file_id, stamp, work)?)
                         },
                         through,
                         work,
@@ -282,7 +274,7 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
                     items.map(Vec::into_iter)
                 } else {
                     completed_through = through;
-                    FuseOwned::empty(Vec::new().into_iter())
+                    FuseOwned::default()
                 }
             };
             let mut items = FuseInvalidationBatch { core, items };
@@ -296,10 +288,10 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
         if denied {
             core.handler_failed.store(true, Ordering::Release);
         }
-        if let Some(cause) = sdk_failure {
-            if let Err(failure) = &result {
-                state.invalidation.failure.get_or_insert((cause, failure.1));
-            }
+        if let Some(cause) = sdk_failure
+            && let Err(failure) = &result
+        {
+            state.invalidation.failure.get_or_insert((cause, failure.1));
         }
         state.invalidation.finish(completed_through, result);
         core.invalidation.notify_all();
@@ -325,7 +317,7 @@ pub(super) fn drop_kernel_caches(
                 notifier.inval_entry(INodeNo(*parent), OsStr::from_bytes(name))
             }
         };
-        // The real SDK attempted this item, including a genuine failed call.
+        // Retire only items actually attempted, including genuine SDK failures.
         drop(items.next());
         if let Err(error) = dropped
             && error.kind() != std::io::ErrorKind::NotFound

@@ -86,8 +86,3 @@ pub(super) fn time_or_now_ns(value: TimeOrNow) -> Result<i64, i32> {
         TimeOrNow::Now => SystemTime::now(),
     })
 }
-
-pub(super) fn native_device_number(major: u32, minor: u32) -> Result<u32, i32> {
-    crate::native_mount::device::join_device(major, minor)
-        .and_then(|device| u32::try_from(device).map_err(|_| libc::EOVERFLOW))
-}

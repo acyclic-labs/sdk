@@ -54,11 +54,12 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read_file()?;
     let read_projector = ReadFileProjection(ProjectionMode::Reference);
-    reference_read.definition.projection_schema = read_projector.schema()?;
+    reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write_file()?;
     let reference_projector = FileResultProjection(ProjectionMode::Reference);
-    reference_write.definition.projection_schema = reference_projector.schema()?;
+    reference_write.definition.projection_schema =
+        ProjectionMode::Reference.schema::<FileResult>()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
         definition("exact_read_full", files::read_file()?)?,
@@ -90,7 +91,12 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let source = "one\r\n🦀 abaaba\r\n";
     let file = FileRef::new(
         VolumeRef::new(
-            ProviderRef::new("file-contract".into(), "filesystem".into(), "1".into(), &mut None)?,
+            ProviderRef::new(
+                "file-contract".into(),
+                "filesystem".into(),
+                "1".into(),
+                &mut None,
+            )?,
             "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([51; 16])),
@@ -109,7 +115,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let read = ReadResult {
         file: file.clone(),
         selection: text::TextSelection {
-            range: read_input.range, text: "🦀".into(), omitted_before: 5, omitted_after: 9,
+            range: read_input.range,
+            text: "🦀".into(),
+            omitted_before: 5,
+            omitted_after: 9,
         },
     };
     let read_invocation = invocation("acyclic.read_file_range", value(&read_input)?);
@@ -125,7 +134,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         query: search_input.query.clone(),
         matches: text::SearchMatches {
             matches: vec![TextRange { start: 10, end: 13 }],
-            total_matches: 2, omitted_matches: 1, work: 19,
+            total_matches: 2,
+            omitted_matches: 1,
+            work: 19,
         },
     };
     let search_invocation = invocation("acyclic.search_file", value(&search_input)?);

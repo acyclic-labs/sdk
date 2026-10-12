@@ -52,33 +52,28 @@ pub(super) struct DirectoryStream {
     pub(super) confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
     pub(super) emitted: u64,
     pub(super) parked: u64,
-    pub(super) park_replacement: Option<(u64, u64)>,
-    pub(super) storage: Option<crate::NativeAllocation>,
 }
 
 #[derive(Default)]
 pub(super) struct DirectoryStreams {
-    pub(super) waiting: HashMap<(u64, u64), DirectoryStream>,
+    pub(super) waiting: HashMap<(u64, u64), (DirectoryStream, crate::NativeAllocation)>,
     pub(super) parked: u64,
 }
 
 impl DirectoryStreams {
     pub(super) fn take(&mut self, inode: u64, offset: u64) -> Option<DirectoryStream> {
-        let mut stream = self.waiting.remove(&(inode, offset))?;
-        // The initialized table row is gone; page/path owners remain live.
-        drop(stream.storage.take());
-        stream.park_replacement = None;
-        Some(stream)
+        self.waiting
+            .remove(&(inode, offset))
+            .map(|(stream, _)| stream)
     }
 
     pub(super) fn prepare_park(
         &mut self,
-        stream: &mut DirectoryStream,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<(crate::NativeAllocation, Option<(u64, u64)>), NativeMountError> {
         fuse_item(work)?;
         let storage = work.claim(
-            std::mem::size_of::<((u64, u64), DirectoryStream)>() as u64,
+            std::mem::size_of::<((u64, u64), (DirectoryStream, crate::NativeAllocation))>() as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
@@ -87,25 +82,29 @@ impl DirectoryStreams {
             .map_err(NativeMountError::Allocation)?;
         let mut oldest = None;
         if self.waiting.len() >= MAXIMUM_DIRECTORY_STREAMS {
-            for (key, candidate) in &self.waiting {
+            for (key, (candidate, _)) in &self.waiting {
                 fuse_item(work)?;
                 if oldest.is_none_or(|(_, parked)| candidate.parked < parked) {
                     oldest = Some((*key, candidate.parked));
                 }
             }
         }
-        stream.park_replacement = oldest.map(|(key, _)| key);
-        stream.storage = Some(storage);
-        Ok(())
+        Ok((storage, oldest.map(|(key, _)| key)))
     }
 
-    pub(super) fn park(&mut self, inode: u64, mut stream: DirectoryStream) {
-        if let Some(key) = stream.park_replacement.take() {
-            drop(self.waiting.remove(&key));
+    pub(super) fn park(
+        &mut self,
+        inode: u64,
+        mut stream: DirectoryStream,
+        (storage, replacement): (crate::NativeAllocation, Option<(u64, u64)>),
+    ) {
+        if let Some(key) = replacement {
+            self.waiting.remove(&key);
         }
         self.parked = self.parked.wrapping_add(1);
         stream.parked = self.parked;
-        self.waiting.insert((inode, stream.emitted), stream);
+        self.waiting
+            .insert((inode, stream.emitted), (stream, storage));
     }
 
     pub(super) fn rename_prefix(
@@ -115,7 +114,7 @@ impl DirectoryStreams {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
-        for (key, stream) in &self.waiting {
+        for (key, (stream, _)) in &self.waiting {
             fuse_item(work)?;
             if let Some(path) = fuse_replace_prefix(&stream.path, source, destination, work)? {
                 fuse_reserve(&mut replacements, 1, work)?;
@@ -126,6 +125,7 @@ impl DirectoryStreams {
             self.waiting
                 .get_mut(&key)
                 .expect("planned stream remains locked")
+                .0
                 .path = path;
         }
         Ok(())
@@ -172,8 +172,6 @@ impl ProjectionState {
             confirmed: HashMap::new(),
             emitted: 0,
             parked: 0,
-            park_replacement: None,
-            storage: None,
         })
     }
 
@@ -193,10 +191,13 @@ impl ProjectionState {
         let mut unlisted_reference = None;
         let result = (|| -> Result<(), NativeMountError> {
             if stream.emitted < 2 {
-                let attr = self.node_attr(inode)?;
+                let lookup = self.by_inode.get(&inode).ok_or(libc::ESTALE)?.lookup;
+                let attr = self.attr(inode, &lookup)?;
                 let resumed = stream.emitted;
-                let dots = [(inode, ".", 1), (stream.parent_inode, "..", 2)];
-                for (dot_inode, name, next) in dots.into_iter().filter(|dot| dot.2 > resumed) {
+                for (dot_inode, name, next) in [(inode, ".", 1), (stream.parent_inode, "..", 2)]
+                    .into_iter()
+                    .filter(|dot| dot.2 > resumed)
+                {
                     fuse_item(work)?;
                     let dot = FileAttr {
                         ino: INodeNo(dot_inode),
@@ -228,8 +229,11 @@ impl ProjectionState {
                     return Ok(());
                 };
                 fuse_item(work)?;
-                let path = fuse_child_path(&stream.path, &entry.name, work)?;
-                let child = ChildName::new(source, path, work)?;
+                let child = ChildName::new(
+                    source,
+                    fuse_child_path(&stream.path, &entry.name, work)?,
+                    work,
+                )?;
                 let current = match stream.entries_stamp {
                     Some(stamp)
                         if source.unchanged_since_with_meter(
@@ -258,7 +262,7 @@ impl ProjectionState {
                 } else {
                     self.inode_by_file
                         .get(&page_lookup.node.file_id)
-                        .and_then(|known| self.by_inode.get(known))
+                        .and_then(|(known, _)| self.by_inode.get(known))
                         .map_or(page_lookup, |known| known.lookup)
                 };
                 let child_inode = self.intern(
@@ -327,14 +331,12 @@ impl DirectoryReply {
             Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
         }
     }
-
     pub(super) fn ok(self) {
         match self {
             Self::Basic(reply) => reply.ok(),
             Self::Plus(reply) => reply.ok(),
         }
     }
-
     pub(super) fn error(self, error: Errno) {
         match self {
             Self::Basic(reply) => reply.error(error),
@@ -366,10 +368,10 @@ impl FuseProjection {
             return Err(libc::ESTALE.into());
         }
         let mut state = self.core.state()?;
-        state.streams.prepare_park(&mut stream, work)?;
-        state.list_directory(source, inode, &mut stream, listing, work)?;
-        state.streams.park(inode, stream);
-        Ok(())
+        let parking = state.streams.prepare_park(work)?;
+        let result = state.list_directory(source, inode, &mut stream, listing, work);
+        state.streams.park(inode, stream, parking);
+        result
     }
 
     pub(super) fn position_directory_stream(
@@ -437,8 +439,10 @@ impl FuseProjection {
                 ChildName::new(source, fuse_child_path(directory, &entry.name, work)?, work)?;
             listed.push((fuse_clone_path(name.key(), work)?, entry.node));
         }
-        let mut confirmed =
-            self.confirm_names(listed.iter().map(|(path, node)| (&**path, *node)), work)?;
+        let mut confirmed = HashMap::new();
+        for (path, node) in listed.iter() {
+            self.confirm_names(path, *node, &mut confirmed, work)?;
+        }
         for (path, node) in listed.drain(..) {
             confirm_name(&mut confirmed, node.file_id, path, stamp, work)?;
         }
