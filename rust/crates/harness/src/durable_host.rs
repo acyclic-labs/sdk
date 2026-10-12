@@ -1394,6 +1394,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     fn execution_write(
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::distributed::JournalWrite> {
         use crate::{distributed::JournalWrite, executor::ExecutionEvent};
         Ok(match event {
@@ -1430,7 +1431,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         event: &crate::executor::ExecutionEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event)?, work)
+        self.condition(Self::execution_write(operation, event, work)?, work)
             .await
             .map(|_| ())
     }
@@ -1845,7 +1846,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let path = crate::distributed::execution_path(operation, work)?;
         self.append(
             path, expected_tail, key, bytes,
-            Self::execution_write(operation, event)?, work,
+            Self::execution_write(operation, event, work)?, work,
         ).await
     }
 
@@ -7659,7 +7660,7 @@ pub(crate) mod tests {
             Limits::default(),
             None,
         )?;
-        let model_digest = prepared_request.manifest().request_digest;
+        let model_digest = prepared_request.request_digest();
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,

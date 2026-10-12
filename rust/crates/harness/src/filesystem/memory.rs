@@ -1373,7 +1373,7 @@ mod tests {
             .collect::<Result<Vec<_>>>()?;
         let fixed = crate::contract::canonical_json_bytes(&request.request().tools)?.len();
         Ok(crate::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(fixed)
                 .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
             message_tokens,
