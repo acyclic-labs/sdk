@@ -2917,7 +2917,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2998,7 +2998,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -3711,7 +3711,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let subscriber = tracing_subscriber::Registry::default()
             .with(captured.clone())
             .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -3788,7 +3788,7 @@ mod tests {
                     idempotency_key: None,
                 })
                 .await?;
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let mut records = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
@@ -3803,7 +3803,7 @@ mod tests {
                     .contains_key("outcome")
             );
             assert_eq!(captured.closed("acyclic.stream.follow"), 0);
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -3846,7 +3846,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let visibility = provider.inner.visibility.write().await;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -3864,7 +3864,7 @@ mod tests {
         );
         let mut future = Box::pin(future);
         assert!(futures::poll!(future.as_mut()).is_pending());
-        let other = obs::tests::Capture::default();
+        let other = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );

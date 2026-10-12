@@ -769,7 +769,7 @@ async fn store_spans_omit_customer_names()
     use tracing_subscriber::layer::SubscriberExt as _;
     // Two dispatchers prevent concurrent callsite interest from being cached away.
     let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-    let seen = crate::body::tests::Capture::default();
+    let seen = acyclic_grpc_observability::test_support::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::registry().with(seen.clone()),
     );
@@ -783,9 +783,9 @@ async fn store_spans_omit_customer_names()
     drop(core);
     drop(reopen(root.path())?);
     let seen = seen.0.lock().map_err(|_| "capture poisoned")?;
-    assert!(!seen.is_empty());
+    assert!(!seen.spans.is_empty());
     let path = root.path().to_string_lossy();
-    for span in seen.iter() {
+    for span in seen.spans.iter().filter(|span| span.closed) {
         for (field, value) in &span.fields {
             assert!(!["path", "token", "content", "body", "authorization"].contains(&field.as_str()));
             for leak in ["recovery", "retained", "missing", path.as_ref()] {
