@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let read = read_and_list(&service, &mut cases, &reference, &generation).await?;
     remove_and_delete(&service, &mut cases, reference, generation, read).await?;
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../test-fixtures/cloud-filesystem/golden.json");
+        .join("tests/fixtures/cloud-filesystem/golden.json");
     std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(&cases)?))?;
     Ok(())
 }

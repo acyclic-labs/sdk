@@ -11,7 +11,7 @@ import { createFilesystemGrpcClient } from "../dist/grpc.js";
 import { FilesystemService } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
-const fixtureDirectory = new URL("../../../../test-fixtures/cloud-filesystem/", import.meta.url);
+const fixtureDirectory = new URL("../../../../rust/crates/filesystem/tests/fixtures/cloud-filesystem/", import.meta.url);
 const source = JSON.parse(readFileSync(new URL("source.json", fixtureDirectory), "utf8"));
 const cases = JSON.parse(readFileSync(new URL("golden.json", fixtureDirectory), "utf8"));
 

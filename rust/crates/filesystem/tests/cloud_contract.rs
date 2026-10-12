@@ -7,7 +7,7 @@ use acyclic_fs::model::FilesystemProfile;
 use acyclic_fs::wire::filesystem::v2::{
     self as wire, filesystem_service_client::FilesystemServiceClient,
 };
-use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
+use acyclic_fs::{Fs, HostedFs, HostedFsOptions, HostedGeneration, IdempotencyKey};
 use futures::future::{Ready, ready};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -150,6 +150,12 @@ impl tower::Service<http::Request<Body>> for GoldenService {
                     MutationResponse
                 ),
                 Some("GetHead") => route!("GetHead", GetHeadRequest, GenerationResponse),
+                Some("GetGeneration") => {
+                    route!("GetGeneration", GetGenerationRequest, GenerationResponse)
+                }
+                Some("OpenWorkspace") => {
+                    route!("OpenWorkspace", OpenWorkspaceRequest, WorkspaceResponse)
+                }
                 Some("Read") => route!("Read", ReadRequest, ReadResponse),
                 Some("ListDirectory") => {
                     route!("ListDirectory", ListDirectoryRequest, ListDirectoryResponse)
@@ -176,12 +182,11 @@ impl tower::Service<http::Request<Body>> for GoldenService {
 #[tokio::test]
 async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
 -> Result<(), Box<dyn std::error::Error>> {
-    let cases: Vec<Value> = serde_json::from_str(include_str!(
-        "../../../../test-fixtures/cloud-filesystem/golden.json"
-    ))?;
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("fixtures/cloud-filesystem/golden.json"))?;
     let seen = Arc::new(Mutex::new(Vec::new()));
     let service = GoldenService {
-        cases: Arc::new(cases.clone()),
+        cases: Arc::new(hosted_setup_cases(&cases)?),
         seen: seen.clone(),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -226,6 +231,7 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
             .and_then(|case| case.get("response"))
             .ok_or("missing list golden response")?
     );
+    replay_hosted_removal(&hosted, &head, &cases).await?;
     let deleted = workspace
         .delete(IdempotencyKey::from_bytes([4; 16]))
         .await?;
@@ -245,6 +251,11 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
             "GetHead",
             "Read",
             "ListDirectory",
+            "OpenWorkspace",
+            "ApplyTransaction",
+            "GetGeneration",
+            "ListDirectory",
+            "Read",
             "DeleteWorkspace"
         ]
     );
@@ -255,6 +266,56 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip()
     drop(hosted);
     let _ = stop.send(());
     server.await??;
+    Ok(())
+}
+
+fn hosted_setup_cases(cases: &[Value]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    let mut result = cases.to_vec();
+    let mut workspace = cases.get(1).ok_or("missing workspace golden")?["response"].clone();
+    workspace["workspace"]["head"] =
+        cases.get(2).ok_or("missing written golden")?["response"]["generation"].clone();
+    result.push(serde_json::json!({
+        "method": "OpenWorkspace", "input": "OpenWorkspaceRequest", "output": "WorkspaceResponse",
+        "request": {"name": "same-name"}, "response": workspace
+    }));
+    let removed = cases.get(6).ok_or("missing removed golden")?["response"]["generation"].clone();
+    result.push(serde_json::json!({
+        "method": "GetGeneration", "input": "GetGenerationRequest", "output": "GenerationResponse",
+        "request": {"generation": removed}, "response": {"generation": removed}
+    }));
+    Ok(result)
+}
+
+async fn replay_hosted_removal(
+    hosted: &HostedFs,
+    retained: &HostedGeneration,
+    cases: &[Value],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace = hosted.open_workspace("same-name").await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([3; 16]));
+    transaction.remove("/value");
+    let removed = transaction.commit(16).await?;
+    assert_eq!(
+        &contract::json("MutationResponse", &removed)?,
+        &cases.get(6).ok_or("missing removal golden")?["response"]
+    );
+    let generation = workspace
+        .generation(
+            removed
+                .generation
+                .ok_or("missing removed generation")?
+                .generation_id,
+        )
+        .await?;
+    let page = generation.list_directory("/", None, 16).await?;
+    assert_eq!(
+        &contract::json(
+            "ListDirectoryResponse",
+            &wire::ListDirectoryResponse { page: Some(page) }
+        )?,
+        &cases.get(7).ok_or("missing empty list golden")?["response"]
+    );
+    assert_eq!(retained.read("/value", 64).await?.as_ref(), b"probe");
     Ok(())
 }
 
