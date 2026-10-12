@@ -514,8 +514,7 @@ where
         let target_generation = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = source
             .join_into(&target)
-            .plan_pinned(source_generation, target_generation)
-            .await?;
+            .plan_at(&source_generation, &target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         if plan.common_ancestor() != root.base_generation {
             return Err(WorkspaceMultiRootPublisherError::Candidate(
                 "common ancestor changed".to_owned(),

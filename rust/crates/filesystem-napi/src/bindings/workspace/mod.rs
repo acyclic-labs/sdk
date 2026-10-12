@@ -476,8 +476,8 @@ impl NativeWorkspace {
                 options.maximum_changes.into_inner(),
                 options.maximum_conflicts.into_inner(),
             )
-            .plan_pinned(
-                match options.source_generation {
+            .plan_at(
+                &match options.source_generation {
                     Some(id) => self
                         .inner
                         .generation(
@@ -493,7 +493,7 @@ impl NativeWorkspace {
                         .map_err(|failure| napi_error(failure.error))?,
                     None => sdk_value!(unbounded_future!(self.inner, head()))?,
                 },
-                match options.target_generation {
+                &match options.target_generation {
                     Some(id) => sdk_value!(unbounded_future!(
                         target.inner,
                         generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
@@ -503,8 +503,9 @@ impl NativeWorkspace {
                     ))?,
                     None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
+                acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
             )
-            .await
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
     }
