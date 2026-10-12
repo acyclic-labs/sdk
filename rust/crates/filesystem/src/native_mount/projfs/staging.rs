@@ -20,19 +20,23 @@ pub(super) fn write_listed_content(
     let mut sink = |_offset: u64, packet: crate::kernel::OwnedSourceChunk| {
         let mut remaining = packet.bytes().as_ref();
         while !remaining.is_empty() {
-            let count =
-                match crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Write, (remaining).len(), projection.work, || std::io::Write::write(&mut &*(file), remaining)) {
-                    Ok(0) => {
-                        return Err(MountSourceError::NativeWork(
-                            std::io::Error::from(std::io::ErrorKind::WriteZero).into(),
-                        ));
-                    }
-                    Ok(count) => count,
-                    Err(error) => {
-                        failure = Some(error);
-                        return Err(MountSourceError::Stale);
-                    }
-                };
+            let count = match crate::native_host::builtin_io(
+                acyclic_native_runtime::NativeOperationKind::Write,
+                (remaining).len(),
+                projection.work,
+                || std::io::Write::write(&mut &*(file), remaining),
+            ) {
+                Ok(0) => {
+                    return Err(MountSourceError::NativeWork(
+                        std::io::Error::from(std::io::ErrorKind::WriteZero).into(),
+                    ));
+                }
+                Ok(count) => count,
+                Err(error) => {
+                    failure = Some(error);
+                    return Err(MountSourceError::Stale);
+                }
+            };
             delivered = delivered
                 .checked_add(count as u64)
                 .ok_or(crate::WorkError::Overflow)?;
