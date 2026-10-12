@@ -12,6 +12,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 mod explicit_conversion;
 
 use acyclic_fs::Fs;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     bundle::HarnessBuilder,
@@ -541,7 +542,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 }
 
 async fn exercise_live_native_boundary() -> Result<()> {
-    let provider = ProviderRef::new("native-boundary", "filesystem", "2")?;
+    let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
@@ -592,7 +593,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         version: 1,
     };
     let mut schemas = SchemaRegistry::new();
-    schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
+    schemas.register(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
     let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
     agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
@@ -716,7 +717,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         output_schema: json!({"type":"object","required":["files"]}),
         projection_schema: json!({"type":"object","required":["kind","parts"],"properties":{"kind":{"const":"parts"},"parts":{"type":"array"}},"additionalProperties":false}),
     };
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool {
         definition: definition.clone(),
         executor: projector.clone(),
@@ -1051,7 +1052,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
                 let changed_revision = context.scoped_model(
                     context.scope().grants().clone(),
                     context.scope().limits(),
-                    Model::new("fixture-native", "all", "mock-native-2", Value::Null)?,
+                    Model::new("fixture-native".into(), "all".into(), "mock-native-2".into(), Value::Null)?,
                     adapter.clone(),
                 )?;
                 let counts = adapter.counts.load(Ordering::SeqCst);
@@ -1115,7 +1116,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1240,7 +1241,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let current_bundle = HarnessBuilder::new()
         .journal(journal)
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1565,7 +1566,7 @@ where
                     .clone()
                     .ok_or_else(|| Error::NotFound("original lease".into()))?,
                 turn,
-                Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+                Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
                 adapter.clone(),
                 ContextPipeline::default(), None,
             )
@@ -1692,7 +1693,7 @@ where
     use acyclic_harness::resources::StreamRef;
     use acyclic_harness::store::StreamAggregate;
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider = ProviderRef::new("media-fork", "stream", "2")?;
+    let stream_provider = ProviderRef::new("media-fork".into(), "stream".into(), "2".into(), &mut None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "media-parent".into(),
@@ -1732,9 +1733,9 @@ where
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
     let model = Model::new(
-        "fixture-native",
-        "all",
-        "mock-native-1",
+        "fixture-native".into(),
+        "all".into(),
+        "mock-native-1".into(),
         json!({"context_tokens":16_384}),
     )?;
     let exchange = vec![
@@ -1772,7 +1773,7 @@ where
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
     let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let executor = StockExecutor::new(
         model.clone(),

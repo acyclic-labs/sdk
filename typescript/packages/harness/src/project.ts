@@ -1,6 +1,6 @@
 /** Parent-bound project fork and merge facade over a provider-owned binding. */
 import type { ConversationMessage, ProviderRef, VolumeRef } from "./conversation.js";
-import { resourceRef, type ResourceRef } from "./fork.js";
+import type { ResourceRef } from "./fork.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { Authority, OperationId, Scope } from "./index.js";
 import type { ToolJsonValue } from "./model.js";
@@ -118,8 +118,10 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
   async forkProject(sourceGeneration: ResourceRef<"generation">, child: VolumeRef<"project", "filesystem">,
     idempotencyKey: string): Promise<ResourceRef<"generation">> {
     const selected = this.#child(child);
-    const generation = await this.#generation(sourceGeneration);
-    this.#key(idempotencyKey);
+    const generation = this.#generation(sourceGeneration);
+    if (typeof idempotencyKey !== "string" || idempotencyKey.length === 0 || /\p{Cc}/u.test(idempotencyKey)) {
+      throw new TypeError("project operation identity is invalid");
+    }
     await this.#binding.authorize("fork:publish", "read");
     return this.#generation(await this.#binding.forkProject(generation, selected, idempotencyKey));
   }
@@ -130,16 +132,16 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
     const prepared = await this.#binding.prepareProjectMerge(selected);
     const handle: ParentMergePlan = Object.freeze({
       child: selected,
-      source: await this.#generation(prepared.source),
-      target: await this.#generation(prepared.target),
-      commonAncestor: await this.#generation(prepared.commonAncestor),
+      source: this.#generation(prepared.source),
+      target: this.#generation(prepared.target),
+      commonAncestor: this.#generation(prepared.commonAncestor),
     });
     this.#plans.set(handle, { raw: prepared.plan });
     return handle;
   }
 
   async describeProjectMergeConflicts(plan: ParentMergePlan, conflicts: readonly Conflict[], truncated: boolean): Promise<Description> {
-    const raw = this.#ownedPlan(plan);
+    const raw = this.#planEntry(plan).raw;
     await this.#binding.authorize("project:merge", "write");
     return this.#binding.describeProjectMergeConflicts(raw, conflicts, truncated);
   }
@@ -156,9 +158,9 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
   }
 
   async publishProjectMergeReceipt(plan: ParentMergePlan, receipt: ProjectMergeReceipt): Promise<void> {
-    this.#ownedPlan(plan);
+    const entry = this.#planEntry(plan);
     const admitted = this.#contracts.validate("project_merge_receipt", receipt);
-    if (this.#planEntry(plan).operationId !== admitted.operation_id) {
+    if (entry.operationId !== admitted.operation_id) {
       throw new TypeError("project merge receipt belongs to another operation");
     }
     if (admitted.child.kind !== "conversation" || !admitted.child.id
@@ -170,10 +172,6 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
     }
     await this.#binding.authorize("project:merge", "write");
     await this.#binding.publishProjectMergeReceipt(admitted);
-  }
-
-  #ownedPlan(plan: ParentMergePlan): RawPlan {
-    return this.#planEntry(plan).raw;
   }
 
   #planEntry(plan: ParentMergePlan): { raw: RawPlan; operationId?: OperationId } {
@@ -192,8 +190,8 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
     return child as VolumeRef<"project", "filesystem">;
   }
 
-  async #generation(value: ResourceRef<"generation">): Promise<ResourceRef<"generation">> {
-    const generation = await resourceRef(value);
+  #generation(value: ResourceRef<"generation">): ResourceRef<"generation"> {
+    const generation = this.#contracts.validate("resource_ref", value);
     if (generation.kind !== "generation"
       || !this.#contracts.canonicalEqual(generation.provider, this.#project.provider)) {
       throw new TypeError("project generation belongs to another provider");
@@ -201,9 +199,4 @@ export class ParentProjectController<RawPlan, Conflict, Resolution, Outcome, Des
     return generation;
   }
 
-  #key(value: string): void {
-    if (typeof value !== "string" || value.length === 0 || /\p{Cc}/u.test(value)) {
-      throw new TypeError("project operation identity is invalid");
-    }
-  }
 }

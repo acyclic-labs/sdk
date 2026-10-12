@@ -4,7 +4,8 @@ use crate::wire;
 use prost::Message;
 use tonic::{Status, transport::Channel};
 use tracing::field::Empty;
-pub use acyclic_workers::grpc::{BearerAuth, ConnectError};
+use acyclic_workers::BearerAuth;
+pub use acyclic_workers::grpc::ConnectError;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::actors_service_client::ActorsServiceClient<
@@ -25,14 +26,8 @@ pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
         error.kind = Empty
     )
 }
-
-/// Connect trusting the operating system's roots with account-bound bearer metadata.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-pub async fn connect_with_ca_certificate(
+pub async fn connect(
     endpoint: &str,
     token: &str,
     ca: Option<&[u8]>,

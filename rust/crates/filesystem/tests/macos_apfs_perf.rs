@@ -84,6 +84,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
     capture_baseline(
         &mut checkout,
         &options,
+        &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
@@ -117,6 +118,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
             &mut checkout,
             batch,
             &options,
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )

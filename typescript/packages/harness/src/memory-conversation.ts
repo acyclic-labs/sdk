@@ -1,20 +1,18 @@
 /** Ephemeral owner-controlled conversation host; the Rust reducer owns admission. */
-import { Harness, type AgentId, type Command, type Event, type OperationId, type Scope } from "./index.js";
+import { Harness, type AgentId, type Command, type OperationId, type Scope } from "./index.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationState,
   FileRef, Limits, ReferencedAttachments, VolumeRef,
 } from "./conversation.js";
 import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
-import { MemoryContentStore } from "./memory-content-store.js";
+import { memoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
 import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
-const defaultResidentBytes = Number.MAX_SAFE_INTEGER;
-const defaultResidentFiles = Number.MAX_SAFE_INTEGER;
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -35,7 +33,7 @@ export class MemoryConversation {
   readonly #scope: Scope;
   readonly #volume: VolumeRef<"agent_private", "memory">;
   readonly #maxResidentFiles: number;
-  readonly #content: MemoryContentStore;
+  readonly #content: ReturnType<typeof memoryContentStore>;
   readonly #foreign = new Map<string, ContentReader>();
   #foreignMount: ((volume: VolumeRef) => Readonly<{ owner: MemoryConversation; scope: Scope }>) | undefined;
   readonly #uploads = new Map<string, Promise<FileRef>>();
@@ -43,7 +41,7 @@ export class MemoryConversation {
   #turns: Promise<void> = Promise.resolve();
 
   private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
-    maxResidentFiles: number, content: MemoryContentStore) {
+    maxResidentFiles: number, content: ReturnType<typeof memoryContentStore>) {
     this.#core = core;
     this.#scope = scope;
     this.#volume = core.contracts.validate("volume_ref", volume);
@@ -58,8 +56,8 @@ export class MemoryConversation {
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
     });
     let limits: Limits;
-    const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;
-    const maxResidentFiles = options.maxResidentFiles ?? defaultResidentFiles;
+    const maxResidentBytes = options.maxResidentBytes ?? Number.MAX_SAFE_INTEGER;
+    const maxResidentFiles = options.maxResidentFiles ?? Number.MAX_SAFE_INTEGER;
     try {
       limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
       if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
@@ -77,7 +75,7 @@ export class MemoryConversation {
         "conversation:bind", "conversation:append", "conversation:select_context",
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
       ]);
-      const content = new MemoryContentStore(volume, limits.file_bytes, limits.path_bytes,
+      const content = memoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, maxResidentFiles, content);
       host.#apply(core.contracts.validateIdentity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
@@ -92,8 +90,8 @@ export class MemoryConversation {
   get scope(): Scope { return structuredClone(this.#scope); }
   /** Attach one owner-issued reader; a bare callback or FileRef is not authority. */
   attachReadVolume(owner: MemoryConversation, scope: Scope): this {
-    const key = this.#volumeKey(owner.volume);
-    if (key === this.#volumeKey(this.#volume) || this.#foreign.has(key)) {
+    const key = this.#core.volumeStorageName(owner.volume);
+    if (key === this.#core.volumeStorageName(this.#volume) || this.#foreign.has(key)) {
       throw new TypeError("foreign content volume is already bound");
     }
     if (scope.agent !== this.#volume.owner.id) throw new TypeError("foreign read scope belongs to another agent");
@@ -109,8 +107,8 @@ export class MemoryConversation {
   }
   /** Owner issues one exact-file grant to an unrelated attached reader. */
   delegateFileRead(reader: AgentId, id: string, file: FileRef): Scope {
-    const reference = this.#validatedFile(file);
-    if (this.#volumeKey(reference.volume) !== this.#volumeKey(this.#volume) || this.#localBytes(reference) === undefined) {
+    const reference = this.#core.contracts.validate("file_ref", file);
+    if (this.#core.volumeStorageName(reference.volume) !== this.#core.volumeStorageName(this.#volume) || this.#localBytes(reference) === undefined) {
       throw new TypeError("owner cannot delegate a nonresident private file");
     }
     return this.#core.delegatePrivateFileRead(this.#scope, reader, id, reference);
@@ -121,8 +119,8 @@ export class MemoryConversation {
   }
   /** Owning provider authenticates a delegated read before returning bytes. */
   async readAuthorized(scope: Scope, reference: FileRef): Promise<Uint8Array> {
-    const file = this.#validatedFile(reference);
-    if (this.#volumeKey(file.volume) !== this.#volumeKey(this.#volume)) throw new TypeError("file belongs to another owner");
+    const file = this.#core.contracts.validate("file_ref", reference);
+    if (this.#core.volumeStorageName(file.volume) !== this.#core.volumeStorageName(this.#volume)) throw new TypeError("file belongs to another owner");
     this.#core.verifyContentRead(scope, file);
     const bytes = this.#localBytes(file);
     if (bytes === undefined) throw new TypeError("owner has no resident file");
@@ -153,8 +151,8 @@ export class MemoryConversation {
       verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
       read: file => this.readAuthorized(admittedScope, file),
       requireFileRead: file => {
-        const reference = this.#validatedFile(file);
-        if (this.#volumeKey(reference.volume) !== this.#volumeKey(this.#volume)) {
+        const reference = this.#core.contracts.validate("file_ref", file);
+        if (this.#core.volumeStorageName(reference.volume) !== this.#core.volumeStorageName(this.#volume)) {
           throw new TypeError("file belongs to another owner");
         }
         this.#core.verifyContentRead(admittedScope, reference);
@@ -229,7 +227,7 @@ export class MemoryConversation {
 
   /** Possession of a ref is not a foreign-owner read grant. */
   async read(reference: FileRef): Promise<Uint8Array> {
-    const file = this.#validatedFile(reference);
+    const file = this.#core.contracts.validate("file_ref", reference);
     const bytes = await this.#reader(file.volume).read(file);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content resolver returned invalid bytes");
     this.#core.contracts.verifyFileBytes(file, bytes);
@@ -237,12 +235,12 @@ export class MemoryConversation {
   }
 
   #reader(volume: VolumeRef): ContentReader {
-    const key = this.#volumeKey(volume);
-    if (key === this.#volumeKey(this.#volume)) return this.readBindings(this.#scope);
+    const key = this.#core.volumeStorageName(volume);
+    if (key === this.#core.volumeStorageName(this.#volume)) return this.readBindings(this.#scope);
     const bound = this.#foreign.get(key);
     if (bound) return bound;
     const mounted = this.#foreignMount?.(volume);
-    if (!mounted || this.#volumeKey(mounted.owner.volume) !== key
+    if (!mounted || this.#core.volumeStorageName(mounted.owner.volume) !== key
       || mounted.scope.agent !== this.#volume.owner.id) {
       throw new TypeError("content has no authorized owning-provider resolver");
     }
@@ -251,7 +249,7 @@ export class MemoryConversation {
 
   #checkDirectory(scope: Scope, volume: VolumeRef, grantedPrefix: string, path: string,
     expected: ResourceRef<"generation"> | null): bigint {
-    if (this.#volumeKey(volume) !== this.#volumeKey(this.#volume)) {
+    if (this.#core.volumeStorageName(volume) !== this.#core.volumeStorageName(this.#volume)) {
       throw new TypeError("directory belongs to another owner");
     }
     this.#core.verifyPrivateDirectoryRead(scope, volume, grantedPrefix, path);
@@ -360,11 +358,7 @@ export class MemoryConversation {
     if (state.messages.some(message => message.id === noticeId)) return;
     const user = state.messages.find(message => message.id === userId && message.kind === "user");
     if (user === undefined) throw new TypeError("terminal turn has no admitted user message");
-    // Terminalization must remain possible under every valid narrowed limit,
-    // including file_bytes/path_bytes == 1. The marker is control-plane data:
-    // its one-byte body and display name retain the outcome while its ref path
-    // falls back to the admitted user path when no short path is available.
-    // The detached staging path never becomes the provider's path head.
+    // Detached one-byte terminal markers use a bounded path without changing its head.
     const marker = encoder.encode(outcome === "failed" ? "f" : "c");
     const preferredPath = `turns/${operationId}/terminal`;
     const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
@@ -385,7 +379,7 @@ export class MemoryConversation {
     attachments: readonly Attachment[],
   ): Promise<RunOutput> {
     const limits = runtime.limits;
-    const userContent = this.#validatedFile(content);
+    const userContent = this.#core.contracts.validate("file_ref", content);
     this.#core.validateFileUnderLimits(userContent, limits);
     await this.read(userContent);
     const list = await this.#attachments(operationId, "user", attachments, limits);
@@ -462,8 +456,8 @@ export class MemoryConversation {
       reply_to: userId, tool_call_id: null, extensions: { "acyclic.model.metadata": metadata } };
     if (priorAssistant === undefined) this.#append(this.#core.contracts.deriveOperationId(operationId, "assistant-event"), "assistant", message, limits);
     else if (priorAssistant.kind !== "assistant" || priorAssistant.reply_to !== userId
-      || this.#fileKey(priorAssistant.content) !== this.#fileKey(message.content)
-      || !this.#sameAttachments(priorAssistant.attachments, message.attachments)) {
+      || this.#core.fileReadCapability(priorAssistant.content) !== this.#core.fileReadCapability(message.content)
+      || !this.#core.contracts.canonicalEqual(priorAssistant.attachments, message.attachments)) {
       throw new TypeError("turn identity is bound to another assistant message");
     }
     return structuredClone(stableOutput);
@@ -477,7 +471,7 @@ export class MemoryConversation {
 
   async #attachments(operation: OperationId, role: string, items: readonly Attachment[], limits: Limits): Promise<ReferencedAttachments> {
     if (items.length > limits.attachments) throw new TypeError("attachments exceed harness limits");
-    const checked = items.map(item => ({ file: this.#validatedFile(item.file), label: item.label }));
+    const checked = items.map(item => ({ file: this.#core.contracts.validate("file_ref", item.file), label: item.label }));
     for (const item of checked) { this.#core.validateFileUnderLimits(item.file, limits); await this.read(item.file); }
     if (checked.length <= 128) return { kind: "inline", items: checked };
     const manifest = await this.stage(`turns/${operation}/${role}-attachments.json`,
@@ -539,31 +533,12 @@ export class MemoryConversation {
     this.#append(operation, label, message, limits);
   }
 
-  #validatedFile(reference: FileRef): FileRef {
-    return this.#core.contracts.validate("file_ref", reference);
-  }
-
   #apply<Action extends { readonly kind: string }>(operation: OperationId, label: string, action: Action): void {
     const [authority, revision] = this.#core.head();
     const command: Command<Action> = { authority,
       operation_id: operation, idempotency_key: `conversation:${operation}:${label}`,
       expected_revision: revision, scope: this.#scope, causal_parent: null, action };
     this.#core.apply(command);
-  }
-
-  #volumeKey(volume: VolumeRef): string {
-    return this.#core.volumeStorageName(volume);
-  }
-
-  #fileKey(file: FileRef): string {
-    return this.#core.fileReadCapability(file);
-  }
-
-  #sameAttachments(left: ReferencedAttachments, right: ReferencedAttachments): boolean {
-    const encodedLeft = this.#core.contracts.encodeCanonicalJson(left);
-    const encodedRight = this.#core.contracts.encodeCanonicalJson(right);
-    return encodedLeft.byteLength === encodedRight.byteLength
-      && encodedLeft.every((byte, index) => byte === encodedRight[index]);
   }
 
 }

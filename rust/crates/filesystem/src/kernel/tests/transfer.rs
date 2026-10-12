@@ -1,5 +1,5 @@
 use super::*;
-use crate::async_storage::{AsyncObjectStore, ImmediateObjectStore};
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
@@ -217,10 +217,8 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 #[test]
 fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    fn assert_immediate<T: ImmediateObjectStore>(_: &T) {}
     let (manifest, _) = fixture();
     let store = MemoryObjectStore::default();
-    assert_immediate(&store);
     let cancellation = CancellationToken::new();
     let terminal = ready(export_generation_batch_async(
         &store,
