@@ -200,7 +200,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         while after < tail {
             let mut page = crate::store::operations::read_records(
                 &self.stream,
-                &stream.0,
+                stream.0.path(),
                 after,
                 (tail - after).min(64) as u32,
                 work,

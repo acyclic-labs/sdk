@@ -232,20 +232,20 @@ impl StockExecution<'_> {
             .model_records(journal, input.operation_id, step, ModelPurpose::Response)
             .await?;
         self.verify_execution_owner().await?;
-        if !stock_append_if_tail(
-            journal,
-            input.operation_id,
-            tail,
-            &projection_key,
-            &ExecutionEvent::ContextCompacted {
-                step,
-                projection,
-                compaction,
-                accounting,
-            },
-            self.io,
-        )
-        .await?
+        if !journal
+            .append_if_tail(
+                input.operation_id,
+                tail,
+                &projection_key,
+                &ExecutionEvent::ContextCompacted {
+                    step,
+                    projection,
+                    compaction,
+                    accounting,
+                },
+                self.io,
+            )?
+            .await?
         {
             return Err(Error::Indeterminate(input.operation_id));
         }

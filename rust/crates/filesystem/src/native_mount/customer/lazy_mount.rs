@@ -212,19 +212,19 @@ where
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
-        revalidate_session(&self.session)?;
+        with_session_work(&self.session, NativeMountSession::revalidate)?;
         advanced.map_err(Into::into)
     }
 
     /// Makes source-side changes beneath the supplied paths visible.
     pub fn changed_outside(&self, paths: &[String]) -> Result<(), MountLifecycleError> {
         self.source.changed_outside(paths)?;
-        revalidate_session(&self.session)
+        with_session_work(&self.session, NativeMountSession::revalidate)
     }
 
     /// Settles all source changes reported before this call.
     pub fn revalidate(&self) -> Result<(), MountLifecycleError> {
-        revalidate_session(&self.session)
+        with_session_work(&self.session, NativeMountSession::revalidate)
     }
 
     fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {

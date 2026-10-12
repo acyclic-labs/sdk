@@ -612,10 +612,18 @@ impl ExecutionJournal for Journal {
     fn append<'a>(
         &'a self,
         operation_id: OperationId,
-        idempotency_key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        async move {
+        idempotency_key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal append is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let event = event.clone();
+            let idempotency_key = idempotency_key.to_owned();
             let mut records = self.0.lock().unwrap();
             if let Some(existing) = records.iter().find(|record| {
                 record.operation_id == operation_id && record.idempotency_key == idempotency_key
@@ -638,18 +646,25 @@ impl ExecutionJournal for Journal {
                 event,
             });
             Ok(())
-        }
-        .boxed()
+        })
     }
 
     fn append_if_tail<'a>(
         &'a self,
         operation_id: OperationId,
         expected_tail: u64,
-        idempotency_key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        async move {
+        idempotency_key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal append is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let event = event.clone();
+            let idempotency_key = idempotency_key.to_owned();
             let mut records = self.0.lock().unwrap();
             let tail = records
                 .iter()
@@ -665,18 +680,31 @@ impl ExecutionJournal for Journal {
                 event,
             });
             Ok(true)
-        }
-        .boxed()
+        })
     }
 
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,
-        idempotency_key: String,
-        bytes: Vec<u8>,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.stage_source(operation_id, idempotency_key, bytes.into(), media_type)
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal stage is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.stage_source(
+                operation_id,
+                idempotency_key.to_owned(),
+                bytes.to_vec().into(),
+                media_type,
+            )
+            .await
+        })
     }
 
     fn load<'a>(

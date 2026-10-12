@@ -73,7 +73,7 @@ pub(super) fn retire_name_owned<T>(
 
 pub(super) fn pending_binding_path<'a>(
     components: &[LogicalName],
-    pending: &'a [(NamespacePath, FileId)],
+    pending: &[(&'a NamespacePath, FileId)],
     case_sensitivity: CaseSensitivity,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Option<(&'a NamespacePath, FileId)>, FsError> {
@@ -92,7 +92,7 @@ pub(super) fn pending_binding_path<'a>(
             CaseSensitivity::ProfileFolded => name_fold_equal(name, other_name, accounting)?,
         };
         if same {
-            return Ok(Some((path, *id)));
+            return Ok(Some((*path, *id)));
         }
     }
     Ok(None)
@@ -100,7 +100,7 @@ pub(super) fn pending_binding_path<'a>(
 
 pub(super) fn removed_binding_id(
     path: &NamespacePath,
-    removed: &[(NamespacePath, FileId)],
+    removed: &[(&NamespacePath, FileId)],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Option<FileId>, FsError> {
     Ok(pending_binding_path(
@@ -126,13 +126,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         {
             return Ok(());
         }
-        let mut pending = Self::name_binding_vector(operations.len(), accounting)?;
-        let mut removed = Self::name_binding_vector(operations.len(), accounting)?;
+        let mut pending =
+            Owned::<Vec<(&NamespacePath, FileId)>>::allocate(operations.len(), accounting)?;
+        let mut removed =
+            Owned::<Vec<(&NamespacePath, FileId)>>::allocate(operations.len(), accounting)?;
         for operation in operations {
             accounting.check()?;
             self.canonicalize_existing_mutation(
                 operation,
-                &pending.0,
+                &pending.value,
                 operations_allocation,
                 accounting,
                 cancellation,
@@ -140,7 +142,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await?;
             self.canonicalize_new_mutation_parents(
                 operation,
-                &pending.0,
+                &pending.value,
                 operations_allocation,
                 accounting,
                 cancellation,
@@ -148,36 +150,41 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await?;
             match operation {
                 Mutation::Create { path, record } | Mutation::Restore { path, record } => {
-                    let allowed = removed_binding_id(path, &removed.0, accounting)?;
+                    let allowed = removed_binding_id(path, &removed.value, accounting)?;
                     let allowed_ids = allowed.as_ref().map_or(&[][..], std::slice::from_ref);
                     self.admit_binding_name(
                         path,
-                        &pending.0,
+                        &pending.value,
                         allowed_ids,
                         accounting,
                         cancellation,
                     )
                     .await?;
-                    Self::push_name_binding(&mut pending, path, record.file_id, accounting)?;
+                    pending.value.push((path, record.file_id));
                 }
                 Mutation::Link {
                     source,
                     destination,
                 } => {
                     let id = self
-                        .pending_or_existing_file_id(source, &pending.0, accounting, cancellation)
+                        .pending_or_existing_file_id(
+                            source,
+                            &pending.value,
+                            accounting,
+                            cancellation,
+                        )
                         .await?;
-                    let allowed = removed_binding_id(destination, &removed.0, accounting)?;
+                    let allowed = removed_binding_id(destination, &removed.value, accounting)?;
                     let allowed_ids = allowed.as_ref().map_or(&[][..], std::slice::from_ref);
                     self.admit_binding_name(
                         destination,
-                        &pending.0,
+                        &pending.value,
                         allowed_ids,
                         accounting,
                         cancellation,
                     )
                     .await?;
-                    Self::push_name_binding(&mut pending, destination, id, accounting)?;
+                    pending.value.push((destination, id));
                 }
                 Mutation::Rename {
                     source,
@@ -185,9 +192,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     replace,
                 } => {
                     let id = self
-                        .pending_or_existing_file_id(source, &pending.0, accounting, cancellation)
+                        .pending_or_existing_file_id(
+                            source,
+                            &pending.value,
+                            accounting,
+                            cancellation,
+                        )
                         .await?;
-                    let removed_id = removed_binding_id(destination, &removed.0, accounting)?
+                    let removed_id = removed_binding_id(destination, &removed.value, accounting)?
                         .filter(|other| *other != id);
                     let ids = [id, removed_id.unwrap_or(id)];
                     let allowed_ids = if removed_id.is_some() {
@@ -197,34 +209,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     };
                     self.admit_binding_name(
                         destination,
-                        &pending.0,
+                        &pending.value,
                         allowed_ids,
                         accounting,
                         cancellation,
                     )
                     .await?;
-                    Self::retain_name_bindings(&mut pending, source, accounting)?;
+                    pending.value.retain(|(path, _)| *path != &*source);
                     if *replace {
-                        Self::retain_name_bindings(&mut pending, destination, accounting)?;
+                        pending.value.retain(|(path, _)| *path != &*destination);
                     }
-                    Self::push_name_binding(&mut removed, source, id, accounting)?;
-                    Self::push_name_binding(&mut pending, destination, id, accounting)?;
+                    removed.value.push((source, id));
+                    pending.value.push((destination, id));
                 }
                 Mutation::Remove { path, .. } => {
                     if pending_binding_path(
                         path.components(),
-                        &pending.0,
+                        &pending.value,
                         self.volume.config.case_sensitivity,
                         accounting,
                     )?
                     .is_none()
                     {
                         let id = self
-                            .pending_or_existing_file_id(path, &pending.0, accounting, cancellation)
+                            .pending_or_existing_file_id(
+                                path,
+                                &pending.value,
+                                accounting,
+                                cancellation,
+                            )
                             .await?;
-                        Self::push_name_binding(&mut removed, path, id, accounting)?;
+                        removed.value.push((path, id));
                     }
-                    Self::retain_name_bindings(&mut pending, path, accounting)?;
+                    pending.value.retain(|(other, _)| *other != &*path);
                 }
                 Mutation::SetMetadata { .. }
                 | Mutation::Write { .. }
@@ -237,70 +254,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 | Mutation::CloneFileRange { .. } => {}
             }
         }
-        Ok(())
-    }
-
-    pub(super) fn name_binding_vector(
-        length: usize,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<
-        (
-            Vec<(NamespacePath, FileId)>,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        FsError,
-    > {
-        let requested = length
-            .checked_mul(size_of::<(NamespacePath, FileId)>())
-            .ok_or(WorkError::Overflow)? as u64;
-        let mut allocation = accounting.claim_owned(requested, u64::from(length != 0))?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(length)
-            .map_err(|_| FsError::PendingMutationAllocationFailed)?;
-        let actual = values
-            .capacity()
-            .checked_mul(size_of::<(NamespacePath, FileId)>())
-            .ok_or(WorkError::Overflow)? as u64;
-        accounting.reconcile_owned(&mut allocation, requested, actual)?;
-        Ok((values, allocation))
-    }
-
-    pub(super) fn push_name_binding(
-        bindings: &mut (
-            Vec<(NamespacePath, FileId)>,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        path: &NamespacePath,
-        id: FileId,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<(), FsError> {
-        let cancellation = name_cancellation(accounting);
-        let mut copied = path.clone_with_accounting(accounting, cancellation)?;
-        bindings.1.absorb(&mut copied.1)?;
-        bindings.0.push((copied.0, id));
-        Ok(())
-    }
-
-    pub(super) fn retain_name_bindings(
-        bindings: &mut (
-            Vec<(NamespacePath, FileId)>,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        removed: &NamespacePath,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<(), FsError> {
-        let bytes = bindings
-            .0
-            .iter()
-            .filter(|(path, _)| path == removed)
-            .try_fold(0_u64, |total, (path, _)| {
-                total
-                    .checked_add(path.retained_bytes())
-                    .ok_or(WorkError::Overflow)
-            })?;
-        bindings.0.retain(|(path, _)| path != removed);
-        accounting.release_owned(&mut bindings.1, bytes)
+        pending.retire(accounting)?;
+        removed.retire(accounting)
     }
 
     pub(super) fn replace_name_path(
@@ -322,7 +277,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn admit_binding_name(
         &mut self,
         path: &NamespacePath,
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         allowed: &[FileId],
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -365,7 +320,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn canonicalize_new_mutation_parents(
         &mut self,
         operation: &mut Mutation,
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         operations_allocation: &mut KernelOwnedAllocation,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -409,56 +364,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn canonicalize_existing_mutation(
         &mut self,
         operation: &mut Mutation,
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         operations_allocation: &mut KernelOwnedAllocation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         if self.volume.config.case_sensitivity != CaseSensitivity::ProfileFolded {
             return Ok(());
         }
-        match operation {
+        let paths = match operation {
             Mutation::Remove { path, .. }
             | Mutation::SetMetadata { path, .. }
             | Mutation::Write { path, .. }
             | Mutation::ValidateRegular { path }
             | Mutation::Resize { path, .. }
             | Mutation::ZeroRange { path, .. }
-            | Mutation::Preallocate { path, .. } => {
-                let replacement = self
-                    .canonical_existing_path(path, pending, accounting, cancellation)
-                    .await?;
-                Self::replace_name_path(path, replacement, operations_allocation, accounting)?;
-            }
-            Mutation::Rename { source, .. } | Mutation::Link { source, .. } => {
-                let replacement = self
-                    .canonical_existing_path(source, pending, accounting, cancellation)
-                    .await?;
-                Self::replace_name_path(source, replacement, operations_allocation, accounting)?;
-            }
+            | Mutation::Preallocate { path, .. } => [Some(path), None],
+            Mutation::Rename { source, .. } | Mutation::Link { source, .. } => [Some(source), None],
             Mutation::CloneRange {
                 source,
                 destination,
                 ..
-            } => {
-                let replacement = self
-                    .canonical_existing_path(source, pending, accounting, cancellation)
-                    .await?;
-                Self::replace_name_path(source, replacement, operations_allocation, accounting)?;
-                let replacement = self
-                    .canonical_existing_path(destination, pending, accounting, cancellation)
-                    .await?;
-                Self::replace_name_path(
-                    destination,
-                    replacement,
-                    operations_allocation,
-                    accounting,
-                )?;
-            }
+            } => [Some(source), Some(destination)],
             Mutation::Create { .. }
             | Mutation::Restore { .. }
             | Mutation::File { .. }
-            | Mutation::CloneFileRange { .. } => {}
+            | Mutation::CloneFileRange { .. } => return Ok(()),
+        };
+        for path in paths.into_iter().flatten() {
+            let replacement = self
+                .canonical_existing_path(path, pending, accounting, cancellation)
+                .await?;
+            Self::replace_name_path(path, replacement, operations_allocation, accounting)?;
         }
         Ok(())
     }
@@ -466,7 +403,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn canonical_existing_path(
         &mut self,
         path: &NamespacePath,
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -503,7 +440,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn canonicalize_path_components(
         &mut self,
         requested: &[LogicalName],
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -592,7 +529,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn pending_or_existing_file_id(
         &mut self,
         path: &NamespacePath,
-        pending: &[(NamespacePath, FileId)],
+        pending: &[(&NamespacePath, FileId)],
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileId, FsError> {

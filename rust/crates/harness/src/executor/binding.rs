@@ -171,14 +171,14 @@ impl StockExecution<'_> {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
-                stock_append(
-                    journal,
-                    input.operation_id,
-                    "execution:started",
-                    &ExecutionEvent::Started { request_digest },
-                    self.io,
-                )
-                .await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        "execution:started",
+                        &ExecutionEvent::Started { request_digest },
+                        self.io,
+                    )?
+                    .await?;
             }
         }
         Ok(())

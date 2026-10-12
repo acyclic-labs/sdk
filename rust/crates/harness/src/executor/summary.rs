@@ -127,15 +127,15 @@ impl StockExecution<'_> {
         let output_key = with_history_io(self.io, |work| {
             crate::contract::preparation_format(format_args!("summary:{step}:output"), work)
         })?;
-        let output = stage_media_bytes(
-            journal,
-            operation_id,
-            &output_key,
-            text.as_bytes(),
-            "text/plain",
-            self.io,
-        )
-        .await?;
+        let output = journal
+            .stage(
+                operation_id,
+                &output_key,
+                text.as_bytes(),
+                "text/plain",
+                self.io,
+            )?
+            .await?;
         let summary = crate::context::ContextSummary {
             operation_id,
             step,

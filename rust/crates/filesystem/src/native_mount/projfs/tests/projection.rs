@@ -128,84 +128,50 @@ async fn a_projected_directory_link_leads_into_its_directory()
 
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn a_directory_replaces_a_link_held_open_once_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let work = setup_work()?;
+async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn std::error::Error>>
+{
     use std::os::windows::fs::OpenOptionsExt as _;
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
     };
-
-    let source = windows_checkout_source().await?;
-    let name = windows_path("name");
-    source.create_symbolic_link(
-        &name,
-        setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
-        FileMetadata::default(),
-        &work,
-    )?;
-    let (_root, destination, mut session) = mount_source(&source)?;
-    let projected = destination.join("name");
-    let held = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ.0)
-        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-        .open(&projected)?;
-    source.remove(&name, None, &work)?;
-    source.create_directory(&name, FileMetadata::default(), &work)?;
-    let inner = name.child(windows_name("inner.txt"));
-    source.create_file(&inner, FileMetadata::default(), None, &work)?;
-    source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
-    let closer = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        drop(held);
-    });
-    session.revalidate(&work)?;
-    closer.join().map_err(|_| "closer panicked")?;
-    let held_by = || format!("the mount holds {:?}", sorted_names(&destination));
-    let kind = std::fs::symlink_metadata(&projected)
-        .map_err(|error| format!("the directory: {error}; {}", held_by()))?;
-    assert!(kind.is_dir(), "not a directory: {kind:?}");
-    let inner = std::fs::read(projected.join("inner.txt"))
-        .map_err(|error| format!("its file: {error}; it holds {:?}", sorted_names(&projected)))?;
-    assert_eq!(inner, b"inner");
-    session.stop()?;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn a_link_held_open_goes_once_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let work = setup_work()?;
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-    };
-
-    let source = windows_checkout_source().await?;
-    let link = windows_path("link");
-    source.create_symbolic_link(
-        &link,
-        setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
-        FileMetadata::default(),
-        &work,
-    )?;
-    let (_root, destination, mut session) = mount_source(&source)?;
-    let projected = destination.join("link");
-    let held = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ.0)
-        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-        .open(&projected)?;
-    source.remove(&link, None, &work)?;
-    let closer = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        drop(held);
-    });
-    session.revalidate(&work)?;
-    closer.join().map_err(|_| "closer panicked")?;
-    assert!(sorted_names(&destination)?.is_empty());
-    session.stop()?;
+    for replacement in [false, true] {
+        let work = setup_work()?;
+        let source = windows_checkout_source().await?;
+        let name = windows_path("name");
+        source.create_symbolic_link(
+            &name,
+            setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
+            FileMetadata::default(),
+            &work,
+        )?;
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let projected = destination.join("name");
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(&projected)?;
+        source.remove(&name, None, &work)?;
+        if replacement {
+            source.create_directory(&name, FileMetadata::default(), &work)?;
+            let inner = name.child(windows_name("inner.txt"));
+            source.create_file(&inner, FileMetadata::default(), None, &work)?;
+            source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+        }
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(held);
+        });
+        session.revalidate(&work)?;
+        closer.join().map_err(|_| "closer panicked")?;
+        if replacement {
+            assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+            assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+        } else {
+            assert!(sorted_names(&destination)?.is_empty());
+        }
+        session.stop()?;
+    }
     Ok(())
 }
 
@@ -263,20 +229,10 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
 async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("advance-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "advance-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let added = path.join("added.txt");
     assert_eq!(
         std::fs::metadata(&added).err().map(|error| error.kind()),
@@ -325,12 +281,7 @@ async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn s
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
     mount.unmount().await?;
     Ok(())
@@ -359,12 +310,7 @@ async fn rustc_links_object_files_created_inside_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("rustc-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "rustc-projfs", &work).await?;
     workspace
         .write(
             "/acyclic-workflow.rs",
@@ -373,12 +319,7 @@ async fn rustc_links_object_files_created_inside_projection()
         .await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(

@@ -31,7 +31,10 @@ impl StockExecution<'_> {
             call_id: stock_string_copy(call_id, self.io)?,
             reason,
         };
-        match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io).await {
+        match journal
+            .append_if_tail(operation_id, tail, &key, &event, self.io)?
+            .await
+        {
             Ok(true) => Ok(()),
             Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                 Err(Error::Indeterminate(operation_id))

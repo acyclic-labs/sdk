@@ -217,7 +217,7 @@ impl McpRuntimeCallbacks {
         Ok(json!({"jsonrpc":"2.0","id":request.message.get("id"),"result":result}))
     }
     async fn pin(&self, operation: OperationId, request: &McpCallbackRequest) -> Result<()> {
-        self.journal.stage(operation, "mcp:callback:request".into(), crate::contract::canonical_json_bytes(&(request, &self.model_name, &self.sampling))?, "application/json").await?;
+        self.journal.stage(operation, "mcp:callback:request", &crate::contract::canonical_json_bytes(&(request, &self.model_name, &self.sampling))?, "application/json", None)?.await?;
         Ok(())
     }
 }

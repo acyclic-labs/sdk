@@ -71,7 +71,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         self.commit(&mut transaction, permit, accounting).await
     }
 
-    pub(super) async fn apply_resolved_promotion(
+    /// Stages an inspected identity in an unpublished transaction.
+    pub async fn apply_resolved_promotion(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         requested: &str,

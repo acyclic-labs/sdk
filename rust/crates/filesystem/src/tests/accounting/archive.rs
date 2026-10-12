@@ -103,27 +103,20 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     };
     let cancellation = CancellationToken::new();
     assert!(
-        !{
-            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
-            let __object_result = crate::AsyncObjectStore::contains(
-                &archive.inner,
-                original_root,
-                &mut __object_work,
-            )
-            .await;
-            __object_work.receipt(__object_result)
-        }?
-        .value
+        !crate::AsyncObjectStore::contains(
+            &archive.inner,
+            original_root,
+            &mut crate::AuthorityWork::new(BUDGET, &cancellation),
+        )
+        .await?
     );
     assert!(
-        !{
-            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
-            let __object_result =
-                crate::AsyncObjectStore::contains(&archive.inner, current_root, &mut __object_work)
-                    .await;
-            __object_work.receipt(__object_result)
-        }?
-        .value
+        !crate::AsyncObjectStore::contains(
+            &archive.inner,
+            current_root,
+            &mut crate::AuthorityWork::new(BUDGET, &cancellation)
+        )
+        .await?
     );
     let cursor = AccountingCursor {
         sequence: initial.sequence,

@@ -615,7 +615,7 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
         crate::NativeFutureBundle::new(work, || async move {
             self.verify(
                 settlement,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await
         })

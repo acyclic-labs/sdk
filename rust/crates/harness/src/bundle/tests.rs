@@ -165,29 +165,31 @@ impl ExecutionJournal for RecordingTurnJournal {
     fn append<'a>(
         &'a self,
         _: crate::OperationId,
-        _: String,
-        event: crate::executor::ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        async move {
+        _: &'a str,
+        event: &'a crate::executor::ExecutionEvent,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() { return Err(crate::Error::Unsupported("finite test journal append is unavailable".into())); }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             self.events
                 .lock()
                 .map_err(|_| Error::Storage("journal lock poisoned".into()))?
-                .push(event);
+                .push(event.clone());
             Err(Error::Unsupported(
                 "stock journal dispatch forbidden".into(),
             ))
-        }
-        .boxed()
+        })
     }
 
     fn stage<'a>(
         &'a self,
         operation: crate::OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::FileRef>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
     }
 
     fn load<'a>(

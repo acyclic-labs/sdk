@@ -1727,19 +1727,22 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: acyclic_harness::executor::ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a acyclic_harness::executor::ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: acyclic_harness::executor::ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a acyclic_harness::executor::ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            let event = event.clone();
             let compacted = matches!(
                 event,
                 acyclic_harness::executor::ExecutionEvent::ContextCompacted { step: 0, .. }
@@ -1756,7 +1759,7 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
             };
             let committed = self
                 .inner
-                .append_if_tail(operation, tail, key, event)
+                .append_if_tail(operation, tail, key, &event, io)?
                 .await?;
             if committed && compacted && self.fail.swap(false, Ordering::SeqCst) {
                 Err(Error::Storage(
@@ -1770,11 +1773,12 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media_type)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
     fn load<'a>(&'a self, file: &'a FileRef,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
@@ -1959,12 +1963,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
     let journal = storage.journal();
     let operation = OperationId::new();
     let context = journal
-        .stage(
-            operation,
-            "temporal-context".into(),
-            b"{\"canonical\":null,\"checkpoint\":null,\"context\":{\"current_input_index\":0,\"messages\":[{\"content\":{\"kind\":\"text\",\"text\":\"source\"},\"role\":\"user\"}],\"metadata\":{}}}".to_vec(),
-            "application/json",
-        )
+        .stage(operation, "temporal-context", b"{\"canonical\":null,\"checkpoint\":null,\"context\":{\"current_input_index\":0,\"messages\":[{\"content\":{\"kind\":\"text\",\"text\":\"source\"},\"role\":\"user\"}],\"metadata\":{}}}", "application/json", None)?
         .await?;
     let compacted = ExecutionEvent::ContextCompacted {
         step: 0,
@@ -1974,33 +1973,25 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
     };
     assert!(
         journal
-            .append_if_tail(operation, 0, "premature".into(), compacted.clone())
+            .append_if_tail(operation, 0, &"premature", &compacted, None)?
             .await
             .is_err()
     );
     journal
-        .append(
-            operation,
-            "started".into(),
-            ExecutionEvent::Started {
+        .append(operation, &"started", &ExecutionEvent::Started {
                 request_digest: [1; 32],
-            },
-        )
+            }, None)?
         .await?;
     journal
-        .append(
-            operation,
-            "prepared".into(),
-            ExecutionEvent::ContextPrepared {
+        .append(operation, &"prepared", &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection: context.clone(),
                 accounting: None,
-            },
-        )
+            }, None)?
         .await?;
     assert!(
         journal
-            .append(operation, "no-summary".into(), compacted.clone())
+            .append(operation, &"no-summary", &compacted, None)?
             .await
             .is_err()
     );
@@ -2018,97 +2009,70 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
         None,
     )?;
     let request_ref = journal
-        .stage(
-            operation,
-            "summary-request".into(),
-            request.bytes().to_vec(),
-            "application/json",
-        )
+        .stage(operation, "summary-request", &request.bytes(), "application/json", None)?
         .await?;
     journal
-        .append(
-            operation,
-            "summary-started".into(),
-            ExecutionEvent::ModelStarted {
+        .append(operation, &"summary-started", &ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: ModelPurpose::Summary,
                 request_digest: request.request_digest(),
                 request: request_ref,
-            },
-        )
+            }, None)?
         .await?;
     assert!(
         journal
-            .append(operation, "unsettled-summary".into(), compacted.clone())
+            .append(operation, &"unsettled-summary", &compacted, None)?
             .await
             .is_err()
     );
     let completed = journal
-        .stage(
-            operation,
-            "summary-completed".into(),
-            b"{\"kind\":\"completed\",\"metadata\":{}}".to_vec(),
-            "application/json",
-        )
+        .stage(operation, "summary-completed", b"{\"kind\":\"completed\",\"metadata\":{}}", "application/json", None)?
         .await?;
     journal
-        .append(
-            operation,
-            "summary-completed".into(),
-            ExecutionEvent::Model {
+        .append(operation, &"summary-completed", &ExecutionEvent::Model {
                 step: 0,
                 purpose: ModelPurpose::Summary,
                 event: completed,
-            },
-        )
+            }, None)?
         .await?;
     assert!(
         !journal
-            .append_if_tail(operation, 3, "stale-tail".into(), compacted.clone())
+            .append_if_tail(operation, 3, &"stale-tail", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append_if_tail(operation, 4, "compacted".into(), compacted.clone())
+            .append_if_tail(operation, 4, &"compacted", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append_if_tail(operation, 4, "compacted".into(), compacted.clone())
+            .append_if_tail(operation, 4, &"compacted", &compacted, None)?
             .await?
     );
     assert!(
         journal
-            .append(operation, "duplicate-compacted".into(), compacted)
+            .append(operation, &"duplicate-compacted", &compacted, None)?
             .await
             .is_err()
     );
     let other = OperationId::new();
     journal
-        .append(
-            other,
-            "started".into(),
-            ExecutionEvent::Started {
+        .append(other, &"started", &ExecutionEvent::Started {
                 request_digest: [2; 32],
-            },
-        )
+            }, None)?
         .await?;
     assert_eq!(journal.replay(operation, 0, 64, None)?.await?.len(), 5);
     assert_eq!(journal.replay(other, 0, 64, None)?.await?.len(), 1);
     assert!(
         journal
-            .append_if_tail(
-                operation,
-                4,
-                "compacted".into(),
-                journal
+            .append_if_tail(operation, 4, &"compacted", &journal
                     .replay(operation, 4, 1)
                     .await?
                     .first()
                     .ok_or_else(|| Error::Invalid("compaction record missing".into()))?
                     .event
-                    .clone()
-            )
+                    , None)?
             .await?
     );
     Ok(())
@@ -2123,7 +2087,7 @@ async fn stage_fixture_json<T: serde::Serialize>(
     let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let bytes = serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))?;
     journal
-        .stage(operation, key.into(), bytes, "application/json")
+        .stage(operation, &key, &bytes, "application/json", None)?
         .await
 }
 
@@ -2173,12 +2137,7 @@ async fn fabricate_checkpoint(
             .content = ModelContent::Text("fabricated current".into());
     } else {
         summary.output = journal
-            .stage(
-                operation,
-                "poison-summary".into(),
-                b"fabricated summary".to_vec(),
-                "text/plain",
-            )
+            .stage(operation, "poison-summary", b"fabricated summary", "text/plain", None)?
             .await?;
     }
     let (retained, proof) = DurableContextProvider::compact(&source, proof.maximum_messages as usize, Some(summary), proof.retention, None)?;
@@ -2188,21 +2147,11 @@ async fn fabricate_checkpoint(
     envelope.retained =
         stage_fixture_json(journal, operation, "poison-retained", &retained).await?;
     envelope.compaction = journal
-        .stage(
-            operation,
-            "poison-proof".into(),
-            proof.encode()?,
-            "application/json",
-        )
+        .stage(operation, "poison-proof", &proof.encode()?, "application/json", None)?
         .await?;
     envelope.validate_projection(&source, &retained, &proof, Limits::default(), None)?;
     let checkpoint = journal
-        .stage(
-            operation,
-            "poison-checkpoint".into(),
-            envelope.encode(Limits::default())?,
-            "application/json",
-        )
+        .stage(operation, "poison-checkpoint", &envelope.encode(Limits::default())?, "application/json", None)?
         .await?;
     *wrapper
         .get_mut("canonical")

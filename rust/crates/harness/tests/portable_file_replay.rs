@@ -132,31 +132,34 @@ impl ExecutionJournal for JournalSpy {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<()>> {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.append(operation, key, event)
+        self.inner.append(operation, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxProviderFuture<'a, Result<bool>> {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.append_if_tail(operation, tail, key, event)
+        self.inner.append_if_tail(operation, tail, key, event, io)
     }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
         self.writes.fetch_add(1, Ordering::SeqCst);
-        self.inner.stage(operation, key, bytes, media_type)
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
     fn load<'a>(&'a self, file: &'a FileRef,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,

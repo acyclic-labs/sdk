@@ -245,15 +245,11 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             )
             .await?;
             journal
-                .append(
-                    input.operation_id,
-                    "tool:0:call-1:started".into(),
-                    ExecutionEvent::ToolStarted {
+                .append(input.operation_id, &"tool:0:call-1:started", &ExecutionEvent::ToolStarted {
                         step: 0,
                         call_id: invocation.call_id.clone(),
                         invocation: reference,
-                    },
-                )
+                    }, None)?
                 .await?;
             assert!(
                 matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
@@ -949,27 +945,19 @@ async fn completed_tool_prefix_validates_retained_result_and_projection_independ
         .await?;
         let projection = stage_json(&journal, operation, "projection", &projected, None).await?;
         journal
-            .append(
-                operation,
-                "started".into(),
-                ExecutionEvent::ToolStarted {
+            .append(operation, &"started", &ExecutionEvent::ToolStarted {
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     invocation: invocation_ref,
-                },
-            )
+                }, None)?
             .await?;
         journal
-            .append(
-                operation,
-                "completed".into(),
-                ExecutionEvent::ToolCompleted {
+            .append(operation, &"completed", &ExecutionEvent::ToolCompleted {
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     result,
                     projection,
-                },
-            )
+                }, None)?
             .await?;
         let records = journal.replay(operation, 0, 64, None)?.await?;
         let retained = completed_tool_projection(

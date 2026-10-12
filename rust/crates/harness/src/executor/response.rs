@@ -77,19 +77,19 @@ impl StockExecution<'_> {
             crate::contract::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
         self.verify_execution_owner().await?;
-        if !stock_append_if_tail(
-            journal,
-            input.operation_id,
-            tail,
-            &prepared_key,
-            &ExecutionEvent::ContextPrepared {
-                step,
-                projection: reference,
-                accounting: accounting_ref,
-            },
-            self.io,
-        )
-        .await?
+        if !journal
+            .append_if_tail(
+                input.operation_id,
+                tail,
+                &prepared_key,
+                &ExecutionEvent::ContextPrepared {
+                    step,
+                    projection: reference,
+                    accounting: accounting_ref,
+                },
+                self.io,
+            )?
+            .await?
         {
             return Err(Error::Indeterminate(input.operation_id));
         }

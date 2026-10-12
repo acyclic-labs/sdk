@@ -311,7 +311,7 @@ async fn oversized_mandatory_instruction_or_native_media_rejects_before_summary(
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::File {
                     file: journal
-                        .stage(operation_id, "media".into(), vec![1; 50_000], "image/png")
+                        .stage(operation_id, "media", &vec![1; 50_000], "image/png", None)?
                         .await?,
                     policy: crate::model::FileProjectionPolicy::Native(Box::new(
                         crate::model::NativeMediaPolicy {

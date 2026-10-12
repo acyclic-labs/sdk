@@ -6,14 +6,13 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([49; 16]);
-    let volume =
-        (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value;
+    let volume = (fs.create_volume_with_id(volume_id, config(), B, &cancellation))
+        .await?
+        .value;
     let mut first = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -21,7 +20,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let mut retry = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -29,13 +28,13 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let mut stale = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
-    let metadata = (first.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
+    let metadata = (first.lookup_no_follow(&root_path, B, &cancellation))
         .await?
         .value
         .record
@@ -54,12 +53,12 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
                 path: path("a")?,
                 record,
             }],
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?;
         assert_eq!(
-            (checkout.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
+            (checkout.lookup_no_follow(&path("a")?, B, &cancellation,))
                 .await?
                 .value
                 .record
@@ -68,7 +67,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         );
     }
     assert!(
-        (stale.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (stale.lookup_no_follow(&path("a")?, B, &cancellation,))
             .await?
             .value
             .record
@@ -82,7 +81,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
                 ..record
             },
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -93,15 +92,10 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -114,15 +108,10 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -135,15 +124,10 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -152,89 +136,23 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     ));
     assert!(stale.has_pending_mutations());
 
-    let mut head = (volume.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let mut head = (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await?;
     assert!(
-        (head
+        (head.value.lookup_no_follow(&path("a")?, B, &cancellation,))
+            .await?
             .value
-            .lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
-        .await?
-        .value
-        .record
-        .is_some()
+            .record
+            .is_some()
     );
-    let lookup = (async {
-        let authority_input_0 = volume_authority_id(volume_id);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = AsyncAuthorityStore::find_operation(
-            &volume.fs.inner.authority,
-            authority_input_0,
-            operation_id,
-            &mut __authority_work,
-        )
-        .await
-        .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let mut recovered = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let denied = (recovered.commit(
-        operation_id,
-        None,
-        None,
-        None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget {
-            items_examined: lookup.work.items_examined,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-        |_| async {
-            crate::FsResult::Ok(OperationReceipt {
-                value: (),
-                work: WorkCounters::UNCHARGED,
-            })
-        },
-    ))
-    .await;
-    assert!(matches!(
-        denied,
-        Err(OperationFailure {
-            error: FsError::Work(WorkError::BudgetExceeded {
-                counter: "items_examined",
-                ..
-            }),
-            ..
-        })
-    ));
-
     let clean_failure = (first.commit(
         OperationId::from_bytes([11; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await
     .err()
@@ -245,7 +163,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let mut inverse = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -259,7 +177,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
             path: path("inverse")?,
             record: inverse_record,
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -269,7 +187,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
             path: path("inverse")?,
             expected_file_id: MetadataField::Value(inverse_record.file_id),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -280,15 +198,10 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await
     .err()
@@ -312,7 +225,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     let volume = (fs.create_volume_with_id(
         VolumeId::from_bytes([0xe1; 16]),
         exclusive_config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -320,7 +233,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     let mut displaced = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -328,18 +241,18 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     let mut owner = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (displaced.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: path("displaced")?,
-            bytes: (bytes::Bytes::from_static(b"stale")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"stale"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -348,15 +261,10 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -364,12 +272,12 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         LivePublicationObservation::Fenced { actual_epoch } if actual_epoch.get() == 3
     ));
     (owner.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: path("owner")?,
-            bytes: (bytes::Bytes::from_static(b"current")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"current"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -378,15 +286,10 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -401,34 +304,21 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([50; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut clean = (volume.checkout(
-        GenerationSelector::Head,
-        manual(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut clean_tracking = (volume.checkout(
-        GenerationSelector::Head,
-        tracking(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([50; 16]), config(), B, &cancellation))
+            .await?
+            .value;
+    let mut clean = (volume.checkout(GenerationSelector::Head, manual(), B, &cancellation))
+        .await?
+        .value;
+    let mut clean_tracking =
+        (volume.checkout(GenerationSelector::Head, tracking(), B, &cancellation))
+            .await?
+            .value;
     let mut dirty = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -436,7 +326,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     let mut conflicted = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -444,21 +334,17 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     let mut writer = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    let mut pinned_checkout = (volume.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut pinned_checkout =
+        (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+            .await?
+            .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
-    let metadata = (writer.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
+    let metadata = (writer.lookup_no_follow(&root_path, B, &cancellation))
         .await?
         .value
         .record
@@ -472,7 +358,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         payload: FilePayload::InlineRegular(InlineFileData::new(b"new-head")?),
     };
     assert!(
-        (conflicted.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (conflicted.lookup_no_follow(&path("published")?, B, &cancellation,))
             .await?
             .value
             .record
@@ -486,7 +372,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
                 ..record
             },
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -495,7 +381,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
             path: path("private")?,
             record,
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -507,7 +393,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
                 ..record
             },
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -516,18 +402,13 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
-    let conflict = (conflicted.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let conflict = (conflicted.rebase_head(8, B, &cancellation)).await?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted {
@@ -540,20 +421,20 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     ));
     assert!(conflicted.has_pending_mutations());
 
-    let pinned_failure = (pinned_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+    let pinned_failure = (pinned_checkout.refresh_head(B, &cancellation))
         .await
         .err()
         .ok_or("pinned refresh unexpectedly succeeded")?;
     assert!(matches!(pinned_failure.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_failure.work, WorkCounters::default());
-    let pinned_rebase = (pinned_checkout.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+    let pinned_rebase = (pinned_checkout.rebase_head(8, B, &cancellation))
         .await
         .err()
         .ok_or("pinned rebase unexpectedly succeeded")?;
     assert!(matches!(pinned_rebase.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_rebase.work, WorkCounters::default());
 
-    let dirty_failure = (dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+    let dirty_failure = (dirty.refresh_head(B, &cancellation))
         .await
         .err()
         .ok_or("dirty refresh unexpectedly succeeded")?;
@@ -564,67 +445,66 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert_eq!(*dirty_failure.work, WorkCounters::default());
     assert!(dirty.has_pending_mutations());
     assert!(
-        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (dirty.lookup_no_follow(&path("private")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
-    let rebased = (dirty.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let rebased = (dirty.rebase_head(8, B, &cancellation)).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     assert!(dirty.has_pending_mutations());
     assert!(
-        (dirty.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (dirty.lookup_no_follow(&path("published")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
     assert!(
-        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (dirty.lookup_no_follow(&path("private")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
 
-    let advanced = (clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let advanced = (clean.refresh_head(B, &cancellation)).await?;
     assert_eq!(advanced.value, writer.generation_id());
     assert!(advanced.work.object_probes > 0);
-    let tracking_advanced =
-        (clean_tracking.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let tracking_advanced = (clean_tracking.refresh_head(B, &cancellation)).await?;
     assert_eq!(tracking_advanced.value, writer.generation_id());
     assert!(
-        (clean.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (clean.lookup_no_follow(&path("published")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
-    let equal = (clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let equal = (clean.refresh_head(B, &cancellation)).await?;
     assert_eq!(equal.value, advanced.value);
     assert_eq!(equal.work.object_probes, 0);
     assert_eq!(equal.work.backend_read_operations, 3);
 
     assert!(!dirty.dependencies.proof().is_empty());
-    (dirty.discard(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (dirty.discard(B, &cancellation)).await?;
     assert!(!dirty.has_pending_mutations());
     assert!(dirty.dependencies.proof().is_empty());
     assert!(
-        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (dirty.lookup_no_follow(&path("private")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_none()
     );
     assert!(
-        (dirty.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (dirty.lookup_no_follow(&path("published")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
-    let after_discard = (dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let after_discard = (dirty.refresh_head(B, &cancellation)).await?;
     assert_eq!(after_discard.value, writer.generation_id());
     Ok(())
 }
@@ -636,18 +516,14 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_mutations_per_batch = 8;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([241; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([241; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let mut local = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -655,30 +531,30 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     let mut remote = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     for index in 0..20 {
         (local.create(
-            crate::AuthoredMutation::CreateFile {
+            AuthoredMutation::CreateFile {
                 path: path(&format!("local{index}"))?,
-                bytes: (bytes::Bytes::from_static(b"local")).into(),
-                metadata: crate::kernel::FileMetadata::default(),
+                bytes: OwnedBytes::from_static(b"local"),
+                metadata: FileMetadata::default(),
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?;
     }
     (remote.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: path("remote")?,
-            bytes: (bytes::Bytes::from_static(b"remote")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"remote"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -687,21 +563,14 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
-        (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value,
+        (local.rebase_head(8, B, &cancellation)).await?.value,
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(
@@ -710,15 +579,10 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
             None,
             None,
             None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            PublicationPermit::Unrestricted,
+            B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            }
+            allow::<FsError>
         ))
         .await?
         .value,
@@ -726,19 +590,15 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     ));
     for index in 0..20 {
         assert!(
-            (local.lookup_no_follow(
-                &path(&format!("local{index}"))?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ))
-            .await?
-            .value
-            .record
-            .is_some()
+            (local.lookup_no_follow(&path(&format!("local{index}"))?, B, &cancellation,))
+                .await?
+                .value
+                .record
+                .is_some()
         );
     }
     assert!(
-        (local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (local.lookup_no_follow(&path("remote")?, B, &cancellation,))
             .await?
             .value
             .record

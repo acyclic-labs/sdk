@@ -78,48 +78,6 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn stage_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        idempotency_key: &'a str,
-        bytes: &'a [u8],
-        media_type: &'static str,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(Error::from)?;
-        let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native staging requires an original dispatch owner",
-        })?;
-        owner.require_volume_grant(
-            &self.volume,
-            VolumeOperation::Write,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
-        )?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            owner
-                .verify(
-                    false,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
-                )
-                .await?;
-            let file = self
-                .stage_with_io(operation_id, idempotency_key, bytes, media_type, Some(&io))
-                .await?;
-            owner
-                .verify(
-                    false,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
-                )
-                .await?;
-            let retained = file.logical_owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((file, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn staged_ref_with_native_work<'a>(
         &'a self,
         operation_id: OperationId,
@@ -134,15 +92,15 @@ where
         owner.require_volume_grant(
             &self.volume,
             VolumeOperation::Read,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
                 owner
-                    .verify_read_access(&mut Some(&mut crate::store::history::native_work_io(
+                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                         work,
-                    )?))
+                    ).map(crate::store::HistoryWork::new)?))
                     .await?;
                 let _identity_hold;
                 let before = io.owned_bytes()?;
@@ -177,9 +135,9 @@ where
                         )
                     })?;
                 owner
-                    .verify_read_access(&mut Some(&mut crate::store::history::native_work_io(
+                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                         work,
-                    )?))
+                    ).map(crate::store::HistoryWork::new)?))
                     .await?;
                 file
             };
@@ -231,93 +189,84 @@ where
 
     fn append<'a>(
         &'a self,
-        operation_id: OperationId,
-        idempotency_key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        let span = obs_span!("acyclic.harness.journal.append");
-        traced(span, async move {
-            self.append_validated(operation_id, None, &idempotency_key, &event, None)
-                .await
-                .map(|_| ())
+        operation: OperationId,
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let local = PreparationIo::from_native_work(work)?;
+                let result = self.append_validated(operation, None, key, event, Some(&local)).await;
+                let retained = local.owned_bytes()?;
+                drop(local.into_native_custody(retained)?);
+                return result.map(|_| ());
+            }
+            let span = obs_span!("acyclic.harness.journal.append");
+            traced(span, async move {
+                self.append_validated(operation, None, key, event, io).await.map(|_| ())
+            }).await
         })
     }
 
     fn append_if_tail<'a>(
         &'a self,
-        operation_id: OperationId,
+        operation: OperationId,
         expected_tail: u64,
-        claim_id: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        let span = obs_span!(
-            "acyclic.harness.journal.append_if_tail",
-            rev = expected_tail
-        );
-        traced(span, async move {
-            self.append_validated(operation_id, Some(expected_tail), &claim_id, &event, None)
-                .await
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn append_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        idempotency_key: &'a str,
+        key: &'a str,
         event: &'a ExecutionEvent,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let result = self
-                .append_validated(operation_id, None, idempotency_key, event, Some(&io))
-                .await;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            drop(custody);
-            result.map(|_| ())
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn append_if_tail_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        expected_tail: u64,
-        idempotency_key: &'a str,
-        event: &'a ExecutionEvent,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, bool>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let result = self
-                .append_validated(
-                    operation_id,
-                    Some(expected_tail),
-                    idempotency_key,
-                    event,
-                    Some(&io),
-                )
-                .await;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            drop(custody);
-            result
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                let local = PreparationIo::from_native_work(work)?;
+                let result = self.append_validated(operation, Some(expected_tail), key, event, Some(&local)).await;
+                let retained = local.owned_bytes()?;
+                drop(local.into_native_custody(retained)?);
+                return result;
+            }
+            let span = obs_span!("acyclic.harness.journal.append_if_tail", rev = expected_tail);
+            traced(span, self.append_validated(operation, Some(expected_tail), key, event, io)).await
         })
     }
 
     fn stage<'a>(
         &'a self,
-        operation_id: OperationId,
-        idempotency_key: String,
-        bytes: Vec<u8>,
-        media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
-        traced(span, async move {
-            self.stage_with_io(operation_id, &idempotency_key, &bytes, media_type, None)
-                .await
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        media: &'static str,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = match io.and_then(PreparationIo::original_native_work) {
+            Some(work) => {
+                work.remaining()?;
+                let (owner, _) = self.owner.as_ref().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "native staging requires an original dispatch owner",
+                })?;
+                owner.require_volume_grant(&self.volume, VolumeOperation::Write,
+                    &mut Some(&mut io.expect("native ledger").history_io()))?;
+                Some((owner, work))
+            }
+            None => None,
+        };
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some((owner, work)) = native {
+                let local = PreparationIo::from_native_work(work)?;
+                owner.verify(false, &mut Some(&mut local.history_io())).await?;
+                let file = self.stage_with_io(operation, key, bytes, media, Some(&local)).await?;
+                owner.verify(false, &mut Some(&mut local.history_io())).await?;
+                let retained = file.logical_owned_bytes()?;
+                io.expect("native ledger").absorb_native_custody(local.into_native_custody(retained)?)?;
+                return Ok(file);
+            }
+            let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+            traced(span, self.stage_with_io(operation, key, bytes, media, io)).await
         })
     }
 

@@ -16,37 +16,40 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>>;
 
-    /// Appends one reconstructable executor observation.
+    /// Appends one reconstructable observation on the original optional ledger.
     fn append<'a>(
         &'a self,
         operation_id: OperationId,
-        idempotency_key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>>;
+        idempotency_key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
-    /// Atomically appends a dispatch or terminal observation at an exact journal tail.
+    /// Appends at the exact operation-scoped journal tail.
     fn append_if_tail<'a>(
         &'a self,
         _operation_id: OperationId,
         _expected_tail: u64,
-        _claim_id: String,
-        _event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "atomic execution journal append is unavailable".into(),
-            ))
-        })
+        _claim_id: &'a str,
+        _event: &'a ExecutionEvent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "atomic execution journal append is unavailable",
+        ))
     }
 
     /// Stages immutable private bytes before any referring observation is appended.
     fn stage<'a>(
         &'a self,
         operation_id: OperationId,
-        idempotency_key: String,
-        bytes: Vec<u8>,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>>;
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
 
     /// Observes an already staged immutable payload by its original operation and retry key.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -139,53 +142,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> Result<bool> {
         work.remaining()?;
         Ok(false)
-    }
-
-    /// Appends borrowed paid metadata; a custom journal must explicitly audit this producer.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn append_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _key: &'a str,
-        _event: &'a ExecutionEvent,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution append is unavailable",
-        })
-    }
-
-    /// Claims exactly the same journal tail; false preserves lost-claim semantics.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn append_if_tail_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _tail: u64,
-        _key: &'a str,
-        _event: &'a ExecutionEvent,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, bool>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native atomic execution append is unavailable",
-        })
-    }
-
-    /// Stages borrowed immutable bytes before copying keys, metadata or provider input.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn stage_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _key: &'a str,
-        _bytes: &'a [u8],
-        _media: &'static str,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution staging is unavailable",
-        })
     }
 
     /// Opens the same admitted durable interaction without reconstructing authority.

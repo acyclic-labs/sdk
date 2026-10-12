@@ -5,12 +5,7 @@ async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<(
     let journal = Journal::default();
     let operation = OperationId::new();
     let reference = journal
-        .stage(
-            operation,
-            "noncanonical".into(),
-            br#"{ "b":2,"a":1 }"#.to_vec(),
-            "application/json",
-        )
+        .stage(operation, "noncanonical", &br#"{ "b":2,"a":1 }"#, "application/json", None)?
         .await?;
     assert!(
         matches!(load_json::<Value>(&journal, &reference, None).await,
@@ -211,23 +206,14 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     let operation = OperationId::from_bytes([29; 16]);
     for step in 0..70 {
         journal
-            .append(
-                operation,
-                format!("step-{step}"),
-                ExecutionEvent::ModelStarted {
+            .append(operation, &format!("step-{step}"), &ExecutionEvent::ModelStarted {
                     step,
                     purpose: crate::executor::ModelPurpose::Response,
                     request_digest: [1; 32],
                     request: journal
-                        .stage(
-                            operation,
-                            "page-fixture".into(),
-                            b"null".to_vec(),
-                            "application/json",
-                        )
+                        .stage(operation, "page-fixture", b"null", "application/json", None)?
                         .await?,
-                },
-            )
+                }, None)?
             .await?;
     }
     let (tail, selected) = replay_execution(
@@ -321,13 +307,9 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let journal = Journal::default();
     let operation = OperationId::from_bytes([27; 16]);
     journal
-        .append(
-            operation,
-            "execution:started".into(),
-            ExecutionEvent::Started {
+        .append(operation, &"execution:started", &ExecutionEvent::Started {
                 request_digest: [1; 32],
-            },
-        )
+            }, None)?
         .await?;
     let records = StockExecution::ordinary(&executor)
         .prefix_records(&journal, operation, 0)
@@ -365,13 +347,9 @@ async fn journal_retry_keys_and_sequences_are_operation_scoped() -> Result<()> {
     let second = OperationId::from_bytes([21; 16]);
     for (operation_id, digest) in [(first, [1; 32]), (second, [2; 32])] {
         journal
-            .append(
-                operation_id,
-                "execution:started".into(),
-                ExecutionEvent::Started {
+            .append(operation_id, &"execution:started", &ExecutionEvent::Started {
                     request_digest: digest,
-                },
-            )
+                }, None)?
             .await?;
     }
     let replayed_first = journal

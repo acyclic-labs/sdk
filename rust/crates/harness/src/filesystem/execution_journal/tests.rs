@@ -73,14 +73,14 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         request_digest: [9; 32],
     };
     open(operation, turn)?
-        .append(operation, "start".into(), event.clone())
+        .append(operation, "start", &event, None)?
         .await?;
     let reopened = open(operation, turn)?;
     let records = reopened.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records.first().map(|record| &record.event), Some(&event));
     reopened
-        .append(operation, "start".into(), event.clone())
+        .append(operation, &"start", &event, None)?
         .await?;
     assert_eq!(reopened.replay(operation, 0, 2, None)?.await?.len(), 1);
     assert!(matches!(

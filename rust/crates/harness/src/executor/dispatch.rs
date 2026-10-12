@@ -122,18 +122,18 @@ impl StockExecution<'_> {
                 let event = &observed[index];
                 admission.observe(event, self.stock.limits, io)?;
                 let reference = stage_json(journal, input.operation_id, &key, event, io).await?;
-                stock_append(
-                    journal,
-                    input.operation_id,
-                    &key,
-                    &ExecutionEvent::Model {
-                        step,
-                        purpose,
-                        event: reference,
-                    },
-                    io,
-                )
-                .await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        &key,
+                        &ExecutionEvent::Model {
+                            step,
+                            purpose,
+                            event: reference,
+                        },
+                        io,
+                    )?
+                    .await?;
             }
             drop(continuation);
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -216,20 +216,20 @@ impl StockExecution<'_> {
                 )
                 .await?;
             }
-            let claimed = stock_append_if_tail(
-                journal,
-                input.operation_id,
-                tail,
-                &claim_key,
-                &ExecutionEvent::ModelStarted {
-                    step,
-                    purpose,
-                    request_digest,
-                    request: request_ref,
-                },
-                io,
-            )
-            .await;
+            let claimed = journal
+                .append_if_tail(
+                    input.operation_id,
+                    tail,
+                    &claim_key,
+                    &ExecutionEvent::ModelStarted {
+                        step,
+                        purpose,
+                        request_digest,
+                        request: request_ref,
+                    },
+                    io,
+                )?
+                .await;
             match claimed {
                 Ok(true) => {}
                 Err(error) if is_native => return Err(error),
@@ -276,18 +276,18 @@ impl StockExecution<'_> {
                 let event = &observed[index];
                 admission.observe(event, self.stock.limits, io)?;
                 let reference = stage_json(journal, input.operation_id, &key, event, io).await?;
-                stock_append(
-                    journal,
-                    input.operation_id,
-                    &key,
-                    &ExecutionEvent::Model {
-                        step,
-                        purpose,
-                        event: reference,
-                    },
-                    io,
-                )
-                .await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        &key,
+                        &ExecutionEvent::Model {
+                            step,
+                            purpose,
+                            event: reference,
+                        },
+                        io,
+                    )?
+                    .await?;
             }
             observed
         };

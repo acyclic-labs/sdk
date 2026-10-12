@@ -20,8 +20,6 @@ export interface WasmRecursiveToolsConfig {
     /** Actual coordinator graph root; omission denies foreign project approval. */
     readonly project_policy_graph_root?: string | null;
     readonly merges: readonly { readonly caller: string; readonly source: string; readonly notice: unknown }[];
-    /** Trusted host-retained original authenticated cuts, not model input. */
-    readonly original_sources?: readonly { readonly caller: string; readonly request: ForkRequest; readonly snapshot: unknown }[];
     readonly stream_provider: WasmProviderRefWire;
     readonly history_limits: HistoryReadLimits;
     readonly inherited_messages: bigint;

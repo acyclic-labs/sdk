@@ -238,7 +238,9 @@ impl StockExecution<'_> {
                     call_id: stock_string_copy(&invocation.call_id, self.io)?,
                     invocation: invocation_ref,
                 };
-                match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io).await
+                match journal
+                    .append_if_tail(operation_id, tail, &key, &event, self.io)?
+                    .await
                 {
                     Ok(true) => {
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -440,7 +442,10 @@ impl StockExecution<'_> {
                 result: result_ref,
                 projection: projection_ref,
             };
-            match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io).await {
+            match journal
+                .append_if_tail(operation_id, tail, &key, &event, self.io)?
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                     return Err(Error::Indeterminate(operation_id));

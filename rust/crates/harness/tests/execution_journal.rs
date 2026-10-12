@@ -203,27 +203,29 @@ impl ExecutionJournal for TerminalCasLoser {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
 
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let terminal = matches!(
                 &event,
                 ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
             );
             let committed = self
                 .inner
-                .append_if_tail(operation, tail, key, event)
+                .append_if_tail(operation, tail, key, event, io)?
                 .await?;
             if terminal && committed && self.losses.fetch_add(1, Ordering::SeqCst) < 2 {
                 return Ok(false);
@@ -235,11 +237,12 @@ impl ExecutionJournal for TerminalCasLoser {
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media_type)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
 
     fn load<'a>(&'a self, file: &'a FileRef,
@@ -326,19 +329,21 @@ impl ExecutionJournal for CompletedDescriptorSpy {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media, io)
     }
     fn load<'a>(
         &'a self,
@@ -468,21 +473,12 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     let journal_b = journal(stream, host, &private, &issuer, &scope)?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
-        .append(
-            operation,
-            "tool:started".into(),
-            ExecutionEvent::Started {
+        .append(operation, &"tool:started", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     let invocation = journal_a
-        .stage(
-            operation,
-            "tool:invocation".into(),
-            b"{}".to_vec(),
-            "application/json",
-        )
+        .stage(operation, "tool:invocation", b"{}", "application/json", None)?
         .await?;
     let event = ExecutionEvent::ToolStarted {
         step: 0,
@@ -490,56 +486,37 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         invocation,
     };
     let (first, second) = tokio::join!(
-        journal_a.append_if_tail(operation, 1, "claim-a".into(), event.clone()),
-        journal_b.append_if_tail(operation, 1, "claim-b".into(), event),
+        journal_a.append_if_tail(operation, 1, &"claim-a", &event, None),
+        journal_b.append_if_tail(operation, 1, &"claim-b", &event, None),
     );
     assert_ne!(first?, second?);
     assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 2);
     let (first_terminal, second_terminal) = tokio::join!(
-        journal_a.append_if_tail(
-            operation,
-            2,
-            "terminal-a".into(),
-            ExecutionEvent::ToolFailed {
+        journal_a.append_if_tail(operation, 2, &"terminal-a", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::ExecutorRejected
-            }
-        ),
-        journal_b.append_if_tail(
-            operation,
-            2,
-            "terminal-b".into(),
-            ExecutionEvent::ToolFailed {
+            }, None),
+        journal_b.append_if_tail(operation, 2, &"terminal-b", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::InvalidOutput
-            }
-        ),
+            }, None),
     );
     assert_ne!(first_terminal?, second_terminal?);
     assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
     let invalid_request = journal_a
-        .stage(
-            paged,
-            "invalid-request".into(),
-            b"null".to_vec(),
-            "application/json",
-        )
+        .stage(paged, "invalid-request", b"null", "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "invalid-model-start".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"invalid-model-start", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest: *blake3::hash(b"null").as_bytes(),
                     request: invalid_request,
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
@@ -559,50 +536,33 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     )?;
     let request_digest = prepared.request_digest();
     let paged_request = journal_a
-        .stage(
-            paged,
-            "paged-request".into(),
-            prepared.bytes().to_vec(),
-            "application/json",
-        )
+        .stage(paged, "paged-request", &prepared.bytes(), "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "model-without-execution".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"model-without-execution", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
     assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     journal_a
-        .append(
-            paged,
-            "paged-execution-start".into(),
-            ExecutionEvent::Started {
+        .append(paged, &"paged-execution-start", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     for step in 0..70 {
         journal_a
-            .append(
-                paged,
-                format!("paged-{step}"),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &format!("paged-{step}"), &ExecutionEvent::ModelStarted {
                     step,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?;
     }
     let first_page = journal_b.replay(paged, 0, 64, None)?.await?;
@@ -614,16 +574,12 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_eq!(journal_b.replay(paged, 0, 65, None)?.await?.len(), 64);
     assert!(journal_b.replay(paged, 0, 0, None)?.await.is_err());
     journal_b
-        .append(
-            paged,
-            "paged-0".into(),
-            ExecutionEvent::ModelStarted {
+        .append(paged, &"paged-0", &ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: acyclic_harness::executor::ModelPurpose::Response,
                 request_digest,
                 request: paged_request.clone(),
-            },
-        )
+            }, None)?
         .await?;
     assert!(journal_b.replay(paged, 71, 64, None)?.await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
@@ -631,17 +587,12 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a
-            .append_if_tail(
-                paged,
-                cursor.tail(),
-                "paged-cas-70".into(),
-                ExecutionEvent::ModelStarted {
+            .append_if_tail(paged, cursor.tail(), &"paged-cas-70", &ExecutionEvent::ModelStarted {
                     step: 70,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?
     );
     assert_eq!(journal_b.replay(paged, 71, 64, None)?.await?.len(), 1);
@@ -1003,44 +954,24 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let first = executor.execute(input.clone(), &journal).await?;
     let staged_operation = OperationId::from_bytes([8; 16]);
     let staged = journal
-        .stage(
-            staged_operation,
-            "original".into(),
-            b"original payload".to_vec(),
-            "application/json",
-        )
+        .stage(staged_operation, "original", b"original payload", "application/json", None)?
         .await?;
     for index in 0..32 {
         let replacement = journal
-            .stage(
-                OperationId::new(),
-                format!("replacement-{index}"),
-                format!("replacement payload {index}").into_bytes(),
-                "application/json",
-            )
+            .stage(OperationId::new(), &format!("replacement-{index}"), &format!("replacement payload {index}").into_bytes(), "application/json", None)?
             .await?;
         assert_eq!(replacement.path(), staged.path());
         assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"original payload");
     }
     assert_eq!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"original payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"original payload", "application/json", None)?
             .await?,
         staged
     );
     assert!(matches!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"changed payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"changed payload", "application/json", None)?
             .await,
         Err(Error::Conflict(_))
     ));

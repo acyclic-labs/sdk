@@ -77,8 +77,8 @@ pub(super) fn visit_task_dependency(
     native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
     marks.insert(
         (
-            native_startup::text(&entry.identity().name, io)?,
-            native_startup::text(&entry.identity().version, io)?,
+            native_startup::text(&key.0, io)?,
+            native_startup::text(&key.1, io)?,
         ),
         1,
     );

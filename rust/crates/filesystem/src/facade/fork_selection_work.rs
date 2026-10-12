@@ -1,11 +1,5 @@
 use super::*;
 
-pub(super) fn fork_selection_allocation(
-    error: crate::kernel::allocation::AllocationError,
-) -> WorkspaceError {
-    crate::collection::handle_allocation_error(error).into()
-}
-
 pub(super) fn fork_selection_items(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -66,30 +60,6 @@ pub(super) fn fork_file_table_search<T>(
         }
     }
     Ok(Err(start))
-}
-
-pub(super) fn fork_selection_standalone_live(accounting: &mut KernelAccounting<'_>) -> Option<u64> {
-    accounting
-        .standalone_parts()
-        .map(|(ledger, _, _, _)| ledger.live_bytes())
-}
-
-pub(super) fn fork_selection_cleanup_standalone(
-    accounting: &mut KernelAccounting<'_>,
-    baseline: Option<u64>,
-) -> Result<(), WorkspaceError> {
-    if let Some(baseline) = baseline {
-        let (ledger, _, _, _) = accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-        ledger
-            .release(
-                ledger
-                    .live_bytes()
-                    .checked_sub(baseline)
-                    .ok_or(WorkError::Overflow)?,
-            )
-            .map_err(fork_selection_allocation)?;
-    }
-    Ok(())
 }
 
 pub(super) async fn fork_selection_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
