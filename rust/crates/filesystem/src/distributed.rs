@@ -866,8 +866,8 @@ impl<E> From<ForkFailure> for AppendFailure<E> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<E> From<acyclic_stream::NativeStreamFailure> for AppendFailure<E> {
-    fn from(error: acyclic_stream::NativeStreamFailure) -> Self {
+impl<E> From<acyclic_stream::StreamError> for AppendFailure<E> {
+    fn from(error: acyclic_stream::StreamError) -> Self {
         Self::Authority(ForkFailure::before_work(error.into()))
     }
 }
@@ -946,8 +946,6 @@ fn authority_corrupt(message: &'static str, meter: &ForkWork<'_>) -> ForkFailure
 fn authority_stream_error(error: &AuthorityStoreError) -> Option<&acyclic_stream::StreamError> {
     match error {
         AuthorityStoreError::NativeStream(error) => Some(error),
-        #[cfg(not(target_arch = "wasm32"))]
-        AuthorityStoreError::NativeStreamFailure(error) => Some(error.source()),
         _ => None,
     }
 }
@@ -3578,18 +3576,18 @@ mod tests {
             .map_err(|(error, _)| error)?;
         let authority = AuthorityId::from_bytes([0x7a; 16]);
         assert!(matches!(&store.head_with_native_work(authority, &original, &cancellation).await,
-            Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.replay_with_native_work(authority, Sequence::GENESIS,
             ReplayLimit { records: 1, payload_bytes: 8 }, &original, &cancellation).await,
-            Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.fence_with_native_work(authority, Head::genesis(Epoch::GENESIS),
-            &original, &cancellation).await, Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            &original, &cancellation).await, Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert!(matches!(&store.find_operation_with_native_work(authority, OperationId::from_bytes([0x7b; 16]),
-            &original, &cancellation).await, Err(AuthorityStoreError::NativeStreamFailure(error))
-                if matches!(error.source(), acyclic_stream::StreamError::Unsupported)));
+            &original, &cancellation).await, Err(AuthorityStoreError::NativeStream(error))
+                if matches!(error, acyclic_stream::StreamError::Unsupported)));
         assert_eq!(provider.writes.load(Ordering::SeqCst), 0);
         assert_eq!(provider.reads.load(Ordering::SeqCst), 0);
         assert_eq!(original.receipt().backend_read_operations, 0);

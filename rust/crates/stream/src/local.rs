@@ -1334,15 +1334,15 @@ impl StreamProvider for LocalStream {
                 outcome = Empty,
                 error.kind = Empty
             ));
-            let mut observation = ReadObservation { span, finished: false };
-            let result = observation.span.scope(async {
+            let mut observation = ReadObservation(Some(span.clone()));
+            let result = span.scope(async {
                 native_result(self.visible(async {
                     self.inner.provider.native_read(request, Arc::clone(&observer)).await
                         .map_err(MemoryFailure::Observer)?.map_err(MemoryFailure::Provider)
                 }, Some(&observer)).await)
             }).await;
-            observation.finished = true;
-            finish_native(&observation.span, result)
+            drop(observation.0.take());
+            finish_native(&span, result)
         })
     }
 

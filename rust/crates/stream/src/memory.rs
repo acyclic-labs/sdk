@@ -1545,7 +1545,7 @@ impl StreamProvider for MemoryStream {
         reserve(&state, &missing.value, 0, 0, self.limits)?;
         provider_result(prepare_retained_capacity(&mut state, &observer))?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let commit_id = provider_result(planned_commit_id(decision, digest, &observer))?;
+        let commit_id = provider_result(planned_commit_id(decision, digest, &observer).map_err(MemoryFailure::from))?;
         let envelope = CommittedEnvelope {
             commit_id,
             mutations: vec![CommittedMutation::Fork(CommittedFork {
