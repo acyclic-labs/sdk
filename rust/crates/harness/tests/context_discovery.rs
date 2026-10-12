@@ -153,7 +153,7 @@ impl Fixture {
         let scope = issuer.issue("owner", &Capabilities::new([
                 volume.capability(VolumeOperation::Write, &mut None)?,
                 volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.directory_read_capability("")?,
+                volume.directory_read_capability("", &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         host.create_volume(&volume).await?;
         let writer =

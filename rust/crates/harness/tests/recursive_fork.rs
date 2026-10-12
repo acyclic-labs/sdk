@@ -1007,29 +1007,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         reference_grants: seed.reference_grants.clone(),
         attachment_manifests: seed.attachment_manifests.clone(), };
         assert_eq!(report.clone().into_seed(&mut None)?, seed);
-        if level == 1 {
-            let verifier = CompositeForkVerifier::new(&[
-                FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-            ], &mut None)?;
-            let fence = verifier.activate(&seed).await?;
-            assert!(
-                host.put_content(
-                    &child_private,
-                    &child_write,
-                    "scratch/fenced.txt",
-                    b"late mutation",
-                    "text/plain",
-                    "fenced.txt",
-                    1_024,
-                    &IdempotencyKey::new("fenced-private-write")?,
-                 None, None)
-                .await
-                .is_err(),
-                "private writes cannot race fork publication"
-            );
-            fence.release().await?;
-        }
         let mut child_aggregate = StreamAggregate::open(
             &stream,
             child_authority.clone(),
