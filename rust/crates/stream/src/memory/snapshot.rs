@@ -634,20 +634,12 @@ impl<'a> Input<'a> {
 )]
 mod tests {
     use super::*;
-    use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+    use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider};
+    use crate::memory::TestClock;
     use crate::wire_codec::observation_wire;
     use futures::StreamExt as _;
     use prost::Message as _;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    #[derive(Default)]
-    struct TestClock(AtomicU64);
-
-    impl UnixMillisClock for TestClock {
-        fn now_unix_millis(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
+    use std::sync::atomic::Ordering;
 
     #[tokio::test]
     async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError> {

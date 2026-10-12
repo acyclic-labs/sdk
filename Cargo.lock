@@ -325,6 +325,7 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-grpc-observability",
  "prost",
  "prost-build",
  "prost-reflect",
@@ -359,6 +360,7 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-grpc-observability",
  "async-trait",
  "futures",
  "hex",

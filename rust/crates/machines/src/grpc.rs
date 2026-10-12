@@ -2687,38 +2687,8 @@ mod tests {
     #[tokio::test]
     async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use std::sync::Mutex;
-        use tracing::field::{Field, Visit};
-        use tracing_subscriber::layer::{Context, SubscriberExt as _};
-
-        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-        struct Capture(Seen);
-        struct Fields<'a>(
-            &'static str,
-            &'a mut Vec<(&'static str, &'static str, String)>,
-        );
-        impl Visit for Fields<'_> {
-            fn record_str(&mut self, field: &Field, value: &str) {
-                self.1.push((self.0, field.name(), value.to_owned()));
-            }
-            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-                self.1.push((self.0, field.name(), format!("{value:?}")));
-            }
-        }
-        impl<S> tracing_subscriber::Layer<S> for Capture
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-                context: Context<'_, S>,
-            ) {
-                let name = context.span(id).unwrap().name();
-                values.record(&mut Fields(name, &mut self.0.lock().unwrap()));
-            }
-        }
+        use acyclic_grpc_observability::test_support::Capture;
+        use tracing_subscriber::layer::SubscriberExt as _;
 
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000031")?;
         let operation = OperationId::parse("00000000-0000-0000-0000-000000000032")?;
@@ -2735,9 +2705,9 @@ mod tests {
         let (machines, shutdown, server) = serve_operation_service(service).await?;
         // Two dispatchers make concurrent callsites recheck this subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-        let seen = Seen::default();
+        let seen = Capture::default();
         let default = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+            tracing_subscriber::registry().with(seen.clone()),
         );
         machines.inspect_operation(operation).await?;
         let substituted = OperationId::parse("00000000-0000-0000-0000-000000000034")?;
@@ -2746,12 +2716,13 @@ mod tests {
         let _ = shutdown.send(());
         server.await??;
 
-        let seen = seen.lock().unwrap();
+        let evidence = seen.0.lock().unwrap();
+        let seen = &evidence.records;
         let span = "acyclic.machines.inspect_operation";
         let records = |field: &str| {
             seen.iter()
-                .filter(|(s, f, _)| *s == span && *f == field)
-                .map(|(_, _, value)| value.as_str())
+                .filter(|(s, f, _)| s == span && f == field)
+                .map(|(_, _, value)| value.trim_matches('"'))
                 .collect::<Vec<_>>()
         };
         assert_eq!(records("outcome"), ["ok", "err"], "{seen:?}");
@@ -2760,7 +2731,7 @@ mod tests {
         assert_eq!(records("error.kind"), ["rejected"]);
         for (span, field, value) in seen.iter() {
             assert!(
-                !["path", "token", "content", "body", "authorization"].contains(field),
+                !["path", "token", "content", "body", "authorization"].contains(&field.as_str()),
                 "{span} records {field}"
             );
             assert!(!value.contains("substituted"), "{value}");
