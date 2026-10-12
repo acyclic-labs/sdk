@@ -126,10 +126,10 @@ pub(crate) fn decode(
     }
     let mut work = PathIndexWork::new(accounting).map_err(accounting_error)?;
     let result = (|| {
-        let mut parser = QueryParser { bytes, position: 0, work: &mut work };
+        let mut parser = QueryParser { bytes, work: &mut work };
         let count = parser.document(generation, file_ids, limits, None)?;
         let mut output = parser.work.exact_vec(count)?;
-        parser.position = 0;
+        parser.bytes = bytes;
         parser.document(generation, file_ids, limits, Some(&mut output))?;
         Ok(output)
     })();
@@ -146,17 +146,15 @@ pub(crate) fn decode(
 
 struct QueryParser<'a, 'work, 'ctx> {
     bytes: &'a [u8],
-    position: usize,
     work: &'a mut PathIndexWork<'work, 'ctx>,
 }
 
 impl<'bytes> QueryParser<'bytes, '_, '_> {
     fn take(&mut self, length: usize) -> Result<&'bytes [u8], PathIndexError> {
-        let end = self.position.checked_add(length).ok_or(PathIndexError::Miss)?;
-        let bytes = self.bytes.get(self.position..end).ok_or(PathIndexError::Miss)?;
+        let (bytes, remaining) = self.bytes.split_at_checked(length).ok_or(PathIndexError::Miss)?;
         let delta = WorkCounters { items_examined: length as u64, ..WorkCounters::UNCHARGED };
         self.work.admit(delta)?;
-        self.position = end;
+        self.bytes = remaining;
         self.work.record(delta)?;
         Ok(bytes)
     }
@@ -227,7 +225,7 @@ impl<'bytes> QueryParser<'bytes, '_, '_> {
                 }
             }
         }
-        if self.position != self.bytes.len() { return Err(PathIndexError::Miss); }
+        if !self.bytes.is_empty() { return Err(PathIndexError::Miss); }
         Ok(paths)
     }
 }
