@@ -12,14 +12,9 @@ async fn delayed_objects_are_invisible_until_bounded_flush()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"delayed");
-    (objects.put(
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    (async { let __object_args = (object_id, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
     .await?;
-    let missing_result = (objects.read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)).await;
+    let missing_result = (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await;
     let Err(missing) = missing_result else {
         return Err("delayed object became visible before flush".into());
     };
@@ -27,7 +22,7 @@ async fn delayed_objects_are_invisible_until_bounded_flush()
     let flushed =
         (simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(flushed.value, 1);
-    let visible = (objects.read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let visible = (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
     assert_eq!(visible.value.bytes, bytes);
     Ok(())
 }
@@ -49,13 +44,13 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"authenticated");
-    (objects.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let corrupt = (objects.read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (async { let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
+    let corrupt = (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value.bytes),
         object_id.digest
     );
-    let partial = (objects.read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let partial = (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
     assert_eq!(partial.value.bytes.len(), b"authenticated".len() - 1);
     Ok(())
 }
@@ -79,12 +74,7 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"four");
-    let digest_failure = (objects.put(
-        first_id,
-        OwnedBytes::from_static(b"bad!"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let digest_failure = (async { let __object_args = (first_id, OwnedBytes::from_static(b"bad!"), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
     .await
     .err()
     .ok_or("digest mismatch was admitted")?;
@@ -92,24 +82,14 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
         digest_failure.error,
         ObjectStoreError::DigestMismatch
     ));
-    (objects.put(
-        first_id,
-        first_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    (async { let __object_args = (first_id, first_bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
     .await?;
     let repeated =
-        (objects.put(first_id, first_bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async { let __object_args = (first_id, first_bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
     assert_eq!(repeated.work.backend_write_operations, 1);
 
     let (second_id, second_bytes) = object(b"x");
-    let bounded = (objects.put(
-        second_id,
-        second_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let bounded = (async { let __object_args = (second_id, second_bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
     .await
     .err()
     .ok_or("delayed-object bound was ignored")?;
@@ -132,8 +112,8 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (empty_id, empty_bytes) = object(b"");
-    (objects.put(empty_id, empty_bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let corrupt = (objects.read(empty_id, 0, WorkBudget::UNBOUNDED, &cancellation))
+    (async { let __object_args = (empty_id, empty_bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
+    let corrupt = (async { let __object_args = (empty_id, 0, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
         .await
         .err()
         .ok_or("empty corrupt read succeeded")?;
@@ -258,7 +238,7 @@ async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
         AuthorityStoreError::CorruptStatic(_)
     ));
     let object_failure =
-        (objects.contains(object(b"poisoned").0, WorkBudget::UNBOUNDED, &cancellation))
+        (async { let __object_args = (object(b"poisoned").0, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
             .await
             .err()
             .ok_or("poisoned object lookup unexpectedly succeeded")?;

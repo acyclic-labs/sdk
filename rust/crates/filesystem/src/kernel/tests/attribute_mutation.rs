@@ -1,8 +1,8 @@
-use crate::async_storage::AsyncObjectStore;
-use crate::kernel::decode_attribute_page;
 use super::*;
 use crate::CancellationToken;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
+use crate::kernel::decode_attribute_page;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
@@ -39,10 +39,17 @@ async fn put(
     maximum_items: u32,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = attribute_page_id(page, maximum_items)?;
-    store.put(
+    {
+        let __object_args = (
         id,
         OwnedBytes::from(encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -99,10 +106,24 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
-    let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-        .value;
-    let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
+    let AttributePage::Internal(children) =
+        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("candidate attribute root is not internal".into());
     };
@@ -130,11 +151,22 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
-    let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
+    )
+    .await?;
+    let bytes = {
+        let __object_args = (
+            receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+    let AttributePage::Leaf(entries) =
+        decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("unordered attribute result is not a leaf".into());
     };
@@ -201,7 +233,8 @@ async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Bo
 }
 
 #[tokio::test]
-async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>> {
+async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>>
+{
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8).await?;
     let limits = DecodeLimits {
@@ -218,20 +251,46 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
         limits,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.work.page_writes, 3);
-    let root_bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-        .value;
+    let root_bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
     assert!(root_bytes.len() <= 175);
-    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
+    let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+    else {
         return Err("byte-bounded candidate attribute root is not internal".into());
     };
     assert_eq!(children.len(), 2);
     for child in children {
-        let bytes = store
-            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-            .value;
+        let bytes = {
+            let __object_args = (
+                child.page,
+                u64::MAX,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value;
         assert!(bytes.len() <= 175);
         assert!(
             matches!(decode_attribute_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, AttributePage::Leaf(entries) if entries.len() == 1)
@@ -241,13 +300,15 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
+async fn oversized_attribute_item_rejects_before_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_attribute_mutations(
         &store,
         root,
-        vec![AttributeMutation::Insert(entry(1, 40, 1)?)],
+        vec![
+            AttributeMutation::Insert(entry(1, 40, 1)?)],
         1,
         DecodeLimits {
             maximum_page_bytes: 99,

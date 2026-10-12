@@ -10,10 +10,10 @@ use crate::storage::{FenceOutcome, ObjectWrite};
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
     CancellationToken, CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GuardedAppend,
-    Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
-    ObjectResult, ObjectStoreError, OperationId, ProposedCommit, PublicationPermit,
-    PublicationReservation, ReplayLimit, ReservationOutcome, Sequence, WorkBudget, WorkCounters,
-    WorkspaceForkCommit, WorkspaceForkOutcome, authority_commit_digest, object_digest,
+    Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectRead, ObjectReadRetention,
+    ObjectStoreError, OperationId, ProposedCommit, PublicationPermit, PublicationReservation,
+    ReplayLimit, ReservationOutcome, Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit,
+    WorkspaceForkOutcome, authority_commit_digest, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 #[cfg(test)]

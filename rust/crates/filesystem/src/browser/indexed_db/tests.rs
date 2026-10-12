@@ -93,38 +93,48 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
     };
     let cancellation = CancellationToken::new();
-    let first = AsyncObjectStore::put(
-        &store,
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let first = ({
+        let __object_args = (
+            object_id,
+            bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(first.work.object_bytes_written, bytes.len() as u64);
 
-    let retry = AsyncObjectStore::put(
-        &store,
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let retry = ({
+        let __object_args = (
+            object_id,
+            bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(retry.work.object_bytes_written, 0);
     assert_eq!(retry.work.object_bytes_read, bytes.len() as u64);
     let mut below_retry_peak = WorkBudget::UNBOUNDED;
     below_retry_peak.peak_allocation_bytes = retry.work.peak_allocation_bytes - 1;
-    let denied = AsyncObjectStore::put(
-        &store,
-        object_id,
-        bytes.clone(),
-        below_retry_peak,
-        &cancellation,
-    )
-    .await
+    let denied = ({
+        let __object_args = (object_id, bytes.clone(), below_retry_peak, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
     .err()
     .ok_or_else(|| js_error("retained existing Blob handle escaped admission"))?;
     assert!(matches!(
@@ -135,14 +145,14 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         })
     ));
 
-    let read = AsyncObjectStore::read(
-        &store,
-        object_id,
-        1_024,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let read = ({
+        let __object_args = (object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(read.value.bytes, bytes);
     assert_eq!(
@@ -152,16 +162,27 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         }
     );
     assert!(
-        AsyncObjectStore::contains(&store, object_id, WorkBudget::UNBOUNDED, &cancellation,)
-            .await
-            .map_err(js_error)?
-            .value
+        ({
+            let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::contains(&store, __object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .map_err(js_error)?
+        .value
     );
 
     let mut one_byte_short = WorkBudget::UNBOUNDED;
     one_byte_short.peak_allocation_bytes = OBJECT_KEY_BYTES + 2 * bytes.len() as u64 - 1;
-    let bounded_result =
-        AsyncObjectStore::read(&store, object_id, 1_024, one_byte_short, &cancellation).await;
+    let bounded_result = ({
+        let __object_args = (object_id, 1_024, one_byte_short, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    });
     let bounded = bounded_result.err().ok_or_else(|| {
         JsValue::from_str("one-byte-short browser allocation budget unexpectedly succeeded")
     })?;
@@ -177,14 +198,19 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([9; 32]),
     };
-    let mismatch_result = AsyncObjectStore::put(
-        &store,
-        forged,
-        OwnedBytes::from_static(b"forged"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await;
+    let mismatch_result = ({
+        let __object_args = (
+            forged,
+            OwnedBytes::from_static(b"forged"),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    });
     let mismatch = mismatch_result
         .err()
         .ok_or_else(|| JsValue::from_str("forged browser object unexpectedly succeeded"))?;
@@ -213,13 +239,17 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let cancellation = CancellationToken::new();
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
-    let written = AsyncObjectStore::put_many(
-        &store,
-        &[first.clone(), second.clone()],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let written = ({
+        let __object_args = (
+            &[first.clone(), second.clone()],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(
         written.work.object_bytes_written,
@@ -228,26 +258,36 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
 
     // A batch holding an object already stored verifies it and stores the rest.
     let third = blob_write(b"third batch object");
-    let mixed = AsyncObjectStore::put_many(
-        &store,
-        &[first.clone(), third.clone()],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let mixed = ({
+        let __object_args = (
+            &[first.clone(), third.clone()],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(mixed.work.object_bytes_written, third.bytes.len() as u64);
     assert_eq!(mixed.work.object_bytes_read, first.bytes.len() as u64);
-    let batch = AsyncObjectStore::read_many(
-        &store,
-        &[first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
-            object_id: write.object_id,
-            maximum_bytes: 1_024,
-        }),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let batch = ({
+        let __object_args = (
+            &[first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
+                object_id: write.object_id,
+                maximum_bytes: 1_024,
+            }),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
     .map_err(js_error)?;
     assert_eq!(
         batch
@@ -268,10 +308,17 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
             object_id: write.object_id,
             maximum_bytes: 1_024,
         });
-    let rejected = AsyncObjectStore::read_many(&store, &requests, below_peak, &cancellation)
-        .await
-        .err()
-        .ok_or_else(|| js_error("batch retained peak escaped admission"))?;
+    let rejected = ({
+        let __object_args = (&requests, below_peak, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
+    .err()
+    .ok_or_else(|| js_error("batch retained peak escaped admission"))?;
     assert!(matches!(
         rejected.error,
         ObjectStoreError::Work(WorkError::BudgetExceeded {
@@ -284,18 +331,30 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let reopened = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
         .await
         .map_err(js_error)?;
-    let persisted =
-        AsyncObjectStore::read_many(&reopened, &requests, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(js_error)?;
+    let persisted = ({
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::read_many(&reopened, __object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
+    .map_err(js_error)?;
     assert_eq!(persisted.value, batch.value);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let rejected =
-        AsyncObjectStore::read_many(&reopened, &requests, WorkBudget::UNBOUNDED, &cancelled)
-            .await
-            .err()
-            .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
+    let rejected = ({
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancelled);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::read_many(&reopened, __object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
+    .err()
+    .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
     assert!(matches!(rejected.error, ObjectStoreError::Cancelled));
     assert_eq!(rejected.work, WorkCounters::default());
 
@@ -303,36 +362,44 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let fourth = blob_write(b"fourth batch object");
     let mut forged = blob_write(b"forged batch object");
     forged.object_id.digest = Digest::from_bytes([9; 32]);
-    let rejected = AsyncObjectStore::put_many(
-        &store,
-        &[fourth.clone(), forged],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
+    let rejected = ({
+        let __object_args = (
+            &[fourth.clone(), forged],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
     .err()
     .ok_or_else(|| JsValue::from_str("forged batch unexpectedly succeeded"))?;
     assert!(matches!(rejected.error, ObjectStoreError::DigestMismatch));
     assert!(
-        !AsyncObjectStore::contains(
-            &store,
-            fourth.object_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        !({
+            let __object_args = (fourth.object_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::contains(&store, __object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
         .map_err(js_error)?
         .value
     );
     for write in [first, second, third] {
-        let read = AsyncObjectStore::read(
-            &store,
-            write.object_id,
-            1_024,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        let read = ({
+            let __object_args = (write.object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
+                &store,
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        })
         .map_err(js_error)?;
         assert_eq!(read.value.bytes, write.bytes);
     }

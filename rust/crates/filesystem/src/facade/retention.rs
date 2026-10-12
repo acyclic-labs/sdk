@@ -160,18 +160,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<bool, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let _hold = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
-                original, cancellation,
-            ).await?;
+            let _hold = ({ let __object_args = (crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at }, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result })?;
             accounting.check()?;
             let created = ({ let __authority_args = (authority_id, commit, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result })?;
             return Ok(created);
         }
-        let drained = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at },
-            accounting.remaining()?, cancellation,
-        ).await;
+        let drained = ({ let __object_args = (crate::PublicationScope::Closure { objects: &publication.objects, proven_at: publication.proven_at }, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) });
         let spent = match &drained { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
         let _hold = drained.map_err(|failure| FsError::Object(failure.error))?.value;
