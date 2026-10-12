@@ -87,11 +87,9 @@ impl ResumableMachine for CreatedControlMachine {
 async fn native_stock_startup_retains_original_configuration_and_current_context() -> Result<()> {
     let tool = crate::tool::files::read_file()?;
     let grant = format!("tool:{}", tool.definition.name);
-    let name = tool.definition.name.clone();
-    let revision = tool.definition.revision.clone();
     let mut tools = crate::tool::ToolRegistry::default();
     tools.register(tool)?;
-    let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools).await?;
+    let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools.clone()).await?;
     let volume = VolumeRef::new(fixture.creation.filesystem_provider.clone(), "scheduler".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80; 16])), &mut None)?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
@@ -99,15 +97,14 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
     let limits = original.session_limits.expect("the original fixture configures session limits");
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(metadata_control_budget(), &cancellation)?;
-    let runtime = NativeCustomerRuntime::open_with_creation_providers_with_native_work(
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    let runtime = NativeCustomerRuntime::open(
         fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
         &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
-        &original.tasks, &original.machines, fixture.runtime.tool_registry(), &resumable,
+        &original.tasks, &original.machines, &tools,
         limits, 16, fixture.creation.root_scope.limits().file_bytes,
-        original.clock.clone(), original.policy.clone(), &original.resource_creation, &work,
+        original.clock.clone(), original.policy.clone(), &original.resource_creation, &resumable, Some(&io),
     ).await?;
-    assert!(runtime.tool_registry().get_version_with_native_work(&name, &revision, &work)?.is_some());
-    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
     let context = runtime.task_context_with_native_work(fixture.creation.root, &fence, &work).await?;
     assert!(context.context().original_task_binding_matches(fixture.creation.root, &fence));
@@ -136,13 +133,16 @@ async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io()
         if !cancelled { budget.allocation_operations = 0; }
         let work = test_work(budget, &cancellation)?;
         if cancelled { cancellation.cancel(); }
-        let result = NativeCustomerRuntime::open_with_creation_providers_with_native_work(
+        let result = async {
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            NativeCustomerRuntime::open(
             fixture.creation.stream.clone(), fixture.creation.filesystem.clone(),
             &volume, &original.verifier, &original.owner_scope, &fixture.creation.root_scope,
-            &original.tasks, &original.machines, fixture.runtime.tool_registry(), &resumable,
+            &original.tasks, &original.machines, &crate::tool::ToolRegistry::default(),
             limits, 16, fixture.creation.root_scope.limits().file_bytes,
-            original.clock.clone(), original.policy.clone(), &original.resource_creation, &work,
-        ).await;
+            original.clock.clone(), original.policy.clone(), &original.resource_creation, &resumable, Some(&io),
+            ).await
+        }.await;
         assert!(matches!(&result, Err(error) if error.is_native_failure()));
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().backend_write_operations, 0);

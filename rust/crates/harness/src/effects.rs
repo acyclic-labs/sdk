@@ -588,7 +588,6 @@ mod tests {
     };
     use futures::FutureExt as _;
     use serde_json::json;
-    use std::{future::Future, pin::Pin};
 
     fn request_file(bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
@@ -619,18 +618,19 @@ mod tests {
     struct ResultResolver;
     impl ContentResidencyVerifier for ResultResolver {
         fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
-            io: Option<&'a crate::conversation::ContentIo>,
-        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            io: Option<&'a crate::conversation::ContentIo>)
+            -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() {
+                return Err(Error::Unsupported("fixture has no finite content reader".into()));
+            }
             crate::conversation::BoundedContentFuture::new(io, || async move {
-                if reference.descriptor().byte_length() > maximum_bytes {
-                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
-                }
                 let bytes = if reference.descriptor().media_type() == "application/schema+json" {
-                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
+                    serde_json::to_vec(&json!({"type":"object","required":["receipt"]}))
                         .map_err(|error| Error::Invalid(error.to_string()))?
-                } else {
-                    br#"{"receipt":"ok"}"#.to_vec()
-                };
+                } else { br#"{"receipt":"ok"}"#.to_vec() };
+                if bytes.len() as u64 > maximum_bytes {
+                    return Err(Error::Invalid("content byte allowance exceeded".into()));
+                }
                 reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })

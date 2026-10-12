@@ -481,10 +481,10 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         Ok(read)
     }
     async fn read_with_custody(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
-        cancellation: &CancellationToken, observation: Option<async_storage::ObjectReadObservation<'_>>) -> ObjectResult<ObjectRead> {
-        let already_observed = observation.is_some_and(|observation| self.data_custody.is_some_and(|owner| observation.is_for(owner)));
+        cancellation: &CancellationToken, observation: Option<&super::ProofDataCustody>) -> ObjectResult<ObjectRead> {
+        let already_observed = observation.is_some_and(|observation| self.data_custody.is_some_and(|owner| std::ptr::eq(observation, owner)));
         let result = self.read(object_id, maximum_bytes, budget, cancellation).await;
-        match observation { Some(observation) if !already_observed => observation.complete(result), _ => result }
+        match observation { Some(observation) if !already_observed => async_storage::observe_read(observation, result), _ => result }
     }
     async fn read_many(&self, requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>> {
         async_storage::read_many_sequential_async(self, requests, budget, cancellation).await

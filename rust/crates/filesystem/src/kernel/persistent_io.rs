@@ -232,7 +232,7 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
         move |budget| async move {
             AsyncObjectStore::read_with_custody(
                 store, page, maximum_bytes, budget, cancellation,
-                data_custody.map(crate::async_storage::ObjectReadObservation::new),
+                data_custody,
             ).await
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },

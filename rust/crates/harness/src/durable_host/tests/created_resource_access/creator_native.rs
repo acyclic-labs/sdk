@@ -21,18 +21,19 @@ async fn original_native_creator_scope_carries_custody_through_real_content_io()
     assert_eq!(receipt.origin.intended_child, created.request.child.operation_id);
     let binding = &receipt.content[0].binding;
     let writer = binding.writer.as_ref().expect("actual created writer");
-    writer.supports_native_stage(&work)?;
-    let (file, file_custody) = writer.stage_once_with_native_work(
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+    writer.supports_stage(Some(&io))?;
+    let (file, file_custody) = writer.stage_once(
         OperationId::from_bytes([177;16]), "native-creator/result.txt", b"actual native created bytes",
-        "text/plain", "result.txt", &work,
+        "text/plain", "result.txt", Some(&io),
     )?.await?;
     assert_eq!(file.volume(), &created.private);
-    let (bytes, read_custody) = binding.reader.read_with_native_work(&file, 1024, &work)?.await?;
-    assert_eq!(bytes, b"actual native created bytes");
+    let bytes = binding.reader.read(&file, 1024, Some(&io))?.await?;
+    assert_eq!(bytes.as_ref(), b"actual native created bytes");
     drop(bytes);
-    drop(read_custody);
     drop(file);
     drop(file_custody);
+    drop(io);
     drop(receipt);
     drop(custody);
     Ok(())

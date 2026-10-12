@@ -11,13 +11,13 @@ async fn open_runtime(fixture: &CreationFixture) -> Result<ParcelRuntime> {
         fixture.filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
      &mut None)?;
-    FilesystemTaskRuntime::open_with_creation_providers(
-        fixture.host.stream.clone(), fixture.filesystem.clone(), volume,
-        fixture.host.verifier.clone(), fixture.host.owner_scope.clone(), fixture.root_scope.clone(),
-        fixture.host.tasks.clone(), fixture.host.machines.clone(), crate::tool::ToolRegistry::default(),
+    FilesystemTaskRuntime::open(
+        fixture.host.stream.clone(), fixture.filesystem.clone(), &volume,
+        &fixture.host.verifier, &fixture.host.owner_scope, &fixture.root_scope,
+        &fixture.host.tasks, &fixture.host.machines, &crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
-        16, 65_536, Arc::new(SystemUnixMillisClock), None, fixture.host.resource_creation.clone(),
-        crate::durable_tool::ResumableToolRegistry::default(),
+        16, 65_536, Arc::new(SystemUnixMillisClock), None, &fixture.host.resource_creation,
+        &crate::durable_tool::ResumableToolRegistry::default(), None,
     ).await
 }
 
