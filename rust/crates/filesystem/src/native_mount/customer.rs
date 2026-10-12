@@ -1315,7 +1315,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeWorkspace {
         #[source]
+        /// Original workspace failure.
         source: WorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Lazy source or sparse-overlay admission failed.
@@ -1325,7 +1327,9 @@ pub enum MountLifecycleError {
     #[error("{source}")]
     NativeLazy {
         #[source]
+        /// Original lazy workspace failure.
         source: LazyWorkspaceError,
+        /// Allocation custody retained until the cause drops.
         custody: Option<crate::NativeAllocation>,
     },
     /// Native driver admission or teardown failed.
@@ -1336,7 +1340,9 @@ pub enum MountLifecycleError {
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
         #[source]
+        /// Original native capture failure.
         source: NativeMountError,
+        /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
     /// Native callback publication failed.
@@ -1749,24 +1755,6 @@ fn native_demand_lifecycle_error(error: crate::demand::DemandError) -> MountLife
     MountLifecycleError::Source(source)
 }
 
-
-fn portable_namespace_path(
-    path: &crate::kernel::NamespacePath,
-) -> Result<String, MountLifecycleError> {
-    let mut value = String::new();
-    for component in path.components() {
-        value.push('/');
-        value.push_str(std::str::from_utf8(component.as_bytes()).map_err(|_| {
-            MountLifecycleError::Source(MountSourceError::Unsupported(
-                "lazy portable mounts cannot root at a non-UTF-8 path".to_owned(),
-            ))
-        })?);
-    }
-    if value.is_empty() {
-        value.push('/');
-    }
-    Ok(value)
-}
 
 impl<A, O> Workspace<A, O>
 where

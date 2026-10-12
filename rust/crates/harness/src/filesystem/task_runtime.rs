@@ -1096,7 +1096,7 @@ where
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        let owner = self.host.readonly_journal_owner(task, work).await?;
         let journal = FilesystemExecutionJournal::for_task(
                 owner,
                 operation,
@@ -1218,7 +1218,7 @@ where
         &self, task: TaskId, admission: &TaskAdmissionRecord,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        let owner = self.host.readonly_journal_owner(task, work).await?;
         FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
             &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), Some(&super::PreparationIo::from_native_work(work)?),

@@ -130,7 +130,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     let receiver = reopened.task_context(child, child_fence).await?;
     assert_eq!(receiver.inbox(0, 8).await?.len(), 1);
     assert_eq!(receiver.read_received_mail(child_receive, &item, &mut None).await?.as_ref(), b"parent steering after child admission".as_ref());
-    assert_eq!(receiver.observe_staged_file_once(copy_operation).await?, Some(copy));
+    assert_eq!(receiver.observe_staged_file_once(copy_operation, None).await?, Some(copy));
     assert!(matches!(receiver.read_file(&parent_file).await, Err(Error::Unauthorized(_))));
     assert!(!receiver.scope().grants().contains(&parent_file.volume().capability(VolumeOperation::Read)?));
     assert!(!parent.scope().grants().contains(&created.private.capability(VolumeOperation::Read)?));

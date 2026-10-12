@@ -654,24 +654,6 @@ fn lazy_reservation_error(error: std::collections::TryReserveError) -> LazyWorks
     { let _ = error; LazyWorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed) }
 }
 
-fn clone_lazy_string(
-    value: &str, allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut WorkCounters, budget: WorkBudget,
-) -> Result<String, LazyWorkspaceError> {
-    allocations.claim_elements::<u8>(value.len(), work, budget).map_err(lazy_allocation_error)?;
-    let mut copied = String::new();
-    copied.try_reserve_exact(value.len()).map_err(lazy_reservation_error)?;
-    let excess = copied.capacity().checked_sub(value.len()).ok_or(crate::WorkError::Overflow)?;
-    if excess != 0 {
-        allocations.claim_bytes(crate::foundation::usize_to_u64(excess), 0, work, WorkBudget::UNBOUNDED)
-            .map_err(lazy_allocation_error)?;
-        work.verify(budget)?;
-    }
-    charge_lazy_copy(crate::foundation::usize_to_u64(value.len()), work, budget)?;
-    copied.push_str(value);
-    Ok(copied)
-}
-
 fn clone_lazy_string_with_accounting(
     value: &str, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -7250,8 +7232,8 @@ where
                 };
                 let candidate_bytes = if portable_lookup.is_some() { candidate.logical_owned_bytes() } else { 0 };
                 if portable_accounting { work.adopt(candidate_bytes)?; }
-                let mut transaction = lazy_dispatch!{work, crate::Transaction::for_checkout_candidate(&self.workspace, candidate),
-                    |original| crate::Transaction::for_checkout_candidate_with_native_work(
+                let mut transaction = lazy_dispatch!{work, accept_lazy_write_receipt(work, crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work.remaining()?, cancellation).map_err(|failure| failure.map_error(workspace_error)))?,
+                    |original| crate::Transaction::for_checkout_candidate(
                         &self.workspace, candidate, original, cancellation,
                     ).map_err(native_workspace_error)?
                 };
