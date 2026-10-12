@@ -61,7 +61,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let host = Arc::new(host);
     #[cfg(not(target_arch = "wasm32"))]
     let harness = {
-        let mut bindings = crate::Bindings::local();
+        let mut bindings = crate::runtime::Bindings::local();
         bindings.tasks = tasks;
         bindings.scope = scope.clone();
         bindings.durable_host = Some(host.clone());
