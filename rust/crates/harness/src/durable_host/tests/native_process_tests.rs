@@ -1384,9 +1384,7 @@ where
                 let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
                     Arc::clone(&lazy), work,
                 )?;
-                let creator = crate::filesystem::FilesystemResourceCreationProvider::new_with_native_work(
-                    Arc::clone(&files), &issuer, work,
-                )?;
+                let creator = crate::filesystem::FilesystemResourceCreationProvider::new(Arc::clone(&files), &issuer, Some(work))?;
                 let (config, operation, initial_generation, _, _) =
                     root_births.expect("mixed Project was physically created through its original operation");
                 let protected = creator.protect_root_bootstrap_with_native_work(

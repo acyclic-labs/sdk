@@ -27,37 +27,39 @@ pub struct FilesystemResourceCreationProvider<A, O> {
 }
 
 impl<A, O> FilesystemResourceCreationProvider<A, O> {
-    /// Binds the Filesystem host and the preparation coordinator's issuer.
-    pub fn new(host: Arc<FilesystemHost<A, O>>, issuer: AuthorityIssuer) -> Result<Self> {
-        host.provider.validate()?;
-        Ok(Self {
-            host, issuer,
-            #[cfg(not(target_arch = "wasm32"))]
-            root_project: std::sync::OnceLock::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            root_scratch: std::sync::OnceLock::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
-        })
-    }
-
-    /// Copies the configured signing identity through the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>, issuer: &AuthorityIssuer,
-        work: &acyclic_fs::NativeMaterializationWork,
+    /// Copies the signing identity with optional original native accounting.
+    pub fn new(host: Arc<FilesystemHost<A, O>>, issuer: &AuthorityIssuer,
+        #[cfg(not(target_arch = "wasm32"))]
+        work: Option<&acyclic_fs::NativeMaterializationWork>,
     ) -> Result<Self> {
-        host.provider.validate_with_native_work(work)?;
-        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
-            .map_err(Error::from)?;
-        let mut observer = crate::store::history::native_work_io(work)?;
-        let issuer = issuer.copy(&mut Some(&mut observer))?;
-        let mut issuer_custody = observer.into_custody();
-        custody.absorb(&mut issuer_custody)
-            .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
-        Ok(Self {
-            host, issuer, native_custody: Some(custody),
-            root_project: std::sync::OnceLock::new(), root_scratch: std::sync::OnceLock::new(),
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut native = match work {
+            Some(work) => {
+                host.provider.validate_with_native_work(work)?;
+                Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
+                    crate::store::history::native_work_io(work)?))
+            }
+            None => { host.provider.validate()?; None }
+        };
+        #[cfg(target_arch = "wasm32")]
+        host.provider.validate()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(target_arch = "wasm32")]
+        let mut history = None;
+        let issuer = issuer.copy(&mut history)?;
+        drop(history);
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_custody = native.map(|(mut custody, io)| {
+            let mut issuer_custody = io.into_custody();
+            custody.absorb(&mut issuer_custody)
+                .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
+            Ok::<_, Error>(custody)
+        }).transpose()?;
+        Ok(Self { host, issuer,
+            #[cfg(not(target_arch = "wasm32"))] native_custody,
+            #[cfg(not(target_arch = "wasm32"))] root_project: std::sync::OnceLock::new(),
+            #[cfg(not(target_arch = "wasm32"))] root_scratch: std::sync::OnceLock::new(),
         })
     }
 
@@ -1644,7 +1646,7 @@ mod tests {
         let owner = bind_genuine_original_root(&fixture, &work).await?;
         let birth = &fixture.original_root_births.as_ref().unwrap()[0];
         let bad_issuer = AuthorityIssuer::new("created-owner", [81; 32], fixture.filesystem_creator.issuer.audience().clone());
-        let bad_creator = FilesystemResourceCreationProvider::new_with_native_work(fixture.filesystem.clone(), &bad_issuer, &work)?;
+        let bad_creator = FilesystemResourceCreationProvider::new(fixture.filesystem.clone(), &bad_issuer, Some(&work))?;
         assert!(bad_creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work)?.await.is_err());
 

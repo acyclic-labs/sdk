@@ -79,8 +79,7 @@ impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     }
 }
 
-// This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
-fn model_vec_with_capacity<T>(
+pub(crate) fn vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
     let mut values = Vec::new();
@@ -255,7 +254,7 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
-    let mut copied = model_vec_with_capacity(messages.len(), io)?;
+    let mut copied = vec_with_capacity(messages.len(), io)?;
     for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
     Ok(copied)
 }
@@ -295,7 +294,7 @@ pub(crate) fn clone_request(
     model_step(io, 1)?;
     let model = clone_model(&request.model, io)?;
     let messages = clone_messages(&request.messages, io)?;
-    let mut tools = model_vec_with_capacity(request.tools.len(), io)?;
+    let mut tools = vec_with_capacity(request.tools.len(), io)?;
     for tool in &request.tools { crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?; }
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }

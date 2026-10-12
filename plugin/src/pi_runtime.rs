@@ -204,9 +204,7 @@ where
         let mut machines = (MachineRegistry::default(), None, None);
         machines.1 = Some(machines.0.register_with_native_work(machine, work)?);
         machines.2 = Some(machines.0.register_with_native_work(fork_machine, work)?);
-        let creation = FilesystemResourceCreationProvider::new_with_native_work(
-            Arc::clone(&filesystem), &authority.0.issuer, work,
-        )?.into_native_shared(work)?;
+        let creation = FilesystemResourceCreationProvider::new(Arc::clone(&filesystem), &authority.0.issuer, Some(work))?.into_native_shared(work)?;
         let creation_providers: [Arc<dyn acyclic_harness::resource_preparation::ResourceCreationProvider>; 1] = [creation];
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
         let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(

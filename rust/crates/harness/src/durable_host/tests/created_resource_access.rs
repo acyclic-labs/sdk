@@ -503,13 +503,13 @@ impl CreationFixture {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let fs_creator = if let Some(work) = bootstrap {
-            FilesystemResourceCreationProvider::new_with_native_work(filesystem.clone(), &issuer, work)?
+            FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, Some(work))?
                 .into_native_shared(work)?
         } else {
-            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?)
+            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)
         };
         #[cfg(target_arch = "wasm32")]
-        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?);
+        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
