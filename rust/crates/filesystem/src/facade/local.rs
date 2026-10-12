@@ -65,7 +65,6 @@ pub(super) fn prepare_local_root_open(
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) async fn run_local_initialization<T, F, I>(
     ownership: tokio::sync::OwnedMutexGuard<()>,
-    span: crate::obs::OperationSpan,
     initialize: I,
 ) -> Result<T, FsError>
 where
@@ -73,12 +72,10 @@ where
     F: std::future::Future<Output = T> + Send + 'static,
     I: FnOnce(tokio::sync::OwnedMutexGuard<()>) -> F + Send + 'static,
 {
-    // Tokio detaches a spawned task when its JoinHandle is dropped. That is intentional here:
-    tokio::spawn(async move {
-        crate::obs::in_span(&span, async move { initialize(ownership).await }).await
-    })
-    .await
-    .map_err(|_| FsError::LocalInitializationWorker)
+    // cancelling the caller must not release root ownership while provider spawn_blocking workers
+    tokio::spawn(async move { initialize(ownership).await })
+        .await
+        .map_err(|_| FsError::LocalInitializationWorker)
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -102,85 +99,65 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .as_ref()
             .map(OwnershipAnchor::release_barrier)
     }
-
     /// Opens the infrastructure-free durable local composition.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.local",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-        );
-        let worker_context = span.clone();
-        crate::obs::outcome_on(
-            &span,
-            crate::obs::in_span(&span, async move {
-                static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
-                let requested_root = options.root.clone();
-                let root = tokio::task::spawn_blocking(crate::obs::in_context(
-                    worker_context.clone(),
-                    move || {
-                        std::fs::create_dir_all(&requested_root)?;
-                        std::fs::canonicalize(requested_root)
-                    },
-                ))
-                .await
-                .map_err(|_| FsError::LocalInitializationWorker)?
-                .map_err(FsError::LocalRoot)?;
-                let mut options = options;
-                options.root = root.clone();
-                let registry =
-                    REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
-                let opening = {
-                    let mut registrations = registry.lock().await;
-                    if let Some(existing) = registrations.get(&root)
-                        && let Some(inner) = existing.live.upgrade()
-                    {
-                        if existing.options != options {
-                            return Err(FsError::LocalOptionsConflict);
-                        }
-                        return Ok(Self { inner });
-                    }
-                    prepare_local_root_open(&mut registrations, &root, &options)
-                };
-                // Opening a root may wait for old provider handles or native I/O to finish. Keep that
-                let _opening = opening.lock().await;
-                let lifecycle = {
-                    let registrations = registry.lock().await;
-                    let existing = registrations
-                        .get(&root)
-                        .ok_or(FsError::LocalInitializationWorker)?;
-                    if let Some(inner) = existing.live.upgrade() {
-                        if existing.options != options {
-                            return Err(FsError::LocalOptionsConflict);
-                        }
-                        return Ok(Self { inner });
-                    }
-                    Arc::clone(&existing.lifecycle)
-                };
-                let ownership = lifecycle.lock_owned().await;
-                let open_options = options.clone();
-                let fs = run_local_initialization(
-                    ownership,
-                    worker_context.clone(),
-                    move |ownership| async move {
-                        let ownership = OwnershipAnchor::new(ownership);
-                        Self::open_local_unshared(open_options, Some(ownership)).await
-                    },
-                )
-                .await??;
-                let mut registrations = registry.lock().await;
-                let existing = registrations
-                    .get_mut(&root)
-                    .ok_or(FsError::LocalInitializationWorker)?;
-                existing.options = options;
-                existing.live = Arc::downgrade(&fs.inner);
-                Ok(fs)
+        (async move {
+            static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
+            let requested_root = options.root.clone();
+            let root = tokio::task::spawn_blocking(move || {
+                std::fs::create_dir_all(&requested_root)?;
+                std::fs::canonicalize(requested_root)
             })
-            .await,
-        )
+            .await
+            .map_err(|_| FsError::LocalInitializationWorker)?
+            .map_err(FsError::LocalRoot)?;
+            let mut options = options;
+            options.root = root.clone();
+            let registry =
+                REGISTRY.get_or_init(|| tokio::sync::Mutex::new(LocalRootRegistry::new()));
+            let opening = {
+                let mut registrations = registry.lock().await;
+                if let Some(existing) = registrations.get(&root)
+                    && let Some(inner) = existing.live.upgrade()
+                {
+                    if existing.options != options {
+                        return Err(FsError::LocalOptionsConflict);
+                    }
+                    return Ok(Self { inner });
+                }
+                prepare_local_root_open(&mut registrations, &root, &options)
+            };
+            let _opening = opening.lock().await;
+            let lifecycle = {
+                let registrations = registry.lock().await;
+                let existing = registrations
+                    .get(&root)
+                    .ok_or(FsError::LocalInitializationWorker)?;
+                if let Some(inner) = existing.live.upgrade() {
+                    if existing.options != options {
+                        return Err(FsError::LocalOptionsConflict);
+                    }
+                    return Ok(Self { inner });
+                }
+                Arc::clone(&existing.lifecycle)
+            };
+            let ownership = lifecycle.lock_owned().await;
+            let open_options = options.clone();
+            let fs = run_local_initialization(ownership, move |ownership| async move {
+                let ownership = OwnershipAnchor::new(ownership);
+                Self::open_local_unshared(open_options, Some(ownership)).await
+            })
+            .await??;
+            let mut registrations = registry.lock().await;
+            let existing = registrations
+                .get_mut(&root)
+                .ok_or(FsError::LocalInitializationWorker)?;
+            existing.options = options;
+            existing.live = Arc::downgrade(&fs.inner);
+            Ok(fs)
+        })
+        .await
     }
-
     pub(super) async fn open_local_unshared(
         options: LocalOptions,
         lifecycle: Option<OwnershipAnchor>,
@@ -191,7 +168,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             objects,
             object_cache,
         } = options;
-        // The Stream and Objects providers own disjoint directories, so their
         let open_stream = async {
             Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
@@ -209,20 +185,16 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let maximum_object_bytes = objects.maximum_object_bytes;
             let objects = std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
-                    acyclic_objects::v1::local::LocalObjects::open(
+                    acyclic_objects::v1::local::LocalObjects::open_with_ownership_anchor(
                         root.join("objects"),
                         objects,
-                        Some(ownership.clone()),
+                        ownership.clone(),
                     )
                     .await?
                 }
                 None => {
-                    acyclic_objects::v1::local::LocalObjects::open(
-                        root.join("objects"),
-                        objects,
-                        None,
-                    )
-                    .await?
+                    acyclic_objects::v1::local::LocalObjects::open(root.join("objects"), objects)
+                        .await?
                 }
             });
             let bucket = acyclic_objects::v1::wire::BucketRef {

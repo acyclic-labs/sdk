@@ -14,6 +14,29 @@ pub struct LocalGarbageCollection {
     pub temporary_files_removed: u64,
 }
 
+/// Limits that admit every page either admits.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
+    DecodeLimits {
+        maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
+        maximum_name_bytes: left.maximum_name_bytes.max(right.maximum_name_bytes),
+        maximum_page_items: left.maximum_page_items.max(right.maximum_page_items),
+        maximum_page_bytes: left.maximum_page_bytes.max(right.maximum_page_bytes),
+        maximum_page_height: left.maximum_page_height.max(right.maximum_page_height),
+        maximum_visited_pages: left.maximum_visited_pages.max(right.maximum_visited_pages),
+    }
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
+    match error {
+        crate::kernel::MarkError::Storage(error) => FsError::Object(error),
+        crate::kernel::MarkError::Decode(reason) => FsError::Object(ObjectStoreError::Rejected(
+            format!("a live object does not decode, so nothing was collected: {reason}"),
+        )),
+    }
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Reclaims every stored object nothing live reaches, while the root
@@ -22,46 +45,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         core_state: Option<&crate::LocalCoreStateStore>,
         cancellation: &CancellationToken,
     ) -> Result<LocalGarbageCollection, FsError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.collect_local_garbage",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty
-        );
-        let result = crate::obs::in_span(&span, async move {
-            if let Some(core_state) = core_state {
-                let store_error = |error: crate::LocalCoreStateStoreError| {
-                    crate::FsError::Object(crate::ObjectStoreError::Rejected(error.to_string()))
-                };
-                let records = core_state.workspace_records().await.map_err(store_error)?;
-                let mut deleted = std::collections::BTreeSet::new();
-                for workspace in records.keys() {
-                    cancellation.check()?;
-                    if self
-                        .local_volume_deleted(workspace.volume_id(), cancellation)
-                        .await?
-                    {
-                        deleted.insert(*workspace);
-                    }
-                }
-                // Live descendants retain their deleted ancestors' lineage.
-                let mut ancestors = std::collections::BTreeSet::new();
-                for workspace in records.keys().filter(|id| !deleted.contains(id)) {
-                    let mut pending = records.get(workspace).cloned().unwrap_or_default();
-                    while let Some(parent) = pending.pop() {
-                        if ancestors.insert(parent) {
-                            pending.extend(records.get(&parent).cloned().unwrap_or_default());
-                        }
-                    }
-                }
-                for workspace in deleted.difference(&ancestors) {
-                    core_state
-                        .forget_workspace(*workspace)
-                        .await
-                        .map_err(store_error)?;
-                }
-                core_state.collect_lazy_nodes().await.map_err(store_error)?;
-            }
+        (async move {
             let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
                 ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
             ))?);
@@ -90,18 +74,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 marker.keep(multipart.value);
             }
             if let Some(core_state) = core_state {
-                for (generation, config) in
-                    core_state
-                        .lazy_retained_generations()
-                        .await
-                        .map_err(|error| {
-                            FsError::Object(ObjectStoreError::Rejected(error.to_string()))
-                        })?
-                {
-                    cancellation.check()?;
-                    marker.set_limits(DecodeLimits::for_volume(config));
-                    marker.generation(generation).await.map_err(mark_error)?;
-                }
                 marker.set_limits(shadow_limits);
                 for record in core_state.lazy_shadow_records().await.map_err(|error| {
                     FsError::Object(ObjectStoreError::Rejected(error.to_string()))
@@ -135,10 +107,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             self.sweep_local_objects(&collecting, unmarked, cancellation)
                 .await
         })
-        .await;
-        crate::obs::outcome_on(&span, result)
+        .await
     }
-
     /// Every current filesystem key and its conditional-deletion validator.
     pub(super) async fn local_object_candidates(
         &self,
@@ -174,7 +144,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
         }
     }
-
     /// Deletes `unmarked` in batches, each under the collection gate, then
     pub(super) async fn sweep_local_objects(
         &self,
@@ -212,7 +181,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     })
                     .await
                     .map_err(FsError::LocalObjectsBucket);
-                // Also clear after an uncertain/partially completed sweep.
                 self.inner.objects.inner().clear()?;
                 if deleted?.existed {
                     removed = removed.saturating_add(1);
@@ -232,7 +200,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             temporary_files_removed: physical.temporary_files_removed,
         })
     }
-
     /// Marks every live generation of every authority, releasing the
     pub(super) async fn mark_local_authorities(
         &self,
@@ -251,14 +218,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .mark_local_authority(marker, authority_id, &mut widest, cancellation)
                 .await
             {
-                // Deleted and released since it was listed: nothing of it is
                 Ok(()) | Err(FsError::WorkspaceDeleted) => {}
                 Err(error) => return Err(error),
             }
         }
         Ok(widest)
     }
-
     /// Marks one authority's live generations; see
     pub(super) async fn mark_local_authority(
         &self,
@@ -268,18 +233,20 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         cancellation.check()?;
-        let head = match self
-            .inner
-            .authority
-            .head(
-                authority_id,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )
-            .await
+        let head = match {
+            let sdk_args = (authority_id, WorkBudget::UNBOUNDED, cancellation);
+            let sdk_store = &self.inner.authority;
+            async move {
+                let mut sdk_work = crate::AuthorityWork::new(sdk_args.1, sdk_args.2);
+                let result = sdk_store.head(sdk_args.0, &mut sdk_work).await;
+                sdk_work.receipt(result)
+            }
+        }
+        .await
         {
-            Ok(head) => head,
-            Err(AuthorityStoreError::Retired) => return Ok(()),
-            Err(error) => return Err(error.into()),
+            Ok(head) => head.value,
+            Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => return Ok(()),
+            Err(failure) => return Err(failure.error.into()),
         };
         if head.sequence == Sequence::GENESIS {
             return Ok(());
@@ -290,11 +257,17 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .into_iter()
             .next()
             .ok_or(FsError::InvalidAuthorityHistory)?;
-        if let Ok(created) = crate::kernel::decode_volume_created(
-            &first.payload,
-            MAXIMUM_VOLUME_EVENT_BYTES,
-            &mut |_| Ok::<_, FsError>(()),
-        ) {
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        );
+        if let Ok((created, _allocation)) =
+            crate::kernel::decode_owned(&mut accounting, |observe| {
+                decode_volume_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+                    observe(step)
+                })
+            })
+        {
             if volume_authority_id(created.volume_id) != authority_id {
                 return Err(FsError::VolumeMismatch);
             }
@@ -311,11 +284,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             if source_authority_id(source_volume) != authority_id {
                 return Err(FsError::VolumeMismatch);
             }
-            // Its facts name generations of its volume's own history.
             return Ok(());
         }
         let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)?;
-        // A retention lasts as long as the workspace it serves: a fork
         let owner = match retained.kind {
             RetentionKind::ForkBase => hex::decode(&retained.label)
                 .ok()
@@ -338,7 +309,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .map_err(mark_error)?;
         Ok(())
     }
-
     /// Marks every generation in one volume's history, or releases the
     pub(super) async fn mark_local_volume(
         &self,
@@ -364,7 +334,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             if deleted != volume_id {
                 return Err(FsError::VolumeMismatch);
             }
-            // A delete interrupted before it released the authority.
             return self
                 .retire_local_authority(authority_id, cancellation)
                 .await;
@@ -378,16 +347,15 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 return Err(FsError::InvalidAuthorityHistory);
             };
             after = last.sequence;
-            // Exactly the history as of the head read: a record appended
             for record in records
                 .iter()
                 .take_while(|record| record.sequence <= head.sequence)
             {
-                let generation = generation_from_record(
-                    record,
-                    volume_id,
-                    &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation),
-                )?;
+                let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                );
+                let generation = generation_from_record(record, volume_id, &mut accounting)?;
                 marker
                     .generation(GenerationId::new(generation.digest))
                     .await
@@ -396,7 +364,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         }
         Ok(())
     }
-
     /// Up to `count` records of one authority after `after`.
     pub(super) async fn local_records(
         &self,
@@ -405,43 +372,56 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         count: u32,
         cancellation: &CancellationToken,
     ) -> Result<Vec<crate::foundation::DurableCommit>, FsError> {
-        Ok(self
-            .inner
-            .authority
-            .replay(
+        Ok({
+            let sdk_args = (
                 authority_id,
                 after,
                 ReplayLimit {
                     records: count,
                     payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
                 },
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )
-            .await
-            .map_err(FsError::from)?
-            .0)
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            );
+            let sdk_store = &self.inner.authority;
+            async move {
+                let mut sdk_work = crate::AuthorityWork::new(sdk_args.3, sdk_args.4);
+                let result = sdk_store
+                    .replay(sdk_args.0, sdk_args.1, sdk_args.2, &mut sdk_work)
+                    .await
+                    .map(|(value, _allocation)| value);
+                sdk_work.receipt(result)
+            }
+        }
+        .await
+        .map_err(|failure| FsError::from(failure.error))?
+        .value)
     }
-
     /// Whether the workspace `volume_id` was deleted; one never created was
     pub(crate) async fn local_volume_deleted(
         &self,
         volume_id: VolumeId,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
-        match self
-            .inner
-            .authority
-            .head(
+        match {
+            let sdk_args = (
                 volume_authority_id(volume_id),
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )
-            .await
+                WorkBudget::UNBOUNDED,
+                cancellation,
+            );
+            let sdk_store = &self.inner.authority;
+            async move {
+                let mut sdk_work = crate::AuthorityWork::new(sdk_args.1, sdk_args.2);
+                let result = sdk_store.head(sdk_args.0, &mut sdk_work).await;
+                sdk_work.receipt(result)
+            }
+        }
+        .await
         {
-            Err(AuthorityStoreError::Missing) => Ok(false),
+            Err(failure) if matches!(failure.error, AuthorityStoreError::Missing) => Ok(false),
             _ => self.local_volume_ended(volume_id, cancellation).await,
         }
     }
-
     /// Whether the workspace `volume_id` ended: deleted, or never created.
     pub(super) async fn local_volume_ended(
         &self,
@@ -449,20 +429,27 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
         let authority_id = volume_authority_id(volume_id);
-        let head = match self
-            .inner
-            .authority
-            .head(
-                authority_id,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )
-            .await
+        let head = match {
+            let sdk_args = (authority_id, WorkBudget::UNBOUNDED, cancellation);
+            let sdk_store = &self.inner.authority;
+            async move {
+                let mut sdk_work = crate::AuthorityWork::new(sdk_args.1, sdk_args.2);
+                let result = sdk_store.head(sdk_args.0, &mut sdk_work).await;
+                sdk_work.receipt(result)
+            }
+        }
+        .await
         {
-            Ok(head) => head,
-            Err(AuthorityStoreError::Retired | AuthorityStoreError::Missing) => {
+            Ok(head) => head.value,
+            Err(failure)
+                if matches!(
+                    failure.error,
+                    AuthorityStoreError::Retired | AuthorityStoreError::Missing
+                ) =>
+            {
                 return Ok(true);
             }
-            Err(error) => return Err(error.into()),
+            Err(failure) => return Err(failure.error.into()),
         };
         if head.sequence == Sequence::GENESIS {
             return Ok(false);
@@ -480,7 +467,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .is_ok_and(|deleted| deleted == volume_id)
         }))
     }
-
     pub(super) async fn retire_local_authority(
         &self,
         authority_id: crate::foundation::AuthorityId,
@@ -488,35 +474,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     ) -> Result<(), FsError> {
         self.inner
             .authority
-            .retire_authority(
-                authority_id,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
-            )
+            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
             .await
-            .map_err(FsError::from)?;
+            .map_err(|failure| FsError::from(failure.error))?;
         Ok(())
-    }
-}
-
-/// Limits that admit every page either admits.
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
-        maximum_name_bytes: left.maximum_name_bytes.max(right.maximum_name_bytes),
-        maximum_page_items: left.maximum_page_items.max(right.maximum_page_items),
-        maximum_page_bytes: left.maximum_page_bytes.max(right.maximum_page_bytes),
-        maximum_page_height: left.maximum_page_height.max(right.maximum_page_height),
-        maximum_visited_pages: left.maximum_visited_pages.max(right.maximum_visited_pages),
-    }
-}
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub(super) fn mark_error(error: crate::kernel::MarkError) -> FsError {
-    match error {
-        crate::kernel::MarkError::Storage(error) => FsError::Object(error),
-        crate::kernel::MarkError::Decode(reason) => FsError::Object(ObjectStoreError::Rejected(
-            format!("a live object does not decode, so nothing was collected: {reason}"),
-        )),
     }
 }
