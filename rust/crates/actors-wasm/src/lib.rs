@@ -108,17 +108,14 @@ impl AbortRegistration {
             &JsValue::from_str("abort"),
             callback.as_ref().unchecked_ref(),
         )?;
-        let aborted = Reflect::get(&signal, &JsValue::from_str("aborted"))?
+        let registration = Self { signal, callback, token };
+        let aborted = Reflect::get(&registration.signal, &JsValue::from_str("aborted"))?
             .as_bool()
             .unwrap_or(false);
         if aborted {
-            token.cancel();
+            registration.token.cancel();
         }
-        Ok(Some(Self {
-            signal,
-            callback,
-            token,
-        }))
+        Ok(Some(registration))
     }
 
 }
