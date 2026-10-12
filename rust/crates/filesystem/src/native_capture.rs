@@ -1024,7 +1024,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)
             ?,
         };
-        let (source_path, source_path_bytes) = crate::native_host::clone_path_with_work(&options.source_root, &mut meter.source())
+        let (source_path, source_path_bytes) = crate::native_host::clone_path(&options.source_root, &mut meter.source())
         .map_err(capture_demand_error)?;
         (canonical, paths, host_roots, host_policy, source_path, source_path_bytes, maximum)
     };
@@ -1603,7 +1603,7 @@ fn capture_stat(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkScop
     #[cfg(unix)]
     { root.stat(path, &mut meter.source()) }
     #[cfg(windows)]
-    { root.stat_wide_with_work(path, &mut meter.source()) }
+    { root.stat_wide(path, &mut meter.source()) }
 }
 
 fn collect_host_walk_measured(
@@ -1624,12 +1624,12 @@ fn collect_host_walk_measured(
         #[cfg(unix)]
         let (mut reader, reader_allocation) = root.read_dir_stats(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
         #[cfg(windows)]
-        let (mut reader, reader_allocation) = root.read_dir_stats_wide_with_work(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
+        let (mut reader, reader_allocation) = root.read_dir_stats_wide(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
         loop {
             #[cfg(unix)]
-            let entry = reader.next_with_work(&mut meter.source()).map_err(capture_demand_error)?;
+            let entry = reader.next(&mut meter.source()).map_err(capture_demand_error)?;
             #[cfg(windows)]
-            let entry = reader.next_wide_with_work(&mut meter.source()).map_err(capture_demand_error)?;
+            let entry = reader.next_wide(&mut meter.source()).map_err(capture_demand_error)?;
             let Some((entry, name_allocation)) = entry else { break };
             let name = (|| {
                 #[cfg(unix)]
@@ -3640,13 +3640,13 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     let opened = (|| {
         cancellation.check().map_err(|_| CaptureError::Cancelled)?;
         #[cfg(unix)]
-        let file = source_root.open_file_positional_with_work(host_path, &mut meter.source())
+        let file = source_root.open_file_positional(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
-        let file = source_root.open_file_positional_wide_with_work(host_path, &mut meter.source())
+        let file = source_root.open_file_positional_wide(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
         let file = file.into_std();
-        let metadata = source_root.stat_file_with_work(&file, &mut meter.source())
+        let metadata = source_root.stat_file(&file, &mut meter.source())
             .map_err(capture_demand_error)?;
         if !metadata.file_type().is_file() {
             return Err(CaptureError::StaleVersion);
@@ -3692,7 +3692,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     let content = staged?;
     let verified = (|| {
         cancellation.check().map_err(|_| CaptureError::Cancelled)?;
-        let after = source_root.stat_file_with_work(native.as_file(), &mut meter.source())
+        let after = source_root.stat_file(native.as_file(), &mut meter.source())
             .map_err(capture_demand_error)?;
         ensure_same_host_node(snapshot, &after)?;
         let current = capture_stat(source_root, host_path, meter)
@@ -3844,7 +3844,7 @@ fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError
 #[cfg(test)]
 fn test_held_stat(root: &HostRoot, file: &cap_std::fs::File) -> Result<HostStat, CaptureError> {
     let mut meter = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_file_with_work(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
+    root.stat_file(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -4479,7 +4479,7 @@ mod windows_sparse_tests {
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let file = root.open_file_positional(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let cancellation = CancellationToken::new();
@@ -4564,7 +4564,7 @@ mod windows_sparse_tests {
 
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let file = root.open_file_positional(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {
@@ -4700,7 +4700,7 @@ fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkS
     }
     #[cfg(windows)]
     {
-        let (units, allocation) = root.read_link_wide_with_work(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
+        let (units, allocation) = root.read_link_wide(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
         let length = units.len().checked_mul(2).ok_or(CaptureError::from(WorkError::Overflow))?;
         let mut bytes = capture_vec(length, meter)?;
         for unit in &units {

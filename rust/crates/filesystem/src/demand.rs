@@ -3836,9 +3836,9 @@ pub mod native {
         fn copy<W: SourceDemandReadWork>(path: &Path, work: &mut W) -> Result<Self, DemandError> {
             let mut custody = SourceRootPathCustody::new(work)?;
             #[cfg(unix)]
-            let (owned, bytes) = crate::native_host::clone_path_with_work(path, work)?;
+            let (owned, bytes) = crate::native_host::clone_path(path, work)?;
             #[cfg(windows)]
-            let (owned, bytes) = crate::native_host::encode_root_path_name_with_work(path, work)?;
+            let (owned, bytes) = crate::native_host::encode_root_path_name(path, work)?;
             if let Err(error) = custody.retain(bytes, work) {
                 drop(owned);
                 work.release(bytes)?;
@@ -3887,9 +3887,9 @@ pub mod native {
                 bytes: 0,
             };
             #[cfg(unix)]
-            let path = crate::native_host::normalize_root_path_measured(&self.path, work)?;
+            let path = crate::native_host::normalize_root_path(&self.path, work)?;
             #[cfg(windows)]
-            let path = crate::native_host::normalize_root_wide_name_with_work(&self.path, self.absolute, work)?;
+            let path = crate::native_host::normalize_root_wide_name(&self.path, self.absolute, work).map(|(name, _)| name)?;
             #[cfg(unix)]
             let bytes = path.capacity() as u64;
             #[cfg(windows)]
@@ -4186,7 +4186,7 @@ pub mod native {
                 let input = (|| {
                     let path = match path {
                         std::borrow::Cow::Owned(path) => { work.adopt(path.capacity() as u64)?; path }
-                        std::borrow::Cow::Borrowed(path) => crate::native_host::clone_path_with_work(path, &mut work)?.0,
+                        std::borrow::Cow::Borrowed(path) => crate::native_host::clone_path(path, &mut work)?.0,
                     };
                     work.allocate(std::mem::size_of::<NativeDemandReadMeter>() as u64)?;
                     Ok(path)
@@ -4250,8 +4250,8 @@ pub mod native {
             #[cfg(unix)]
             let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
-            let root = HostRoot::open_root_wide_measured(&input.path, work)?;
-            let inline = root.is_local_with_work(work)?;
+            let root = HostRoot::open_root_wide(&input.path, work)?;
+            let inline = root.is_local(work)?;
             let requests_ownership = SourcePayloadOwnership::new(work)?;
             let requests_bytes = (std::mem::size_of::<Semaphore>() + 2 * std::mem::size_of::<usize>()) as u64;
             work.allocate(requests_bytes)?;
@@ -4552,11 +4552,11 @@ pub mod native {
                 return Err(DemandError::NativeWorkUnavailable);
             }
             if source != self.reference() { return Err(DemandError::StaleSource); }
-            let held = self.inner.root.held_identity_with_work(work)?;
+            let held = self.inner.root.held_identity(work)?;
             #[cfg(unix)]
-            let named = crate::native_host::root_path_identity_with_work(&self.inner.path, work)?;
+            let named = crate::native_host::root_path_identity(&self.inner.path, work)?;
             #[cfg(windows)]
-            let named = crate::native_host::root_path_identity_wide_with_work(&self.inner.path, work)?;
+            let named = crate::native_host::root_path_identity_wide(&self.inner.path, work)?;
             if held != self.inner.root.identity() || named != held { return Err(DemandError::SourceUnavailable); }
             if source != self.reference() { return Err(DemandError::StaleSource); }
             work.check()
@@ -4571,9 +4571,9 @@ pub mod native {
                 return Ok(());
             }
             #[cfg(unix)]
-            let identity = crate::native_host::root_path_identity_with_work(&self.inner.path, work);
+            let identity = crate::native_host::root_path_identity(&self.inner.path, work);
             #[cfg(windows)]
-            let identity = crate::native_host::root_path_identity_wide_with_work(&self.inner.path, work);
+            let identity = crate::native_host::root_path_identity_wide(&self.inner.path, work);
             match identity {
                 Ok(identity) if identity == self.inner.root.identity() => Ok(()),
                 Err(error @ (DemandError::Work(_) | DemandError::Cancelled)) => Err(error),
@@ -4649,7 +4649,7 @@ pub mod native {
             #[cfg(unix)]
             { self.inner.root.stat(relative, work) }
             #[cfg(windows)]
-            { self.inner.root.stat_wide_with_work(relative, work) }
+            { self.inner.root.stat_wide(relative, work) }
         }
 
         fn metadata<W: SourceDemandReadWork>(&self, path: &NamespacePath, work: &mut W) -> Result<Option<HostStat>, DemandError> {
@@ -4814,7 +4814,7 @@ pub mod native {
             #[cfg(unix)]
             let result = self.inner.root.read_dir_stats(&relative, work);
             #[cfg(windows)]
-            let result = self.inner.root.read_dir_stats_wide_with_work(&relative, work);
+            let result = self.inner.root.read_dir_stats_wide(&relative, work);
             match result {
                 Ok((reader, allocation)) => {
                     ownership.retain(allocation, work)?;
@@ -4867,10 +4867,10 @@ pub mod native {
                 None => {
                     #[cfg(unix)]
                     let result = self.inner.root.open_dir_held(directory, work)
-                        .and_then(|parent| crate::native_host::stat_leaf_with_work(&parent, file_name, work));
+                        .and_then(|parent| crate::native_host::stat_leaf(&parent, file_name, work));
                     #[cfg(windows)]
-                    let result = self.inner.root.open_dir_held_wide_with_work(directory, work)
-                        .and_then(|parent| crate::native_host::stat_windows_leaf_with_work(&parent, &entry.name, work));
+                    let result = self.inner.root.open_dir_held_wide(directory, work)
+                        .and_then(|parent| crate::native_host::stat_windows_leaf(&parent, &entry.name, work));
                     match result {
                         Ok(stat) => Self::node(&stat, work)?,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -4890,9 +4890,9 @@ pub mod native {
         fn read_entry<W: SourceDemandReadWork>(reader: &mut DirectoryReader, work: &mut W) -> Result<Option<DirectoryPending>, DemandError> {
             let ownership = SourcePayloadOwnership::new(work)?;
             #[cfg(unix)]
-            let result = reader.0.next_with_work(work)?;
+            let result = reader.0.next(work)?;
             #[cfg(windows)]
-            let result = reader.0.next_wide_with_work(work)?;
+            let result = reader.0.next_wide(work)?;
             let Some((entry, allocation)) = result else { return Ok(None) };
             ownership.retain(allocation, work)?;
             Ok(Some((entry, ownership)))
@@ -5082,7 +5082,7 @@ pub mod native {
                 let remaining = work.remaining()?;
                 let maximum = remaining.output_bytes.min(remaining.source_bytes_read).min(maximum_bytes);
                 let bytes = if work.is_native_original() {
-                    self.inner.root.read_source_link_with_work(&relative, maximum, work)?
+                    self.inner.root.read_source_link(&relative, maximum, work)?
                 } else {
                 let ownership = SourcePayloadOwnership::new(work)?;
                 #[cfg(windows)]
@@ -5090,7 +5090,7 @@ pub mod native {
                 #[cfg(unix)]
                 let (target, target_bytes) = self.inner.root.read_link(&relative, maximum, work)?;
                 #[cfg(windows)]
-                let (target, target_bytes) = self.inner.root.read_link_wide_with_work(&relative, maximum, work)?;
+                let (target, target_bytes) = self.inner.root.read_link_wide(&relative, maximum, work)?;
                 #[cfg(unix)]
                 ownership.retain(target_bytes, work)?;
                 #[cfg(windows)]
@@ -5249,7 +5249,7 @@ pub mod native {
             ownership.retain(path_owned_bytes(&relative), work)?;
             let file_ownership = SourcePayloadOwnership::new(work)?;
             #[cfg(windows)]
-            let file = provider.inner.root.open_file_yielding_wide_with_work(&relative, work);
+            let file = provider.inner.root.open_file_yielding_wide(&relative, work);
             #[cfg(not(windows))]
             let file = provider
                 .inner
@@ -5335,7 +5335,7 @@ pub mod native {
         fn reopen<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<NativeSourceFile, DemandError> {
             self.provider.check(self.source, work)?;
             let ownership = SourcePayloadOwnership::new(work)?;
-            let file = match self.provider.inner.root.open_file_yielding_wide_with_work(&self.relative, work) {
+            let file = match self.provider.inner.root.open_file_yielding_wide(&self.relative, work) {
                 Ok(file) => file,
                 Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                     return Err(DemandError::StaleVersion);
@@ -5640,9 +5640,9 @@ pub mod native {
         provider: &NativeDemandSource, file: &SourceFile, work: &mut W,
     ) -> Result<HostStat, DemandError> {
         #[cfg(windows)]
-        { file.with(|file| provider.inner.root.stat_file_with_work(file, work)) }
+        { file.with(|file| provider.inner.root.stat_file(file, work)) }
         #[cfg(not(windows))]
-        { provider.inner.root.stat_file_with_work(file, work) }
+        { provider.inner.root.stat_file(file, work) }
     }
 
     fn node_kind(file_type: crate::native_host::HostFileType) -> SourceNodeKind {
@@ -6174,7 +6174,7 @@ pub mod native {
                         #[cfg(windows)]
                         NativeChangedItem::WidePath { relative, altered } => {
                             let (name, exact, guard) = inner.name_wide_with_work(relative, work)?;
-                            let metadata = inner.root.stat_wide_with_work(relative, work);
+                            let metadata = inner.root.stat_wide(relative, work);
                             Self::append_path_change(&mut reported, name, exact, guard, &mut native_names, &ownership, altered, metadata, work)?;
                         }
                     }

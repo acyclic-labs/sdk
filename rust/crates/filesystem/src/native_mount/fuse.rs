@@ -3021,7 +3021,7 @@ impl FusePhysicalSession {
         &mut self, destination: &Path, native: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let mut host = native;
-        let (directory, identity) = crate::native_host::open_root_directory_identity_with_work(destination, &mut host)?;
+        let (directory, identity) = crate::native_host::open_root_directory(destination, &mut host)?;
         self.active_root = Some(directory);
         self.native_root_identity = Some(identity);
         close_fuse_root(&mut self.active_root, native)
@@ -3098,7 +3098,7 @@ impl FuseSession {
         if root.node.kind != MountNodeKind::Directory {
             return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
         }
-        let metadata = crate::native_host::unix_name_with_work(
+        let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(), &mut &materialization, fuse_recovery_stat,
         ).map_err(NativeMountError::from)?;
         let core = ProjectionCore::root(source, root, stamp, request.writable,
@@ -3417,7 +3417,7 @@ impl FuseRecoveryControl {
         if self.helper.is_some() && (!mounted || self.failed_spawn) { self.retire_controls(work)?; }
         if !mounted { return Ok(()); }
         if self.helper.is_none() {
-            let direct = crate::native_host::unix_name_with_work(
+            let direct = crate::native_host::unix_name(
                 destination.as_os_str(), &mut &*work, |path, work| {
                     fuse_recovery_attempt(work, true, || {
                         // SAFETY: the admitted terminated pathname stays alive
@@ -3436,7 +3436,7 @@ impl FuseRecoveryControl {
             }
             let program = fuse_recovery_helper(work)?;
             self.helper_work = Some(work.clone());
-            let spawned = crate::native_host::unix_name_with_work(
+            let spawned = crate::native_host::unix_name(
                 destination.as_os_str(), &mut &*work, |path, work| {
                     acyclic_native_runtime::ProcessTree::spawn_closed_measured(
                         program, &[c"-u", c"-q", c"-z", c"--", path], work.runtime_meter().as_ref(), &mut self.helper,
@@ -3507,10 +3507,10 @@ fn fuse_recovery_is_mounted(
     destination: &Path, work: &crate::NativeMaterializationWork,
 ) -> Result<bool, NativeMountError> {
     let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
-    let parent = crate::native_host::unix_name_with_work(
+    let parent = crate::native_host::unix_name(
         parent.as_os_str(), &mut &*work, fuse_recovery_stat,
     )?;
-    let destination = crate::native_host::unix_name_with_work(
+    let destination = crate::native_host::unix_name(
         destination.as_os_str(), &mut &*work, fuse_recovery_stat,
     );
     match destination {

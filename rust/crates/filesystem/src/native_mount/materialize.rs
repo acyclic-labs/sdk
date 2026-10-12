@@ -434,11 +434,11 @@ impl GenerationHostPath {
     ) -> Result<(), DemandError> {
         #[cfg(unix)]
         if let Some(parent) = self.path().parent().filter(|parent| !parent.as_os_str().is_empty()) {
-            root.create_dir_all_held_measured(parent, work)?;
+            root.create_dir_all_held(parent, work)?;
         }
         #[cfg(windows)]
         if let Some(separator) = self.units.iter().rposition(|unit| *unit == u16::from(b'\\')) {
-            root.create_dir_all_held_wide_measured(&self.units[..separator], work)?;
+            root.create_dir_all_held_wide(&self.units[..separator], work)?;
         }
         Ok(())
     }
@@ -449,7 +449,7 @@ impl GenerationHostPath {
         #[cfg(unix)]
         { root.create_dir(self.path(), work) }
         #[cfg(windows)]
-        { root.create_dir_wide_measured(&self.units, work) }
+        { root.create_dir_wide(&self.units, work) }
     }
 
     fn hard_link(
@@ -458,7 +458,7 @@ impl GenerationHostPath {
         #[cfg(unix)]
         { root.hard_link(source.path(), self.path(), work) }
         #[cfg(windows)]
-        { root.hard_link_wide_measured(&source.units, &self.units, work) }
+        { root.hard_link_wide(&source.units, &self.units, work) }
     }
 
     #[cfg(any(target_os = "macos", windows))]
@@ -468,7 +468,7 @@ impl GenerationHostPath {
         #[cfg(target_os = "macos")]
         { root.clone_file_from(root, source.path(), self.path(), work) }
         #[cfg(windows)]
-        { root.clone_file_from_wide_measured(root, &source.units, &self.units, work) }
+        { root.clone_file_from_wide(root, &source.units, &self.units, work) }
     }
 
     fn stat(
@@ -477,7 +477,7 @@ impl GenerationHostPath {
         #[cfg(unix)]
         root.stat(self.path(), work)?;
         #[cfg(windows)]
-        root.stat_wide_with_work(&self.units, work)?;
+        root.stat_wide(&self.units, work)?;
         Ok(())
     }
 }
@@ -1316,7 +1316,7 @@ fn prepare_restore(
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
         HostPathReplacement::Atomic => destination_parent
-            .recover_entry_exchange_measured(Path::new(destination_name), work)
+            .recover_entry_exchange(Path::new(destination_name), work)
             .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
             &destination_parent, Path::new(destination_name), &relative.0, work,
@@ -1336,7 +1336,7 @@ fn prepare_restore(
         HostPathReplacement::LiveMount => destination_parent.open_child(Path::new(""), work)
             .map_err(restore_demand_error)?,
     };
-    let stage_owner = stage_parent_root.create_dir_all_held_measured(Path::new(""), work)
+    let stage_owner = stage_parent_root.create_dir_all_held(Path::new(""), work)
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work.path(&stage_parent_path.0, Some(&stage_name.0)).map_err(materialize_native_error) {
@@ -1369,7 +1369,7 @@ fn publish_restore(
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => destination_parent
-                .exchange_to_measured(name, &stage_parent, name, work).map_err(restore_demand_error)?,
+                .exchange_to(name, &stage_parent, name, work).map_err(restore_demand_error)?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent, name, destination_parent, name, relative, work,
             )?,
@@ -1398,7 +1398,7 @@ fn validate_host_relative_measured(relative: &Path, work: &mut impl crate::deman
 }
 
 fn held_parent(root: &HostRoot, relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<HostRoot, MaterializeError> {
-    root.create_dir_all_held_measured(relative.parent().unwrap_or_else(|| Path::new("")), work)
+    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), work)
         .map_err(restore_demand_error)
 }
 
@@ -1840,7 +1840,7 @@ where
                     #[cfg(target_os = "macos")]
                     let file = receipt.run(|work| host_root.0.open_file(host_path.0.path(), work))?.into_std();
                     #[cfg(windows)]
-                    let file = receipt.run(|work| host_root.0.open_file_positional_wide_with_work(&host_path.0.units, work))?.into_std();
+                    let file = receipt.run(|work| host_root.0.open_file_positional_wide(&host_path.0.units, work))?.into_std();
                     let meter = receipt.custody.work().runtime_meter();
                     let file = receipt.runtime_result(
                         acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
@@ -2309,9 +2309,9 @@ fn validate_options(
         root.read_dir_stats(Path::new(""), work)
     })?;
     #[cfg(unix)]
-    let next = receipt.run(|work| entries.next_with_work(work));
+    let next = receipt.run(|work| entries.next(work));
     #[cfg(windows)]
-    let next = receipt.run(|work| entries.next_wide_with_work(work));
+    let next = receipt.run(|work| entries.next_wide(work));
     drop(entries);
     receipt.run(|work| crate::native_host::NativeHostWork::release(work, reader_allocation))?;
     if let Some((entry, allocation)) = next? {
@@ -2339,7 +2339,7 @@ fn create_file(
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, GenerationFailure> {
     #[cfg(windows)]
-    let file = receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
+    let file = receipt.run(|work| host_root.create_overlapped_file_wide(&path.units, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(receipt.custody.work().runtime_meter()));
@@ -2476,7 +2476,7 @@ fn create_symlink_measured(
             bytes_copied: target.len() as u64, ..WorkCounters::UNCHARGED
         }))?;
         units.extend(decoded);
-        let result = receipt.run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
+        let result = receipt.run(|work| host_root.symlink_file_wide(&units, &destination.units, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt.release(retained)?;

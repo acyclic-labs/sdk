@@ -745,7 +745,7 @@ fn evict_native_entries(
         let mut buffer = [0_u8; 85];
         let leaf = cache_name(oldest, false, &mut buffer, meter)?;
         // A failed eviction remains a disposable disk entry, as before.
-        cache_io_miss(crate::native_host::remove_leaf_with_work(directory, leaf, meter))?;
+        cache_io_miss(crate::native_host::remove_leaf(directory, leaf, meter))?;
         let delta = cache_move(state.entries.len() - 1, std::mem::size_of::<([u8; 32], usize)>())?;
         meter.accounting.admit(delta).map_err(projected_error)?;
         let (_, bytes) = state.entries.remove(0);
@@ -795,7 +795,7 @@ impl NativeGenerationPathIndex {
             let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
             let result = (|| {
                 let mut meter = PathIndexWork::new(&mut accounting)?;
-                let directory = crate::native_host::open_root_directory_with_work(&root, &mut meter)?;
+                let directory = crate::native_host::open_root_directory(&root, &mut meter).map(|(directory, _)| directory)?;
                 evict_native_entries(&mut state, &directory, &mut meter)
             })();
             release_borrowed(&mut accounting, retained).map_err(projected_error)?;
@@ -819,10 +819,10 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
             if borrowed { let _ = accounting.claim_owned(root_bytes, 0).map_err(projected_error)?; }
             let result = (|| {
                 let mut meter = PathIndexWork::new(accounting)?;
-                let directory = crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?;
+                let directory = crate::native_host::open_root_directory(&self.root, &mut meter).map(|(directory, _)| directory)?;
                 let mut name = [0_u8; 85];
                 let leaf = cache_name(key, false, &mut name, &mut meter)?;
-                let mut file = crate::native_host::open_leaf_with_work(&directory, leaf,
+                let mut file = crate::native_host::open_leaf(&directory, leaf,
                     &crate::native_host::NativeOpenOptions::Read, &mut meter)?;
                 let metadata = crate::native_host::NativeHostWork::attempt_io(&mut meter, WorkCounters {
                     backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || file.metadata())?;
@@ -879,11 +879,11 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 cache_reserve(&mut state.entries, &mut state.allocation,
                     MAXIMUM_PATH_INDEX_ENTRIES + 1, accounting).map_err(projected_error)?;
                 let mut meter = PathIndexWork::new(accounting)?;
-                let directory = match crate::native_host::open_root_directory_with_work(&self.root, &mut meter) {
+                let directory = match crate::native_host::open_root_directory(&self.root, &mut meter).map(|(directory, _)| directory) {
                     Ok(directory) => directory,
                     Err(PathIndexError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
                         crate::native_host::create_directories(&self.root, &mut meter)?;
-                        crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?
+                        crate::native_host::open_root_directory(&self.root, &mut meter).map(|(directory, _)| directory)?
                     }
                     Err(error) => return Err(error),
                 };
@@ -898,7 +898,7 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 let leaf = cache_name(key, false, &mut name, &mut meter)?;
                 let temporary_leaf = cache_name(key, true, &mut temporary, &mut meter)?;
                 let stored = (|| {
-                    let mut file = crate::native_host::open_leaf_with_work(&directory, temporary_leaf,
+                    let mut file = crate::native_host::open_leaf(&directory, temporary_leaf,
                         &crate::native_host::NativeOpenOptions::ReadWriteCreate, &mut meter)?;
                     crate::native_host::NativeHostWork::attempt_io(&mut meter, WorkCounters {
                         backend_write_operations: 1, ..WorkCounters::UNCHARGED }, || file.set_len(0))?;
@@ -920,14 +920,14 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                         }
                     }
                     drop(file);
-                    cache_io_miss(crate::native_host::remove_leaf_with_work(&directory, leaf, &mut meter))?;
+                    cache_io_miss(crate::native_host::remove_leaf(&directory, leaf, &mut meter))?;
                     crate::native_host::rename_no_replace_held(&directory, temporary_leaf,
                         &directory, leaf, &mut meter)
                 })();
                 match stored {
                     Err(error @ (PathIndexError::Boundary(_) | PathIndexError::Miss)) => return Err(error),
                     Err(PathIndexError::Io(_)) => {
-                        cache_io_miss(crate::native_host::remove_leaf_with_work(
+                        cache_io_miss(crate::native_host::remove_leaf(
                             &directory, temporary_leaf, &mut meter))?;
                         return Ok(());
                     }

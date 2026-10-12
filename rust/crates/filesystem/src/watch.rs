@@ -1123,7 +1123,7 @@ impl NativeWatch {
             let (path, allocation) = original.path(path, None)?;
             Ok((path, Some(allocation)))
         } else {
-            let (path, _) = crate::native_host::clone_path_with_work(path, work)
+            let (path, _) = crate::native_host::clone_path(path, work)
                 .map_err(demand_watch_error)?;
             Ok((path, None))
         }
@@ -1263,7 +1263,7 @@ impl NativeWatch {
         if use_adapter {
             work.allocate(0).map_err(demand_watch_error)?;
             watched_directories.try_reserve_exact(1).map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
-            let (directory, _) = crate::native_host::clone_path_with_work(&root, work)
+            let (directory, _) = crate::native_host::clone_path(&root, work)
                 .map_err(demand_watch_error)?;
             watched_directories.push(directory);
         }
@@ -1527,7 +1527,7 @@ impl NativeWatch {
             ))?;
             path_bytes = (path.capacity() as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let (mut held, _) = self.held_root.open_dir_held_wide_with_identity_with_work(&[], work)?;
+                let (mut held, _) = self.held_root.open_dir_held_wide_with_identity(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
@@ -1536,7 +1536,7 @@ impl NativeWatch {
                     }
                     let length = if path[index] == u16::from(b'\\') { index } else { index + 1 };
                     let prefix = &path[..length];
-                    let (next, identity) = match self.held_root.open_dir_component_wide_with_work(
+                    let (next, identity) = match self.held_root.open_dir_component_wide(
                         &held, &path[component_start..length], work,
                     ) {
                         Ok(observed) => observed,
@@ -2194,7 +2194,7 @@ impl NativeWatch {
         work.check()?;
         let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
         let held = root.stat(Path::new(""), work)?.identity()?;
-        match crate::native_host::root_path_identity_with_work(&self.root, work) {
+        match crate::native_host::root_path_identity(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
                 if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(false),

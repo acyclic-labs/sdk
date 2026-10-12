@@ -1527,12 +1527,12 @@ impl DarwinMountSession {
             let metadata = {
                 let materialization = source_work.clone();
                 let mut host = &materialization;
-                let metadata = crate::native_host::unix_name_with_work(
+                let metadata = crate::native_host::unix_name(
                     request.destination.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work),
                 ).map_err(NativeMountError::from)?;
                 let parent = request.destination.parent().ok_or(crate::DemandError::InvalidRequest)
                     .map_err(NativeMountError::from)?;
-                crate::native_host::unix_name_with_work(parent.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work))
+                crate::native_host::unix_name(parent.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work))
                     .map_err(NativeMountError::from)?;
                 metadata
             };
@@ -1727,7 +1727,7 @@ impl DarwinMountSession {
         use std::os::fd::{FromRawFd as _, IntoRawFd as _};
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         let mut host = &materialization;
-        let identity = crate::native_host::file_identity_and_length_with_work(&file, &mut host);
+        let identity = crate::native_host::file_identity_and_length(&file, &mut host);
         let (closed, recorded) = cleanup.attempt_recorded(|| {
             if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
         });
@@ -2318,7 +2318,7 @@ fn is_mounted(
         let end = if let Some(parent_name) = parent_name {
             normalize_mount_probe(destination, parent_name, &mut normalized, work, cleanup)?
         } else {
-            crate::native_host::unix_name_with_work(parent.as_os_str(), &mut work, |name, work| {
+            crate::native_host::unix_name(parent.as_os_str(), &mut work, |name, work| {
                 Ok(normalize_mount_probe(destination, name, &mut normalized, work, cleanup))
             })??
         };
@@ -2794,7 +2794,7 @@ fn spawn_diskutil(
     let result = (|| {
         let original = meter.work().ok_or(crate::DemandError::Cancelled)?;
         let mut work = &original;
-        crate::native_host::unix_name_with_work(destination.as_os_str(), &mut work, |path, work| {
+        crate::native_host::unix_name(destination.as_os_str(), &mut work, |path, work| {
             acyclic_native_runtime::ProcessTree::spawn_closed_measured(
                 c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter().as_ref(),
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,

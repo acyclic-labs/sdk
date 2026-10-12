@@ -1838,7 +1838,7 @@ impl NativeMountRecoveryOwner {
     fn acquire_with_original(
         destination: &Path, original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination = crate::native_host::clone_path_with_work(destination, &mut &original)?;
+        let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
         let mut shared_custody = original.claim(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         destination.1.absorb(&mut shared_custody)?;
         let closure_custody = original.claim(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
@@ -2011,13 +2011,13 @@ impl NativeRecoveryWorker {
         )?;
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         return Err(NativeMountError::UnsupportedTarget);
-        let (identity, _) = crate::native_host::file_identity_and_length_with_work(
+        let (identity, _) = crate::native_host::file_identity_and_length(
             self.state.guard.as_ref().and_then(|guard| guard.file.as_ref())
                 .ok_or(NativeMountError::InvalidDestination)?, &mut &self.original,
         )?;
         #[cfg(windows)]
         {
-            self.state.destination_identity = match crate::native_host::root_path_identity_with_work(
+            self.state.destination_identity = match crate::native_host::root_path_identity(
                 &self.shared.destination, &mut &self.original,
             ) {
                 Ok(identity) => Some(identity),
@@ -2156,8 +2156,8 @@ fn remove_empty_recovery_destination(
     let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
     let name = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory_with_work(parent, &mut host)
-        .and_then(|directory| crate::native_host::remove_empty_directory_held_with_work(
+    let result = crate::native_host::open_root_directory(parent, &mut host).map(|(directory, _)| directory)
+        .and_then(|directory| crate::native_host::remove_empty_directory_held(
             &directory, Path::new(name), &mut host,
         ));
     match result {
@@ -2297,7 +2297,7 @@ impl PreparedNativeMountStart {
                 if old.retired_callback_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() {
                     return Err(NativeMountError::Lifecycle("original callback outcome is not settled"));
                 }
-                let (destination, custody) = crate::native_host::clone_path_with_work(
+                let (destination, custody) = crate::native_host::clone_path(
                     &old.request.destination, &mut &original,
                 )?;
                 next.request.destination = destination;
@@ -3074,13 +3074,13 @@ impl MountDestinationGuard {
             if parent.as_os_str().is_empty() { return Err(NativeMountError::InvalidDestination); }
             Some(parent)
         } else { None };
-        let directory = crate::native_host::open_root_directory_with_work(recovery_parent.unwrap_or(destination), work)?;
+        let directory = crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work).map(|(directory, _)| directory)?;
         if !allow_nonempty {
-            let (mut reader, allocation) = crate::native_host::read_dir_held_with_work(&directory, work)?;
+            let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;
             #[cfg(unix)]
-            let result = reader.next_with_work(work);
+            let result = reader.next(work);
             #[cfg(windows)]
-            let result = reader.next_wide_with_work(work);
+            let result = reader.next_wide(work);
             drop(reader);
             work.release(allocation)?;
             match result? {
@@ -3093,9 +3093,9 @@ impl MountDestinationGuard {
             }
         }
         #[cfg(unix)]
-        let canonical_owner = crate::native_host::canonical_directory_path_held_with_work(directory, work)?;
+        let canonical_owner = crate::native_host::canonical_directory_path_held(directory, work)?;
         #[cfg(windows)]
-        let canonical_owner = crate::native_host::canonical_directory_wide_with_work(&directory, work)?;
+        let canonical_owner = crate::native_host::canonical_directory_wide(&directory, work)?;
         // The actual native allocation guard stays after the path in this
         // tuple, including early-error and panic destruction.
         let canonical = &canonical_owner.0;
@@ -3150,7 +3150,7 @@ impl MountDestinationGuard {
         })();
         let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> = if recovery && result.is_ok() {
             #[cfg(unix)]
-            { crate::native_host::open_root_directory_with_work(canonical, work).map(Some).map_err(Into::into) }
+            { crate::native_host::open_root_directory(canonical, work).map(|(directory, _)| directory).map(Some).map_err(Into::into) }
             #[cfg(windows)]
             { Ok(Some(directory)) }
         } else { Ok(None) };
@@ -3186,14 +3186,14 @@ impl MountDestinationGuard {
         let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
         let parent_directory = match recovery_directory? {
             Some(directory) => directory,
-            None => crate::native_host::open_root_directory_with_work(parent, work)?,
+            None => crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?,
         };
-        let registry = crate::native_host::open_leaf_with_work(
+        let registry = crate::native_host::open_leaf(
             &parent_directory, Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
-        let file = crate::native_host::open_leaf_with_work(
+        let file = crate::native_host::open_leaf(
             &parent_directory, Path::new(std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8")),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
@@ -3314,7 +3314,7 @@ impl MountDestinationGuard {
         // A contended registry is a real pending control. Do not spend an
         // unbounded sequence of new lock attempts after cancellation.
         lock_mount_file_with_work(registry, false, &mut work)?;
-        match crate::native_host::remove_prepared_ascii_leaf_with_work(directory, name, &mut work) {
+        match crate::native_host::remove_prepared_ascii_leaf(directory, name, &mut work) {
             Ok(()) => {}
             Err(crate::NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -3337,7 +3337,7 @@ impl MountDestinationGuard {
             Some(directory) => directory,
             None => {
                 let parent = self.lock_path.parent().ok_or(NativeMountError::InvalidDestination)?;
-                opened_directory = crate::native_host::open_root_directory_with_work(parent, work)?;
+                opened_directory = crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?;
                 &opened_directory
             }
         };
@@ -3345,12 +3345,12 @@ impl MountDestinationGuard {
             Some(name) => Path::new(std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8")),
             None => Path::new(self.lock_path.file_name().ok_or(NativeMountError::InvalidDestination)?),
         };
-        let registry = crate::native_host::open_leaf_with_work(
+        let registry = crate::native_host::open_leaf(
             directory, Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
-        match crate::native_host::remove_leaf_with_work(directory, lock_name, work) {
+        match crate::native_host::remove_leaf(directory, lock_name, work) {
             Ok(()) => {}
             Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {}
             Err(error) => return Err(error.into()),
@@ -3634,7 +3634,7 @@ mod tests {
         assert_eq!(original.receipt().backend_write_operations, before_close + 1);
         assert!(lock_path.is_file(), "LastDrop must preserve the actual marker");
         let unlocked = acquire_existing_mount_lock(&lock_path)?;
-        let (after_identity, _) = crate::native_host::file_identity_and_length_with_work(&unlocked, &mut &original)?;
+        let (after_identity, _) = crate::native_host::file_identity_and_length(&unlocked, &mut &original)?;
         assert_eq!(after_identity, identity);
         drop(unlocked);
         assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");

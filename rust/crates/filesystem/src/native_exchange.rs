@@ -83,7 +83,7 @@ fn held_identity<W: NativeHostWork>(
     name: &Path,
     work: &mut W,
 ) -> Result<Option<crate::NativeRootIdentity>, W::Error> {
-    crate::native_host::entry_identity_with_work(parent, name, work)
+    crate::native_host::entry_identity(parent, name, work)
 }
 
 /// Exchanges entries through their original held parents and the existing scratch/witness protocol.
@@ -135,8 +135,8 @@ fn exchange_kernel_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     use std::os::fd::AsRawFd as _;
-    crate::native_host::unix_name_with_work(left_name.as_os_str(), work, |left_name, work| {
-        crate::native_host::unix_name_with_work(right_name.as_os_str(), work, |right_name, work| {
+    crate::native_host::unix_name(left_name.as_os_str(), work, |left_name, work| {
+        crate::native_host::unix_name(right_name.as_os_str(), work, |right_name, work| {
             attempted(work, crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             }, || {
@@ -230,9 +230,9 @@ fn open_witness<W: NativeHostWork>(
 ) -> Result<std::fs::File, W::Error> {
     with_wide_leaf(name, work, |name, work| {
         if create {
-            crate::native_host::create_windows_provisional_file_with_work(directory, name, work)
+            crate::native_host::create_windows_provisional_file(directory, name, work)
         } else {
-            crate::native_host::open_windows_leaf_with_options_with_work(directory, name,
+            crate::native_host::open_windows_leaf_with_options(directory, name,
                 &crate::native_host::NativeOpenOptions::Read, work)
         }
     })
@@ -446,7 +446,7 @@ fn rename_durable_held<W: NativeHostWork>(
     from: &cap_std::fs::Dir, from_name: &Path,
     to: &cap_std::fs::Dir, to_name: &Path, expected: crate::NativeRootIdentity, work: &mut W,
 ) -> Result<(), W::Error> {
-    crate::native_host::rename_no_replace_held_if_identity_with_work(from, from_name, to, to_name,
+    crate::native_host::rename_no_replace_held_if_identity(from, from_name, to, to_name,
         expected, work)?;
     crate::native_host::sync_directory_held(from, work)?;
     crate::native_host::sync_directory_held(to, work)
@@ -461,7 +461,7 @@ where W::Error: From<NativeExchangeError> {
         return Err(NativeExchangeError::IncompatibleJournal.into());
     }
     with_wide_leaf(name, work, |name, work|
-        crate::native_host::remove_windows_leaf_if_identity_with_work(parent, name, false,
+        crate::native_host::remove_windows_leaf_if_identity(parent, name, false,
             identity, work))?;
     crate::native_host::sync_directory_held(parent, work)
 }
@@ -486,7 +486,7 @@ fn create_measured_entry_witness<W: NativeHostWork>(
     attempted(work, crate::WorkCounters {
         durability_operations: 1, ..crate::WorkCounters::UNCHARGED
     }, || file.sync_all())?;
-    crate::native_host::keep_windows_created_file_with_work(&file, work)?;
+    crate::native_host::keep_windows_created_file(&file, work)?;
     crate::native_host::sync_directory_held(left, work)?;
     attempted(work, crate::WorkCounters {
         backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -549,7 +549,7 @@ fn recover_entry_held<W: NativeHostWork>(
 where W::Error: From<NativeExchangeError> {
     let mut file = open_witness(left, witness_name, false, work)?;
     let (witness_identity, witness_length) =
-        crate::native_host::file_identity_and_length_with_work(&file, work)?;
+        crate::native_host::file_identity_and_length(&file, work)?;
     let mut magic = [0u8; 32];
     read_exact_measured(&mut file, &mut magic, work)?;
     if &magic != MEASURED_ENTRY_WITNESS {
@@ -563,7 +563,7 @@ where W::Error: From<NativeExchangeError> {
     let mut remaining = witness_length.checked_sub(96).ok_or(NativeExchangeError::IncompatibleJournal)?;
     let published = with_read_native_path(&mut file, &mut remaining, work, |left_parent_path, file, remaining, work| {
         if !left_parent_path.is_absolute() { return Err(NativeExchangeError::IncompatibleJournal.into()); }
-        let named_left = crate::native_host::open_root_directory_with_work(left_parent_path, work)?;
+        let named_left = crate::native_host::open_root_directory(left_parent_path, work).map(|(directory, _)| directory)?;
         if parent_identity(&named_left, work)? != parents[0] {
             return Err(NativeExchangeError::IncompatibleJournal.into());
         }
@@ -571,7 +571,7 @@ where W::Error: From<NativeExchangeError> {
         if original_name != left_name { return Err(NativeExchangeError::IncompatibleJournal.into()); }
         with_read_native_path(file, remaining, work, |right_parent_path, file, remaining, work| {
             if !right_parent_path.is_absolute() { return Err(NativeExchangeError::IncompatibleJournal.into()); }
-            let right = crate::native_host::open_root_directory_with_work(right_parent_path, work)?;
+            let right = crate::native_host::open_root_directory(right_parent_path, work).map(|(directory, _)| directory)?;
             if parent_identity(&right, work)? != parents[1] {
                 return Err(NativeExchangeError::IncompatibleJournal.into());
             }
@@ -582,7 +582,7 @@ where W::Error: From<NativeExchangeError> {
                         return Err(NativeExchangeError::IncompatibleJournal.into());
                     }
                 }
-                let (identity, length) = crate::native_host::file_identity_and_length_with_work(file, work)?;
+                let (identity, length) = crate::native_host::file_identity_and_length(file, work)?;
                 if *remaining != 0 || length != witness_length || identity != witness_identity {
                     return Err(NativeExchangeError::IncompatibleJournal.into());
                 }
@@ -668,8 +668,8 @@ pub(crate) fn exchange_native_entries_measured(
     let left_name = left.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
     let right_name = right.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
     let mut meter = work;
-    let left = crate::native_host::open_root_directory_with_work(left_parent, &mut meter)?;
-    let right = crate::native_host::open_root_directory_with_work(right_parent, &mut meter)?;
+    let left = crate::native_host::open_root_directory(left_parent, &mut meter).map(|(directory, _)| directory)?;
+    let right = crate::native_host::open_root_directory(right_parent, &mut meter).map(|(directory, _)| directory)?;
     exchange_native_entries_held_measured(&left, Path::new(left_name), &right, Path::new(right_name), &mut meter)
 }
 
@@ -680,7 +680,7 @@ pub(crate) fn recover_native_entry_exchange_measured(
     let parent = live.parent().ok_or(NativeExchangeError::InvalidLayout)?;
     let name = live.file_name().ok_or(NativeExchangeError::InvalidLayout)?;
     let mut meter = work;
-    let parent = crate::native_host::open_root_directory_with_work(parent, &mut meter)?;
+    let parent = crate::native_host::open_root_directory(parent, &mut meter).map(|(directory, _)| directory)?;
     recover_native_entry_exchange_held_measured(&parent, Path::new(name), &mut meter)
 }
 
@@ -1357,10 +1357,10 @@ mod tests {
         let ledger = crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
             .expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(live.parent().expect("parent"), &mut work)
+        let parent = crate::native_host::open_root_directory(live.parent().expect("parent"), &mut work).map(|(directory, _)| directory)
             .expect("held fixture parent");
-        let prepared_parent = crate::native_host::open_root_directory_with_work(
-            prepared.parent().expect("prepared parent"), &mut work).expect("held prepared parent");
+        let prepared_parent = crate::native_host::open_root_directory(
+            prepared.parent().expect("prepared parent"), &mut work).map(|(directory, _)| directory).expect("held prepared parent");
         let live_name = Path::new(live.file_name().expect("live name"));
         let prepared_name = Path::new(prepared.file_name().expect("prepared name"));
         let roots = [
@@ -1477,7 +1477,7 @@ mod tests {
         let ledger = crate::materializer::NativeMaterializationWork::new(
             finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held parent");
+        let parent = crate::native_host::open_root_directory(&root, &mut work).map(|(directory, _)| directory).expect("original held parent");
         std::fs::rename(&root, &saved).expect("displace original root");
         std::fs::create_dir(&root).expect("user replacement root");
         std::fs::write(root.join("live"), b"user-live").expect("user live");
@@ -1614,7 +1614,7 @@ mod tests {
         let ledger = crate::materializer::NativeMaterializationWork::new(
             finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held root");
+        let parent = crate::native_host::open_root_directory(&root, &mut work).map(|(directory, _)| directory).expect("original held root");
         std::fs::rename(&root, &saved).expect("displace original physical parent");
         std::fs::create_dir(&root).expect("user replacement root");
         std::fs::write(root.join("live"), b"user-live").expect("user live");
