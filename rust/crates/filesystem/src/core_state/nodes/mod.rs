@@ -360,7 +360,7 @@ fn core_lazy_work(
                     .checked_add(work)
                     .expect("constructor used its remaining allowance");
             }
-            crate::LazyWorkspaceError::NativeConstruction { cause, work }
+            crate::LazyWorkspaceError::NativeWork(cause)
         },
     )
 }

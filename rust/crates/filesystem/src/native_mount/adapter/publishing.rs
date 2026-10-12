@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 && (force || original.checkout.has_pending_mutations())
                 && let Some(context) = context
             {
-                let (digest, evidence) = crate::lazy_workspace::native_publication_evidence(
+                let (digest, evidence) = crate::lazy_workspace::publication_evidence(
                     context,
                     operation,
                     permit,
