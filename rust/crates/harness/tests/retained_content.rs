@@ -75,7 +75,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
     let attached_scope = issuer.issue("unrelated-reader", &Capabilities::new([
-            admitted.read_capability()?,
+            admitted.read_capability(&mut None)?,
             volume.directory_read_capability("messages")?,
         ]), Some(attached), None, &mut None).expect("scope proof");
     let attached_read =

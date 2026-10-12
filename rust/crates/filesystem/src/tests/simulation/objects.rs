@@ -204,7 +204,6 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
                 &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
             )
             .await
-            .map(|(value, _allocation)| value)
     })?;
     assert!(missing.is_none());
     let head = (authority

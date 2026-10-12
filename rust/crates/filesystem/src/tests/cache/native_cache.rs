@@ -132,7 +132,7 @@ impl AsyncObjectStore for OwnedNativeStore {
             }
             .await;
         }
-        context.work.remaining(context.budget)?;
+        context.read_budget()?;
 
         self.inner.read(id, maximum, context).await
     }

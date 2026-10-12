@@ -42,7 +42,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>>
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
     {
         if work.original.is_some() {
             return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
@@ -120,7 +120,7 @@ impl crate::AsyncAuthorityStore for OpaqueAuthority {
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<
-        (Option<crate::DurableCommit>, crate::AuthorityAllocation),
+        Option<crate::DurableCommit>,
         crate::AuthorityStoreError,
     > {
         if work.original.is_some() {

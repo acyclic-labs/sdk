@@ -516,7 +516,7 @@ mod tests {
         ).await?;
         assert_eq!(ack, Some((Some(operation), generation)));
         assert_eq!(original.receipt().authority_records_appended, appended);
-        let (durable, custody) =(async { let __authority_args = (crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = fs.authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }.await)?;
+        let durable =(async { let __authority_args = (crate::kernel::volume_authority_id(volume.id()), operation, &original, &cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = fs.authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }.await)?;
         let durable = durable.ok_or("original append disappeared")?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let decoded = crate::kernel::decode_publication_evidence_with_accounting(
@@ -524,7 +524,6 @@ mod tests {
         )?;
         assert_eq!(decoded.original_evidence, Some(evidence.as_slice()));
         drop(durable);
-        drop(custody);
         Ok(())
     }
 }

@@ -159,7 +159,6 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
         )
         .await
         .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value)
     })?
     else {
         return Err("offline actual Memory authority did not commit".into());

@@ -1,7 +1,6 @@
 use super::*;
 use crate::core::AggregateKind;
 use crate::durable_host::tests::created_resource_access::CreationFixture;
-use crate::resource_preparation::{RootBootstrapContentContext, RootBootstrapContentRole};
 use crate::source_authorization::{
     ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
 };
@@ -74,7 +73,7 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
         .protect_root_bootstrap_with_native_work(
             &owner,
             &birth.volume,
-            RootBootstrapContentRole::Project,
+            VolumeClass::Project,
             birth.operation,
             birth.config,
             birth.initial_generation,
@@ -90,19 +89,16 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
         .await?;
     admission_hold = hold;
     creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
-    let root_context = RootBootstrapContentContext::from_verified_root_with_native_work(
-        &owner,
+    let root_context = owner.root_bootstrap_context(
         &admission,
         token.witness.binding(),
         &work,
     )
     .await?;
-    let (receipt, custody) = creator
+    let receipt = creator
         .verify_root_bootstrap_with_native_work(root_context, token.request(), &work)?
         .await?;
-    assert!(receipt.binding.writer.is_none());
     drop(receipt);
-    drop(custody);
     let bare = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
         fixture.filesystem.clone(),
         creator.issuer.audience(),

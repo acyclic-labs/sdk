@@ -219,7 +219,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 )
             })?;
             if let Some(observer) = quota.work().as_deref_mut() {
-                let comparisons = (request.resources.len() as u64)
+                let comparisons = (request.resources().count() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
                     .ok_or_else(|| {
@@ -238,7 +238,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 || request.child.parent != Some(parent)
                 || request.child.operation_id == admission.operation_id
                 || request.child.resource_proofs.iter().any(|proof| {
-                    request.resources.contains(&proof.resource) && proof.preparation != self.task_id
+                    request.resources().any(|resource| resource == &proof.resource) && proof.preparation != self.task_id
                 })
                 || !self.input_grants.contains(&request.creation_grant)
             {

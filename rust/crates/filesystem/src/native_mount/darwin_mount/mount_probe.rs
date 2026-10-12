@@ -7,25 +7,31 @@ pub(super) struct MountProbe {
     pub(super) mounts: DarwinOwned<Vec<MaybeUninit<libc::statfs>>>,
 }
 
-pub(super) struct ProbeWork<'a, 'b> {
-    pub(super) original: &'a crate::NativeMaterializationWork,
-    pub(super) cleanup: Option<&'a NativeCleanupLoan<'b>>,
+pub(super) enum ProbeWork<'a, 'b> {
+    Live(&'a crate::NativeMaterializationWork),
+    Cleanup(&'a NativeCleanupLoan<'b>),
 }
 
 impl ProbeWork<'_, '_> {
+    pub(super) fn original(&self) -> &crate::NativeMaterializationWork {
+        match self {
+            Self::Live(work) => work,
+            Self::Cleanup(loan) => loan.credit.work(),
+        }
+    }
+
     pub(super) fn check(&self) -> Result<(), NativeMountError> {
-        match self.cleanup {
-            Some(cleanup) => cleanup.check_wait()?,
-            None => self.original.admit(crate::WorkCounters::UNCHARGED)?,
+        match self {
+            Self::Live(work) => work.admit(crate::WorkCounters::UNCHARGED)?,
+            Self::Cleanup(loan) => loan.check_wait()?,
         }
         Ok(())
     }
 
     pub(super) fn read(&self) -> Result<(), NativeMountError> {
-        let delta = READ_WORK;
-        match self.cleanup {
-            Some(cleanup) => cleanup.started_io(delta)?,
-            None => self.original.charge(delta)?,
+        match self {
+            Self::Live(work) => work.charge(READ_WORK)?,
+            Self::Cleanup(loan) => loan.started_io(READ_WORK)?,
         }
         Ok(())
     }
@@ -35,14 +41,17 @@ impl ProbeWork<'_, '_> {
         delta: crate::WorkCounters,
         operation: impl FnOnce() -> T,
     ) -> Result<T, NativeMountError> {
-        if let Some(cleanup) = self.cleanup {
-            let mut credit = cleanup.admit_completed(delta)?;
-            let result = operation();
-            credit.record_completed(delta)?;
-            Ok(result)
-        } else {
-            self.original.charge(delta)?;
-            Ok(operation())
+        match self {
+            Self::Live(work) => {
+                work.charge(delta)?;
+                Ok(operation())
+            }
+            Self::Cleanup(loan) => {
+                let credit = loan.admit_completed(delta)?;
+                let result = operation();
+                credit.record_completed(delta)?;
+                Ok(result)
+            }
         }
     }
 }
@@ -87,9 +96,9 @@ impl MountProbe {
         work: &ProbeWork<'_, '_>,
     ) -> Result<bool, NativeMountError> {
         let mut path = [MaybeUninit::<u8>::uninit(); libc::PATH_MAX as usize];
-        let mut close = match work.cleanup {
-            Some(cleanup) => cleanup.admit_completed(WRITE_WORK)?,
-            None => work.original.reserve_work(WRITE_WORK)?,
+        let mut close = match work {
+            ProbeWork::Cleanup(loan) => loan.admit_completed(WRITE_WORK)?,
+            ProbeWork::Live(original) => original.reserve_work(WRITE_WORK)?,
         };
         work.read()?;
         // SAFETY: parent is terminated and retained through open.
@@ -148,7 +157,7 @@ impl MountProbe {
         // SAFETY: the prefix contains the initialized parent and appended name.
         let normalized = unsafe { std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), end) };
         if self.mounts.capacity() == 0 {
-            self.preallocate(work.original)?;
+            self.preallocate(work.original())?;
         }
         loop {
             let bytes = self
@@ -166,12 +175,12 @@ impl MountProbe {
                 return Err(std::io::Error::last_os_error().into());
             }
             if count as usize >= self.mounts.capacity() {
-                if work.cleanup.is_some() {
+                if matches!(work, ProbeWork::Cleanup(_)) {
                     return Err(NativeMountError::Lifecycle(
                         "Darwin mount table exceeds its prepaid capacity",
                     ));
                 }
-                self.preallocate(work.original)?;
+                self.preallocate(work.original())?;
                 continue;
             }
             // SAFETY: successful fill initialized exactly count entries.

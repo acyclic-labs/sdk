@@ -40,7 +40,7 @@ use acyclic_harness::{
     runtime::{
         ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext,
     },
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand,
 };

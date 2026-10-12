@@ -10,13 +10,6 @@ impl PreparationIo {
         self.preflight(work)?;
         self.charge(work).map_err(Into::into)
     }
-
-    pub(crate) async fn verify_publication_lease(
-        &self,
-        lease: &dyn crate::resource_preparation::CreatedTaskLease,
-    ) -> Result<()> {
-        lease.verify_with_io(self)?.await
-    }
 }
 
 impl HistoryIo for &PreparationIo {

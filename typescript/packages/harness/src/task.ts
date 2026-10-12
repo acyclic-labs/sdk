@@ -168,17 +168,11 @@ export interface TaskRef<Input, Output> {
   readonly [taskRefBrand]: (input: Input) => Output;
 }
 
-const taskReferences = new WeakMap<object, object>();
-
 const taskDefinitions = new WeakMap<object, object>();
 
 export function publicTaskHandle<Input, Output>(definition: TaskDefinition<Input, Output>): TaskRef<Input, Output> {
-  let handle = taskReferences.get(definition) as TaskRef<Input, Output> | undefined;
-  if (handle === undefined) {
-    handle = Object.freeze({ name: definition.name, revision: definition.revision }) as TaskRef<Input, Output>;
-    taskReferences.set(definition, handle);
-    taskDefinitions.set(handle, definition);
-  }
+  const handle = Object.freeze({ name: definition.name, revision: definition.revision }) as TaskRef<Input, Output>;
+  taskDefinitions.set(handle, definition);
   return handle;
 }
 

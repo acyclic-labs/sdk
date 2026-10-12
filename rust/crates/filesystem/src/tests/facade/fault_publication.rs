@@ -381,7 +381,6 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
                 &mut crate::AuthorityWork::new(B, authority_cancellation),
             )
             .await
-            .map(|(value, _allocation)| value)
         })?
         .is_some()
     );

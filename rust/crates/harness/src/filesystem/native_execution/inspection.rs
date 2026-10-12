@@ -48,7 +48,7 @@ pub fn observe_preparation<'a, P: StreamProvider>(
             }
         }
         if let Some(scratch) = witness.scratch_proof() {
-            if scratch.original_task() != intent.task
+            if crate::runtime::task_id_for_admission(scratch.origin().intended_child) != intent.task
                 || !intent
                     .manifest
                     .volumes

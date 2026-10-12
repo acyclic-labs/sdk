@@ -306,7 +306,7 @@ fn label_bytes(prefix: &str, digest: [u8; 32]) -> ([u8; 80], usize) {
     (label, length)
 }
 
-fn content_label(prefix: &str, digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
+pub(crate) fn content_label(prefix: &str, digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
     let (label, length) = label_bytes(prefix, digest);
     let text = std::str::from_utf8(&label[..length]).expect("ASCII identity label");
     match work.as_deref_mut() { Some(io) => io.clone_text(text), None => Ok(text.to_owned()) }
@@ -793,9 +793,9 @@ impl FileRef {
     }
 
     /// Owner-issued capability for reading precisely this immutable version.
-    pub fn read_capability(&self) -> Result<String> {
-        self.validate(&mut None)?;
-        content_label("file:read:", crate::contract::canonical_json_digest(self, u64::MAX, &mut None)?, &mut None)
+    pub fn read_capability(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
+        self.validate(work)?;
+        content_label("file:read:", crate::contract::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 }
 
@@ -3258,7 +3258,7 @@ mod tests {
             ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
-        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability()?]), Some(owner), None, &mut None).expect("scope proof");
+        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability(&mut None)?]), Some(owner), None, &mut None).expect("scope proof");
         assert!(matches!(
             ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
@@ -3589,7 +3589,7 @@ mod tests {
                 id: AgentId::from_bytes([1; 16]).to_string(),
             },
         );
-        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability()?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
+        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability(&mut None)?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)],
             Some(Arc::new(StaticMount {

@@ -48,7 +48,7 @@ impl AsyncObjectStore for ScriptedAsyncObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let _budget = context.work.remaining(context.budget)?;
+        let _budget = context.read_budget()?;
         let _cancellation = context.cancellation;
         let result = ({
             let result = match &self.read {
@@ -317,8 +317,7 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
         None::<&mut ()>,
     )
     .await
-    .map_err(|error| error.into_error(std::convert::identity))
-    .map(|(value, _allocation)| value))?;
+    .map_err(|error| error.into_error(std::convert::identity)))?;
     assert!(matches!(appended, AppendOutcome::Committed(_)));
     assert_eq!(
         ({
@@ -345,8 +344,7 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
             operation_id,
             &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
         )
-        .await
-        .map(|(value, _allocation)| value))?
+        .await)?
         .is_some()
     );
     let current = (AsyncAuthorityStore::head(
@@ -422,8 +420,7 @@ async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_e
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            .map_err(|error| error.into_error(std::convert::identity));
             __authority_work.receipt(__authority_result)
         })
         .await
@@ -463,8 +460,7 @@ async fn async_adapters_and_explicit_sequential_reads_fail_closed_before_or_at_e
                 operation_id,
                 &mut __authority_work,
             )
-            .await
-            .map(|(value, _allocation)| value);
+            .await;
             __authority_work.receipt(__authority_result)
         })
         .await

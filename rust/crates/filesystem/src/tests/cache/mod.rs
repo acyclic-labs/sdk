@@ -107,7 +107,7 @@ impl AsyncObjectStore for CountingStore {
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        context.work.remaining(context.budget)?;
+        context.read_budget()?;
         self.scalar_reads.fetch_add(1, Ordering::AcqRel);
         self.inner.read(object_id, maximum_bytes, context).await
     }
@@ -167,7 +167,7 @@ impl AsyncObjectStore for ShortBatchStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        context.work.remaining(context.budget)?;
+        context.read_budget()?;
 
         self.inner.read(object_id, maximum_bytes, context).await
     }
@@ -241,7 +241,7 @@ impl AsyncObjectStore for GatedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        context.work.remaining(context.budget)?;
+        context.read_budget()?;
 
         self.reads.fetch_add(1, Ordering::AcqRel);
         self.gate.wait().await;
