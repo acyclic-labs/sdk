@@ -1453,7 +1453,7 @@ where
                 WorkPull::Idle => return Err(Error::NotFound("original task lease".into())),
                 WorkPull::Unresolved { error, .. } => return Err(error),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             fence = Some(LeaseFence::from(&lease.reservation));
         }
         let original = runtime.task_host().observe_admission(task).await?;

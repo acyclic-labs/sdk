@@ -2266,7 +2266,7 @@ async fn stock_restart_with_publication_fault(
             }
         } else {
             session_limits
-        })?;
+        }, None)?;
         if reopened {
             assert!(host.observe_admission(task).await.is_err());
         }
@@ -2781,7 +2781,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&worker).await? else {
                 return Err(Error::NotFound("stock lease".into()));
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
                 let payload = payloads.stage(OperationId::new(), path, bytes).await?;

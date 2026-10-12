@@ -133,7 +133,7 @@ impl Fixture {
         let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&Worker { id: "pi-native-worker".into(), available: Default::default(), labels: BTreeMap::new() }).await? else {
             return Err(invalid("actual native task lease was not admitted"));
         };
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,

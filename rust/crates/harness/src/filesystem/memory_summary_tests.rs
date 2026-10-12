@@ -168,8 +168,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_providers(vec![Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
+    }, None)?.with_resource_creation_providers(&[Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)], None)?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -186,7 +186,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
@@ -210,7 +210,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
-    host.start_task(&lease).await?;
+    host.start_task(&lease, None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));

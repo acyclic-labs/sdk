@@ -254,7 +254,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     else {
         panic!("root did not obtain its original execution lease");
     };
-    host.start_task(&lease).await.unwrap();
+    host.start_task(&lease, None).await.unwrap();
     let fence = LeaseFence::from(&lease.reservation);
     let head = fixture.head().await;
     let context = fixture.runtime.runtime.task_context_with_native_work(

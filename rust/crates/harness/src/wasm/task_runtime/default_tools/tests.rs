@@ -44,7 +44,7 @@ async fn claim(runtime: &WasmTaskRuntime, operation: OperationId, worker: &Worke
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("original browser caller lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     Ok(lease)
 }
 async fn settle_tools(runtime: &WasmTaskRuntime, execution: &super::super::headless::WasmHeadlessExecution,

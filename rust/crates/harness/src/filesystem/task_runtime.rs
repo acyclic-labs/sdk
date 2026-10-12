@@ -442,10 +442,10 @@ where
             let mut host = CoordinatorTaskHost::new_with_native_work(
                 coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
-            )?.with_session_limits_with_native_work(session_limits, work)?
-                .with_resource_creation_providers_with_native_work(creation_providers, work)?;
+            )?.with_session_limits(session_limits, Some(work))?
+                .with_resource_creation_providers(creation_providers, Some(work))?;
             if let Some(policy) = &policy {
-                host = host.with_policy_with_native_work(policy.clone(), work)?;
+                host = host.with_policy(policy.clone(), Some(work))?;
             }
             let host = host.into_native_shared(work)?;
             let harness = AgentHarness::with_policy_with_native_work(
@@ -493,10 +493,10 @@ where
             machines,
             clock,
         )?
-        .with_session_limits(session_limits)?
-        .with_resource_creation_providers(creation_providers)?;
+        .with_session_limits(session_limits, None)?
+        .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
-            host = host.with_policy(policy.clone())?;
+            host = host.with_policy(policy.clone(), None)?;
         }
         let host = Arc::new(host);
         let harness = crate::runtime::Bindings {
@@ -1711,15 +1711,15 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "native worker lost its original observer",
             })?;
-            self.host.start_task_with_native_work(lease, work).await?;
+            self.host.start_task(lease, Some(work)).await?;
             self.open_task_with_native_work(task, fence, Arc::clone(context), work).await?
         } else {
-            self.host.start_task(lease).await?;
+            self.host.start_task(lease, None).await?;
             self.open_task(task, fence.clone()).await?
         };
         #[cfg(target_arch = "wasm32")]
         let mut session = {
-            self.host.start_task(lease).await?;
+            self.host.start_task(lease, None).await?;
             self.open_task(task, fence.clone()).await?
         };
         #[cfg(not(target_arch = "wasm32"))]

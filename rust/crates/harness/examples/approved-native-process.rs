@@ -329,7 +329,7 @@ where
     else {
         return Err("missing task lease".into());
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(
         runtime
             .task_host()

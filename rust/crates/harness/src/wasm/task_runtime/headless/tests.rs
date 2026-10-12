@@ -82,7 +82,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("headless lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     let execution = runtime.headless_execution(task, to_js(&crate::scheduler::LeaseFence::from(&lease.reservation))?, OperationId::new().to_string()).await?;
     let input = TurnInput { operation_id:OperationId::parse(&execution.operation_id()).map_err(js_error)?, input:crate::model::ModelContent::Text("headless".into()), selected_context:None, max_steps:1 };
     let first = execution.model_step(to_js(&input)?, 0, to_js(&Vec::<crate::model::ModelMessage>::new())?).await?;
