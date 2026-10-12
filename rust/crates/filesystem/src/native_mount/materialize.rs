@@ -238,7 +238,7 @@ impl GenerationReceipt {
         if growth == 0 {
             return Ok(());
         }
-        let result = self.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+        let result = self.custody.work().allocations(|ledger, work, budget, cancellation| {
             cancellation.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
             let prior_peak = work.peak_allocation_bytes;
             ledger.claim_bytes(bytes as u64, 1, work, budget).map_err(|error| {
@@ -392,7 +392,7 @@ fn clone_namespace_measured(
     limits: crate::model::VolumeLimits,
     receipt: &mut GenerationReceipt,
 ) -> Result<NamespacePath, GenerationFailure> {
-    let result = receipt.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+    let result = receipt.custody.work().allocations(|ledger, work, budget, cancellation| {
         let result = match extra {
             Some(name) => path.child_with_ledger(name, limits, ledger, work, budget, cancellation),
             None => path.clone_with_ledger(ledger, work, budget, cancellation),
@@ -1302,36 +1302,6 @@ where
     Ok(OperationReceipt { value: receipt.value, work })
 }
 
-/// Materializes a host-relative path using the checkout's configured name profile.
-pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let span = crate::obs::span!(
-        DEBUG,
-        "acyclic.fs.materialize_host_path",
-        outcome = crate::obs::Empty,
-        error.kind = crate::obs::Empty,
-        work.items = crate::obs::Empty,
-        work.bytes = crate::obs::Empty,
-        work.durability = crate::obs::Empty,
-    );
-    crate::obs::measured_on(
-        &span,
-        crate::obs::in_span(&span, async move {
-            let receipt = GenerationReceipt::new(budget, cancellation)?;
-            materialize_host_path(
-                checkout, relative, options, receipt,
-            ).await
-        })
-        .await.map_err(GenerationFailure::into_operation_failure),
-        |receipt| &receipt.work,
-    )
-}
-
 /// Keeps all host-relative selections in one original traversal and hard-link map.
 pub(crate) async fn materialize_checkout_host_paths_with_work_guarded<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
@@ -1608,12 +1578,12 @@ type RestoreOwnedPath = GenerationOwned<PathBuf>;
 
 impl RestoreOwnedPath {
     fn copy(path: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.copy_path(path).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.path(path, None).map_err(restore_allocation_error)?;
         Ok(Self { value: path, _custody: allocation })
     }
 
     fn join(parent: &Path, name: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.join_path(parent, name).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.path(parent, Some(name)).map_err(restore_allocation_error)?;
         Ok(Self { value: path, _custody: allocation })
     }
 }

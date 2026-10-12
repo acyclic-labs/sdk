@@ -397,7 +397,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         name_hold = io.guard_owned(name.capacity() as u64)?;
         let birth = bounded_io::filesystem_call!(io, work,
             self.host.filesystem.workspace_for_creation_operation_with_native_work(&name, self.config, self.operation, work, &io.cancellation),
-            self.host.filesystem.workspace_for_creation_operation_measured(&name, self.config, self.operation, io.remaining()?, &io.cancellation))?;
+            self.host.filesystem.workspace_for_creation_operation(&name, self.config, self.operation, io.remaining()?, &io.cancellation))?;
         if !birth.as_ref().is_some_and(|birth| birth.id() == self.initial_generation) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original protected Filesystem birth changed"));
         }

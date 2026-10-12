@@ -10,7 +10,7 @@ pub mod conformance;
 pub mod grpc;
 pub mod http_response;
 pub mod persistence;
-pub mod preparation;
+mod preparation;
 pub mod request;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;

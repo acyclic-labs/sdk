@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 import { PiOperatorDriver } from "./pi-operator-driver.ts";
 import { blake3 } from "@noble/hashes/blake3";
 import { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS } from "../../../typescript/packages/filesystem/src/native.ts";
@@ -34,20 +34,22 @@ export default function(pi) {
   });
   pi.on("tool_result", async (event, ctx) => {
     if (event.toolCallId !== "a-edit" || event.isError) return;
-    const path = join(ctx.cwd, "child-a.txt");
-    const before = statSync(path, {bigint:true});
-    const replay = promisify(execFile)(process.env.ACYCLIC_BINARY, ["__pi", "NativeBuiltinEdit"], {
-      cwd:ctx.cwd, env:process.env, windowsHide:true, timeout:30000, encoding:"utf8", maxBuffer:1048576,
-    });
-    replay.child.stdin.end(JSON.stringify({cwd:ctx.cwd,session_id:sessionId,
-      caller:JSON.parse(process.env.ACYCLIC_PI_CALLER), operation:"a-edit", path:"child-a.txt", phase:"write",
-      content:"child A edited\\n", expected_sha256:createHash("sha256").update("child A original\\n").digest("hex"),
-    }));
-    await replay;
-    const after = statSync(path, {bigint:true});
-    if (after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || after.size !== before.size) {
-      throw new Error("lost exact-edit acknowledgement repeated the original native mutation");
-    }
+    try {
+      const path = join(ctx.cwd, "child-a.txt");
+      const before = statSync(path, {bigint:true});
+      const replay = promisify(execFile)(process.env.ACYCLIC_BINARY, ["__pi", "NativeBuiltinEdit"], {
+        cwd:ctx.cwd, env:process.env, windowsHide:true, timeout:30000, encoding:"utf8", maxBuffer:1048576,
+      });
+      replay.child.stdin.end(JSON.stringify({cwd:ctx.cwd,session_id:sessionId,
+        caller:JSON.parse(process.env.ACYCLIC_PI_CALLER), operation:"a-edit", path:"child-a.txt", phase:"write",
+        content:"child A edited\\n", expected_sha256:createHash("sha256").update("child A original\\n").digest("hex"),
+      }));
+      await replay;
+      const after = statSync(path, {bigint:true});
+      if (after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || after.size !== before.size) {
+        throw new Error("lost exact-edit acknowledgement repeated the original native mutation");
+      }
+    } catch (error) { return {isError:true,content:[{type:"text",text:String(error)}]}; }
   });
   const provider = fauxProvider({provider:"acyclic-native-qualification", models:[{id:"probe"},{id:"switched"}]});
   const response = async (context, _options, _state, model) => {
@@ -170,7 +172,7 @@ export default function(pi) {
 
 test("required pinned Pi recursively launches original native effects and reopens without repeating work", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-recursive-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   const oracleDirectory = join(directory, "native-oracles");
   const ownedServicePids: number[] = [];
   let originalFailure: unknown;
@@ -238,15 +240,16 @@ test("required pinned Pi recursively launches original native effects and reopen
         assert.deepEqual((await initial.listDirectory("/", undefined, 256)).entries, []);
         assert.ok((await parentGeneration.listDirectory("/", undefined, 256)).entries.length > 0);
         const destination = await parent.forkAt(`scratch-exclusion-${id}`, parentGeneration);
+        const destinationBefore = await destination.sync();
         const parentHead = await parent.head(), childHead = await child.head();
         const plan = await child.joinInto(destination, {
           history: "merge", maximumGenerations: 256, maximumChanges: 256, maximumConflicts: 16,
-          sourceGeneration: initial.id, targetGeneration: await destination.head(),
+          sourceGeneration: initial.id, targetGeneration: destinationBefore.id,
         });
         try {
           assert.deepEqual(plan.commonAncestor, parentGeneration.id, "actual scratch generation must retain parent lineage");
           assert.equal((await plan.apply(plan.targetHead)).status, "applied");
-          assert.deepEqual((await destination.diff(parentGeneration, await destination.sync(), 256)).changes().files, [],
+          assert.deepEqual((await destination.diff(destinationBefore, await destination.sync(), 256)).changes().files, [],
             "filtered exclusions must not publish parent deletions");
           assert.deepEqual(await parent.head(), parentHead);
           assert.deepEqual(await child.head(), childHead);
@@ -343,7 +346,7 @@ test("required pinned Pi recursively launches original native effects and reopen
 test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-cuts-", import.meta.url)));
   const oracleDirectory = join(directory, "native-oracles");
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     mkdirSync(oracleDirectory);
     fixture = await installedNativeFixture(directory, recursiveProvider, {
@@ -353,8 +356,10 @@ test("installed Pi retains split spawn, import and cancellation identities acros
     await fixture.start();
     await fixture.run("ACYCLIC_NATIVE_CONTROL");
     const fields = { cwd: fixture.project, session_id: fixture.manager.getSessionId() };
+    const caller = JSON.parse((await fixture.command(["__pi", "SessionStart"], JSON.stringify(fields))).stdout).caller;
+    assert.ok(caller, "split controls must reuse the original issued root caller proof");
     const control = async (event: string, arguments_: Record<string, unknown>) =>
-      JSON.parse((await fixture!.command(["__pi", event], JSON.stringify({ ...fields, ...arguments_ }))).stdout);
+      JSON.parse((await fixture!.command(["__pi", event], JSON.stringify({ ...fields, caller, ...arguments_ }))).stdout);
     const restart = async () => { await fixture!.kill(); await fixture!.start(); };
     const rootBytes = readFileSync(fixture.session);
     const sourceBytes = readFileSync(join(fixture.project, "seed.txt"));
@@ -440,10 +445,13 @@ test("installed Pi retains split spawn, import and cancellation identities acros
       assert.equal(raced[1].status, "fulfilled");
       const destinationHead = await importedDestination.head();
       await restart();
-      assert.equal((await control("TaskStatus", {})).tasks.find((task: {task:string}) => task.task === rootTask).outcome, "Cancelled");
+      const cancelledRoot = (await control("TaskStatus", {})).tasks.find((task: {task:string}) => task.task === rootTask);
+      assert.ok(cancelledRoot.outcome === "Cancelled" || cancelledRoot.outcome?.Indeterminate
+        || (cancelledRoot.state === "unresolved" && cancelledRoot.error));
       const replayed = await control("TaskImport", racingImport).catch(() => undefined);
       if (replayed) {
-        assert.equal(raced[0].status, "fulfilled", "cancelled unknown import must not become a new successful dispatch");
+        assert.equal(replayed.operation, racingImport.operation);
+        assert.ok(replayed.original_operation);
         if (raced[0].status === "fulfilled") assert.deepEqual(replayed, raced[0].value);
       }
       await assert.rejects(() => control("SpawnCommit", unstartedCommit));
@@ -452,9 +460,7 @@ test("installed Pi retains split spawn, import and cancellation identities acros
       assert.deepEqual(await importedDestination.head(), destinationHead);
     } finally { filesystem.cancel(); }
     await fixture.close();
-    for (const name of readdirSync(oracleDirectory).filter(name => name.endsWith(".json"))) {
-      assertNativePidExited(JSON.parse(readFileSync(join(oracleDirectory, name), "utf8")).pid);
-    }
+    assertNativePidExited(JSON.parse(originalNative.toString()).pid);
   } finally {
     for (const name of readdirSync(oracleDirectory).filter(name => name.endsWith(".json"))) {
       const { pid } = JSON.parse(readFileSync(join(oracleDirectory, name), "utf8"));

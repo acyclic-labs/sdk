@@ -961,8 +961,8 @@ fn with_workspace_mount<T>(
                 .await
                 .map_err(engine_err("open store"))?;
             let workspace = engine
-                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable))
-                .await
+                .create_workspace_with_config("par-bench", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("create workspace"))?;
             workspace
                 .mount(

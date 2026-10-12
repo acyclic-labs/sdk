@@ -911,30 +911,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
-    /// Restores caller state with explicit cold input and terminal cache limits.
-    pub async fn open_from_snapshot_with_projection_limits(
-        client: &StreamClient<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        snapshot: Snapshot,
-        limits: HistoryReadLimits,
-        maximum_terminal_effects: usize,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            Some(snapshot),
-            limits,
-            maximum_terminal_effects,
-            None,
-            &mut None,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
     pub(crate) async fn open_inner(
         client: &StreamClient<P>,
@@ -1068,7 +1044,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             after_revision: reducer.revision(),
             through_revision: through,
         };
-        let read = reader
+        let (page, records, mut used, events_retained_bytes) = reader
             .read_page_with_work(
                 &cursor,
                 HistoryReadLimits { maximum_events, maximum_bytes },
@@ -1079,19 +1055,17 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
         if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
-        if read.page.cursor.after_revision != through {
+        if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
             ));
         }
-        let event_bytes = (read.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
-        let record_capacity = (read.records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
-        let page_cursor_bytes = read.page.cursor.authority.id.capacity() as u64;
-        let events_retained_bytes = read.events_retained_bytes;
-        drop(read.page.cursor);
+        let event_bytes = (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
+        let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
+        let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
+        drop(page.cursor);
         if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
-        let mut used = read.bytes;
-        for (event, record) in read.page.events.into_iter().zip(read.records) {
+        for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
                 reducer.authority(),
@@ -1413,16 +1387,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
             owned.adopt(reader.logical_owned_bytes()?.checked_sub(verifier_bytes)
                 .ok_or_else(|| Error::Invalid("history reader ownership underflows".into()))?)?;
         }
-        let page = reader.read_page_with_work(&cursor,
+        let (page, _, _, retained) = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
             false, owned.work().as_mut().map(|work| &mut **work as &mut dyn history::HistoryIo)).await?;
-        let retained = page.events_retained_bytes;
         if owned.work().is_some() {
-            owned.adopt(retained + page.page.cursor.authority.id.capacity() as u64
-                + (page.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64)?;
+            owned.adopt(retained + page.cursor.authority.id.capacity() as u64
+                + (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64)?;
         }
-        let event = page.page.events.into_iter().next();
-        drop(page.page.cursor);
+        let event = page.events.into_iter().next();
+        drop(page.cursor);
         drop(cursor);
         drop(reader);
         let event = event.ok_or_else(|| guarded_boundary(owned.work(), crate::wire::ErrorCode::NotFound,
