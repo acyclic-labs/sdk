@@ -858,12 +858,12 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
 ) -> Result<(Vec<Option<FileRecord>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_batch::lookup_async_with_accounting::<S, FileTableFormat>(
         store, root, file_ids, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.values, allocation))
+    ).await.map(|(receipt, allocation)| (receipt.value, allocation))
 }
 
-fn to_record_batch(receipt: persistent_batch::Receipt<FileRecord>) -> FileRecordBatchLookup {
+fn to_record_batch(receipt: OperationReceipt<Vec<Option<FileRecord>>>) -> FileRecordBatchLookup {
     FileRecordBatchLookup {
-        records: receipt.values,
+        records: receipt.value,
         work: receipt.work,
     }
 }
