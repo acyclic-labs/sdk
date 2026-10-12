@@ -3747,21 +3747,8 @@ where
             .await
     }
 
-    /// Publishes pending authored writes under one authority lease permit.
-    pub async fn sync_async_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-    ) -> Result<(), MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        self.sync_async_with_permit_measured(permit, crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-    }
-
     /// Publishes the mounted candidate and removal journal with bounded work.
-    pub async fn sync_async_with_permit_measured(
+    pub async fn sync_async_with_permit(
         &self,
         permit: crate::PublicationPermit,
         budget: crate::WorkBudget,
@@ -3811,8 +3798,8 @@ where
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await.map_err(|error| (E::from(error), None))?.into_mutation_phase();
-        let result = self.sync_staged_measured(
-            permit, &mut work, cancellation, &mut before_publication,
+        let result = self.sync_staged(
+            permit, &mut work, cancellation, &mut before_publication, None,
         ).await;
         if let Some(snapshot) = work.publication_snapshot.filter(|snapshot| snapshot.operation().is_some()) {
             *acknowledged = Some(snapshot);
@@ -3836,7 +3823,7 @@ where
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();
-        self.sync_staged_measured(permit, &mut work, cancellation, before_publication).await
+        self.sync_staged(permit, &mut work, cancellation, before_publication, None).await.map(|_| ())
     }
 
     /// Verifies the caller's original owner immediately before every SDK seal.
@@ -3923,7 +3910,7 @@ where
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();
-        self.sync_selected_staged_measured(
+        self.sync_staged(
             permit, &mut work, cancellation, &mut before_publication,
             Some(SelectedMountInput { destination, plan: &plan, operation, original }),
         ).await?.ok_or_else(|| E::from(MountSourceError::OriginalSnapshotUnavailable))
@@ -3969,27 +3956,13 @@ where
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         let mut original = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation());
         let mut work = MountSyncWork::new(&self.authored, super::adapter::NativeDemandCarrier::Borrowed(&mut original))?;
-        self.sync_staged_measured(
+        self.sync_staged(
             permit, &mut work, self.authored.cancellation(),
-            &mut self.authored.sdk_publication_policy(),
-        ).await
-    }
-
-    async fn sync_staged_measured<F, Fut, E>(
-        &self, permit: crate::PublicationPermit, work: &mut MountSyncWork<'_>,
-        cancellation: &crate::CancellationToken, before_publication: &mut F,
-    ) -> Result<(), E>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        self.sync_selected_staged_measured(
-            permit, work, cancellation, before_publication, None,
+            &mut self.authored.sdk_publication_policy(), None,
         ).await.map(|_| ())
     }
 
-    pub(super) async fn sync_selected_staged_measured<F, Fut, E>(
+    pub(super) async fn sync_staged<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
         work: &mut MountSyncWork<'_>,
@@ -5720,8 +5693,10 @@ where
                         cursor,
                         maximum_entries,
                         Some((&removed_children, opaque)),
+                        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
                     )
-                    .await
+                    .await.map(|receipt| receipt.value)
+                    .map_err(|failure| crate::lazy_workspace::lazy_operation_failure(failure, std::convert::identity))
                     .map_err(|error| match error {
                         // The directory changed while it was listed.
                         LazyWorkspaceError::Demand(DemandError::StaleVersion) => {
@@ -9135,7 +9110,7 @@ mod tests {
         view.remove(&path, Some(open.lookup()?.node.file_id))?;
         open.write_range(0, Bytes::from_static(b"detached"))?;
         let cancellation = crate::CancellationToken::new();
-        let failure = view.sync_async_with_permit_measured(
+        let failure = view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget { authority_records_appended: 0, ..crate::WorkBudget::UNBOUNDED },
             &cancellation,
@@ -9147,13 +9122,13 @@ mod tests {
         assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
-        let cancelled = view.sync_async_with_permit_measured(
+        let cancelled = view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &stopped,
         ).await.expect_err("cancelled retry must not publish");
         assert!(matches!(cancelled.error, MountSourceError::Cancelled));
         assert_eq!(cancelled.work.authority_records_appended, 0);
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), operation);
-        let receipt = view.sync_async_with_permit_measured(
+        let receipt = view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(receipt.work.authority_records_appended > 0);
@@ -9198,7 +9173,7 @@ mod tests {
         let file = view.detached_by_id(identity)?.ok_or("missing detached identity")?;
         let (original_record, _, original_epoch) = file.snapshot_async().await?;
         let cancellation = crate::CancellationToken::new();
-        let failure = view.sync_async_with_permit_measured(
+        let failure = view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget { authority_records_appended: 0, ..crate::WorkBudget::UNBOUNDED },
             &cancellation,
@@ -9236,7 +9211,7 @@ mod tests {
             assert_eq!(pending.epoch, original_epoch);
             assert_eq!(pending.file.record(), original_record);
         }
-        let completed = view.sync_async_with_permit_measured(
+        let completed = view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(completed.work.authority_records_appended >= 2);
@@ -9271,7 +9246,7 @@ mod tests {
         view.remove(&path, Some(identity))?;
         held.write_range(0, Bytes::from_static(b"epoch-one"))?;
         let cancellation = crate::CancellationToken::new();
-        view.sync_async_with_permit_measured(
+        view.sync_async_with_permit(
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget { authority_records_appended: 0, ..crate::WorkBudget::UNBOUNDED },
             &cancellation,
@@ -9312,7 +9287,7 @@ mod tests {
             gate_tail: reservation.gate_tail,
             expected: reservation.expected,
         };
-        let completed = view.sync_async_with_permit_measured(
+        let completed = view.sync_async_with_permit(
             permit, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(completed.work.authority_records_appended > 0);
@@ -9371,7 +9346,7 @@ mod tests {
                 fault,
             )?;
             let cancellation = crate::CancellationToken::new();
-            let failure = view.sync_async_with_permit_measured(
+            let failure = view.sync_async_with_permit(
                 crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
             ).await.expect_err("the real scheduled native publication fault must surface");
             assert!(failure.work.backend_read_operations > 0);
@@ -9389,7 +9364,7 @@ mod tests {
                 gate_tail: reservation.gate_tail,
                 expected: reservation.expected,
             };
-            let recovered = view.sync_async_with_permit_measured(
+            let recovered = view.sync_async_with_permit(
                 permit, crate::WorkBudget::UNBOUNDED, &cancellation,
             ).await?;
             assert!(recovered.work.backend_read_operations > 0);
@@ -10309,8 +10284,8 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
-            ).await.map(|(_, state)| state).map_err(lazy_error)
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+            ).await.map(|receipt| receipt.value.1).map_err(|failure| lazy_error(crate::lazy_workspace::lazy_operation_failure(failure, std::convert::identity)))
         })?;
         let caller = crate::CancellationToken::new();
         let full_budget = finite_directory_budget();
@@ -10469,8 +10444,8 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
-            ).await.map(|(_, state)| state).map_err(lazy_error)
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+            ).await.map(|receipt| receipt.value.1).map_err(|failure| lazy_error(crate::lazy_workspace::lazy_operation_failure(failure, std::convert::identity)))
         })?;
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
