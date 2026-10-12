@@ -132,11 +132,11 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     assert_eq!(request.standard_input.as_deref(), Some(input.prompt.as_bytes()));
     assert!(!request.argv.contains(&input.prompt));
     assert_eq!(request.view, manifest);
-    let digest = request.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap();
+    let digest = request.approval_digest(binding.task_id, OperationId::from_bytes([41; 16]), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap())).unwrap();
     let mut changed = (*request).clone(); changed.environment.insert("ACYCLIC_PI_CALLER".into(), "foreign-route".into());
-    assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
+    assert_ne!(digest, changed.approval_digest(binding.task_id, OperationId::from_bytes([41; 16]), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap())).unwrap());
     changed = (*request).clone(); changed.argv.push("--resume".into());
-    assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
+    assert_ne!(digest, changed.approval_digest(binding.task_id, OperationId::from_bytes([41; 16]), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap())).unwrap());
     for prompt in ["--model attacker --session original-root", "@source-file-must-not-be-opened", "literal native prompt\nwith another line"] {
         let mut literal = input.clone();
         literal.prompt = prompt.into();

@@ -88,7 +88,7 @@ async fn root_input_fixture(
     let owner = PiOwnerConfig::new(&policy, None, &crate::pi_fork::tests::work()).unwrap();
     crate::pi_owner::tests::publish_owner(&(owner), session, &crate::pi_fork::tests::work()).unwrap();
     let filesystem =
-        FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
+        FilesystemHost::new(raw.clone(), owner.policy.journal.provider(), None).unwrap();
     filesystem
         .create_volume(&owner.policy.journal)
         .await
@@ -179,7 +179,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         ))
         .await
         .unwrap(),
-        owner.policy.journal.provider().clone(),
+        owner.policy.journal.provider(), None,
     )
     .unwrap();
     let reopened = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
@@ -311,7 +311,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         ))
         .await
         .unwrap(),
-        owner.policy.journal.provider().clone(),
+        owner.policy.journal.provider(), None,
     )
     .unwrap();
     let reopened = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();

@@ -221,9 +221,9 @@ impl Fixture {
         self.raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
             self.session.path().join("filesystem"),
         )).await.unwrap();
-        self.filesystem = Arc::new(FilesystemHost::new(
-            self.raw.clone(), self.owner.policy.journal.provider().clone(),
-        ).unwrap());
+        self.filesystem = FilesystemHost::new(
+            self.raw.clone(), self.owner.policy.journal.provider(), None,
+        ).unwrap();
         self.runtime = open_runtime(self.session.path(), &self.owner, self.filesystem.clone(), &self.work).await;
         self
     }

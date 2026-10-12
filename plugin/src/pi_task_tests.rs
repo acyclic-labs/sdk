@@ -154,10 +154,10 @@ async fn storage(root: &Path, provider: &ProviderRef) -> (
     Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     Arc<LocalStream>,
 ) {
-    let filesystem = Arc::new(FilesystemHost::new(
+    let filesystem = FilesystemHost::new(
         acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(root.join("filesystem"))).await.unwrap(),
-        provider.clone(),
-    ).unwrap());
+        &provider, None,
+    ).unwrap();
     let stream = Arc::new(LocalStream::open(root.join("stream"), LocalStreamLimits::default()).await.unwrap());
     (filesystem, stream)
 }

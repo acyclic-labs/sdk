@@ -830,7 +830,8 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
         return Err(Error::Unauthorized("Pi native approval changed original protected host settings".into()));
     }
     let request = invocation.request_with_work(binding, manifest, work)?;
-    let digest = request.0.approval_digest_with_native_work(owner.task_id(), command, work)?;
+    let digest = request.0.approval_digest(owner.task_id(), command,
+        Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
     let approval = task_interaction_id(owner.task_id(), command);
     let title = native_fixed_text(format_args!("Run pinned Pi child {}", binding.native_session_id))?;
     let title = pi_native_string(std::str::from_utf8(&title.0[..title.1]).expect("formatter copies UTF-8"), work)?;
@@ -1124,7 +1125,6 @@ impl PiNativeRootSeed {
                 reason: "Pi mixed view belongs to another original preparation operation" });
         }
         owner.verify_with_native_work(false, meter).await?;
-        let view = view.into_arc_with_native_work(meter)?;
         let seed = retained.take().expect("original creator slot was exclusively borrowed throughout preparation");
         Ok(PiPreparedScratch { view, allocation: seed.allocation.expect("completed original creator witness was verified above"),
             _creator_packet: seed.packet,

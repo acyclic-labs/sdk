@@ -123,7 +123,7 @@ impl Fixture {
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
         let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
-        let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
+        let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
         let stream = Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?);
         let (runtime, identity, machine) = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
@@ -229,7 +229,7 @@ impl Fixture {
         let plan = (TaskEffectPlan { provider: PI_NATIVE_PROVIDER.into(), effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
             guarantee: EffectGuarantee::AtMostOnce, request: request_file.0, result_schema: schema.0 }, request_file.1);
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
-        approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi".into(), command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
+        approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi".into(), command, request.0.approval_digest(task, command, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?))?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,
             reservation: Some(reservation) })
@@ -423,7 +423,7 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     assert!(matches!(observed.effect.status, EffectStatus::Indeterminate));
     let original_work = observed.work;
     fixture.owner.verify_with_native_work(false, &work).await?;
-    assert!(!<View as NativeProcessView<LocalStream>>::operation_cancellation(fixture.view.as_ref()).is_cancelled(),
+    assert!(!<View as NativeProcessView<LocalStream>>::original_native_work(fixture.view.as_ref()).cancellation().is_cancelled(),
         "stopping a warm native process must not retire the original mounted view");
     let diagnostic = observed.diagnostic.as_ref().ok_or_else(|| invalid("actual stop lacks its cleanup diagnostic"))?;
     let bytes = fixture.context.context().read_file_with_native_work(diagnostic, &work).await?;
