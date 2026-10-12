@@ -37,7 +37,7 @@ fn value<T: Serialize>(input: T) -> Result<Value> {
 
 fn definition(variant: &str, tool: Tool) -> Result<Value> {
     let definition = tool.definition;
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let digest = definition.digest()?;
     Ok(json!({"variant":variant,"definition":definition,"definition_digest":digest}))
 }
@@ -90,7 +90,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let source = "one\r\n🦀 abaaba\r\n";
     let file = FileRef::new(
         VolumeRef::new(
-            ProviderRef::new("file-contract", "filesystem", "1")?,
+            ProviderRef::new("file-contract".into(), "filesystem".into(), "1".into(), &mut None)?,
             "private",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([51; 16])),

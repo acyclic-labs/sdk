@@ -152,7 +152,7 @@ struct InitialLookups {
 }
 
 /// Applies one ordered namespace, metadata, and content batch to a generation.
-pub async fn apply_generation_mutations_async<S: AsyncObjectStore>(
+pub async fn apply_generation_mutations<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
     operations: Vec<Mutation>,
@@ -160,30 +160,10 @@ pub async fn apply_generation_mutations_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-    let (receipt, _operations) = apply_generation_mutations_retaining_async(
-        store,
-        generation,
-        operations,
-        config,
-        budget,
-        cancellation,
-    )
-    .await?;
-    Ok(receipt)
-}
-
-pub(crate) async fn apply_generation_mutations_retaining_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &GenerationRoot,
-    operations: Vec<Mutation>,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(GenerationMutationReceipt, Vec<Mutation>), GenerationMutationFailure> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     apply_generation_mutations_retaining_with_accounting(
         store, generation, operations, config, &mut accounting, cancellation,
-    ).await.map(|(receipt, operations, _)| (receipt, operations))
+    ).await.map(|(receipt, _, _)| receipt)
         .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
 }
 
@@ -355,7 +335,7 @@ impl Owned<TransactionState> {
             })?;
             drop_owned(mutations, bytes, accounting)?;
             self.leaf(accounting, |state, leaf| {
-                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.root }; Ok(())
+                state.record_mut(leaf, id)?.working.payload = FilePayload::Directory { entries: receipt.value }; Ok(())
             })?;
             cursor = end;
         }
@@ -379,7 +359,7 @@ impl Owned<TransactionState> {
                 store, entries, None, 1, DecodeLimits::for_volume(config), accounting, cancellation.clone(), None,
             ).await.map_err(|error| {
                 if is_original(accounting) { error } else {
-                    GenerationMutationError::Directory(super::list::map_error(super::persistent_pagination::project_failure(error))).into()
+                    GenerationMutationError::Directory(super::persistent_pagination::project_failure(error)).into()
                 }
             })?;
             let listing = Owned { value: listing, allocation };
@@ -407,7 +387,7 @@ impl Owned<TransactionState> {
                 if is_original(accounting) { error } else {
                     GenerationMutationError::FileTable(super::file_table_mutation::project_file_table_error(error)).into()
                 }
-            })?.root
+            })?.value
         };
         drop_owned(mutations, bytes, accounting)?;
         let root = self.leaf(accounting, |state, leaf| state.clone_generation_root(leaf, generation, root))?;
@@ -449,24 +429,6 @@ fn generation_error(error: crate::FsError) -> GenerationMutationError {
         crate::FsError::Config(error) => error.into(),
         _ => unreachable!("standalone generation leaves return typed generation/read/work errors"),
     }
-}
-
-/// Synchronous adapter over [`apply_generation_mutations_async`].
-pub fn apply_generation_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &GenerationRoot,
-    operations: Vec<Mutation>,
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-    crate::async_storage::poll_immediate(apply_generation_mutations_async(
-        store,
-        generation,
-        operations,
-        config,
-        budget,
-        &CancellationToken::new(),
-    ))
 }
 
 async fn verify_created_identities<S: AsyncObjectStore>(

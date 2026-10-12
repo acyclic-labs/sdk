@@ -69,6 +69,7 @@ struct RetainedRootLazy<A, O, D, S> {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     D: DemandSource + 'static, S: LazyWorkspaceStore> RootLazyBacking<A, O> for RetainedRootLazy<A, O, D, S>
+where for<'source> &'source LazyWorkspace<A, O, D, S>: Send
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId { self.lazy.workspace().id() }
     #[cfg(not(target_arch = "wasm32"))]
@@ -151,10 +152,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
-                let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit, original,
-                    io.cancellation(), &mut before_mutation,
-                ).await?;
+                let (commit, snapshot) = (async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original, cancellation)?; let mut guard = self.lazy.native_write_guard(&mut before_mutation, &accounting)?; self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut guard).await }).await?;
                 Ok((generation(commit)?, snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
@@ -170,16 +168,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                         Err(error) => Err(acyclic_fs::OperationFailure::new(error, callback.receipt())),
                     }
                 };
-                io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit,
-                    allowance, io.cancellation(), &mut before_mutation,
-                ).await)?
+                io.receive_content((async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(allowance, cancellation); let result = self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut before_mutation).await; accounting.measured(result, |error, spent| acyclic_fs::OperationFailure::new(error, spent)) }).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
-                self.lazy.write_at_snapshot_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit,
-                    io.cancellation(), &mut before_mutation,
-                ).await?
+                (async { let cancellation = io.cancellation(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation); let before_mutation = &mut before_mutation; let mut guard = |_| { let future = before_mutation(); async move { future.await.map(|()| acyclic_fs::OperationReceipt { value: (), work: Default::default() }).map_err(acyclic_fs::OperationFailure::before_work) } }; self.lazy.write_at_snapshot(snapshot, root_lazy_mutations(mutations), key, permit, &accounting, &mut guard).await }).await?
             };
             Ok((generation(commit)?, snapshot))
         })
@@ -218,7 +210,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     ) -> Result<Self> {
         let mut observer = io.map(super::PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        host.provider.validate_with_work(&mut work)?;
+        host.provider.validate(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let owner = match work.as_deref_mut() {
@@ -304,7 +296,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         }
         if io.is_none() {
             snapshot.project.validate(&mut None)?;
-            snapshot.generation.validate()?;
+            snapshot.generation.validate(&mut None)?;
         }
         if snapshot.project.class() != VolumeClass::Project
             || snapshot.project.provider() != &self.host.provider
@@ -384,9 +376,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             let frozen = match io.original_native_work() {
                 Some(work) => {
                     frozen_hold = Some(work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?);
-                    crate::contract::json_from_slice_bounded_native_trusted::<LazySnapshotRef, _>(
-                        &encoded, bounds, 0, crate::wire::ErrorCode::Invalid,
-                        crate::contract::JsonValueSchema::None, &mut |charge| io.codec_charge(charge, false))?
+                    crate::contract::json_from_slice_bounded(
+                        std::marker::PhantomData::<LazySnapshotRef>, &encoded, bounds, 0, Some(crate::wire::ErrorCode::Invalid),
+                        Some(crate::contract::JsonValueSchema::None), &mut |charge| io.codec_charge(charge, false))?
                 }
                 None => {
                     frozen_hold = None;
@@ -481,7 +473,7 @@ mod tests {
             input: serde_json::json!({}), input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}), parent: None,
             resource_proofs: Vec::new(),
-            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read)?]),
+            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]),
             limits: Limits::default(), run_limits: TaskRunLimits::default(),
             policy: None, extensions: None, execution: None,
         })
@@ -499,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_filesystem_birth_without_protected_root_association_is_not_source_authority() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("root-birth", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("root-birth".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?);
         let project = VolumeRef::new(provider, "root-project", VolumeClass::Project,
             VolumeOwner::Project("root-project".into()))?;
@@ -513,7 +505,7 @@ mod tests {
             .expect("finite original Root bootstrap ledger");
         let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
         let birth = host.filesystem.create_workspace_with_operation_with_native_work(
-            &project.storage_name()?, config, operation, &work, &cancellation,
+            &project.storage_name(&mut None)?, config, operation, &work, &cancellation,
         ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
         let selected = ProjectSourceSnapshot {
             project: project.clone(), generation: host.generation_ref(&birth)?, native_snapshot: None,

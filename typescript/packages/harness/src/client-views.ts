@@ -76,17 +76,18 @@ function tick(value: bigint): void {
 export class ClientViews<Value, Assumption, Evidence> {
   readonly #kernel: WasmClientViews;
   readonly #selections = new Set<Selection<Value>>();
+  readonly #maximumSelections: number;
   #disposed = false;
-  readonly limits: ClientViewLimits;
 
   static async initialize(): Promise<void> { await ensureHarnessWasm(); }
 
   constructor(domain: ClientDomain<Value, Assumption, Evidence>, namespace: string, sequence: bigint,
     limits: ClientViewLimits) {
     tick(sequence);
-    this.limits = Object.freeze({ ...limits });
-    this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, this.limits,
+    const budget = Object.freeze({ ...limits });
+    this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
       domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+    this.#maximumSelections = budget.records + budget.branches;
     if (domain.restore !== undefined) this.#kernel.enableRestore(domain.restore.bind(domain));
   }
 
@@ -108,9 +109,7 @@ export class ClientViews<Value, Assumption, Evidence> {
     return Object.freeze({ ...data, dependencies: Object.freeze(data.dependencies.map(edge => Object.freeze(edge))) });
   }
 
-  /** Restore authoritative records and logical time first. Import parents before
-   * descendants into a client constructed with the recovered sequence watermark.
-   * Atomic per hypothesis; no IO, operation admission or effect execution. */
+  /** Restore records and time first, then hypotheses in parent order with the saved watermark. */
   restore(hypothesis: ClientHypothesis<Value, Assumption>): void {
     this.#live();
     if (this.#selections.size !== 0) throw new Error("restore hypotheses before selecting client views");
@@ -132,7 +131,7 @@ export class ClientViews<Value, Assumption, Evidence> {
   /** Explicit bounded selection; dispose releases its snapshot cache/listeners. */
   select(key: string, overlays: readonly BranchId[] = []): ClientViewStore<Value> {
     this.#live();
-    if (this.#selections.size >= this.limits.records + this.limits.branches) {
+    if (this.#selections.size >= this.#maximumSelections) {
       throw new RangeError("client selection capacity exceeded");
     }
     const initial = this.view(key, overlays);

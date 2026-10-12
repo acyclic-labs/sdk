@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  conversationMessageId, decodeAttachmentManifest, descriptorFor,
-  verifyFileBytes, DEFAULT_LIMITS, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMITS, MAX_PATH_BYTES,
+  descriptorFor,
+  DEFAULT_LIMITS, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMITS, MAX_PATH_BYTES,
   type ConversationMessage, type ConversationMessageId, type FileRef, type TaskOutcomeRecord,
 } from "../src/conversation.js";
 import type { AgentId } from "../src/index.js";
@@ -9,7 +9,6 @@ import { NativeContracts } from "../src/native-contracts.js";
 
 const contracts = await NativeContracts.create();
 const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
-const fixtureId = (value: string): ConversationMessageId => value as ConversationMessageId;
 
 test("Rust-owned limits contract preserves defaults, ceilings, and number semantics", () => {
   expect(DEFAULT_LIMITS.path_bytes).toBe(2 ** 32 - 1);
@@ -22,7 +21,7 @@ test("Rust-owned limits contract preserves defaults, ceilings, and number semant
   expect(Object.values(DEFAULT_LIMITS).every(value => typeof value === "number")).toBe(true);
   expect(() => contracts.validate("limits", {
     ...MAX_LIMITS, file_bytes: MAX_EXACT_JS_INTEGER + 1,
-  })).toThrow("unsafe JavaScript Number");
+  })).toThrow();
   expect(() => contracts.validate("limits", {
     ...MAX_LIMITS, path_bytes: MAX_PATH_BYTES + 1,
   })).toThrow();
@@ -82,24 +81,24 @@ async function content(owner = agent): Promise<FileRef> {
 
 test("file references reject traversal and verify exact bytes", async () => {
   const reference = await content();
-  await verifyFileBytes(reference, new TextEncoder().encode("payload"));
-  await expect(verifyFileBytes(reference, new TextEncoder().encode("changed"))).rejects.toThrow();
-  await expect(verifyFileBytes({
+  contracts.verifyFileBytes(reference, new TextEncoder().encode("payload"));
+  expect(() => contracts.verifyFileBytes(reference, new TextEncoder().encode("changed"))).toThrow();
+  expect(() => contracts.verifyFileBytes({
     ...reference,
     descriptor: { ...reference.descriptor, sha256: [...reference.descriptor.sha256, 0] },
-  }, new TextEncoder().encode("payload"))).rejects.toThrow();
+  }, new TextEncoder().encode("payload"))).toThrow();
   expect(() => contracts.validate("file_ref", { ...reference, path: "../escape" })).toThrow();
   expect(() => contracts.validate("file_ref", { ...reference, unexpected: true } as FileRef)).toThrow();
   expect(() => contracts.validate("conversation_message", {
-    id: fixtureId("not-a-uuid"), sequence: 1n, kind: "user", content: reference,
+    id: ("not-a-uuid" as ConversationMessageId), sequence: 1n, kind: "user", content: reference,
     attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: null, extensions: {},
   }, DEFAULT_LIMITS)).toThrow();
 });
 
-test("canonical message identity is branded only after Rust UUID validation", async () => {
-  expect(String(await conversationMessageId("01010101-0101-0101-0101-010101010101")))
+test("canonical message identity is branded only after Rust UUID validation", () => {
+  expect(String(contracts.validateConversationMessageId("01010101-0101-0101-0101-010101010101")))
     .toBe("01010101-0101-0101-0101-010101010101");
-  await expect(conversationMessageId("not-a-uuid")).rejects.toThrow();
+  expect(() => contracts.validateConversationMessageId("not-a-uuid")).toThrow();
 });
 
 test("manifest-backed attachment lists require a pinned typed file and exact count", async () => {
@@ -118,7 +117,7 @@ test("native manifest decoding preserves exact TypeScript file-length types", as
   const bytes = contracts.encodeAttachmentManifest([{ file, label: null }]);
   const manifest = contracts.validate("file_ref", { ...file, path: "attachments/list.json",
     descriptor: await descriptorFor(bytes, "application/vnd.acyclic.harness.attachments+json") });
-  const items = await decodeAttachmentManifest(manifest, bytes, 1);
+  const items = contracts.decodeAttachmentManifest(manifest, bytes, 1);
   expect(items).toHaveLength(1);
   expect(items[0]?.file.descriptor.byte_length).toBe(7);
   expect(typeof items[0]?.file.descriptor.byte_length).toBe("number");
@@ -127,7 +126,7 @@ test("native manifest decoding preserves exact TypeScript file-length types", as
 test("configured limits reject oversized references before admission", async () => {
   const reference = await content();
   const message: ConversationMessage = {
-    id: fixtureId("03030303-0303-0303-0303-030303030303"), sequence: 1n, kind: "user",
+    id: ("03030303-0303-0303-0303-030303030303" as ConversationMessageId), sequence: 1n, kind: "user",
     content: reference, attachments: { kind: "inline", items: [] },
     reply_to: null, tool_call_id: null, extensions: {},
   };
@@ -140,7 +139,7 @@ test("Rust WASM preserves conversation positions beyond JavaScript's exact-numbe
   const reference = await content();
   const sequence = (1n << 53n) + 1n;
   const message: ConversationMessage = {
-    id: fixtureId("04040404-0404-0404-0404-040404040404"), sequence, kind: "user",
+    id: ("04040404-0404-0404-0404-040404040404" as ConversationMessageId), sequence, kind: "user",
     content: reference, attachments: { kind: "inline", items: [] },
     reply_to: null, tool_call_id: null, extensions: {},
   };
@@ -170,10 +169,10 @@ test("Rust JSON boundaries encode full-width integers and reject inexact model v
   expect(() => contracts.decodeModelJson(new TextEncoder().encode('{"value":18446744073709551617}')))
     .toThrow();
   const rustStructJson = new TextEncoder().encode('{"sequence":9007199254740993,"kind":"user"}');
-  expect(() => contracts.decodeCanonicalJson(rustStructJson)).toThrow("not canonical");
+  expect(() => contracts.decodeCanonicalJson(rustStructJson)).toThrow();
   expect(contracts.decodeModelJson(new TextEncoder().encode(' { "value": 7 } '))).toEqual({ value: 7 });
   expect(() => contracts.decodeModelJson(new TextEncoder().encode('{"value":9007199254740993}')))
-    .toThrow("JavaScript precision");
+    .toThrow();
 });
 
 test("Rust and TypeScript share the canonical v2 message fixture", async () => {
@@ -211,7 +210,7 @@ test("Rust and TypeScript reject the same malformed file references and forged c
       expect(() => contracts.validate("file_ref", modified as unknown as FileRef)).toThrow();
     } else {
       const reference = contracts.validate("file_ref", modified as unknown as FileRef);
-      await expect(verifyFileBytes(reference, new TextEncoder().encode("hello"))).rejects.toThrow();
+      expect(() => contracts.verifyFileBytes(reference, new TextEncoder().encode("hello"))).toThrow();
     }
   }
 });

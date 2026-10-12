@@ -19,7 +19,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     let directory =
         tempfile::tempdir().map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path());
-    let provider = ProviderRef::new("retention-test", "filesystem", "2")?;
+    let provider = ProviderRef::new("retention-test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([31; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -35,14 +35,10 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             id: "retention".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
 
@@ -78,14 +74,10 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         )
         .await?;
     let attached = AgentId::from_bytes([33; 16]);
-    let attached_scope = issuer.root_for_agent(
-        attached,
-        "unrelated-reader",
-        Capabilities::new([
+    let attached_scope = issuer.issue("unrelated-reader", &Capabilities::new([
             admitted.read_capability()?,
             volume.directory_read_capability("messages")?,
-        ]),
-    );
+        ]), Some(attached), None, &mut None).expect("scope proof");
     let attached_read =
         ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &attached_scope, &admitted)?;
     assert_eq!(
@@ -115,7 +107,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &attached_directory,
             "messages/current.txt",
             Some(&listed_generation),
-            64
+            64,
+            None,
         )
         .await?
         .1

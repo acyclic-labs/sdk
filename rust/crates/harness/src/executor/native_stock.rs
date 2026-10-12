@@ -1,5 +1,6 @@
 //! Original-work admission and custody for the shared stock execution engine.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::projection::ModelContextSelection;
 use std::fmt::{Arguments, Write as _};
 
@@ -36,10 +37,6 @@ impl<'a> StockExecution<'a> {
     pub(super) fn native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         self.io().and_then(PreparationIo::original_native_work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native_context(&self) -> Option<&Arc<crate::runtime::NativeTaskContext>> {
-        self.native.map(|native| native.context)
-    }
     pub(super) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native { return Some(native.context.context()); }
@@ -59,14 +56,9 @@ impl<'a> StockExecution<'a> {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn native_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
-
 pub(crate) fn stock_boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.and_then(PreparationIo::original_native_work).is_some() { return native_boundary(code, reason); }
+    if io.and_then(PreparationIo::original_native_work).is_some() { return crate::Error::NativeBoundary { code, reason }; }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
     match code {
@@ -126,11 +118,11 @@ pub(crate) fn stock_key(arguments: Arguments<'_>, io: Option<&PreparationIo>) ->
         }
         let mut size = Size(0);
         size.write_fmt(arguments).map_err(|_| Error::Invalid("stock key size overflow".into()))?;
-        io.claim(size.0 as u64)?;
+        io.retain_owned(size.0 as u64)?;
         io.allocation_attempt(size.0 as u64)?;
         let mut key = String::new();
         key.try_reserve_exact(size.0).map_err(Error::Allocation)?;
-        io.claim(key.capacity().saturating_sub(size.0) as u64)?;
+        io.retain_owned(key.capacity().saturating_sub(size.0) as u64)?;
         io.preflight(acyclic_fs::WorkCounters { bytes_copied: size.0 as u64, ..Default::default() })?;
         key.write_fmt(arguments).map_err(|_| Error::Invalid("stock key formatting failed".into()))?;
         io.spent(acyclic_fs::WorkCounters { bytes_copied: key.len() as u64, ..Default::default() })?;
@@ -153,16 +145,16 @@ pub(crate) fn stock_vec_push<T>(values: &mut Vec<T>, value: T, io: Option<&Prepa
                 let mut custody = work.claim(bytes)?;
                 values.try_reserve_exact(1).map_err(Error::Allocation)?;
                 let actual = (values.capacity() - before).checked_mul(std::mem::size_of::<T>())
-                    .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "stock vector capacity overflow"))?;
+                    .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "stock vector capacity overflow" })?;
                 let completed = custody.reconcile_capacity(actual as u64);
                 io.absorb_native_custody(custody)?;
                 completed?;
             }
             if values.len() == values.capacity() {
-                io.claim(bytes)?;
+                io.retain_owned(bytes)?;
                 io.allocation_attempt(bytes)?;
                 values.try_reserve_exact(1).map_err(Error::Allocation)?;
-                io.claim(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
+                io.retain_owned(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
             }
         }
     }
@@ -194,10 +186,10 @@ pub(crate) fn stock_string_push(text: &mut String, suffix: &str, io: Option<&Pre
                 completed?;
             }
             if target > text.capacity() {
-                io.claim(extra as u64)?;
+                io.retain_owned(extra as u64)?;
                 io.allocation_attempt(extra as u64)?;
                 text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
-                io.claim((text.capacity() - target) as u64)?;
+                io.retain_owned((text.capacity() - target) as u64)?;
             }
         }
     }
@@ -239,7 +231,7 @@ pub(super) async fn stage_media_bytes(journal: &dyn ExecutionJournal, operation:
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.claim(bytes.len() as u64)?;
+        io.retain_owned(bytes.len() as u64)?;
         io.allocation_attempt(bytes.len() as u64)?;
         io.charge(acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() })?;
     }
@@ -268,7 +260,7 @@ pub(super) async fn stage_bytes(journal: &dyn ExecutionJournal, operation: Opera
         || reference.descriptor().sha256() != &digest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if io.and_then(PreparationIo::original_native_work).is_some() {
-            return Err(native_boundary(crate::wire::ErrorCode::Storage, "execution journal staged different private JSON bytes"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "execution journal staged different private JSON bytes" });
         }
         return Err(Error::Storage("execution journal staged different private JSON bytes".into()));
     }
@@ -294,9 +286,8 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
     io: Option<&PreparationIo>) -> Result<Vec<crate::tool::ToolDefinition>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (definitions, custody) = registry.definitions_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+    if let Some(io) = io && io.original_native_work().is_some() {
+        let definitions = registry.definitions(Some(io))?;
         let mut selected = Vec::new();
         for definition in definitions {
             let key = stock_key(format_args!("tool:call:{}", definition.name), Some(io))?;
@@ -304,7 +295,7 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
         }
         return Ok(selected);
     }
-    Ok(registry.definitions()?.into_iter().filter(|definition| scope.grants()
+    Ok(registry.definitions(None)?.into_iter().filter(|definition| scope.grants()
         .contains(&capability::tool_call(&definition.name))).collect())
 }
 
@@ -351,7 +342,7 @@ pub(crate) fn replay_execution_with_native_work<'a>(journal: &'a dyn ExecutionJo
     work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'a, (u64, Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>> {
     if !journal.supports_native_execution(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution journal is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution journal is unavailable" });
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
@@ -359,7 +350,7 @@ pub(crate) fn replay_execution_with_native_work<'a>(journal: &'a dyn ExecutionJo
         let (tail, records) = replay_execution(journal, operation, maximum, select, Some(&io)).await?;
         let mut retained = native_size_add(std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
             (records.capacity() as u64).checked_mul(std::mem::size_of::<ExecutionRecord>() as u64)
-                .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Invalid, "execution replay size overflow"))?)?;
+                .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "execution replay size overflow" })?)?;
         for record in &records {
             retained = native_size_add(retained, record.idempotency_key.capacity() as u64)?;
             let event_bytes = match &record.event {
@@ -393,7 +384,7 @@ pub(crate) fn stage_json_with_native_work<'a, T: Serialize + Sync>(journal: &'a 
     operation: OperationId, key: &'a str, value: &'a T, work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
     if !journal.supports_native_execution(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution journal is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution journal is unavailable" });
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
@@ -410,11 +401,11 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     reference: &'a FileRef, work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'a, (T, acyclic_fs::NativeAllocation)>> {
     if !journal.supports_native_execution(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution journal is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution journal is unavailable" });
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json::<T>(journal, reference, Some(&io)).await?.into_retained();
+        let value: T = retain_preparation(load_json::<T>(journal, reference, Some(&io)).await?);
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;
@@ -440,7 +431,7 @@ impl StockExecutor {
         tools: &ToolRegistry, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeStockExecutor> {
         if !provider.supports_native_model(work)? {
-            return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native model provider is unavailable"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native model provider is unavailable" });
         }
         pipeline.validate(Some(&PreparationIo::from_native_work(work)?))?;
         let io = PreparationIo::from_native_work(work)?;
@@ -461,7 +452,7 @@ impl NativeStockExecutor {
     fn require_original_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.remaining()?;
         if !std::ptr::eq(self.custody.work().runtime_meter(), work.runtime_meter()) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock configuration differs from its original work"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock configuration differs from its original work" });
         }
         Ok(())
     }
@@ -497,10 +488,10 @@ impl NativeStockExecutor {
     ) -> Result<Self> {
         self.require_original_work(work)?;
         if !context.native_metadata_matches(work) || !context.context().original_task_binding_matches(task, fence) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock owner differs from the issued native task context"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock owner differs from the issued native task context" });
         }
         if !host.supports_native_execution(work)? {
-            return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock task owner is unavailable"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock task owner is unavailable" });
         }
         let io = PreparationIo::from_native_work(work)?;
         let (fence, fence_custody) = fence.clone_with_native_work(work)?;
@@ -520,15 +511,15 @@ impl NativeStockExecutor {
     ) -> Result<Self> {
         self.require_original_work(work)?;
         let Some((context, _)) = self.context.as_ref() else {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy has no original context binding"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy has no original context binding" });
         };
         context.context().validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
         if let Some(policy) = &policy {
             let Some((_, original)) = context.context().stock_tool_policy_binding() else {
-                return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy is not issued by this context"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not issued by this context" });
             };
             if !Arc::ptr_eq(policy, original) {
-                return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy is not issued by this context"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not issued by this context" });
             }
         }
         let identity = if let Some(policy) = &policy {
@@ -567,7 +558,7 @@ impl NativeStockExecutor {
     /// Sets the same output token budget as the ordinary composition.
     pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
         if maximum == 0 {
-            return Err(native_boundary(crate::wire::ErrorCode::Invalid, "model output token budget is zero"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "model output token budget is zero" });
         }
         self.stock.max_output_tokens = Some(maximum);
         Ok(self)
@@ -585,7 +576,7 @@ impl NativeStockExecutor {
         if self.context.as_ref().is_none_or(|(original, operation)|
             *operation != input.operation_id || !Arc::ptr_eq(original, context))
             || !context.native_metadata_matches(work) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "native stock execution differs from its original binding"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native stock execution differs from its original binding" });
         }
         native_execution_supported(&self.stock, context, journal, work)
     }
@@ -617,20 +608,20 @@ pub(super) fn native_execution_supported(
 ) -> Result<()> {
     work.remaining()?;
     if !context.native_metadata_matches(work) {
-        return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock context lacks its original native custody"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock context lacks its original native custody" });
     }
     if !journal.supports_native_execution(work)? || !stock.provider.supports_native_model(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock producer is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock producer is unavailable" });
     }
     if context.context().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
-        return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock owner differs from the issued context"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock owner differs from the issued context" });
     }
     if let Some((host, task, fence)) = stock.task.as_ref() {
         if !context.context().original_task_binding_matches(*task, fence) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock execution owner differs from the issued context"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock execution owner differs from the issued context" });
         }
         if !host.supports_native_execution(work)? {
-            return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock task owner is unavailable"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock task owner is unavailable" });
         }
     }
     stock.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
@@ -640,17 +631,16 @@ pub(super) fn native_execution_supported(
     }
     if let Some(policy) = &stock.policy {
         let Some((_, original)) = context.context().stock_tool_policy_binding() else {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy is not the original context policy"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not the original context policy" });
         };
         if !Arc::ptr_eq(policy, original) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy is not the original context policy"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not the original context policy" });
         }
     }
     context.context().validate_stock_scope_with_native_work(&stock.tool_scope, stock.limits, work)?;
     if context.context().scope().run_limits() != stock.tool_scope.run_limits()
         || context.context().scope().extensions() != stock.tool_scope.extensions() {
-        return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "stock task context differs from execution binding"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock task context differs from execution binding" });
     }
     Ok(())
 }
@@ -689,12 +679,12 @@ impl StockExecutor {
     /// Summarizes with the same stock admission, accounting and recovery engine.
     pub async fn summarize(&self, journal: &dyn ExecutionJournal, operation: OperationId,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize(journal, operation, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, None, operation, 0, source, instruction).await
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(&self, journal: &dyn ExecutionJournal, input: &TurnInput, step: u32,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize_in_turn(journal, input, step, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, Some(input), input.operation_id, step, source, instruction).await
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
@@ -705,9 +695,6 @@ impl StockExecutor {
     pub async fn completed_tool_prefix(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
         step: u32, call: Option<&str>) -> Result<crate::model::PreparedModelRequest> {
         StockExecution::ordinary(self).completed_tool_prefix(journal, input, step, call).await
-    }
-    pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
-        StockExecution::ordinary(self).verify_task_context_binding(operation)
     }
 
 }
@@ -730,17 +717,16 @@ pub(super) fn stock_model_call(parent: OperationId, step: u32, call: String, nam
     arguments: Value, io: Option<&PreparationIo>) -> Result<ToolInvocation> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return ToolInvocation::for_model_call_with_native_work(parent, step, call, name, arguments, work);
+        return ToolInvocation::for_model_call(parent, step, call, name, arguments, Some(work));
     }
-    Ok(ToolInvocation::for_model_call(parent, step, call, name, arguments))
+    ToolInvocation::for_model_call(parent, step, call, name, arguments, None)
 }
 
 pub(super) fn stock_tool_lookup<'a>(registry: &'a ToolRegistry, name: &str,
     io: Option<&PreparationIo>) -> Result<&'a crate::tool::Tool> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.and_then(PreparationIo::original_native_work).is_some() {
-        return registry.get(name, io)?.ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::NotFound, "tool is not bound to this stock composition"));
+        return registry.get(name, io)?.ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound, reason: "tool is not bound to this stock composition" });
     }
     registry.get(name, io)?.ok_or_else(|| Error::NotFound(format!("tool {name}")))
 }
@@ -760,8 +746,7 @@ pub(super) fn stock_authorize_tool(tool: &crate::tool::Tool, context: Option<&cr
     scope: &RuntimeScope, invocation: &ToolInvocation, io: Option<&PreparationIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        let context = context.ok_or_else(|| native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "native tool authorization has no issued context"))?;
+        let context = context.ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native tool authorization has no issued context" })?;
         return tool.executor.authorize_with_native_context(context, invocation, work);
     }
     if let Some(context) = context {
@@ -776,8 +761,7 @@ pub(super) async fn stock_execute_tool(tool: &crate::tool::Tool,
     io: Option<&PreparationIo>) -> Result<ToolResult> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let context = context.as_ref().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "native tool execution has no issued context"))?;
+        let context = context.as_ref().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native tool execution has no issued context" })?;
         let (result, custody) = tool.executor.execute_with_native_context(context, invocation, work)?.await?;
         io.absorb_native_custody(custody)?;
         return Ok(result);
@@ -794,8 +778,7 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
     io: Option<&PreparationIo>) -> Result<Option<ToolResult>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let context = context.as_ref().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "native tool reconciliation has no issued context"))?;
+        let context = context.as_ref().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "native tool reconciliation has no issued context" })?;
         let (result, custody) = tool.executor.reconcile_with_native_context(context, invocation, work)?.await?;
         io.absorb_native_custody(custody)?;
         return Ok(result);
@@ -807,31 +790,18 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
     }
 }
 
-pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition, value: &Value,
-    limits: Limits, io: Option<&PreparationIo>) -> Result<crate::model::ToolResultContent> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (content, custody) = definition.validate_projection_with_native_work(value, limits, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(content);
-    }
-    let content = definition.validate_projection(value)?;
-    content.validate_limits(limits, &mut None)?;
-    Ok(content)
-}
-
 pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
         let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
         io.absorb_native_custody(custody)?;
-        let content = stock_projection_content(&tool.definition, &value, limits, Some(io))?;
+        let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
     let value = tool.projection.project(invocation, result)?;
-    let content = stock_projection_content(&tool.definition, &value, limits, io)?;
+    let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));
     }
@@ -862,16 +832,14 @@ impl StockExecution<'_> {
     ) -> Result<Option<ToolCallProgress>> {
         let Some(native) = self.native else { return Ok(None); };
         let context = native.context.context();
-        let work = native.io.original_native_work().ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
+        let work = native.io.original_native_work().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "stock policy has no original work" })?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
-            let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
+            let Some(((approval_operation, request), custody)) = context.stock_policy_approval(
                 policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;
             if !self.stock.tool_scope.grants().contains(capability::INTERACTION_ROUTE) {
-                return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
-                    "stock tool approval requires interaction:route"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock tool approval requires interaction:route" });
             }
             let task = self.stock.task.as_ref().map_or(TaskId::from_bytes(operation.into_bytes()), |(_, task, _)| *task);
             let approval = stock_task_interaction_id(task, approval_operation, Some(native.io))?;
@@ -883,7 +851,7 @@ impl StockExecution<'_> {
                     else { Ok(Some(ToolCallProgress::Pending(invocation.operation_id))) };
             };
             if matches!(outcome, InteractionOutcome::Answered { .. }) {
-                return Err(native_boundary(crate::wire::ErrorCode::Conflict, "approval resolved with a question answer"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "approval resolved with a question answer" });
             }
             match check_tool_approval(outcome) {
                 Ok(()) => {}
@@ -897,10 +865,10 @@ impl StockExecution<'_> {
 }
 
 pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<&PreparationIo>) -> Result<()> {
+    crate::executor::with_history_io(io, |work|
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        invocation.validate_with_native_work(work)?;
-        let io = io.expect("original work belongs to this IO");
+    if let Some(io) = io && io.original_native_work().is_some() {
         crate::contract::json_owned_value_shape_bounded(
             &invocation.arguments, crate::contract::JsonBounds {
                 maximum_bytes: u64::MAX, maximum_items: io.remaining()?.items_examined, maximum_depth: 256,
@@ -908,7 +876,7 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
         )?;
         return Ok(());
     }
-    invocation.validate()
+    Ok(())
 }
 
 pub(super) async fn stock_tool_rejection(
@@ -922,24 +890,23 @@ pub(super) async fn stock_tool_rejection(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_size_add(left: u64, right: u64) -> Result<u64> {
-    left.checked_add(right).ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage,
-        "native stock logical payload size overflow"))
+    left.checked_add(right).ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native stock logical payload size overflow" })
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_events_owned_bytes(events: &Vec<ModelEvent>) -> Result<u64> {
     let slots = (events.capacity() as u64).checked_mul(std::mem::size_of::<ModelEvent>() as u64)
-        .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native event slots overflow"))?;
+        .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native event slots overflow" })?;
     events.iter().try_fold(native_size_add(std::mem::size_of::<Vec<ModelEvent>>() as u64, slots)?,
         |bytes, event| native_size_add(bytes, event.logical_owned_bytes()?.checked_sub(
             std::mem::size_of::<ModelEvent>() as u64,
-        ).ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native event metadata extent differs"))?))
+        ).ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native event metadata extent differs" })?))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_output_payload_bytes(output: &TurnOutput) -> Result<u64> {
     let slots = (output.attachments.capacity() as u64).checked_mul(std::mem::size_of::<Attachment>() as u64)
-        .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native attachment slots overflow"))?;
+        .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native attachment slots overflow" })?;
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
     bytes = native_size_add(bytes, crate::contract::json_value_logical_owned_bytes(&output.metadata)?)?;
     for attachment in &output.attachments {
@@ -981,7 +948,7 @@ impl StockExecutor {
     /// Copies the actual configured stock composition, not its issued task context.
     pub(crate) fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<NativeStockExecutor> {
         if !self.supports_native_execution(work)? {
-            return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock composition is unavailable"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock composition is unavailable" });
         }
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<NativeStockExecutor>() as u64)?)?;
@@ -1026,7 +993,7 @@ pub(crate) fn retained_model_step_with_native_work<'a>(
     purpose: ModelPurpose, limits: Limits, work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'a, (RetainedModelStep, acyclic_fs::NativeAllocation)>> {
     if !journal.supports_native_execution(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution journal is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution journal is unavailable" });
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
@@ -1039,7 +1006,7 @@ pub(crate) fn retained_model_step_with_native_work<'a>(
         bytes = native_size_add(bytes, native_events_owned_bytes(&retained.events)? - std::mem::size_of::<Vec<ModelEvent>>() as u64)?;
         bytes = native_size_add(bytes, (retained.admission.calls.capacity() as u64)
             .checked_mul(std::mem::size_of::<String>() as u64)
-            .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native admission slots overflow"))?)?;
+            .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native admission slots overflow" })?)?;
         for call in &retained.admission.calls { bytes = native_size_add(bytes, call.capacity() as u64)?; }
         work.remaining()?;
         Ok((retained, io.into_native_custody(bytes)?))
@@ -1053,11 +1020,11 @@ pub(crate) fn completed_tool_projection_with_native_work<'a>(
     work: &'a acyclic_fs::NativeMaterializationWork,
 ) -> Result<crate::NativeFutureBundle<'a, (crate::model::ToolResultContent, acyclic_fs::NativeAllocation)>> {
     if !journal.supports_native_execution(work)? {
-        return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution journal is unavailable"));
+        return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution journal is unavailable" });
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let content = completed_tool_projection(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
+        let content = completed_tool_projection(journal, records, step, expected, tools, limits, Some(&io)).await?;
         let retained = content.logical_owned_bytes()?;
         work.remaining()?;
         Ok((content, io.into_native_custody(retained)?))

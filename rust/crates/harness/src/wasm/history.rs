@@ -79,13 +79,13 @@ impl WasmBrowserHistoryReader {
         let (client, issuer) = options.connect().await?;
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let inner =
-            HistoryReader::new(&client, verifier.audience(), verifier.clone()).map_err(js_error)?;
+            HistoryReader::new(&client, verifier.audience(), &(verifier), &mut None).map_err(js_error)?;
         Ok(Self { inner })
     }
 
     /// Captures a committed traversal boundary; subsequent appends are excluded.
     pub async fn pin(&self, after_revision: u64) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.pin(after_revision).await.map_err(js_error)?)
+        to_js(&self.inner.pin(after_revision, None).await.map_err(js_error)?)
     }
 
     /// Runs the same bounded page and attestation checks as the native reader.
@@ -96,7 +96,7 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .read_page(&cursor, limits)
+                .read_page(&cursor, limits, None)
                 .await
                 .map_err(js_error)?,
         )
@@ -124,8 +124,8 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .operation_event(operation)
-                .await
+                .operation_event(operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None)
+                .await.map(|(event, _)| event)
                 .map_err(js_error)?,
         )
     }
@@ -153,10 +153,10 @@ impl WasmBrowserAggregate {
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let authority = verifier.audience().clone();
         let inner = if let Some(snapshot) = snapshot {
-            StreamAggregate::open_from_snapshot(&client, authority, verifier, schemas, snapshot)
+            StreamAggregate::open(&client, authority, verifier, schemas, Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await
         } else {
-            StreamAggregate::open(&client, authority, verifier, schemas).await
+            StreamAggregate::open(&client, authority, verifier, schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await
         }
         .map_err(js_error)?;
         Ok(Self { inner })
@@ -165,7 +165,7 @@ impl WasmBrowserAggregate {
     /// Publishes the event and archived-operation location in one existing commit.
     pub async fn execute(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
         let command: Command = from_js(command)?;
-        to_js(&self.inner.execute(command).await.map_err(js_error)?)
+        to_js(&self.inner.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await.map_err(js_error)?)
     }
 
     /// Reconciles only the exact admitted command; no replacement dispatch is authored.

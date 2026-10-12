@@ -184,7 +184,7 @@ impl ExecutionJournal for JournalSpy {
     reason = "one retained admission and replay scenario keeps pre-I/O negative controls with its positive result"
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
-    let provider = ProviderRef::new("file-replay", "filesystem", "2")?;
+    let provider = ProviderRef::new("file-replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
@@ -203,10 +203,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         },
     );
     let read_grant = volume.capability(VolumeOperation::Read)?;
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -219,15 +216,14 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "tool:call:acyclic.patch_file".to_owned(),
             read_grant.clone(),
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let writer = Arc::new(FilesystemContentPublisher::new(
         filesystem.clone(),
-        volume.clone(),
+        &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &signed,
-        65_536,
+        65_536, None,
     )?);
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
@@ -247,7 +243,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     });
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let mutations = [
         (
@@ -328,9 +324,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(task_definition)?;
-    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1")?;
+    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([84; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
@@ -378,9 +374,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             Some(ContentBindings {
                 reader: Arc::new(FilesystemContentVerifier::new(
                     filesystem.clone(),
-                    issuer.verifier(&mut None).expect("verifier copy"),
-                    signed.clone(),
-                    65_536,
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &signed,
+                    65_536, None,
                 )?),
                 writer: Some(writer.clone()),
             }),
@@ -393,10 +389,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             inner: Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
-                signed.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+                &signed,
+                65_536, None,
             )?),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),

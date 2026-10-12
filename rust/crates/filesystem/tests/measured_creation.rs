@@ -392,9 +392,9 @@ mod source_bound_lost_ack {
         std::fs::create_dir_all(directory.path().join("unresolved/deeper"))?;
         std::fs::write(directory.path().join("unresolved/deeper/file"), b"unread source")?;
         let reference = SourceReference { identity: [61; 16], epoch: 4 };
-        let source = Arc::new(NativeDemandSource::open_with_reference_measured(
-            directory.path().to_path_buf(), FilesystemProfile::Portable, VolumeLimits::default(),
-            reference, None, budget, &cancellation,
+        let source = Arc::new(NativeDemandSource::open(
+            std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
+            Some(reference), None, budget, &cancellation,
         ).await?.value);
         let store = MemoryLazyWorkspaceStore::default();
         let failure = LazyWorkspace::attach_with_operation_measured(
@@ -422,9 +422,9 @@ mod source_bound_lost_ack {
 
         // Reconstruct both production adapters, without the fault wrapper.
         let reopened = Fs::from_memory_providers(stream, objects, bucket);
-        let source = Arc::new(NativeDemandSource::open_with_reference_measured(
-            directory.path().to_path_buf(), FilesystemProfile::Portable, VolumeLimits::default(),
-            reference, None, budget, &cancellation,
+        let source = Arc::new(NativeDemandSource::open(
+            std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
+            Some(reference), None, budget, &cancellation,
         ).await?.value);
         assert_eq!(source.reference(), reference);
         let recovered = LazyWorkspace::attach_with_operation_measured(

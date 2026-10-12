@@ -202,7 +202,7 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate_with_native_work(native)?;
+            provider.validate(&mut Some(&mut crate::store::native_work_io(native)?))?;
         }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -349,12 +349,14 @@ pub struct ContentGrant {
 }
 
 impl ContentGrant {
-    /// Constructs read authority only from the sealed kernel proof.
-    pub(crate) fn from_verified_project_source(
-        proof: &crate::source_authorization::VerifiedProjectSourceRead<'_>,
+    /// Constructs read authority from authenticated project-source authorization.
+    pub(crate) fn from_project_source(
+        authorization: &crate::source_authorization::ProjectSourceAuthorization,
+        verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        Ok(Self { volume: proof.project().copy(work)?, operation: VolumeOperation::Read,
+        authorization.verify_scope_with_work(verifier, work)?;
+        Ok(Self { volume: authorization.project.copy(work)?, operation: VolumeOperation::Read,
             exact_file: None, directory_prefix: Some(String::new()) })
     }
 
@@ -880,7 +882,7 @@ pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
-        self.generation.validate()?;
+        self.generation.validate(&mut None)?;
         if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
@@ -1251,7 +1253,7 @@ pub fn decode_attachment_manifest(
             }
         }
         let mut failure = None;
-        let result = io.decode_seed(
+        let result = io.decode(
             ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
             bytes, crate::wire::ErrorCode::Invalid,
         );
@@ -1266,21 +1268,21 @@ pub fn decode_attachment_manifest(
             }
         };
         let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
-            .checked_add(manifest_owned_bytes(&decoded, decoded.capacity())?)
+            .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
-        decoded.substitute_owned(actual)?;
+        decoded.1.substitute(actual)?;
         let encoded_hold;
-        let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));
         }
         drop(encoded);
         drop(encoded_hold);
-        if item_count.is_some_and(|count| decoded.len() != count as usize) {
+        if item_count.is_some_and(|count| decoded.0.len() != count as usize) {
             return Err(io.invalid("attachment manifest count is incomplete"));
         }
-        return Ok(decoded.into_retained());
+        return Ok(crate::filesystem::retain_decoded(decoded));
     }
     let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
@@ -2272,7 +2274,7 @@ impl ConversationState {
         if cut <= self.resident_after_sequence() || self.pending_user.is_some() {
             return self.copy(work, retain);
         }
-        crate::projection::validate_model_context_selection_at_revision_with_work(
+        crate::projection::validate_model_context_selection(
             self, selection, cut, work)?;
         let mut temporary = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut calls = BTreeSet::new();
@@ -3194,16 +3196,9 @@ mod tests {
             },
         );
         let read = private.capability(VolumeOperation::Read, &mut None)?;
-        let scope = issuer.root_for_agent(
-            owner,
-            "write",
-            crate::Capabilities::new([write.clone(), read.clone()]),
-        );
+        let scope = issuer.issue("write", &crate::Capabilities::new([write.clone(), read.clone()]), Some(owner), None, &mut None).expect("scope proof");
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Write, u64::MAX, &mut None)?;
-        let unsigned = issuer.root(
-            "copied-capability",
-            crate::Capabilities::new([write.clone()]),
-        );
+        let unsigned = issuer.issue("copied-capability", &crate::Capabilities::new([write.clone()]), None, None, &mut None).expect("scope proof");
         assert!(
             ContentGrant::verify(
                 &issuer.verifier(&mut None).expect("verifier copy"),
@@ -3232,7 +3227,7 @@ mod tests {
             },
         );
         let copied =
-            foreign_issuer.root_for_agent(attached, "copied", crate::Capabilities::new([write]));
+            foreign_issuer.issue("copied", &crate::Capabilities::new([write]), Some(attached), None, &mut None).expect("scope proof");
         assert!(
             ContentGrant::verify(
                 &foreign_issuer.verifier(&mut None).expect("verifier copy"),
@@ -3252,11 +3247,7 @@ mod tests {
             ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
-        let internal_exact = issuer.root_for_agent(
-            owner,
-            "internal-exact",
-            crate::Capabilities::new([internal.read_capability()?]),
-        );
+        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability()?]), Some(owner), None, &mut None).expect("scope proof");
         assert!(matches!(
             ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
@@ -3298,11 +3289,7 @@ mod tests {
                 .require(&private, VolumeOperation::Write, None)
                 .is_err()
         );
-        let foreign_owner_scope = foreign_issuer.root_for_agent(
-            attached,
-            "copied-read",
-            crate::Capabilities::new([read]),
-        );
+        let foreign_owner_scope = foreign_issuer.issue("copied-read", &crate::Capabilities::new([read]), Some(attached), None, &mut None).expect("scope proof");
         assert!(
             foreign_issuer
                 .delegate_private_file_read(&foreign_owner_scope, attached, "invalid", &exact_file)
@@ -3314,7 +3301,7 @@ mod tests {
     fn file(agent: AgentId, path: &str) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("acyclic", "filesystem", "2")?,
+                ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
@@ -3498,8 +3485,8 @@ mod tests {
             }
         }
         let owner = VolumeOwner::Agent(AgentId::from_bytes([1; 16]));
-        let manifest_provider = ProviderRef::new("test", "filesystem", "a")?;
-        let member_provider = ProviderRef::new("test", "filesystem", "b")?;
+        let manifest_provider = ProviderRef::new("test".into(), "filesystem".into(), "a".into(), &mut None)?;
+        let member_provider = ProviderRef::new("test".into(), "filesystem".into(), "b".into(), &mut None)?;
         let member = FileRef::new(
             VolumeRef::new(
                 member_provider.clone(),
@@ -3591,11 +3578,7 @@ mod tests {
                 id: AgentId::from_bytes([1; 16]).to_string(),
             },
         );
-        let scope = issuer.root_for_agent(
-            AgentId::from_bytes([1; 16]),
-            "exact-member",
-            crate::Capabilities::new([member.read_capability()?]),
-        );
+        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability()?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)],
             Some(Arc::new(StaticMount {

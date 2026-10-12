@@ -34,7 +34,7 @@ impl PinnedContextStage {
         let revision = revision.into();
         crate::contract::validate_component_label(&name, "context snapshot")?;
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
-        validate_reference(&reference, limits)?;
+        validate_reference(&reference, limits, None)?;
         let bytes = reader.read(&reference, limits.render_bytes, None)?.await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
@@ -62,30 +62,12 @@ impl PinnedContextStage {
 
 }
 
-fn validate_reference(reference: &FileRef, limits: Limits) -> Result<()> {
-    limits.validate(&mut None)?;
-    limits.validate_file(reference, &mut None)?;
+fn validate_reference(reference: &FileRef, limits: Limits, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+    crate::executor::with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() > limits.render_bytes
     {
-        return Err(Error::Invalid(
-            "context snapshot file exceeds JSON/render bounds".into(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn validate_reference_native(
-    reference: &FileRef, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let mut observer = crate::store::history::native_work_io(work)?;
-    limits.validate(&mut Some(&mut observer))?;
-    limits.validate_file(reference, &mut Some(&mut observer))?;
-    if reference.descriptor().media_type() != "application/json"
-        || reference.descriptor().byte_length() > limits.render_bytes
-    {
-        return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
+        return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
             "context snapshot file exceeds JSON/render bounds"));
     }
     Ok(())
@@ -99,7 +81,7 @@ impl ContextStage for PinnedContextStage {
     fn validate(&self) -> Result<()> {
         crate::contract::validate_component_label(&self.name, "context snapshot")?;
         crate::contract::validate_component_label(&self.revision, "context snapshot revision")?;
-        validate_reference(&self.reference, self.limits)?;
+        validate_reference(&self.reference, self.limits, None)?;
         super::validate_projected_context(&self.context, self.limits, None)
     }
 
@@ -121,7 +103,7 @@ impl ContextStage for PinnedContextStage {
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             let limits = super::restrict_context_limits(self.limits, limits, None)?;
-            validate_reference(&self.reference, limits)?;
+            validate_reference(&self.reference, limits, None)?;
             let composed =
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
             // A new admission still requires the original bound reader's current authority and retained content.
@@ -137,15 +119,14 @@ impl ContextStage for PinnedContextStage {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn validate_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) || !crate::is_valid_component_label(&self.revision) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                "context snapshot identity is invalid"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context snapshot identity is invalid" });
         }
-        validate_reference_native(&self.reference, self.limits, work)?;
-        if !self.reader.supports_read(self.reference.volume(), Some(&crate::executor::PreparationIo::from_native_work(work)?))? {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context snapshot reader has no original native capability"));
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        validate_reference(&self.reference, self.limits, Some(&io))?;
+        if !self.reader.supports_read(self.reference.volume(), Some(&io))? {
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context snapshot reader has no original native capability" });
         }
-        super::validate_projected_context(&self.context, self.limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+        super::validate_projected_context(&self.context, self.limits, Some(&io))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -169,12 +150,13 @@ impl ContextStage for PinnedContextStage {
     ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
         self.validate_native(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-            validate_reference_native(&self.reference, limits, work)?;
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let limits = super::restrict_context_limits(self.limits, limits, Some(&io))?;
+            validate_reference(&self.reference, limits, Some(&io))?;
             let composed = super::selection::place_snapshot_native(
                 context, &self.context, self.placement, limits, work)?;
-            super::verify_file(&self.reference, self.reader.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
-            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&crate::executor::PreparationIo::from_native_work(work)?)).await?;
+            super::verify_file(&self.reference, self.reader.as_ref(), Some(&io)).await?;
+            super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&io)).await?;
             Ok(composed)
         })
     }
