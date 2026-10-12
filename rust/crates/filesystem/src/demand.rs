@@ -834,28 +834,11 @@ impl SourceWatchAllocationCustody {
 /// Live observation of every change made to one source outside every view
 pub trait SourceWatch: Send + Sync {
 
-    /// Delivers the original watch's preceding changes within this allowance,
-    fn fence(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
+    /// Delivers preceding changes within the accounting allowance.
+    fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError>;
 
-    /// Fences this same subscription against the caller's original native
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        crate::native_host::NativeHostWork::check(&work)?;
-        Err(DemandError::NativeWorkUnavailable)
-    }
-
-    /// Quiesces this original subscription using the same native engine.
-    fn stop(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
-
-    /// Quiesces this subscription against the original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stop_with_native_work(&self, _work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        Err(DemandError::NativeWorkUnavailable)
-    }
+    /// Quiesces this subscription within the accounting allowance.
+    fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError>;
 
     /// Retires this owned subscription against its original birth-paid cleanup.
     #[cfg(not(target_arch = "wasm32"))]
@@ -883,6 +866,24 @@ pub trait SourceWatch: Send + Sync {
     fn is_exact(&self) -> bool;
 }
 
+/// Fences a watch using standalone or original native accounting.
+pub fn fence_watch<W: crate::facade::FsWork>(
+    watch: &dyn SourceWatch, work: W, cancellation: &CancellationToken,
+) -> W::Output<(), DemandError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = watch.fence(&mut accounting);
+    work.finish(result, &accounting)
+}
+
+/// Stops a watch using standalone or original native accounting.
+pub fn stop_watch<W: crate::facade::FsWork>(
+    watch: &dyn SourceWatch, work: W, cancellation: &CancellationToken,
+) -> W::Output<(), DemandError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = watch.stop(&mut accounting);
+    work.finish(result, &accounting)
+}
+
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 fn cancellation_error(error: crate::cancellation::CancellationWaitError) -> DemandError {
     match error {
@@ -908,9 +909,6 @@ struct NativeControlCursor {
     born: u128,
     retired: u128,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type NativeObserverOverflow = std::sync::Mutex<Vec<DemandObserverCustody>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl DemandObserverCustody {
@@ -1003,44 +1001,6 @@ impl NativeDemandReadMeter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeCheckoutControlSink<'a> {
-    roots: &'a mut DemandCancellationRoots,
-    original: &'a std::sync::Arc<NativeDemandReadMeter>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeCheckoutControlSink<'_> {
-    pub(crate) fn owns(
-        &self, original: &std::sync::Arc<NativeDemandReadMeter>,
-        token: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-    ) -> bool {
-        std::sync::Arc::ptr_eq(self.original, original)
-            && self.roots.owns_native_control(token)
-    }
-
-    pub(crate) fn register(
-        &mut self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget,
-    ) -> Result<(), DemandError> {
-        let registered_native = self.roots.owns_native_control(token);
-        if !registered_native
-            && (token.retained_payload_bytes() != 0 || token.native_control_events() != (0, 0)) {
-            return Err(DemandError::InvalidRequest);
-        }
-        if !token.bind_native_original(self.original) { return Err(DemandError::InvalidRequest); }
-        self.roots.retain_observer(std::sync::Arc::clone(token), allocations, work, budget)?;
-        let mut overflow = self.roots.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        let custody = self.roots.observers.iter_mut().flatten()
-            .chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut()))
-            .find(|custody| std::sync::Arc::ptr_eq(&custody.token, token))
-            .expect("registered original constructor token");
-        custody.native.get_or_insert_with(NativeControlCursor::default);
-        Ok(())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct DemandWatchCustody {
     token: std::sync::Weak<SourceWatchAllocationCustody>,
     adopted_bytes: u64,
@@ -1062,7 +1022,7 @@ pub(crate) struct DemandCancellationRoots {
     inline: [Option<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>; 3],
     overflow: Vec<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>,
     observers: [Option<DemandObserverCustody>; 3],
-    observer_overflow: Option<std::sync::Arc<NativeObserverOverflow>>,
+    observer_overflow: Option<std::sync::Arc<std::sync::Mutex<Vec<DemandObserverCustody>>>>,
     pending_items: u64,
     pending_outputs: u64,
     pending_work: WorkCounters,
@@ -1209,10 +1169,10 @@ impl DemandCancellationRoots {
             return Ok(true);
         }
         if self.observer_overflow.is_none() {
-            let bytes = std::mem::size_of::<NativeObserverOverflow>() as u64;
+            let bytes = std::mem::size_of::<std::sync::Mutex<Vec<DemandObserverCustody>>>() as u64;
             allocations.claim_bytes(bytes, 1, work, budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            self.observer_overflow = Some(std::sync::Arc::new(NativeObserverOverflow::default()));
+            self.observer_overflow = Some(std::sync::Arc::new(std::sync::Mutex::<Vec<DemandObserverCustody>>::default()));
         }
         let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if overflow.len() == overflow.capacity() {
@@ -1463,17 +1423,6 @@ impl OriginalDemandWork {
         }
     }
 
-    pub(crate) fn from_native_materialization_work(work: &crate::materializer::NativeMaterializationWork) -> Self {
-        Self {
-            state: Arc::clone(work.native_read_meter()),
-            resource: work.resource_allowance().cloned(),
-            capture_origin: work.capture_origin().cloned(),
-            invocation: work.invocation_view_state().cloned(),
-            #[cfg(feature = "native-mount")]
-            execution: work.source_execution_view().cloned(),
-        }
-    }
-
     pub(crate) fn resource_allowance(&self) -> Option<&Arc<crate::materializer::NativeResourceAllowance>> {
         self.resource.as_ref()
     }
@@ -1492,14 +1441,10 @@ impl OriginalDemandWork {
     }
 
     pub(crate) fn allocation_work(&self) -> Self {
-        Self {
-            state: Arc::clone(&self.state),
-            resource: self.resource.clone(),
-            capture_origin: self.capture_origin.clone(),
-            invocation: self.invocation.clone(),
-            #[cfg(feature = "native-mount")]
-            execution: None,
-        }
+        let work = self.clone();
+        #[cfg(feature = "native-mount")]
+        let work = Self { execution: None, ..work };
+        work
     }
 
     pub(crate) fn meter(&self) -> &std::sync::Arc<NativeDemandReadMeter> { &self.state }
@@ -1555,22 +1500,6 @@ impl<T: AsMut<crate::demand::DemandWork>> NativeDemandReadMeter<T> {
 
     pub(crate) fn with_original_leaf<R>(&self, operation: impl FnOnce(&mut T) -> R) -> R {
         operation(&mut *self.lock())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeDemandReadMeter {
-    pub(crate) fn with_native_checkout_controls<T>(
-        self: &std::sync::Arc<Self>,
-        operation: impl FnOnce(
-            &mut NativeCheckoutControlSink<'_>,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut WorkCounters, WorkBudget, &CancellationToken,
-        ) -> T,
-    ) -> Result<T, DemandError> {
-        let mut original = self.lock();
-        let (mut sink, allocations, work, budget, cancellation) = original.native_checkout_control_parts(self);
-        Ok(operation(&mut sink, allocations, work, budget, cancellation))
     }
 }
 
@@ -2159,17 +2088,6 @@ impl DemandWork {
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn partition_native_work_items(&mut self, items: u64) -> Result<(), DemandError> {
-        let pending_work = self.cancellation_wait.pending_work.items_examined
-            .checked_sub(items).ok_or(DemandError::InvalidRequest)?;
-        let pending_items = self.cancellation_wait.pending_items.checked_add(items)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.cancellation_wait.pending_work.items_examined = pending_work;
-        self.cancellation_wait.pending_items = pending_items;
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refund_native_work(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
             let original = self.with_resource_scope(None, |work| work.refund_native_work(unused));
@@ -2427,16 +2345,6 @@ impl DemandWork {
         WorkBudget, &CancellationToken,
     ) {
         (&mut self.allocations, &mut self.work, self.budget, &self.cancellation)
-    }
-
-    fn native_checkout_control_parts<'a>(
-        &'a mut self, original: &'a std::sync::Arc<NativeDemandReadMeter>,
-    ) -> (
-        NativeCheckoutControlSink<'a>, &'a mut crate::kernel::allocation::AllocationLedger,
-        &'a mut WorkCounters, WorkBudget, &'a CancellationToken,
-    ) {
-        let sink = NativeCheckoutControlSink { roots: &mut self.cancellation_wait, original };
-        (sink, &mut self.allocations, &mut self.work, self.budget, &self.cancellation)
     }
 
     pub(crate) fn owns_native_checkout_token(
@@ -3200,22 +3108,12 @@ struct FilteredWatch {
 }
 
 impl SourceWatch for FilteredWatch {
-    fn fence(&self, budget: WorkBudget, cancellation: &CancellationToken) -> DemandResult<()> {
-        self.inner.fence(budget, cancellation)
+    fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        self.inner.fence(accounting)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        self.inner.fence_with_native_work(work)
-    }
-
-    fn stop(&self, budget: WorkBudget, cancellation: &CancellationToken) -> DemandResult<()> {
-        self.inner.stop(budget, cancellation)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stop_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        self.inner.stop_with_native_work(work)
+    fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        self.inner.stop(accounting)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3985,11 +3883,8 @@ pub mod native {
             }
             if self.original_cleanup.is_some() { return Err(DemandError::NativeWorkUnavailable); }
             if self.lease.is_some() {
-                match accounting {
-                    crate::kernel::KernelAccounting::Standalone { work, budget, .. } => work.charge(&publication_cleanup(), budget)?,
-                    crate::kernel::KernelAccounting::BorrowedStandalone { work, budget, .. } => work.charge(&publication_cleanup(), budget)?,
-                    crate::kernel::KernelAccounting::NativeOriginal { .. } => unreachable!(),
-                }
+                let (_, work, budget, _) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                work.charge(&publication_cleanup(), &budget)?;
                 if let Some(mut lease) = self.lease.take() { lease.restore(); }
             }
             Ok(())
@@ -6104,28 +5999,36 @@ pub mod native {
             self.backing.as_ref().map(Arc::clone)
         }
 
-        fn fence(
-            &self, budget: WorkBudget, cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            let mut work = DemandWork::new(budget, cancellation);
-            let result = self.watch.watch.fence_measured(Duration::from_secs(10), &mut work).map(|_| ());
-            work.finish(result)
+        fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+            if let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                return self.watch.watch.fence_with_work(
+                    Duration::from_secs(10), &mut NativeSourceWork::from_native_materialization_work(work),
+                ).map(|_| ());
+            }
+            let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+            let answer = {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                let mut work = DemandWork::new(budget, cancellation);
+                let result = self.watch.watch.fence_with_work(Duration::from_secs(10), &mut work).map(|_| ());
+                work.finish(result)
+            };
+            accept_source_result(answer, accounting)
         }
 
-        fn fence_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-            self.watch.watch.fence_with_work(Duration::from_secs(10), &mut work).map(|_| ())
-        }
-
-        fn stop(
-            &self, budget: WorkBudget, cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            let mut work = DemandWork::new(budget, cancellation);
-            let result = self.watch.watch.stop_measured(&mut work);
-            work.finish(result)
-        }
-
-        fn stop_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-            self.watch.watch.stop_with_work(&mut work)
+        fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+            if let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                return self.watch.watch.stop_with_work(&mut NativeSourceWork::from_native_materialization_work(work));
+            }
+            let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+            let answer = {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                let mut work = DemandWork::new(budget, cancellation);
+                let result = self.watch.watch.stop_with_work(&mut work);
+                work.finish(result)
+            };
+            accept_source_result(answer, accounting)
         }
 
         fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
@@ -6937,7 +6840,7 @@ mod tests {
             watch: &dyn SourceWatch,
             reported: impl Fn(&[SourceChange]) -> bool,
         ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+            fence_watch(watch, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut changes = self.take()?;
             while !reported(&changes) && std::time::Instant::now() < deadline {
@@ -6960,21 +6863,21 @@ mod tests {
         assert!(watch.logical_owned_bytes() <= subscribed.work.peak_allocation_bytes);
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let failure = watch.fence(WorkBudget::default(), &cancellation)
+        let failure = fence_watch(watch.as_ref(), WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled fence must not start host work");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        let failure = watch.stop(WorkBudget::default(), &cancellation)
+        let failure = stop_watch(watch.as_ref(), WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled stop retains the original live subscription");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        watch.fence(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
-        let failure = watch.stop(WorkBudget::default(), &subscription_cancellation)
+        fence_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        let failure = stop_watch(watch.as_ref(), WorkBudget::default(), &subscription_cancellation)
             .expect_err("native quiescence is admitted before starting cleanup");
         assert!(matches!(failure.error, DemandError::Work(_)));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        watch.fence(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
-        watch.stop(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        fence_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        stop_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
         Ok(())
     }
 
