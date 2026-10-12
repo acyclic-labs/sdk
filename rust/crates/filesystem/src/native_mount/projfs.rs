@@ -672,12 +672,6 @@ impl ReadBasis {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Release {
-    Done,
-    Busy,
-}
-
 struct PhysicalEntry {
     file: Mutex<Option<std::fs::File>>,
     directory: bool,
@@ -1741,7 +1735,7 @@ impl Projector {
                 Some(true) => self.remove_tree(projection, &child)?,
                 Some(false) => {
                     let (owned, released) = self.release_recorded(projection, &child)?;
-                    if released == Release::Busy {
+                    if !released {
                         let mut state = lock_recover(&self.state);
                         state.relist.insert(&child, (), projection)?;
                         self.make_pending(&mut state, &child, owned, projection)?;
@@ -1786,7 +1780,7 @@ impl Projector {
 
     fn release_recorded(
         &self, projection: Projection<'_>, path: &MountPath,
-    ) -> Result<(Option<Owned>, Release), NativeMountError> {
+    ) -> Result<(Option<Owned>, bool), NativeMountError> {
         with_keyed_lock(&self.paths, path, projection, || {
             let owned = {
                 let state = lock_recover(&self.state);
@@ -1796,7 +1790,7 @@ impl Projector {
                 }
             };
             let released = release(projection, path, owned.clone())?;
-            if released == Release::Done {
+            if released {
                 let mut state = lock_recover(&self.state);
                 state.written.remove(path, projection)?;
                 state.pending.remove(path, projection)?;
@@ -1830,7 +1824,7 @@ impl Projector {
                 if *is_directory { continue; }
                 let child = owned_child(path, name, projection)?;
                 let (owned, released) = self.release_recorded(projection, &child)?;
-                if released == Release::Busy {
+                if !released {
                     held = true;
                     self.make_pending(&mut lock_recover(&self.state), &child, owned, projection)?;
                 }
@@ -1850,7 +1844,7 @@ impl Projector {
             .and_then(|written| written.owned.as_ref()).cloned();
         if matches!(owned, Some(Owned::Directory(_))) {
             let (_, released) = self.release_recorded(projection, path)?;
-            return Ok(released == Release::Done);
+            return Ok(released);
         }
         remove_vacated(projection, path)?;
         Ok(true)
@@ -2505,50 +2499,73 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
 }
 
 fn release(
-    projection: Projection<'_>,
-    path: &MountPath,
-    owned: Option<Owned>,
-) -> Result<Release, NativeMountError> {
+    projection: Projection<'_>, path: &MountPath, owned: Option<Owned>,
+) -> Result<bool, NativeMountError> {
+    if owned.is_some() && has_pending_capture(projection.captures, path, projection)? { return Ok(false); }
     match owned {
-        None => delete_unowned(projection, path),
-        Some(Owned::Link(owner)) => release_link(projection, path, &owner),
-        Some(Owned::File(state, owner)) => release_file(projection, path, state, &owner),
-        Some(Owned::Directory(owner)) => release_directory(projection, path, &owner),
-        Some(Owned::PhysicalLink(_, owner)) => release_directory(projection, path, &owner),
-        Some(Owned::ProvisionalFile(owner)) => release_directory(projection, path, &owner),
-    }
-}
-
-fn release_file(
-    projection: Projection<'_>, path: &MountPath, state: HostWindowsMetadata,
-    owner: &PhysicalEntry,
-) -> Result<Release, NativeMountError> {
-    if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
-    let deleted = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        delete_file_while_owned(parent, leaf, state, projection.work, owner)
-    });
-    match deleted {
-        Ok(true) => {}
-        Ok(false) => return Ok(Release::Done),
-        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound =>
-            return Ok(Release::Done),
-        Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) =>
-            return Ok(Release::Busy),
-        Err(error) => return Err(error),
-    }
-    with_projection_relative_name(path, projection.work, |relative| clear_tombstone(projection, relative))
-}
-
-fn release_directory(
-    projection: Projection<'_>, path: &MountPath, owner: &PhysicalEntry,
-) -> Result<Release, NativeMountError> {
-    if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
-    // Original namespace/capture admission remains separate from physical birth credit; cancelled source work cannot authorize publication.
-    projection.work.admit(crate::WorkCounters::UNCHARGED)?;
-    match retire_physical_entry(owner, projection.work, Some(projection.work.cancellation())) {
-        Ok(()) => Ok(Release::Done),
-        Err(NativeMountError::Io(error)) if refused_for_now(&error) => Ok(Release::Busy),
-        Err(error) => Err(error),
+        None => {
+            with_projection_relative_name(path, projection.work, |relative| {
+                match prj_delete(projection, relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
+                    Ok(()) => Ok(true),
+                    Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) => Ok(false),
+                    Err(error) if native_mount_error_code(&error).is_some_and(|code| [
+                        HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION,
+                        HR_DIRECTORY_NOT_EMPTY,
+                    ].contains(&code)) => Ok(true),
+                    Err(error) => Err(error),
+                }
+            })
+        }
+        Some(Owned::Link(owner)) => {
+            projection.work.admit(crate::WorkCounters::UNCHARGED)?;
+            match owner.retire(projection.context, Some(projection.work.cancellation())) {
+                Ok(()) => Ok(true),
+                Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+        Some(Owned::File(state, owner)) => {
+            let deleted = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
+                let file = match open_projection_leaf(parent, leaf, true, projection.work) {
+                    Ok(file) => file,
+                    Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error),
+                };
+                if handle_state_measured(&file, projection.work)? != state { return Ok(false); }
+                retire_physical_entry(&owner, projection.work, Some(projection.work.cancellation()))?;
+                crate::native_host::sync_directory_held(parent, &mut { projection.work })
+                    .map_err(detach_work_error)?;
+                Ok(true)
+            });
+            match deleted {
+                Ok(true) => {}
+                Ok(false) => return Ok(true),
+                Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound =>
+                    return Ok(true),
+                Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) =>
+                    return Ok(false),
+                Err(error) => return Err(error),
+            }
+            with_projection_relative_name(path, projection.work, |relative| {
+                match prj_delete(projection, relative, PRJ_UPDATE_ALLOW_TOMBSTONE) {
+                    Ok(()) => Ok(true),
+                    Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) => Ok(false),
+                    Err(error) if native_mount_error_code(&error).is_some_and(|code| [
+                        HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION,
+                    ].contains(&code)) => Ok(true),
+                    Err(error) => Err(error),
+                }
+            })
+        }
+        Some(Owned::Directory(owner) | Owned::PhysicalLink(_, owner) | Owned::ProvisionalFile(owner)) => {
+            // Original namespace/capture admission remains separate from physical birth credit; cancelled source work cannot authorize publication.
+            projection.work.admit(crate::WorkCounters::UNCHARGED)?;
+            match retire_physical_entry(&owner, projection.work, Some(projection.work.cancellation())) {
+                Ok(()) => Ok(true),
+                Err(NativeMountError::Io(error)) if refused_for_now(&error) => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
     }
 }
 
@@ -2605,31 +2622,6 @@ fn retire_physical_entry(
         drop(reopened);
     }
     result
-}
-
-fn release_link(
-    projection: Projection<'_>, path: &MountPath, owner: &SdkPhysicalEntry,
-) -> Result<Release, NativeMountError> {
-    if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
-    projection.work.admit(crate::WorkCounters::UNCHARGED)?;
-    match owner.retire(projection.context, Some(projection.work.cancellation())) {
-        Ok(()) => Ok(Release::Done),
-        Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(Release::Busy),
-        Err(error) => Err(error),
-    }
-}
-
-fn clear_tombstone(
-    projection: Projection<'_>, relative: PCWSTR,
-) -> Result<Release, NativeMountError> {
-    match prj_delete(projection, relative, PRJ_UPDATE_ALLOW_TOMBSTONE) {
-        Ok(()) => Ok(Release::Done),
-        Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) => Ok(Release::Busy),
-        Err(error) if native_mount_error_code(&error).is_some_and(|code| [
-            HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION,
-        ].contains(&code)) => Ok(Release::Done),
-        Err(error) => Err(error),
-    }
 }
 
 const SHARING_VIOLATION: i32 = 32;
@@ -3299,18 +3291,6 @@ fn open_projection_leaf(
     })
 }
 
-fn held_while(
-    parent: &cap_std::fs::Dir, leaf: &[u16], state: HostWindowsMetadata,
-    work: &crate::NativeMaterializationWork,
-) -> Result<Option<std::fs::File>, NativeMountError> {
-    let file = match open_projection_leaf(parent, leaf, true, work) {
-        Ok(file) => file,
-        Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    Ok((handle_state_measured(&file, work)? == state).then_some(file))
-}
-
 fn held_original_while(
     original: &PhysicalEntry, expected: HostWindowsMetadata,
     work: &crate::NativeMaterializationWork,
@@ -3346,33 +3326,6 @@ fn verify_projection_namespace_work(projection: Projection<'_>) -> Result<(), Na
     Ok(())
 }
 
-fn delete_file_while_owned(
-    parent: &cap_std::fs::Dir, leaf: &[u16], state: HostWindowsMetadata,
-    work: &crate::NativeMaterializationWork, owner: &PhysicalEntry,
-) -> Result<bool, NativeMountError> {
-    let Some(_file) = held_while(parent, leaf, state, work)? else { return Ok(false); };
-    retire_physical_entry(owner, work, Some(work.cancellation()))?;
-    crate::native_host::sync_directory_held(parent, &mut { work })
-        .map_err(detach_work_error)?;
-    Ok(true)
-}
-
-fn delete_unowned(
-    projection: Projection<'_>, path: &MountPath,
-) -> Result<Release, NativeMountError> {
-    with_projection_relative_name(path, projection.work, |relative| {
-        match prj_delete(projection, relative, PRJ_UPDATE_ALLOW_READ_ONLY) {
-            Ok(()) => Ok(Release::Done),
-            Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) => Ok(Release::Busy),
-            Err(error) if native_mount_error_code(&error).is_some_and(|code| [
-                HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION,
-                HR_DIRECTORY_NOT_EMPTY,
-            ].contains(&code)) => Ok(Release::Done),
-            Err(error) => Err(error),
-        }
-    })
-}
-
 fn replace_written(
     projection: Projection<'_>, path: &MountPath, written: &WrittenEntry,
     committed: &mut Option<WrittenEntry>,
@@ -3400,7 +3353,7 @@ fn rewrite(
         return replace_ordinary(projection, path, *state, original, lookup, pin, basis, committed, record);
     }
     if owned.is_some() {
-        if release(projection, path, owned)? == Release::Busy { return Ok(Replaced::Busy); }
+        if !release(projection, path, owned)? { return Ok(Replaced::Busy); }
     } else {
         let released = with_projection_relative_name(path, projection.work, |relative| {
             prj_delete(projection, relative, PRJ_UPDATE_ALLOW_READ_ONLY)
@@ -5157,11 +5110,6 @@ struct OpenMetadataState {
     open_handles: usize,
 }
 
-enum MetadataClose {
-    Pending,
-    Final(Option<HostWindowsMetadata>),
-}
-
 fn host_windows_metadata(
     path: &MountPath, projection: Projection<'_>,
 ) -> Result<HostWindowsMetadata, NativeMountError> {
@@ -5308,18 +5256,19 @@ fn probe_host_windows_metadata(
 
 fn close_metadata_handle(
     baselines: &Mutex<MemoMap<u128, OpenMetadataState>>, file_id: u128, projection: Projection<'_>,
-) -> Result<MetadataClose, NativeMountError> {
+) -> Result<Option<OpenMetadataState>, NativeMountError> {
     let mut baselines = lock_recover(baselines);
     let Ok(index) = baselines.index(&file_id, projection.work)? else {
-        return Ok(MetadataClose::Final(None));
+        return Ok(None);
     };
     if baselines.entries.items[index].1.open_handles > 1 {
         baselines.entries.items[index].1.open_handles -= 1;
-        Ok(MetadataClose::Pending)
+        Ok(Some(baselines.entries.items[index].1))
     } else {
-        let (key, state) = baselines.entries.remove(index, projection)?;
+        let (key, mut state) = baselines.entries.remove(index, projection)?;
         drop(key);
-        Ok(MetadataClose::Final(Some(state.baseline)))
+        state.open_handles = 0;
+        Ok(Some(state))
     }
 }
 
@@ -6079,7 +6028,7 @@ unsafe fn notification(
                 | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED)
             {
                 let close = close_metadata_handle(runtime.metadata_baselines.as_ref(), file_id, projection)?;
-                let final_close = matches!(close, MetadataClose::Final(_));
+                let final_close = close.is_none_or(|state| state.open_handles == 0);
                 if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED {
                     lock_recover(projection.captures).pending_captures.remove(&path, projection)?;
                     retry_path.set(Some(&path));
@@ -6096,10 +6045,9 @@ unsafe fn notification(
                 return Ok(());
             }
             if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
-                let baseline = match close_metadata_handle(runtime.metadata_baselines.as_ref(), file_id, projection)? {
-                    MetadataClose::Pending => return Ok(()),
-                    MetadataClose::Final(baseline) => baseline,
-                };
+                let close = close_metadata_handle(runtime.metadata_baselines.as_ref(), file_id, projection)?;
+                if close.is_some_and(|state| state.open_handles != 0) { return Ok(()); }
+                let baseline = close.map(|state| state.baseline);
                 if has_pending_capture(projection.captures, &path, projection)? { return Ok(()); }
                 let Some(baseline) = baseline else {
                     return defer_host_capture(projection.captures, &path, projection);
