@@ -58,9 +58,6 @@ pub enum MountLifecycleError {
     /// Native callback publication failed.
     #[error(transparent)]
     Source(#[from] MountSourceError),
-    /// Combined exactification and materialization exceeded its work budget.
-    #[error(transparent)]
-    Work(#[from] crate::WorkError),
     /// Original physical preparation failure.
     #[error(transparent)]
     Materialization(#[from] crate::NativeTreeMaterializationError),
@@ -70,15 +67,6 @@ pub enum MountLifecycleError {
     /// Fixed native-view policy refusal.
     #[error("{0}")]
     NativePolicy(&'static str),
-    /// Lazy-query cause drops before its original allocation.
-    #[error("{source}")]
-    NativeLazy {
-        /// Original lazy-query failure.
-        #[source]
-        source: LazyWorkspaceError,
-        /// Original retained capacity.
-        custody: Option<NativeAllocation>,
-    },
     /// Physical retirement retained an authored capture and cleanup failure.
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
@@ -88,12 +76,6 @@ pub enum MountLifecycleError {
         /// Distinct namespace cleanup failure.
         cleanup_failure: Option<NativeMountError>,
     },
-}
-
-impl From<(LazyWorkspaceError, Option<NativeAllocation>)> for MountLifecycleError {
-    fn from((source, custody): (LazyWorkspaceError, Option<NativeAllocation>)) -> Self {
-        Self::NativeLazy { source, custody }
-    }
 }
 
 /// SDK source retained after its view-dependent physical work has retired.
