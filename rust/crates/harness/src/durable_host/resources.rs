@@ -114,14 +114,15 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     fn verify_with_io<'a>(
         &'a self,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return self
-                .verify_with_native_work(work)
-                .map(crate::store::history::HistoryContentFuture::Native);
+            if !self._native_custody.as_ref().is_some_and(|custody|
+                custody.work().shares_allocation_context(work)) {
+                return Err(crate::executor::stock_boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "created publication lease differs from its original SDK metadata ledger"));
+            }
         }
-        io.history_future(|| async move {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let mut observer = io.history_io();
             self.verify_with_work(&mut Some(&mut observer)).await
         })

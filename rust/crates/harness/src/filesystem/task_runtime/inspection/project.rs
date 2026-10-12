@@ -227,11 +227,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
         let reference = crate::executor::with_history_io(Some(&self.io), |work| FileRef::new(
-            volume.copy(work)?, bounded_io::clone_text(path, Some(&self.io))?,
-            bounded_io::clone_text(&version, Some(&self.io))?,
+            volume.copy(work)?, stock_string_copy(path, Some(&self.io))?,
+            stock_string_copy(&version, Some(&self.io))?,
             FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(),
-                bounded_io::clone_text(descriptor.media_type(), Some(&self.io))?)?,
-            bounded_io::clone_text(display_name, Some(&self.io))?, work))?;
+                stock_string_copy(descriptor.media_type(), Some(&self.io))?)?,
+            stock_string_copy(display_name, Some(&self.io))?, work))?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }
@@ -294,3 +294,5 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
 }
+
+use crate::executor::{stock_string_copy};

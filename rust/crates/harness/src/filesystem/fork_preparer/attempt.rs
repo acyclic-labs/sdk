@@ -23,7 +23,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .transpose()?;
         }
         if let (Some(io), Some(task)) = (&io, task) {
-            io.encode(task.request(), task.request().maximum_bytes, false)?;
+            task.request().validate(&mut Some(&mut io.history_io()))?;
         }
         Ok(PreparationAttempt {
             preparer: self,
@@ -123,9 +123,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
     }
 
     pub(super) fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
-        let mut values = bounded_io::vector(paths.len(), self.io.as_ref())?;
+        let mut values = crate::model::vec_with_capacity(paths.len(), self.io.as_ref())?;
         for path in paths {
-            values.push(bounded_io::clone_text(path, self.io.as_ref())?);
+            values.push(stock_string_copy(path, self.io.as_ref())?);
         }
         Ok(values)
     }
@@ -202,21 +202,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let Some(preparation) = &self.task_preparation else {
             return Ok(());
         };
-        let encoded_hold;
-        let encoded = encode(
+        let digest = record_digest(
             request,
             self.journal_limit(MAX_REQUEST_BYTES),
             self.io.as_ref(),
         )?;
-        encoded_hold = self
-            .io
-            .as_ref()
-            .map(|io| io.guard_bytes(&encoded))
-            .transpose()?
-            .flatten();
-        let digest = *bounded_io::digest(&encoded, self.io.as_ref())?.as_bytes();
-        drop(encoded);
-        drop(encoded_hold);
         for volume in creation_volumes(request) {
             let journal = allocation_ref(&self.preparer.host.provider, volume, self.io.as_ref())?;
             let retained = read_record::<A, O, AllocationClaim>(
@@ -228,7 +218,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )
             .await?
             .ok_or_else(|| {
-                bounded_io::failure(
+                stock_boundary(
                     self.io.as_ref(),
                     crate::wire::ErrorCode::Unauthorized,
                     "task-bound allocation is missing",
@@ -241,7 +231,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 || &retained.volume != volume
                 || !same_task_origin(retained.task_origin.as_ref(), Some(preparation.origin()))
             {
-                return Err(bounded_io::failure(
+                return Err(stock_boundary(
                     self.io.as_ref(),
                     crate::wire::ErrorCode::Unauthorized,
                     "allocation belongs to another preparation task",
@@ -294,13 +284,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.io.as_ref(),
         )?;
         let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
-            bounded_io::failure(
+            stock_boundary(
                 self.io.as_ref(),
                 crate::wire::ErrorCode::Invalid,
                 "fork journal name is not UTF-8",
             )
         })?;
-        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:journal", request.operation_id), work))?)?;
+        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(
+            self.io.as_ref(),
+            |work| {
+                crate::contract::preparation_format(
+                    format_args!("fork:{}:journal", request.operation_id),
+                    work,
+                )
+            },
+        )?)?;
         bounded_io::create(
             &self.preparer.host,
             name,
@@ -309,39 +307,33 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.task_preparation,
         )
         .await?;
-        if read_claim(
-            &self.preparer.host,
-            &journal,
-            request,
-            self.journal_limit(MAX_REQUEST_BYTES),
+        let key = IdempotencyKey::new(crate::executor::with_history_io(
             self.io.as_ref(),
-        )
-        .await?
-        {
-            return Ok(journal);
-        }
-        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:claim", request.operation_id), work))?)?;
-        write_record(
+            |work| {
+                crate::contract::preparation_format(
+                    format_args!("fork:{}:claim", request.operation_id),
+                    work,
+                )
+            },
+        )?)?;
+        let prior = write_once(
             &self.preparer.host,
             &journal,
             "/request.json",
             request,
             self.journal_limit(MAX_REQUEST_BYTES),
             &key,
+            request.operation_id,
             self.io.as_ref(),
             self.task_preparation,
         )
         .await?;
-        if !read_claim(
-            &self.preparer.host,
-            &journal,
-            request,
-            self.journal_limit(MAX_REQUEST_BYTES),
-            self.io.as_ref(),
-        )
-        .await?
-        {
-            return Err(Error::Indeterminate(request.operation_id));
+        if prior != *request {
+            return Err(stock_boundary(
+                self.io.as_ref(),
+                crate::wire::ErrorCode::Conflict,
+                "fork operation is claimed by another request",
+            ));
         }
         Ok(journal)
     }
@@ -351,35 +343,35 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         journal: &WorkspaceRef,
         report: &ForkReport,
     ) -> Result<ForkReport> {
-        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:report", report.request.operation_id), work))?)?;
-        write_record(
+        let key = IdempotencyKey::new(crate::executor::with_history_io(
+            self.io.as_ref(),
+            |work| {
+                crate::contract::preparation_format(
+                    format_args!("fork:{}:report", report.request.operation_id),
+                    work,
+                )
+            },
+        )?)?;
+        let prior = write_once(
             &self.preparer.host,
             journal,
             "/report.json",
             report,
             self.journal_limit(MAX_REPORT_BYTES),
             &key,
+            report.request.operation_id,
             self.io.as_ref(),
             self.task_preparation,
         )
         .await?;
-        match read_report(
-            &self.preparer.host,
-            journal,
-            &report.request,
-            self.journal_limit(MAX_REPORT_BYTES),
-            self.io.as_ref(),
-        )
-        .await?
-        {
-            Some(committed) if committed == *report => Ok(committed),
-            Some(_) => Err(bounded_io::failure(
+        if prior != *report {
+            return Err(stock_boundary(
                 self.io.as_ref(),
                 crate::wire::ErrorCode::Conflict,
                 "fork operation has a different committed report",
-            )),
-            None => Err(Error::Indeterminate(report.request.operation_id)),
+            ));
         }
+        Ok(prior)
     }
 
     pub(super) async fn capture_result(
@@ -388,7 +380,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         index: usize,
         selection: &ForkSelection,
     ) -> Result<Option<Capture>> {
-        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work))?;
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
+            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+        })?;
         let Some(capture) = read_record::<A, O, Capture>(
             &self.preparer.host,
             journal,
@@ -400,7 +394,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         else {
             return Ok(None);
         };
-        let attempt_path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work))?;
+        let attempt_path = crate::executor::with_history_io(self.io.as_ref(), |work| {
+            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+        })?;
         read_record::<A, O, Uuid>(
             &self.preparer.host,
             journal,
@@ -410,7 +406,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         )
         .await?
         .ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 self.io.as_ref(),
                 crate::wire::ErrorCode::Storage,
                 "fork capture result has no durable start",
@@ -427,7 +423,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         request: &ForkRequest,
         index: usize,
     ) -> Result<bool> {
-        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work))?;
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
+            crate::contract::preparation_format(format_args!("/capture-{index}-attempt.json"), work)
+        })?;
         if read_record::<A, O, Uuid>(
             &self.preparer.host,
             journal,
@@ -441,10 +439,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             return Ok(false);
         }
         let attempt = Uuid::new_v4();
-        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!(
-                "fork:{}:capture-attempt:{index}:{attempt}",
-                request.operation_id
-            ), work))?)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(
+            self.io.as_ref(),
+            |work| {
+                crate::contract::preparation_format(
+                    format_args!(
+                        "fork:{}:capture-attempt:{index}:{attempt}",
+                        request.operation_id
+                    ),
+                    work,
+                )
+            },
+        )?)?;
         write_record(
             &self.preparer.host,
             journal,
@@ -479,33 +485,33 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         capture: Capture,
     ) -> Result<Capture> {
         validate_capture(selection, &capture)?;
-        if let Some(prior) = self.capture_result(journal, index, selection).await? {
-            return if prior == capture {
-                Ok(prior)
-            } else {
-                Err(bounded_io::failure(
-                    self.io.as_ref(),
-                    crate::wire::ErrorCode::Conflict,
-                    "fork capture has another committed result",
-                ))
-            };
-        }
-        let path = crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work))?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:capture-result:{index}", request.operation_id), work))?)?;
-        write_record(
+        let path = crate::executor::with_history_io(self.io.as_ref(), |work| {
+            crate::contract::preparation_format(format_args!("/capture-{index}-result.json"), work)
+        })?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(
+            self.io.as_ref(),
+            |work| {
+                crate::contract::preparation_format(
+                    format_args!("fork:{}:capture-result:{index}", request.operation_id),
+                    work,
+                )
+            },
+        )?)?;
+        write_once(
             &self.preparer.host,
             journal,
             &path,
             &capture,
             self.journal_limit(MAX_CAPTURE_BYTES),
             &key,
+            request.operation_id,
             self.io.as_ref(),
             self.task_preparation,
         )
         .await?;
         match self.capture_result(journal, index, selection).await? {
             Some(committed) if committed == capture => Ok(committed),
-            Some(_) => Err(bounded_io::failure(
+            Some(_) => Err(stock_boundary(
                 self.io.as_ref(),
                 crate::wire::ErrorCode::Conflict,
                 "fork capture has another committed result",
@@ -514,3 +520,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         }
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

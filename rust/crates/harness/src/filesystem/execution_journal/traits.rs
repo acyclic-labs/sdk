@@ -107,7 +107,7 @@ where
                 let (key, path) =
                     self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
                 let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                    crate::filesystem::fork_preparer_io::failure(
+                    stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Invalid,
                         "staging identity ownership underflow",
@@ -341,3 +341,5 @@ where
         })
     }
 }
+
+use crate::executor::{stock_boundary};

@@ -1314,7 +1314,7 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify_with_io<'a>(
         &'a self,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(

@@ -198,6 +198,6 @@ pub(super) fn interaction_boundary(
     if code == ErrorCode::NotFound && io.is_none_or(|io| io.original_native_work().is_none()) {
         Error::NotFound(reason.into())
     } else {
-        super::fork_preparer_io::failure(io, code, reason)
+        crate::executor::stock_boundary(io, code, reason)
     }
 }
