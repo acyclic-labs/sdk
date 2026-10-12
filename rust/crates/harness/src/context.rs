@@ -1454,7 +1454,7 @@ impl ContextInput {
         let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&turn.input, work).map(|(copy, _)| copy))?;
         let selected_context = turn.selected_context.as_ref().map(|selected| {
             crate::executor::with_history_io(io, |work| {
-                if work.is_none() { return Ok(selected.clone()); }
+                if work.is_none() { return Ok::<_, Error>(selected.clone()); }
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let mut message_ids = Vec::new();
                 let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;

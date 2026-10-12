@@ -152,7 +152,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     pub(super) async fn replace(
         &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
         io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
+        publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef> {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
@@ -209,7 +209,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     pub(super) async fn publish_once(
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
+        publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
     ) -> Result<FileRef> {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
