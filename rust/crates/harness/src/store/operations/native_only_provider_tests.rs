@@ -212,7 +212,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
     let bounds = bounds_with_work(&client, &publication.path, &mut work)
         .await?
-        .map_err(|error| sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
     assert_eq!(bounds.tail, 1);
     drop(page);
     drop(cursor);

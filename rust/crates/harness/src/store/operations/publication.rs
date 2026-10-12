@@ -284,7 +284,7 @@ impl IndexedPublication {
                 expected: self.expected_tail,
             },
             Err(error)
-                if *sdk_source(&error) == acyclic_stream::StreamError::NotFound
+                if error == acyclic_stream::StreamError::NotFound
                     && self.expected_tail == 0 =>
             {
                 drop(error);
@@ -292,7 +292,7 @@ impl IndexedPublication {
                     path: self.path.clone(),
                 }
             }
-            Err(error) => return Err(sdk_error(error, request.1.work())),
+            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, request.1.work())),
         };
         crate::distributed::add_condition(&mut request, target)?;
         crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;
