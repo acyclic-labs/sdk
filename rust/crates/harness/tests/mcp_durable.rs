@@ -467,7 +467,7 @@ async fn phase(
     let mut bindings = Bindings::local();
     bindings.scope = scope.clone();
     bindings.state = Some(Arc::new(AdmittedTask(scope)));
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let task = TaskId::from_bytes([42; 16]);
     let op = OperationId::from_bytes([43; 16]);
     let context = runtime
@@ -480,7 +480,7 @@ async fn phase(
             op,
             definition,
             json!({}),
-            ToolContext::new(context, op, op.to_string())?,
+            ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
         )
         .await
 }

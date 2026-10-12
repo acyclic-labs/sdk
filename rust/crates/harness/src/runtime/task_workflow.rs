@@ -10,24 +10,6 @@ pub(super) fn validate_task_transition(
     Ok(())
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) enum RegisteredTaskOpening<'a> {
-    Ordinary(crate::scheduler::LeaseFence),
-    Native {
-        fence: &'a crate::scheduler::LeaseFence,
-        context: Arc<NativeTaskContext>,
-        definition: Arc<dyn RegisteredTaskDefinition>,
-    },
-}
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) enum OrdinaryRegisteredTaskOpening {
-    Ordinary(crate::scheduler::LeaseFence),
-}
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type RegisteredTaskOpening<'a> = OrdinaryRegisteredTaskOpening;
-
 pub(super) fn task_original_work(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Option<&NativeWork>> {
@@ -221,7 +203,7 @@ pub struct ResumableTaskSession {
     pub(super) workflow: DurableWorkflowHost,
     pub(super) output_schema: Value,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_context: Option<Arc<NativeTaskContext>>,
+    pub(super) native_context: Option<Arc<TaskContext>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_metadata_custody: Option<acyclic_fs::NativeAllocation>,
 }
