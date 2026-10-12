@@ -1241,11 +1241,7 @@ where
         for entry in &page.0.entries {
             let mut name = entry
                 .name
-                .unicode_text_with_native_work(native_work, cancellation)
-                .map_err(|source| Error::NativeFilesystem {
-                    source,
-                    custody: None,
-                })?;
+                .unicode_text_with_native_work(native_work, cancellation)?;
             output.2.absorb(&mut name.1).map_err(native_error)?;
             output.0.push(PiNativeInspectionEntry {
                 name: name.0,
@@ -1749,11 +1745,7 @@ where
     {
         let mut name = entry
             .name
-            .unicode_text_with_native_work(native_work, cancellation)
-            .map_err(|source| Error::NativeFilesystem {
-                source,
-                custody: None,
-            })?;
+            .unicode_text_with_native_work(native_work, cancellation)?;
         let path = if directory.is_empty() {
             native_work
                 .display(&format_args!("{}", name.0))

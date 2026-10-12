@@ -72,12 +72,7 @@ impl PiRootHandle {
                 reason: "root index key custody differs from original source work",
             });
         }
-        let workspace = workspace
-            .into_arc_with_native_work(work)
-            .map_err(|source| Error::NativeSource {
-                source,
-                custody: None,
-            })?;
+        let workspace = workspace.into_arc_with_native_work(work)?;
         let mut entry = work.claim(
             std::mem::size_of::<(String, Self)>() as u64,
             0,
@@ -913,19 +908,11 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
         .resources
         .store
         .load_lazy_workspace_with_native_work(snapshot.workspace_id, work)
-        .await
-        .map_err(|source| Error::NativeSource {
-            source,
-            custody: None,
-        })?
+        .await?
         .ok_or_else(|| PiRootProvider::<P>::native_failure("root source lazy binding is absent"))?;
     state
         .as_state()
-        .validate_root_binding(snapshot.workspace_id, input.source)
-        .map_err(|source| Error::NativeSource {
-            source,
-            custody: None,
-        })?;
+        .validate_root_binding(snapshot.workspace_id, input.source)?;
     let identity = work.root_identity(Path::new(&paths[key]))?;
     if identity.to_bytes() != root.native_root_identity
         || !provider
@@ -2225,19 +2212,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                         .resources
                         .store
                         .load_lazy_workspace_with_native_work(generation.workspace().id(), work)
-                        .await
-                        .map_err(|source| Error::NativeSource {
-                            source,
-                            custody: None,
-                        })?
+                        .await?
                     {
                         binding
                             .as_state()
-                            .validate_root_binding(generation.workspace().id(), input.source)
-                            .map_err(|source| Error::NativeSource {
-                                source,
-                                custody: None,
-                            })?;
+                            .validate_root_binding(generation.workspace().id(), input.source)?;
                         persisted_source = binding.as_state().source;
                         existing_workspace = Some(generation.workspace());
                     }
@@ -2310,12 +2289,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     acyclic_fs::WorkCounters::UNCHARGED,
                 )?;
                 slot.absorb(&mut owned_key.1)?;
-                let workspace = workspace
-                    .into_arc_with_native_work(work)
-                    .map_err(|source| Error::NativeSource {
-                        source,
-                        custody: None,
-                    })?;
+                let workspace = workspace.into_arc_with_native_work(work)?;
                 state.handles.insert(
                     owned_key.0,
                     PiRootHandle {
@@ -2671,21 +2645,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     .resources
                     .store
                     .load_lazy_workspace_with_native_work(generation.workspace().id(), work)
-                    .await
-                    .map_err(|source| Error::NativeSource {
-                        source,
-                        custody: None,
-                    })?
+                    .await?
                 else {
                     return Ok(None);
                 };
                 state
                     .as_state()
-                    .validate_root_binding(generation.workspace().id(), input.source)
-                    .map_err(|source| Error::NativeSource {
-                        source,
-                        custody: None,
-                    })?;
+                    .validate_root_binding(generation.workspace().id(), input.source)?;
                 let observed = work.root_identity(Path::new(path))?;
                 if observed.to_bytes() != input.native_identity {
                     return Err(Self::native_failure("root native identity was substituted"));
