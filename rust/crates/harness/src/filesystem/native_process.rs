@@ -42,7 +42,7 @@ impl NativeProcessRequest {
         }
         if let Some(exchange) = &self.mcp_stdio {
             let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
-            let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
+            let (exchange, first, custody) = exchange.exchange(Some(work))?;
             drop((exchange, first, custody));
         }
         {
@@ -491,7 +491,7 @@ where
             let bytes = self.authority.result_content.read(reference, u64::from(request.maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
             let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value(result_schema, &value.value,
+            crate::contract::validate_json_schema_value(result_schema, &value.0,
                 "native process result", Some(&io))?;
         }
         Ok(reference)

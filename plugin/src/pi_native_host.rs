@@ -1134,7 +1134,7 @@ impl PiNativeCommandHost {
         let content = self.result_bindings(context, input)?.reader;
         let authorization = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
-        let mut registry = EffectRegistry::new_with_native_work(work)?
+        let mut registry = EffectRegistry::new(Some(work))?
             .with_result_resolver_with_native_work(content.clone(), work)?;
         registry.register_with_native_work(provider.clone(), work)?;
         let ((audience, issuer, scope), custody) = authorization;

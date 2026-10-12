@@ -2974,8 +2974,8 @@ impl ControlPlane {
             let (root_files, root_bindings, paths) = if let Some(path) = requested_path {
                 let filter = agent_change_filter(path, &route, route_root, workspace.profile())?;
                 let paths = changes
-                    .changed_paths(100_000)
-                    .await
+                    .changed_paths(100_000, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?
                     .into_iter()
                     .filter(|change| change.path.is_within(&filter))
@@ -3116,11 +3116,11 @@ impl ControlPlane {
                 .await
                 .map_err(display)?;
             let changed = base
-                .diff_to(&source_head, u32::MAX)
-                .await
+                .diff_to(&source_head, u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map_err(|failure| failure.error)
                 .map_err(display)?
-                .changed_paths(u32::MAX)
-                .await
+                .changed_paths(u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(display)?;
             let child_wins_bindings = git_ignore_policy(&lazy_source)
                 .await?
@@ -4352,11 +4352,11 @@ async fn changed_paths_into(
         return Ok(());
     }
     for change in base
-        .diff_to(head, u32::MAX)
-        .await
+        .diff_to(head, u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map_err(|failure| failure.error)
         .map_err(display)?
-        .changed_paths(u32::MAX)
-        .await
+        .changed_paths(u32::MAX, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(display)?
     {
         changed.insert(namespace_path_text(&change.path)?);

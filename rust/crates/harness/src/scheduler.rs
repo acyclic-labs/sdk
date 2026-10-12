@@ -1,6 +1,6 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
-use crate::contract::{COMPONENT_LABEL_MAX_BYTES, next_revision};
+use crate::contract::COMPONENT_LABEL_MAX_BYTES;
 use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
     resources::CheckpointRef,
@@ -482,15 +482,6 @@ type SchedulerAllocation = acyclic_fs::NativeAllocation;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type SchedulerAllocation = ();
 
-struct PreparedSchedulerEvent {
-    event: SchedulerEvent,
-    child_slot: Option<String>,
-    cancellation: Vec<OperationId>,
-    observer_owned: u64,
-    // LAST: discarded event fields and temporary vectors drop first.
-    custody: Option<SchedulerAllocation>,
-}
-
 #[derive(Clone, Copy)]
 // Guard slots follow these variants; the final slot holds guard-map storage.
 enum CachedSchedulerField { Declaration, Reservation, Checkpoint, Workflow, Outcome }
@@ -713,12 +704,7 @@ impl Scheduler {
         {
             return Ok(());
         }
-        let cloned = event.clone_with_work(work)?;
-        let prepared = self.prepare_event(cloned, work)?;
-        let discarded = prepared.observer_owned;
-        self.apply_validated(prepared);
-        if let Some(io) = work.as_deref_mut() { io.release_owned(discarded)?; }
-        crate::obs::outcome(Ok(()))
+        self.apply_event(event.clone_with_work(work)?, work)
     }
 
     /// The original deterministic validators for every scheduler event.
@@ -734,12 +720,12 @@ impl Scheduler {
             _ => None,
         };
         for id in std::iter::once(primary).chain(declared_parent) {
-            if let Some(operation) = self.operation(id) { revision_with_work(operation.revision, work)?; }
+            if let Some(operation) = self.operation(id) { revision(operation.revision, work)?; }
         }
         if let SchedulerEvent::Orchestrated { cancel, .. } = event {
             for id in cancel {
                 observe(work)?;
-                if let Some(operation) = self.operation(*id) { revision_with_work(operation.revision, work)?; }
+                if let Some(operation) = self.operation(*id) { revision(operation.revision, work)?; }
             }
         }
         match event {
@@ -902,7 +888,7 @@ impl Scheduler {
                 for (id, operation) in &self.operations {
                     observe(work)?;
                     if *id == primary || (*recursive && self.cancellation_descendant(*id, primary, work)?) {
-                        revision_with_work(operation.revision, work)?;
+                        revision(operation.revision, work)?;
                     }
                 }
             }
@@ -955,91 +941,88 @@ impl Scheduler {
         self.operation(id).ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::NotFound, "scheduler operation"))
     }
 
-    fn prepare_event(
+    fn apply_event(
         &mut self, event: SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<PreparedSchedulerEvent> {
-        let owned = if work.is_some() { event.logical_owned_bytes()? } else { 0 };
-        let mut prepared = PreparedSchedulerEvent {
-            event, child_slot: None, cancellation: Vec::new(), observer_owned: owned,
-            custody: None,
-        };
+    ) -> Result<()> {
+        // Declare custody before temporary payloads; retire the event explicitly on failure.
+        let mut custody: Option<SchedulerAllocation> = None;
+        let mut child_slot = None;
+        let mut cancellation = Vec::new();
+        let mut observer_owned = if work.is_some() { event.logical_owned_bytes()? } else { 0 };
         let mut retained_owned = 0;
         let result = (|| {
-            retained_owned = prepared.event.retained_clone_owned_bytes()?;
-            if let SchedulerEvent::Declared { spec } = &prepared.event {
+            retained_owned = event.retained_clone_owned_bytes()?;
+            if let SchedulerEvent::Declared { spec } = &event {
                 let slots = std::mem::size_of::<(OperationId, OperationState)>() as u64
                     + if spec.parent.is_some() { std::mem::size_of::<((OperationId, String), OperationId)>() as u64 } else { 0 };
                 if let Some(io) = work.as_deref_mut() {
                     io.admit_allocation(slots)?;
                     io.retain_owned(slots)?;
-                    prepared.observer_owned += slots;
+                    observer_owned += slots;
                 }
                 retained_owned += slots;
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if !self.native_operations.contains_key(&prepared.event.operation_id())
-                && (matches!(prepared.event, SchedulerEvent::Declared { .. }) || retained_owned != 0)
+            if !self.native_operations.contains_key(&event.operation_id())
+                && (matches!(event, SchedulerEvent::Declared { .. }) || retained_owned != 0)
                 && let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
             {
                 let bytes = std::mem::size_of::<(OperationId, [Option<acyclic_fs::NativeAllocation>; 6])>() as u64;
                 io.admit_allocation(bytes)?;
                 io.retain_owned(bytes)?;
-                prepared.observer_owned += bytes;
+                observer_owned += bytes;
                 retained_owned += bytes;
             }
-            if let SchedulerEvent::Declared { spec } = &prepared.event
+            if let SchedulerEvent::Declared { spec } = &event
                 && let Some(parent) = &spec.parent
             {
                 let slot = match work.as_deref_mut() {
                     Some(io) => io.clone_text(&parent.slot)?,
                     None => parent.slot.clone(),
                 };
-                prepared.observer_owned = prepared.observer_owned.checked_add(if work.is_some() { slot.capacity() as u64 } else { 0 })
+                observer_owned = observer_owned.checked_add(if work.is_some() { slot.capacity() as u64 } else { 0 })
                     .ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Invalid, "scheduler clone custody overflows"))?;
-                prepared.child_slot = Some(slot);
-                retained_owned += prepared.child_slot.as_ref().expect("prepared child slot").capacity() as u64;
+                child_slot = Some(slot);
+                retained_owned += child_slot.as_ref().expect("prepared child slot").capacity() as u64;
             }
-            if let SchedulerEvent::CancellationRequested { operation_id, recursive } = &prepared.event {
-                prepared.cancellation = self.cancellation_frontier(*operation_id, *recursive, work)?;
+            if let SchedulerEvent::CancellationRequested { operation_id, recursive } = &event {
+                cancellation = self.cancellation_frontier(*operation_id, *recursive, work)?;
                 if work.is_some() {
-                    prepared.observer_owned = prepared.observer_owned.checked_add(
-                        (prepared.cancellation.capacity() * std::mem::size_of::<OperationId>()) as u64,
+                    observer_owned = observer_owned.checked_add(
+                        (cancellation.capacity() * std::mem::size_of::<OperationId>()) as u64,
                     ).ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Invalid, "scheduler clone custody overflows"))?;
                 }
             }
-            self.reserve_completion_for_event(&prepared.event, &prepared.cancellation, work)?;
+            self.reserve_completion_for_event(&event, &cancellation, work)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(io) = work.as_deref_mut() && io.original_native_work().is_some() {
-                prepared.custody = Some(io.take_native_custody(prepared.observer_owned)?);
-                prepared.observer_owned = 0;
+                custody = Some(io.take_native_custody(observer_owned)?);
+                observer_owned = 0;
             }
             Ok(())
         })();
         if let Err(error) = result {
-            let bytes = prepared.observer_owned;
-            drop(prepared);
+            let bytes = observer_owned;
+            drop(event);
+            drop(child_slot);
+            drop(cancellation);
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            drop(custody);
             if let Some(io) = work.as_deref_mut() { let _ = io.release_owned(bytes); }
             return Err(error);
         }
-        // Non-native observer cleanup remains on its original observer.
-        if let Some(io) = work.as_deref_mut() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if prepared.custody.is_some() { return Ok(prepared); }
-            prepared.observer_owned = prepared.observer_owned.checked_sub(retained_owned)
+        if let Some(io) = work.as_deref_mut() && custody.is_none() {
+            observer_owned = observer_owned.checked_sub(retained_owned)
                 .ok_or_else(|| diagnostic(&Some(&mut *io), crate::wire::ErrorCode::Invalid, "scheduler clone custody underflows"))?;
         }
-        Ok(prepared)
-    }
-
-    /// Mutation only: every fallible validator, copy and capacity preparation has completed before this shared ordinary/native body is entered.
-    fn apply_validated(&mut self, mut prepared: PreparedSchedulerEvent) {
-        let primary = prepared.event.operation_id();
-        let declared_parent = match &prepared.event {
+        // All fallible preparation is complete before mutation.
+        let primary = event.operation_id();
+        let declared_parent = match &event {
             SchedulerEvent::Declared { spec } => spec.parent.as_ref().map(|parent| parent.operation_id),
             _ => None,
         };
-        let event = prepared.event;
+        let cancelled = matches!(event, SchedulerEvent::CancellationRequested { .. });
         match event {
             SchedulerEvent::SessionConfigured { limits, .. } => { self.sessions.insert(primary, limits); }
             SchedulerEvent::ModelDispatchClaimed { attempt_id, step, request_digest, ceiling, .. } => {
@@ -1050,13 +1033,13 @@ impl Scheduler {
             SchedulerEvent::Declared { spec } => {
                 let spec = *spec;
                 if let Some(parent) = &spec.parent {
-                    self.child_slots.insert((parent.operation_id, prepared.child_slot.take().expect("prepared child slot")), primary);
+                    self.child_slots.insert((parent.operation_id, child_slot.take().expect("prepared child slot")), primary);
                 }
                 self.operations.insert(primary, OperationState {
                     spec, phase: OperationPhase::WaitingForDependencies, reservation: None,
                     checkpoint: None, workflow: None, outcome: None, cancellation_requested: false, revision: 0,
                 });
-                self.install_native_field(primary, CachedSchedulerField::Declaration, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Declaration, &mut custody);
             }
             SchedulerEvent::WaitingForCapacity { .. } => {
                 self.operations.get_mut(&primary).expect("validated operation").phase = OperationPhase::WaitingForCapacity;
@@ -1065,13 +1048,13 @@ impl Scheduler {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
                 operation.reservation = Some(reservation);
                 operation.phase = OperationPhase::Admitted;
-                self.install_native_field(primary, CachedSchedulerField::Reservation, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Reservation, &mut custody);
             }
             SchedulerEvent::PartiallyAdmitted { reservation, .. } => {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
                 operation.reservation = Some(reservation);
                 operation.phase = OperationPhase::WaitingForCapacity;
-                self.install_native_field(primary, CachedSchedulerField::Reservation, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Reservation, &mut custody);
             }
             SchedulerEvent::Rejected { reason, .. } => {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
@@ -1079,14 +1062,14 @@ impl Scheduler {
                 operation.phase = OperationPhase::Terminal;
                 operation.outcome = Some(Outcome::Failed { message: reason });
                 self.completion_order.push(primary);
-                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut custody);
             }
             SchedulerEvent::Started { .. } => {
                 self.operations.get_mut(&primary).expect("validated operation").phase = OperationPhase::Running;
             }
             SchedulerEvent::Checkpointed { checkpoint, .. } => {
                 self.operations.get_mut(&primary).expect("validated operation").checkpoint = Some(checkpoint);
-                self.install_native_field(primary, CachedSchedulerField::Checkpoint, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Checkpoint, &mut custody);
             }
             SchedulerEvent::WaitingForChildren { .. } | SchedulerEvent::LeaseReleased { .. } => {
                 let waiting_for_children = matches!(event, SchedulerEvent::WaitingForChildren { .. });
@@ -1112,7 +1095,7 @@ impl Scheduler {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
                 operation.workflow.as_mut().expect("validated resume slot").input = Some(input);
                 operation.phase = OperationPhase::WaitingForCapacity;
-                self.install_native_field(primary, CachedSchedulerField::Workflow, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Workflow, &mut custody);
             }
             SchedulerEvent::ReconciliationResumed { .. } => {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
@@ -1121,12 +1104,10 @@ impl Scheduler {
                 self.retire_native_fields(primary);
             }
             SchedulerEvent::CancellationRequested { .. } => {
-                for target in &prepared.cancellation { self.cancel_validated(*target); }
-                return;
+                for target in &cancellation { self.cancel_validated(*target); }
             }
             SchedulerEvent::Completed { outcome, .. } => {
                 let operation = self.operations.get_mut(&primary).expect("validated operation");
-                if operation.phase == OperationPhase::Terminal { return; }
                 operation.phase = if matches!(outcome, Outcome::Indeterminate { .. }) {
                     OperationPhase::Reconciling
                 } else {
@@ -1137,7 +1118,7 @@ impl Scheduler {
                 if operation.phase == OperationPhase::Terminal && !self.completion_order.contains(&primary) {
                     self.completion_order.push(primary);
                 }
-                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut custody);
                 self.retire_native_fields(primary);
             }
             SchedulerEvent::Orchestrated { outcome, cancel, .. } => {
@@ -1147,12 +1128,20 @@ impl Scheduler {
                 operation.outcome = Some(outcome);
                 operation.reservation = None;
                 if operation.phase == OperationPhase::Terminal { self.completion_order.push(primary); }
-                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut prepared.custody);
+                self.install_native_field(primary, CachedSchedulerField::Outcome, &mut custody);
                 self.retire_native_fields(primary);
             }
         }
-        self.operations.get_mut(&primary).expect("validated operation").revision += 1;
-        if let Some(parent) = declared_parent { self.operations.get_mut(&parent).expect("validated parent").revision += 1; }
+        if !cancelled {
+            self.operations.get_mut(&primary).expect("validated operation").revision += 1;
+            if let Some(parent) = declared_parent { self.operations.get_mut(&parent).expect("validated parent").revision += 1; }
+        }
+        drop(child_slot);
+        drop(cancellation);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        drop(custody);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(observer_owned)?; }
+        crate::obs::outcome(Ok(()))
     }
 
     fn cancellation_descendant(
@@ -1819,7 +1808,6 @@ impl BorrowedOutcome<'_> {
 
     fn observe(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         match self {
-            Self::Failed(_) => observe(work),
             Self::ChildFailed { .. } => { observe(work)?; observe(work) }
             _ => observe(work),
         }
@@ -1951,7 +1939,7 @@ fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> 
     false
 }
 
-fn diagnostic(
+pub(crate) fn diagnostic(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
@@ -1967,8 +1955,7 @@ fn diagnostic(
     }
 }
 
-fn revision_with_work(revision: u64, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Result<u64> {
-    if work.is_none() { return next_revision(revision); }
+fn revision(revision: u64, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Result<u64> {
     revision.checked_add(1).ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Invalid, "revision exhausted"))
 }
 
@@ -2214,11 +2201,7 @@ mod tests {
                     kind: AggregateKind::Task,
                     id: operation_id.to_string(),
                 },
-            )
-            .root(
-                "original-declare",
-                crate::Capabilities::new(["operation:declare"]),
-            ),
+            ).issue("original-declare", &crate::Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),
@@ -2772,7 +2755,7 @@ mod tests {
         };
         for (index, event) in remaining.iter().enumerate() {
             let mut next = scheduler.clone();
-            let accepted = next.apply(event.clone()).is_ok();
+            let accepted = next.apply(event, &mut None).is_ok();
             if !accepted {
                 assert_eq!(&next, scheduler, "rejected event mutated state: {event:?}");
             }
@@ -2946,7 +2929,7 @@ mod tests {
                 fence: Some(fence(4)), execution_duration_ns: None },
         ];
         for event in controls {
-            assert!(original.clone().apply(event.clone()).is_err());
+            assert!(original.clone().apply(&event, &mut None).is_err());
             let cancellation = acyclic_fs::CancellationToken::new();
             let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
                 .expect("original negative-control ledger");
@@ -3128,12 +3111,12 @@ mod tests {
                 .is_err()
         );
         let mut polled = scheduler.clone();
-        polled.apply(SchedulerEvent::WorkflowSuspended {
+        polled.apply(&(SchedulerEvent::WorkflowSuspended {
             operation_id: id(91),
             fence: second.clone(),
             workflow_revision: 1,
             waiting_command: None,
-        })?;
+        }), &mut None)?;
         assert!(
             polled
                 .operation(id(91))
@@ -3227,7 +3210,7 @@ mod tests {
         };
         *fence = None;
         assert!(matches!(
-            Scheduler::new().apply(unfenced),
+            Scheduler::new().apply(&(unfenced), &mut None),
             Err(Error::Invalid(_))
         ));
         Ok(())
@@ -3288,7 +3271,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("parent".into()))?
             .revision;
         let mut suspended_loser = scheduler.clone();
-        suspended_loser.apply(SchedulerEvent::WorkflowSuspended {
+        suspended_loser.apply(&(SchedulerEvent::WorkflowSuspended {
             operation_id: id(2),
             fence: LeaseFence {
                 reservation_id: "lease-a".into(),
@@ -3296,15 +3279,15 @@ mod tests {
             },
             workflow_revision: 1,
             waiting_command: None,
-        })?;
-        suspended_loser.apply(SchedulerEvent::Orchestrated {
+        }), &mut None)?;
+        suspended_loser.apply(&(SchedulerEvent::Orchestrated {
             operation_id: id(1),
             expected_revision,
             outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
             cancel: vec![id(2)],
             reducer: None,
             reduction_digest: None,
-        })?;
+        }), &mut None)?;
         assert!(
             suspended_loser
                 .operation(id(2))
@@ -3705,19 +3688,19 @@ mod tests {
         let mut resumed = scheduler.clone();
         assert!(
             resumed
-                .apply(SchedulerEvent::ReconciliationResumed {
+                .apply(&(SchedulerEvent::ReconciliationResumed {
                     operation_id: id(32),
                     fence: LeaseFence {
                         reservation_id: "stale".into(),
                         placement: "worker".into()
                     },
-                })
+                }), &mut None)
                 .is_err()
         );
-        resumed.apply(SchedulerEvent::ReconciliationResumed {
+        resumed.apply(&(SchedulerEvent::ReconciliationResumed {
             operation_id: id(32),
             fence: fence.clone(),
-        })?;
+        }), &mut None)?;
         assert_eq!(
             resumed.available_for("worker", &capacity, &mut None)?.0.get("cpu"),
             Some(&0)

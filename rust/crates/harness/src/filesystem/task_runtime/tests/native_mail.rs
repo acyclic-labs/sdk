@@ -33,7 +33,7 @@ impl MailFixture {
             8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
         let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
-        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let mut tasks = Vec::new();
         for byte in 190..193 {
             let operation = OperationId::from_bytes([byte; 16]);
@@ -50,7 +50,7 @@ impl MailFixture {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             tasks.push((TaskId::from_bytes(lease.operation.operation_id.into_bytes()), LeaseFence::from(&lease.reservation)));
         }
         let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source").await?;

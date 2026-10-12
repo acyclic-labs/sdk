@@ -473,8 +473,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if reservation.is_none() {
                 return Ok(());
             }
-            let head = workspace.head_with_native_work(work, cancellation)
-                .await.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
+            let head = workspace.head(work, cancellation)
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             if head.id() != original_generation {
                 return Err(reservation_selection("native reservation generation differs from original selection"));
             }
@@ -1516,9 +1516,9 @@ where
                     &workspace, binding.generation, volume_work,
                 ).await?;
                 if binding.writable {
-                    let head = workspace.head_with_native_work(
+                    let head = workspace.head(
                         volume_work, cancellation,
-                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                    ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
                     if head.id() != generation.id() {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native destination generation is stale" });
                     }
@@ -1615,7 +1615,7 @@ where
                     verify_binding(owner, binding, volume_work)?;
                     let (path, path_custody) = materializer.backend().staging_path(binding.path)?;
                     let staged = (
-                        acyclic_fs::MaterializeOptions::native(path).expected_root_identity(Some(identity)),
+                        acyclic_fs::MaterializeOptions { expected_root_identity: Some(identity), ..acyclic_fs::MaterializeOptions::native(path) },
                         path_custody,
                     );
                     generation.materialize_with_native_work(
@@ -2608,28 +2608,11 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider 
     let encoded = acyclic_stream::OwnedBytes::from_vec_with_guard(
         encoded, encoded_custody, work.runtime_meter_owner(),
     ).map_err(|failure| Error::from(work.runtime_error(failure.into_error())))?;
-    let applied = aggregate.0.execute_task_command_with_native_work(command, owner, work).await?;
+    crate::store::history::HistoryIo::retain_owned(
+        &mut io, std::mem::size_of::<crate::core::ApplyResult>() as u64)?;
+    let applied = aggregate.0.execute(command, Some(owner), &mut Some(&mut io)).await?;
     drop(applied);
     Ok(encoded)
-}
-
-impl acyclic_fs::MaterializationActionCompletion for crate::NativeFutureBundle<'_,
-    (acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
-    type Error = Error;
-
-    async fn complete(self) -> Result<acyclic_fs::MaterializationJournal> {
-        let (mut journal, mut output_custody) = self.await?;
-        match journal.custody.as_mut() {
-            Some(custody) => {
-                if let Err(cause) = custody.absorb(&mut output_custody) {
-                    drop(journal);
-                    return Err(Error::NativeWork { cause, custody: Some(output_custody) });
-                }
-            }
-            None => journal.custody = Some(output_custody),
-        }
-        Ok(journal)
-    }
 }
 
 /// Fenced Stream adapter for the existing materializer journal, not a second log.
@@ -2839,8 +2822,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
 impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'_, P> {
     type Error = Error;
 
-    type ActionCompletion<'a> = crate::NativeFutureBundle<'a,
-        (acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> where Self: 'a;
+    type ActionCompletion<'a> = crate::NativeFutureBundle<'a, acyclic_fs::MaterializationJournal> where Self: 'a;
 
     async fn prepare_action<'a>(
         &'a self, journal: acyclic_fs::MaterializationJournal,
@@ -2875,7 +2857,17 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let counters = prepared.completion_work()?;
-            prepared.finish(&owner.stream(), counters, None).await
+            let (mut journal, mut output_custody) = prepared.finish(&owner.stream(), counters, None).await?;
+            match journal.custody.as_mut() {
+                Some(custody) => {
+                    if let Err(cause) = custody.absorb(&mut output_custody) {
+                        drop(journal);
+                        return Err(Error::NativeWork { cause, custody: Some(output_custody) });
+                    }
+                }
+                None => journal.custody = Some(output_custody),
+            }
+            Ok(journal)
         })?;
         Ok(future)
     }

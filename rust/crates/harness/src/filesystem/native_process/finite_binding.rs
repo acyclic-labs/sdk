@@ -85,8 +85,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
             }
             let bytes = authority.content.read(&plan.request, owner.input_limits().file_bytes, Some(&io))?.await?;
-            let request = io.decode_preparation::<NativeProcessRequest>(
-                bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
+            let request = crate::filesystem::retain_decoded(io.decode_preparation::<NativeProcessRequest>(
+                bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
             for mapping in &request.view.volumes {
@@ -114,8 +114,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             }
             let schema = authority.content.read(&plan.result_schema, owner.input_limits().file_bytes, Some(&io))?.await?;
             let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-            crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
-            let result_schema = decoded.into_retained();
+            crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
+            let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);
             for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
                 owner.require_volume_grant_with_native_work(authority.results.volume(), operation, work)?;
@@ -139,7 +139,8 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
-    let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
+    let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
+        &mut Some(&mut io.history_io()))?;
     let history = HistoryReader::new_with_work(
         &owner.stream(), authority.verifier.audience(), &authority.verifier, Some(&mut io.history_io()))?;
     let plan = arc(plan, &io)?;

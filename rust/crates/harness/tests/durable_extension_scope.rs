@@ -47,7 +47,7 @@ fn selected_scope(id: &str) -> Result<RuntimeScope> {
         operation_id: OperationId::new(),
         idempotency_key: IdempotencyKey::new(format!("selection:{id}"))?,
         expected_revision: 0,
-        scope: issuer.root("owner", Capabilities::new(["extension:activate"])),
+        scope: issuer.issue("owner", &Capabilities::new(["extension:activate"]), None, None, &mut None).expect("scope proof"),
         causal_parent: None,
         action: Action::SelectExtensions { roots: Vec::new() },
     })?;

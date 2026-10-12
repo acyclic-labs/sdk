@@ -109,11 +109,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
     );
     let authority = owner.authority().unwrap();
     let issuer = AuthorityIssuer::new(ISSUER, owner.key, authority.verifier.audience().clone());
-    let task_scope = issuer.root_for_agent(
-        owner.policy.agent,
-        owner.policy.root_task.to_string(),
-        owner.policy.grants.clone(),
-    );
+    let task_scope = issuer.issue(&owner.policy.root_task.to_string(), &owner.policy.grants, Some(owner.policy.agent), None, &mut None).expect("scope proof");
     let read = ContentGrant::verify_read(&authority.verifier, &task_scope, &reference).unwrap();
     let original = filesystem
         .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
@@ -149,7 +145,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
         .await
         .unwrap();
-    let original_head = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+    let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
     let PiRootIntent::Project { paths, .. } = &mut changed.root else {
         unreachable!()
     };
@@ -164,7 +160,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
             .await
             .is_err()
     );
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original_head);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original_head);
     assert_eq!(
         filesystem
             .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
@@ -249,10 +245,9 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        schema,
-        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding).unwrap()
-    );
+    let expected_schema = crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work).unwrap();
+    assert_eq!(schema, expected_schema.0);
+    drop(expected_schema);
     let original_request = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
         plan.request,
@@ -360,7 +355,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
             .await
             .unwrap();
-        let original_head = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+        let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
         if failure == "owner" {
             fs::remove_file(session.path().join(OWNER_FILE)).unwrap();
         }
@@ -374,7 +369,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
         assert!(result.is_err(), "accepted {failure}");
         assert!(!session.path().join("unopened-selected-root").exists());
         assert_eq!(
-            workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(),
+            workspace.head(&observation, observation.cancellation()).await.unwrap().id(),
             original_head,
             "mutated storage for {failure}"
         );
@@ -489,14 +484,6 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     assert_eq!(fs::metadata(&path).unwrap().len(), MAXIMUM_OWNER_BYTES + 1);
 }
 
-fn replace_plain(session: &Path, plain: &[u8]) {
-    let protected = protection::protect(plain).unwrap();
-    let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
-    bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
-    bytes.extend_from_slice(&protected);
-    fs::write(session.join(OWNER_FILE), bytes).unwrap();
-}
-
 #[test]
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
@@ -530,7 +517,12 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
         invalids.push(value);
     }
     for value in invalids {
-        replace_plain(directory.path(), &serde_json::to_vec(&value).unwrap());
+        let plain = serde_json::to_vec(&value).unwrap();
+        let protected = protection::protect(&plain).unwrap();
+        let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
+        bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
+        bytes.extend_from_slice(&protected);
+        fs::write(directory.path().join(OWNER_FILE), bytes).unwrap();
         let before = fs::read(directory.path().join(OWNER_FILE)).unwrap();
         assert!(PiOwnerConfig::load(directory.path()).is_err());
         assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == before);
@@ -590,7 +582,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let observation = crate::pi_fork::tests::work();
     let workspace = raw.open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation()).await.unwrap();
-    let original = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+    let original = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
     let limited = NativeMaterializationWork::new(WorkBudget {
         peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
         ..crate::pi_root_provider::allocation_budget()
@@ -599,7 +591,14 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     assert!(matches!(stage_root_command(&owner, &filesystem, &request, &limited).await,
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
     assert_eq!(limited.live_allocation_bytes(), baseline);
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original);
+    let unhashed = NativeMaterializationWork::new(WorkBudget {
+        bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let before = unhashed.receipt();
+    assert!(matches!(stage_root_command(&owner, &filesystem, &request, &unhashed).await,
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
+    assert_eq!(unhashed.receipt(), before);
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let before = work.receipt();
@@ -607,7 +606,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     assert!(matches!(stage_root_command(&owner, &filesystem, &request, &work).await,
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original);
     assert!(!session.path().join("unopened-selected-root").exists());
 }
 
@@ -634,9 +633,7 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     drop(conversation.0);
     drop(conversation.1);
     let ordinary_issuer = owner.effect_issuer();
-    let ordinary_effect_scope = ordinary_issuer.root_for_agent(
-        owner.policy.agent, owner.policy.root_task.to_string(), owner.policy.grants.clone(),
-    );
+    let ordinary_effect_scope = ordinary_issuer.issue(&owner.policy.root_task.to_string(), &owner.policy.grants, Some(owner.policy.agent), None, &mut None).expect("scope proof");
     let effect = owner.effect_authority_with_native_work(&work).unwrap();
     assert!(effect.0.2 == ordinary_effect_scope);
     let verifier = owner.effect_verifier_with_native_work(&work).unwrap();

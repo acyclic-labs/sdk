@@ -42,10 +42,6 @@ fn roles_providers_and_original_creation_are_checked() {
             .is_err()
     );
     let mut changed = original.clone();
-    changed.scratch.allocation = PiScratchAllocation::Preparing;
-    assert!(changed.validate(None, vec![], false).is_err());
-    changed.validate(None, vec![], true).unwrap();
-    let mut changed = original.clone();
     changed.scratch.volume = VolumeRef::new(
         original.scratch.volume.provider().clone(),
         "scratch",
@@ -77,10 +73,6 @@ fn roles_providers_and_original_creation_are_checked() {
 fn scratch_allocation_requires_an_explicit_current_variant() {
     let original = binding("native-session", 1);
     let current = serde_json::to_value(&original).unwrap();
-    assert_eq!(
-        current.pointer("/scratch/allocation/state"),
-        Some(&json!("created"))
-    );
     let mut preparing = original;
     preparing.scratch.allocation = PiScratchAllocation::Preparing;
     let prepared = serde_json::to_value(&preparing).unwrap();

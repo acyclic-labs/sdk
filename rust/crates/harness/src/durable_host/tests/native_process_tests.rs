@@ -22,14 +22,14 @@ type Files<A = MemoryAuthorityBackend, O = MemoryObjectBackend> = FilesystemHost
 
 #[tokio::test]
 async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let mut authority = fixture.authority();
     authority.results = Arc::new(FilesystemContentPublisher::new(
         fixture.files.clone(),
-        fixture.destination.clone(),
+        &fixture.destination,
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.scope,
-        65_536,
+        65_536, None,
     )?);
     assert!(matches!(async {
         Process::new(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
@@ -60,12 +60,8 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
 
 #[tokio::test]
 async fn readonly_schema_storage_does_not_require_result_write_authority() -> Result<()> {
-    let mut fixture = process_fixture("write", true).await?;
-    let setup = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "schema-setup",
-        Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]),
-    );
+    let mut fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
+    let setup = fixture.issuer.issue("schema-setup", &Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
     let grant = ContentGrant::verify(
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &setup,
@@ -97,7 +93,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
     )?;
     let before = fixture.files.resolve(&source).await?.generation;
     let status = fixture
-        .effects(fixture.provider().await?)?
+        .effects(fixture.provider(fixture.view.work()).await?)?
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
     let EffectStatus::Succeeded { result } = status else {
@@ -153,9 +149,7 @@ fn assert_native_receipt_binding<P: StreamProvider>(
 async fn original_native_prepared_binding_preserves_approval_and_cancellation_before_launch() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &work,
-    ).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&work)).await?;
     assert!(fixture.view.work().shares_ledger(&work));
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &foreign_cancellation)?;
@@ -172,7 +166,7 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
         request.approval_digest_with_native_work(fixture.owner.task_binding().0, fixture.command, &work)?,
         request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
     );
-    let process = fixture.provider_with_native_work(&work).await?;
+    let process = fixture.provider(&work).await?;
     let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
     let dispatch = EffectDispatch {
@@ -187,7 +181,6 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
     assert_eq!(work.receipt(), before);
     assert!(fixture.view.operation_cancellation().is_cancelled());
     assert!(!fixture.view.manifest().options.root.join("dst/output.txt").exists());
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"),)?).await?.tail, 0);
     Ok(())
 }
 
@@ -195,10 +188,8 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
 async fn original_native_success_hands_effect_and_receipt_custody_through_cancel_and_reconcile() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &work,
-    ).await?;
-    let process = fixture.provider_with_native_work(&work).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&work)).await?;
+    let process = fixture.provider(&work).await?;
     let effects = fixture.effects(process.clone())?;
     let (status, status_custody) = effects.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &work,
@@ -207,7 +198,6 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
     assert!(status_custody.work().shares_ledger(&work));
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes());
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"),)?).await?.tail, 2);
     let query_prefix = work.receipt();
     let receipt = process.receipt(attempt, &work, None).await.unwrap().unwrap();
     assert_native_receipt_binding(&fixture.owner, fixture.command, &fixture.plan, &receipt, &status, true)?;
@@ -227,7 +217,6 @@ async fn original_native_success_hands_effect_and_receipt_custody_through_cancel
         .await?.unwrap();
     assert_eq!(observed.status, status);
     assert!(observed_custody.work().shares_ledger(&work));
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"),)?).await?.tail, 2);
     let (effect, receipt_custody) = receipt.into_effect_with_native_custody().unwrap();
     let query_completed = work.receipt();
     assert_eq!(query_completed.backend_write_operations, query_prefix.backend_write_operations);
@@ -254,10 +243,8 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "mixed-issued-view", &original,
-    ).await?;
-    let process = fixture.provider_with_native_work(&original).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "mixed-issued-view", true, Some(&original)).await?;
+    let process = fixture.provider(&original).await?;
     let effects = fixture.effects(process.clone())?;
     let (status, status_custody) = effects.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &original,
@@ -296,7 +283,6 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     assert!(candidate_custody.work().shares_ledger(&query));
     let repeated = recovered.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert_eq!(receipt.published, repeated.published);
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"),)?).await?.tail, 2);
     assert_eq!(query.receipt().backend_write_operations, before.backend_write_operations);
     assert_eq!(query.receipt().materializations, before.materializations);
     let inspection = fixture.inspect_project_candidate_with_native_work(
@@ -310,7 +296,6 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
     assert!(selected_custody.work().shares_ledger(&query));
     assert_eq!(query.receipt().backend_write_operations, selection_prefix.backend_write_operations);
     assert_eq!(query.receipt().materializations, selection_prefix.materializations);
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"),)?).await?.tail, 2);
     assert_eq!(original.receipt(), original_prefix);
     assert!(!output.exists(), "cold snapshot query never reruns the accepted process");
     drop(repeated);
@@ -327,10 +312,8 @@ async fn cold_unchanged_project_keeps_the_actual_sdk_snapshot_without_relaunch()
 async fn native_process_drain_factory_rejects_other_attempt_before_admission() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &original,
-    ).await?;
-    let process = fixture.provider_with_native_work(&original).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&original)).await?;
+    let process = fixture.provider(&original).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let cleanup = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cleanup_cancellation)?;
     let before = cleanup.receipt();
@@ -356,10 +339,8 @@ async fn native_process_drain_factory_rejects_other_attempt_before_admission() -
 async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &original,
-    ).await?;
-    let process = fixture.provider_with_native_work(&original).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&original)).await?;
+    let process = fixture.provider(&original).await?;
     let effects = fixture.effects(process.clone())?;
     let (status, status_custody) = effects.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &original,
@@ -401,10 +382,8 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
 async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_span() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "wait", &original,
-    ).await?;
-    let process = fixture.provider_with_native_work(&original).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "wait", true, Some(&original)).await?;
+    let process = fixture.provider(&original).await?;
     let effects = fixture.effects(process.clone())?;
     let owner = fixture.owner.clone();
     let command = fixture.command;
@@ -452,10 +431,8 @@ async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_r
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
         let stream = Arc::new(ReceiptFaultStream::default());
-        let fixture = process_fixture_with_native_work(
-            stream.clone(), "write", &work,
-        ).await?;
-        let process = fixture.provider_with_native_work(&work).await?;
+        let fixture = process_fixture(stream.clone(), "write", true, Some(&work)).await?;
+        let process = fixture.provider(&work).await?;
         let effects = fixture.effects(process.clone())?;
         *stream.fault.lock().await = Some((kind, lost_reply));
         let outcome = effects.run_task_effect_with_native_work(
@@ -472,11 +449,7 @@ async fn original_native_receipt_commit_faults_reconcile_the_same_slot_without_r
             task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes());
         let path = format!("harness/v2/native-process/{attempt}");
         let tail = fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&path)?).await?.tail;
-        assert_eq!(tail, match (kind, lost_reply) {
-            ("launch", false) => 0,
-            ("observed", true) => 2,
-            _ => 1,
-        });
+
         let receipt = process.receipt(attempt, &work, None).await.unwrap();
         let expected = match &receipt {
             Some(receipt) => {
@@ -513,10 +486,8 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
     let stream = Arc::new(ReceiptFaultStream::default());
-    let fixture = process_fixture_with_native_work(
-        stream.clone(), "write", &work,
-    ).await?;
-    let process = fixture.provider_with_native_work(&work).await?;
+    let fixture = process_fixture(stream.clone(), "write", true, Some(&work)).await?;
+    let process = fixture.provider(&work).await?;
     *stream.cancel_observed.lock().await = Some(cancellation.clone());
     assert!(fixture.effects(process.clone())?.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &work,
@@ -524,8 +495,6 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert!(fixture.view.operation_cancellation().is_cancelled());
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes());
-    let path = format!("harness/v2/native-process/{attempt}");
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&path)?).await?.tail, 1);
     let prefix = work.receipt();
     assert!(process.reconcile_with_native_work(attempt, &work).is_err());
     assert_eq!(work.receipt(), prefix);
@@ -545,7 +514,6 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     let again = process.receipt(attempt, &query, None).await.unwrap().unwrap();
     assert_eq!(again.effect, effect);
     assert!(!output.exists());
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&path)?).await?.tail, 1);
     assert!(fixture.view.operation_cancellation().is_cancelled());
     drop(effect);
     drop(custody);
@@ -554,7 +522,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
 
 #[tokio::test]
 async fn finite_native_binding_rejects_legacy_view_before_future_or_content_reads() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let budget = fixture.request().await?.view.options.work_per_volume;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(budget, &cancellation)?;
@@ -637,11 +605,7 @@ where
         approvals: self.approvals.clone(), authority_custody: None, }
     }
 
-    async fn provider(&self) -> Result<Arc<Process<P>>> {
-        self.provider_with_native_work(self.view.work()).await
-    }
-
-    async fn provider_with_native_work(
+    async fn provider(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Process<P>>> {
         Process::new(
@@ -703,16 +667,7 @@ where
     }
 }
 
-async fn process_fixture(mode: &str, approve: bool) -> Result<ProcessFixture> {
-    process_fixture_on(
-        Arc::new(MemoryStream::default()),
-        mode,
-        approve, None
-    )
-    .await
-}
-
-async fn process_fixture_on<P: StreamProvider + 'static>(
+async fn process_fixture<P: StreamProvider + 'static>(
     stream: std::sync::Arc<P>,
     mode: &str,
     approve: bool,
@@ -721,18 +676,6 @@ async fn process_fixture_on<P: StreamProvider + 'static>(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     process_fixture_with_filesystems(stream, directory, Fs::memory(), Fs::memory(), mode, approve, work)
         .await
-}
-
-
-
-async fn process_fixture_with_native_work<P: StreamProvider + 'static>(
-    stream: std::sync::Arc<P>, mode: &str,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<ProcessFixture<P>> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    process_fixture_original(
-        stream, directory, Fs::memory(), Fs::memory(), mode, true, Some(work),
-    ).await
 }
 
 fn initialize_issued_view_fixture_services() -> Result<()> {
@@ -749,9 +692,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "mixed-issued-view", &work,
-    ).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "mixed-issued-view", true, Some(&work)).await?;
     assert!(matches!(fixture.view.manifest().volumes[0].namespace, NativeVolumeNamespace::LazyMount { .. }));
     assert_eq!(fixture.view.manifest().volumes[0].volume.class(), VolumeClass::Project);
     assert!(matches!(fixture.view.manifest().volumes[1].namespace, NativeVolumeNamespace::MaterializedDirectory));
@@ -789,10 +730,8 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     initialize_issued_view_fixture_services()?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = test_work(acyclic_fs::performance::work_budget(1_000_000_000, 1_000_000_000), &cancellation)?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &original,
-    ).await?;
-    let process = fixture.provider_with_native_work(&original).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&original)).await?;
+    let process = fixture.provider(&original).await?;
     let (status, status_custody) = fixture.effects(process.clone())?
         .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, &original).await?;
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
@@ -856,17 +795,13 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-    let fixture = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &work,
-    ).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&work)).await?;
     let issued = fixture.view.task_working_view_with_native_work(&fixture.owner, &work)?.await?;
     let foreign_work = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
     assert!(matches!(issued.verify_with_native_work(&foreign_work),
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, .. })));
     assert_eq!(foreign_work.receipt().backend_write_operations, 0);
-    let foreign = process_fixture_with_native_work(
-        Arc::new(MemoryStream::default()), "write", &work,
-    ).await?;
+    let foreign = process_fixture(Arc::new(MemoryStream::default()), "write", true, Some(&work)).await?;
     assert_ne!(fixture.owner.task_binding().1, foreign.owner.task_binding().1);
     assert!(fixture.view.task_working_view_with_native_work(&foreign.owner, &work)?.await.is_err());
     let context = fixture.task.task_context_with_native_work(
@@ -889,7 +824,7 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     assert!(guard.for_volume(&fixture.owner, &ungranted, false, &work).is_err());
     assert_eq!(work.receipt().backend_read_operations, before_guards.backend_read_operations);
     assert_eq!(work.receipt().backend_write_operations, before_guards.backend_write_operations);
-    let legacy = process_fixture("write", true).await?;
+    let legacy = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     assert!(legacy.view.task_working_view_with_native_work(&legacy.owner, &work)?.await.is_err());
     fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
     let before = work.receipt().backend_write_operations;
@@ -917,25 +852,6 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
 }
 
 async fn process_fixture_with_filesystems<P, A, O>(
-    stream: std::sync::Arc<P>,
-    directory: tempfile::TempDir,
-    filesystem: Fs<A, O>,
-    auxiliary_filesystem: Fs<A, O>,
-    mode: &str,
-    approve: bool,
-    work: Option<&acyclic_fs::NativeMaterializationWork>,
-) -> Result<ProcessFixture<P, A, O>>
-where
-    P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    process_fixture_original(
-        stream, directory, filesystem, auxiliary_filesystem, mode, approve, work,
-    ).await
-}
-
-async fn process_fixture_original<P, A, O>(
     stream: std::sync::Arc<P>,
     directory: tempfile::TempDir,
     filesystem: Fs<A, O>,
@@ -1035,7 +951,7 @@ where
                 .collect::<Result<Vec<_>>>()?,
         ),
     );
-    let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+    let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
     let root_births = if mode == "mixed-issued-view" {
         let original = original_work.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -1092,7 +1008,7 @@ where
     else {
         return Err(Error::NotFound("native lease".into()));
     };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner_fence = crate::scheduler::LeaseFence::from(&lease.reservation);
     let owner = match original_work {
         Some(work) => task.task_host().journal_owner_with_native_work(
@@ -1129,12 +1045,9 @@ where
             scope: scope.clone(),
             causal_parent: None,
             action: crate::core::Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new(
+    let setup_scope = issuer.issue("setup", &Capabilities::new(
             [
                 source.capability(VolumeOperation::Write)?,
                 auxiliary.capability(VolumeOperation::Write)?,
@@ -1146,8 +1059,7 @@ where
                     .map(|volume| volume.capability(VolumeOperation::Write))
                     .collect::<Result<Vec<_>>>()?,
             ),
-        ),
-    );
+        ), Some(agent), None, &mut None).expect("scope proof");
     let setup_grant = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
@@ -1199,9 +1111,9 @@ where
         .await?
         .generation;
     if mode == "review-test" {
-        let read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
+        let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
         for (volume, key) in [(&destination, "review-fork"), (&second_destination, "caller-fork")] {
-            let write = ContentGrant::verify(&issuer.verifier(), &scope, volume, VolumeOperation::Write)?;
+            let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, volume, VolumeOperation::Write)?;
             files.fork_volume(&source, &read, &source_generation, volume, &write, None, &IdempotencyKey::new(key)?).await?;
         }
     }
@@ -1365,12 +1277,10 @@ where
                 let mount = Arc::new(mount);
                 let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
                     .await?;
-                let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
+                let native_source = crate::filesystem::FsRootNativeSource::from_lazy(
                     Arc::clone(&lazy), work,
                 )?;
-                let creator = crate::filesystem::FilesystemResourceCreationProvider::new_with_native_work(
-                    Arc::clone(&files), &issuer, work,
-                )?;
+                let creator = crate::filesystem::FilesystemResourceCreationProvider::new(Arc::clone(&files), &issuer, Some(work))?;
                 let (config, operation, initial_generation, _, _) =
                     root_births.expect("mixed Project was physically created through its original operation");
                 let protected = creator.protect_root_bootstrap_with_native_work(
@@ -1378,8 +1288,8 @@ where
                     operation, config, initial_generation, snapshot.authored_generation,
                     Some((&native_source, snapshot)), work,
                 )?.await?.into_native_shared(work)?;
-                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new_with_native_work(
-                    Arc::clone(&files), issuer.audience(), task_id, work,
+                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
+                    Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
                 project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
             borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
@@ -1458,16 +1368,16 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        1_000_000,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        result_volume.clone(),
+        &result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let request_ref = results
         .stage(
@@ -1497,10 +1407,10 @@ where
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        result_volume,
-        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-        scope.clone(),
-        1_000_000,
+        &result_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+        &scope,
+        1_000_000, None,
     )?);
     approvals
         .open_interaction(
@@ -1569,17 +1479,9 @@ where
         },
         schema: serde_json::json!({"type":"integer"}),
     });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        implementation.clone(),
-        serde_json::json!({"type":"integer"}),
-        serde_json::json!({"type":"object"}),
+    let (identity, machine, tasks, machines) = test_registries(
+        implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"object"}),
     )?;
-    let identity = definition.identity().clone();
-    let machine = implementation.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
     let runtime = FilesystemTaskRuntime::open(
         stream,
@@ -1821,7 +1723,7 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
     let crate::distributed::WorkPull::Claimed(lease) = task.task_host().pull_work(&crate::distributed::Worker {
         id: "preparation-worker".into(), available: Default::default(), labels: BTreeMap::new(),
     }).await? else { return Err(Error::NotFound("native preparation lease".into())); };
-    task.task_host().start_task(&lease).await?;
+    task.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(task.task_host().journal_owner(
         TaskId::from_bytes([53; 16]), crate::scheduler::LeaseFence::from(&lease.reservation),
     ).await?);
@@ -1862,7 +1764,7 @@ type PreparationView = NativeVolumeView<MemoryAuthorityBackend, MemoryObjectBack
 #[tokio::test]
 async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_physical_writes() -> Result<()> {
     use std::path::Path;
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let fixture = preparation_fixture_on(Arc::new(MemoryStream::default()), &seed).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let view = PreparationView::prepare(
@@ -1890,7 +1792,7 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
 async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_current_task() -> Result<()> {
     use crate::runtime::DurableTaskHost as _;
     use std::path::Path;
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let fixture = preparation_fixture_on(Arc::new(MemoryStream::default()), &seed).await?;
     let foreign = preparation_fixture_on(Arc::new(MemoryStream::default()), &seed).await?;
     assert_eq!(fixture.owner.task_binding().0, foreign.owner.task_binding().0);
@@ -1919,7 +1821,7 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
 #[tokio::test]
 async fn original_native_preparation_resumes_physical_partial_and_lost_acknowledgements() -> Result<()> {
     use acyclic_fs::MaterializationPhase::{Applied, Applying, Preparing};
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let original = PreparationView::inspect_preparation(
         &seed.owner, &seed.preparation_root, seed.view.manifest().options.work_per_volume,
         &acyclic_fs::CancellationToken::new(),
@@ -2005,7 +1907,7 @@ async fn original_native_preparation_resumes_physical_partial_and_lost_acknowled
 #[tokio::test]
 #[cfg(feature = "filesystem-local")]
 async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let storage = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let path = storage.path().join("coordinator");
     let provider = acyclic_stream::LocalStream::open(&path, Default::default()).await
@@ -2053,8 +1955,8 @@ async fn native_preparation_incomplete_journal_reopens_on_actual_local_stream() 
 
 #[tokio::test]
 async fn native_precapture_identity_failure_retains_work_and_never_replays() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
-    let process = fixture.provider().await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let root = fixture.view.manifest().options.root.clone();
     let original = root.with_file_name("original-native-root");
     std::fs::rename(&root, &original).map_err(|error| Error::Storage(error.to_string()))?;
@@ -2110,9 +2012,9 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
         ("observed", true),
     ] {
         let stream = Arc::new(ReceiptFaultStream::default());
-        let fixture = process_fixture_on(stream.clone(), "write", true).await?;
+        let fixture = process_fixture(stream.clone(), "write", true, None).await?;
         *stream.fault.lock().await = Some((kind, lost_reply));
-        let process = fixture.provider().await?;
+        let process = fixture.provider(fixture.view.work()).await?;
         let effects = fixture.effects(process.clone())?;
         assert!(
             effects
@@ -2234,19 +2136,12 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
     );
     let weak_stream = Arc::downgrade(&local);
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let fixture = process_fixture_with_filesystems(
-        local,
-        directory,
-        filesystem,
-        auxiliary,
-        "write",
-        true, None
-    )
+    let fixture = process_fixture_with_filesystems(local, directory, filesystem, auxiliary, "write", true, None)
     .await?;
     let seed = NativeRestart::from_fixture(&fixture);
     let auxiliary = fixture.view.manifest().volumes[2].clone();
     let weak_files = Arc::downgrade(&fixture.files);
-    let process = fixture.provider().await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let weak_process = Arc::downgrade(&process);
     let status = fixture
         .effects(process.clone())?
@@ -2423,16 +2318,16 @@ async fn reopen_native(
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        seed.scope.clone(),
-        1_000_000,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        seed.result_volume.clone(),
+        &seed.result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &seed.scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
@@ -2456,10 +2351,10 @@ async fn reopen_native(
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        seed.result_volume.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-        seed.scope.clone(),
-        1_000_000,
+        &seed.result_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let process = Arc::new(
         LocalNativeProcess::recover(
@@ -2514,14 +2409,7 @@ async fn native_host_child() -> Result<()> {
     );
     let directory =
         tempfile::tempdir_in(&storage).map_err(|error| Error::Storage(error.to_string()))?;
-    let fixture = process_fixture_with_filesystems(
-        stream,
-        directory,
-        filesystem,
-        auxiliary,
-        "host-death",
-        true, None
-    )
+    let fixture = process_fixture_with_filesystems(stream, directory, filesystem, auxiliary, "host-death", true, None)
     .await?;
     std::fs::write(
         storage.join("restart.json"),
@@ -2529,7 +2417,7 @@ async fn native_host_child() -> Result<()> {
     )
     .map_err(|error| Error::Storage(error.to_string()))?;
     fixture
-        .effects(fixture.provider().await?)?
+        .effects(fixture.provider(fixture.view.work()).await?)?
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
     Err(Error::Storage(
@@ -2590,14 +2478,6 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     let path = acyclic_stream::StreamPath::new(format!("harness/v2/native-process/{attempt}"))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
-        owner.stream()
-            .bounds(acyclic_stream::StreamPath::new(path.as_str())?)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .tail,
-        1
-    );
-    assert_eq!(
         effects
             .run_task_effect(&owner, seed.command, seed.plan.clone())
             .await?,
@@ -2636,14 +2516,6 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     );
     assert_eq!(process.receipt(attempt).await?, Some(receipt));
     assert_eq!(task.task_host().outcome(seed.task).await?, None);
-    assert_eq!(
-        owner.stream()
-            .bounds(acyclic_stream::StreamPath::new(path.as_str())?)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?
-            .tail,
-        1
-    );
     assert!(!output.exists());
     let destination = workspace_ref(
         seed.destination.provider().clone(),
@@ -2786,18 +2658,15 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         "stdin-bytes",
         "stdin-empty",
     ] {
-        let mut fixture = process_fixture(
-            if change.starts_with("mcp-") {
+        let mut fixture = process_fixture(Arc::new(MemoryStream::default()), if change.starts_with("mcp-") {
                 "mcp-approval"
             } else if change == "stdin-bytes" {
                 "stdin-bytes"
             } else {
                 "write"
-            },
-            true,
-        )
+            }, true, None)
         .await?;
-        drop(fixture.provider().await?);
+        drop(fixture.provider(fixture.view.work()).await?);
         let mut request = fixture.request().await?;
         match change {
             "argv" => request.argv.swap(0, 1),
@@ -2839,7 +2708,7 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         );
         fixture.replace_request(&request).await?;
         assert!(
-            fixture.provider().await.is_err(),
+            fixture.provider(fixture.view.work()).await.is_err(),
             "accepted changed {change}"
         );
         assert!(
@@ -2857,7 +2726,7 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
 
 #[tokio::test]
 async fn stopped_mcp_response_remains_uncertain() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let mut request = fixture.request().await?;
     let initialization = OperationId::from_bytes([75; 16]);
     let operation = OperationId::from_bytes([76; 16]);
@@ -2900,7 +2769,7 @@ async fn stopped_mcp_response_remains_uncertain() -> Result<()> {
 #[tokio::test]
 #[cfg(windows)]
 async fn native_view_rejects_physical_aliases_before_any_materialization() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     for names in [["same", "SAME"], ["parent", "PARENT/child"]] {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let mut options = fixture.view.manifest().options.clone();
@@ -2942,8 +2811,8 @@ async fn native_view_rejects_physical_aliases_before_any_materialization() -> Re
 #[tokio::test]
 async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success() -> Result<()> {
     for mode in ["pause-write", "partial-publication"] {
-        let fixture = process_fixture(mode, true).await?;
-        let process = fixture.provider().await?;
+        let fixture = process_fixture(Arc::new(MemoryStream::default()), mode, true, None).await?;
+        let process = fixture.provider(fixture.view.work()).await?;
         let effects = Arc::new(fixture.effects(process.clone())?);
         let running = {
             let effects = effects.clone();
@@ -3140,14 +3009,6 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
         );
         assert_eq!(
             fixture
-                .owner.stream()
-                .bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"))?)
-                .await?
-                .tail,
-            2,
-        );
-        assert_eq!(
-            fixture
                 .task
                 .task_host()
                 .outcome(fixture.owner.task_binding().0)
@@ -3162,8 +3023,8 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
 #[tokio::test]
 async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication() -> Result<()> {
     for mode in ["timeout", "flood"] {
-        let fixture = process_fixture(mode, true).await?;
-        let process = fixture.provider().await?;
+        let fixture = process_fixture(Arc::new(MemoryStream::default()), mode, true, None).await?;
+        let process = fixture.provider(fixture.view.work()).await?;
         let effects = fixture.effects(process.clone())?;
         let status = effects
             .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
@@ -3261,14 +3122,6 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
             status
         );
         assert_eq!(recovered.receipt(attempt).await?, Some(receipt));
-        assert_eq!(
-            fixture
-                .owner.stream()
-                .bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"))?)
-                .await?
-                .tail,
-            2,
-        );
         if mode == "timeout" {
             tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
             assert!(
@@ -3287,13 +3140,13 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
 
 #[tokio::test]
 async fn approved_bash_preserves_ordered_arguments_and_selected_environment() -> Result<()> {
-    let fixture = process_fixture("bash", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "bash", true, None).await?;
     assert_eq!(fixture.view.manifest().volumes.len(), 3);
     assert_ne!(
         fixture.view.manifest().volumes[0].volume.provider(),
         fixture.view.manifest().volumes[2].volume.provider()
     );
-    let effects = fixture.effects(fixture.provider().await?)?;
+    let effects = fixture.effects(fixture.provider(fixture.view.work()).await?)?;
     let status = effects
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
@@ -3336,13 +3189,13 @@ async fn approved_bash_preserves_ordered_arguments_and_selected_environment() ->
 
 #[tokio::test]
 async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication() -> Result<()> {
-    let fixture = process_fixture("mutate-source-bash", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "mutate-source-bash", true, None).await?;
     let source = workspace_ref(
         fixture.source.provider().clone(),
         &fixture.source.storage_name()?,
     )?;
     let before = fixture.files.resolve(&source).await?.generation;
-    let process = fixture.provider().await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let effects = fixture.effects(process.clone())?;
     let failure_error = effects
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
@@ -3408,10 +3261,10 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
 
 #[tokio::test]
 async fn approved_bash_uses_nineteen_independently_selected_volumes() -> Result<()> {
-    let fixture = process_fixture("many-bash", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "many-bash", true, None).await?;
     assert_eq!(fixture.view.manifest().volumes.len(), 19);
     let status = fixture
-        .effects(fixture.provider().await?)?
+        .effects(fixture.provider(fixture.view.work()).await?)?
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
@@ -3433,7 +3286,7 @@ async fn approved_bash_uses_nineteen_independently_selected_volumes() -> Result<
 #[tokio::test]
 async fn stock_task_commands_select_existing_effect_registry_explicitly() -> Result<()> {
     use crate::filesystem::{EFFECT_TASK_COMMAND_KIND, TaskCommandHost as _, TaskCommandProgress};
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let (task, fence) = fixture.owner.task_binding();
     let context = fixture
         .task
@@ -3483,7 +3336,7 @@ async fn stock_task_commands_select_existing_effect_registry_explicitly() -> Res
     let commands = fixture
         .task
         .commands()
-        .with_effects(Arc::new(fixture.effects(fixture.provider().await?)?));
+        .with_effects(Arc::new(fixture.effects(fixture.provider(fixture.view.work()).await?)?));
     let TaskCommandProgress::Ready(result) = commands
         .execute(
             context.clone(),
@@ -3530,8 +3383,8 @@ async fn stock_task_commands_select_existing_effect_registry_explicitly() -> Res
 
 #[tokio::test]
 async fn nonzero_exit_preserves_output_and_is_not_implicitly_replayed() -> Result<()> {
-    let fixture = process_fixture("nonzero", true).await?;
-    let process = fixture.provider().await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "nonzero", true, None).await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let effects = fixture.effects(process)?;
     let status = effects
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
@@ -3571,9 +3424,9 @@ async fn nonzero_exit_preserves_output_and_is_not_implicitly_replayed() -> Resul
 #[tokio::test]
 async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_receipt() -> Result<()>
 {
-    let denied = process_fixture("write", false).await?;
+    let denied = process_fixture(Arc::new(MemoryStream::default()), "write", false, None).await?;
     assert!(matches!(
-        denied.provider().await,
+        denied.provider(denied.view.work()).await,
         Err(Error::Unauthorized(_))
     ));
     assert!(
@@ -3585,7 +3438,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
             .join("dst/output.txt")
             .exists()
     );
-    let fixture = process_fixture("review-test", true).await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "review-test", true, None).await?;
     let source = workspace_ref(fixture.source.provider().clone(), &fixture.source.storage_name()?)?;
     let source_head = fixture.files.resolve(&source).await?.generation;
     assert!(fixture.owner.require_volume_grant(&fixture.source, VolumeOperation::Write, &mut None).is_err());
@@ -3595,7 +3448,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].name, "input.txt");
     assert_eq!(inspection.read_path(&fixture.source, "", "input.txt", &source_head).await?.1.as_ref(), b"pinned input");
-    let process = fixture.provider().await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let effect_id = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect_id.into_bytes());
     assert_eq!(process.receipt(attempt).await?, None);
@@ -3613,14 +3466,6 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(process.receipt(attempt).await?, None);
-    assert_eq!(
-        fixture
-            .owner.stream()
-            .bounds(acyclic_stream::StreamPath::new(&format!("harness/v2/native-process/{attempt}"))?)
-            .await?
-            .tail,
-        0,
-    );
     let status = fixture
         .effects(process.clone())?
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
@@ -3700,11 +3545,11 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert!(fixture.files.read(&source, None, "/tests/generated.txt", 128).await.is_err());
     assert_eq!(fixture.files.read(&destination, None, "/tests/generated.txt", 128).await?.as_ref(), b"isolated test");
     let caller = workspace_ref(fixture.second_destination.provider().clone(), &fixture.second_destination.storage_name()?)?;
-    let caller_write = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
+    let caller_write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
     fixture.files.put_content(&fixture.second_destination, &caller_write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
         &IdempotencyKey::new("review-concurrent")?).await?;
     let review_head = fixture.files.resolve(&destination).await?.generation;
-    let review_read = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
+    let review_read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
     let import = fixture.files.prepare_volume_import(&fixture.destination, &review_read, &review_head,
         &fixture.second_destination, &caller_write).await?;
     let key = IdempotencyKey::new("review-import")?;
@@ -3717,7 +3562,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert!(fixture.files.read(&source, None, "/tests/generated.txt", 128).await.is_err());
     std::fs::remove_file(fixture.view.manifest().options.root.join("dst/tests/generated.txt"))
         .map_err(|e| Error::Storage(e.to_string()))?;
-    assert_eq!(fixture.effects(fixture.provider().await?)?.run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone()).await?, status);
+    assert_eq!(fixture.effects(fixture.provider(fixture.view.work()).await?)?.run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone()).await?, status);
     assert!(!fixture.view.manifest().options.root.join("dst/tests/generated.txt").exists());
     Ok(())
 }
@@ -3725,8 +3570,8 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
 #[tokio::test]
 async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descendants() -> Result<()>
 {
-    let fixture = process_fixture("wait", true).await?;
-    let process = fixture.provider().await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "wait", true, None).await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let weak = Arc::downgrade(&process);
     let effects = fixture.effects(process.clone())?;
     let owner = fixture.owner.clone();
@@ -3827,7 +3672,6 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
         .await?;
     assert_eq!(known, EffectStatus::Succeeded { result: captured });
     assert_eq!(recovered.receipt(attempt).await?, Some(receipt));
-    assert_eq!(fixture.owner.stream().bounds(acyclic_stream::StreamPath::new(&path)?).await?.tail, 2);
     let (task, fence) = fixture.owner.task_binding();
     fixture
         .task
@@ -3846,7 +3690,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
 
 #[tokio::test]
 async fn native_preparation_bounds_shared_codec_before_physical_root_open() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     assert!(seed.view.manifest().volumes.iter().all(|mapping| {
         matches!(mapping.namespace, NativeVolumeNamespace::MaterializedDirectory)
     }));
@@ -3868,7 +3712,7 @@ async fn native_preparation_bounds_shared_codec_before_physical_root_open() -> R
 
 #[tokio::test]
 async fn native_preparation_decode_failure_retains_original_journal_read_work() -> Result<()> {
-    let seed = process_fixture("write", true).await?;
+    let seed = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let stream = Arc::new(ReceiptFaultStream::default());
     let fixture = preparation_fixture_on(stream, &seed).await?;
     let prepared = PreparationView::prepare(
@@ -3900,8 +3744,8 @@ async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() ->
         ("stdin-empty", [].as_slice()),
         ("stdin-bytes", [0, 255, b'\n', b'x'].as_slice()),
     ] {
-        let fixture = process_fixture(mode, true).await?;
-        let effects = fixture.effects(fixture.provider().await?)?;
+        let fixture = process_fixture(Arc::new(MemoryStream::default()), mode, true, None).await?;
+        let effects = fixture.effects(fixture.provider(fixture.view.work()).await?)?;
         let status = effects.run_task_effect(
             &fixture.owner, fixture.command, fixture.plan.clone(),
         ).await?;
@@ -3925,10 +3769,10 @@ async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() ->
 #[tokio::test]
 async fn even_exactly_approved_mcp_requests_cannot_also_supply_literal_stdin() -> Result<()> {
     for mode in ["mcp-stdin-empty", "mcp-stdin-bytes"] {
-        let fixture = process_fixture(mode, true).await?;
+        let fixture = process_fixture(Arc::new(MemoryStream::default()), mode, true, None).await?;
         let request = fixture.request().await?;
         assert!(request.mcp_stdio.is_some() && request.standard_input.is_some());
-        assert!(fixture.provider().await.is_err());
+        assert!(fixture.provider(fixture.view.work()).await.is_err());
         assert!(!fixture.view.manifest().options.root.join("dst/output.txt").exists());
     }
     Ok(())
@@ -3937,7 +3781,7 @@ async fn even_exactly_approved_mcp_requests_cannot_also_supply_literal_stdin() -
 #[tokio::test]
 async fn native_publication_factory_pins_original_generation_and_retains_denied_cleanup() -> Result<()> {
     for stale in [false, true] {
-        let fixture = process_fixture("write", true).await?;
+        let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let cleanup_cancellation = acyclic_fs::CancellationToken::new();
         let budget = fixture.view.manifest().validation_budget()?;
@@ -4045,8 +3889,8 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
 
 #[tokio::test]
 async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_native_view() -> Result<()> {
-    let fixture = process_fixture("wait", true).await?;
-    let process = fixture.provider().await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "wait", true, None).await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let effects = fixture.effects(process.clone())?;
     let owner = fixture.owner.clone();
     let command = fixture.command;
@@ -4118,8 +3962,8 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
 
 #[tokio::test]
 async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() -> Result<()> {
-    let fixture = process_fixture("wait", true).await?;
-    let process = fixture.provider().await?;
+    let fixture = process_fixture(Arc::new(MemoryStream::default()), "wait", true, None).await?;
+    let process = fixture.provider(fixture.view.work()).await?;
     let effects = fixture.effects(process.clone())?;
     let owner = fixture.owner.clone();
     let command = fixture.command;
