@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn apply_windows_metadata<W: SourceDemandReadWork>(
+pub(crate) fn apply_windows_metadata<W: NativeHostWork<Error = DemandError>>(
     file: cap_std::fs::File,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,

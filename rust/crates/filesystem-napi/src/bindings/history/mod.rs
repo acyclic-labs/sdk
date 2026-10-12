@@ -301,40 +301,29 @@ pub(in crate::bindings) fn native_join_history(value: &str) -> Result<JoinHistor
 pub(in crate::bindings) fn native_join_result(
     outcome: JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeJoinResult {
-    let generation =
-        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
-            NativeJoinResult {
-                status: status.to_owned(),
-                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-                conflicts: Vec::new(),
-                truncated: false,
-            }
-        };
-    match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.generation),
-        JoinOutcome::AlreadyApplied(value) => generation("already-applied", value.generation),
-        JoinOutcome::NoChanges(value) => generation("no-changes", value),
-        JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+    let (status, generation) = match outcome {
+        JoinOutcome::Applied(value) => ("applied", Some(value.generation)),
+        JoinOutcome::AlreadyApplied(value) => ("already-applied", Some(value.generation)),
+        JoinOutcome::NoChanges(value) => ("no-changes", Some(value)),
+        JoinOutcome::StaleTarget(value) => ("stale-target", Some(value)),
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
-        } => NativeJoinResult {
-            status: "conflicted".to_owned(),
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        JoinOutcome::Fenced => NativeJoinResult {
-            status: "fenced".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        JoinOutcome::IdempotencyConflict => NativeJoinResult {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return NativeJoinResult {
+                status: "conflicted".to_owned(),
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        JoinOutcome::Fenced => ("fenced", None),
+        JoinOutcome::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeJoinResult {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

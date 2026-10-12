@@ -755,7 +755,6 @@ mod tests {
         let result = ToolResult {
             value: encode(&read)?,
         };
-        let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = ReadProjection(mode);
             let projected = projector.project(&input, &result, None)?.0;
@@ -770,7 +769,6 @@ mod tests {
             } else {
                 assert_reference(&projected, &file)?;
             }
-            assert_eq!(result, unchanged);
         }
         let search = SearchResult {
             file: file.clone(),
@@ -787,7 +785,6 @@ mod tests {
         let result = ToolResult {
             value: encode(&search)?,
         };
-        let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = SearchProjection(mode);
             let projected = projector.project(&input, &result, None)?.0;
@@ -802,7 +799,6 @@ mod tests {
             } else {
                 assert_reference(&projected, &file)?;
             }
-            assert_eq!(result, unchanged);
         }
         Ok(())
     }

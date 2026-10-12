@@ -610,7 +610,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
-        .abandon(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
+        .retire(fixture.lazy_work.as_ref().expect("original seeded volume work").cancellation())?;
     Ok(())
 }
 

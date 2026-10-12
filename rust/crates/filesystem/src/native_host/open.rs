@@ -130,9 +130,8 @@ pub(crate) fn read_builtin_file(
     work: &NativeMaterializationWork,
 ) -> Result<usize, NativeTreeMaterializationError> {
     use std::io::Read as _;
-    let meter = work.runtime_meter();
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
-        meter.as_ref(),
+        work.runtime_meter(),
         acyclic_native_runtime::NativeOperationKind::Read,
         destination.len(),
     )
@@ -161,9 +160,8 @@ pub(crate) fn write_builtin_file(
     work: &NativeMaterializationWork,
 ) -> Result<usize, NativeTreeMaterializationError> {
     use std::io::Write as _;
-    let meter = work.runtime_meter();
     let mut transfer = acyclic_native_runtime::NativeByteReservation::new(
-        meter.as_ref(),
+        work.runtime_meter(),
         acyclic_native_runtime::NativeOperationKind::Write,
         source.len(),
     )

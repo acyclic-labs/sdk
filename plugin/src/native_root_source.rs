@@ -376,7 +376,7 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
             self.budget,
         )?;
         let path = root.to_path_buf();
-        tokio::task::spawn_blocking(move || HostRoot::open(&path).map(|root| root.identity()))
+        tokio::task::spawn_blocking(move || acyclic_fs::capture_root_identity(&path))
             .await
             .map_err(|error| {
                 rejected(

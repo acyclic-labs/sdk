@@ -51,27 +51,8 @@ async fn persisted_foreign_commit_tree_needs_capture_provenance() {
 
 #[tokio::test]
 async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-policy",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-policy").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::new()).await;
     transaction
         .create_dir_all(
             "/target/nested",
@@ -79,9 +60,8 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directories");
+        .expect("directories")
+        .value;
     transaction
         .write_text("/target/drop.bin", "drop")
         .await
@@ -142,17 +122,7 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
 
 #[tokio::test]
 async fn capture_at_generation_excludes_later_workspace_updates() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-pinned-generation",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
+    let workspace = memory_workspace("git-capture-pinned-generation").await;
     let mut initial = workspace
         .begin_transaction(
             IdempotencyKey::from_bytes([0x35; 16]),
@@ -160,9 +130,8 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("initial transaction");
+        .expect("initial transaction")
+        .value;
     initial
         .write_text("/published.txt", "published")
         .await
@@ -175,9 +144,8 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("later transaction");
+        .expect("later transaction")
+        .value;
     later
         .write_text("/later.txt", "later")
         .await
@@ -223,27 +191,8 @@ async fn capture_at_generation_excludes_later_workspace_updates() {
 
 #[tokio::test]
 async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitives() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-records",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x41; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-records").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x41; 16])).await;
     transaction
         .write_text("/source.txt", "linked")
         .await
@@ -259,9 +208,8 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("metadata");
+        .expect("metadata")
+        .value;
     transaction
         .hard_link(
             "/source.txt",
@@ -270,15 +218,13 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("hard link");
+        .expect("hard link")
+        .value;
     transaction
         .create_dir_all("/ignored", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("ignored directory");
+        .expect("ignored directory")
+        .value;
     transaction
         .write_text("/ignored/drop.txt", "drop")
         .await
@@ -301,9 +247,8 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("source stat");
+        .expect("source stat")
+        .value;
     let linked = captured
         .generation
         .stat(
@@ -312,9 +257,8 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("link stat");
+        .expect("link stat")
+        .value;
     assert_eq!(source.file_id, linked.file_id);
     assert_eq!(source.link_count, 2);
     assert_eq!(source.metadata.posix_mode, Some(0o100_640));
@@ -331,33 +275,13 @@ async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitive
 
 #[tokio::test]
 async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-nested-policy",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x49; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-nested-policy").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x49; 16])).await;
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -427,39 +351,18 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
 
 #[tokio::test]
 async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-diff-policy",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
+    let workspace = memory_workspace("git-diff-policy").await;
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("baseline");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x4b; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+        .expect("baseline")
+        .value;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x4b; 16])).await;
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     transaction
         .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
         .await
@@ -476,9 +379,8 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("changed generation");
+        .expect("changed generation")
+        .value;
 
     let counts = git_compatible_diff_counts(
         &before,
@@ -495,9 +397,8 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
         workspace
             .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("unchanged head")
+            .value
             .id(),
         after.id()
     );
@@ -517,17 +418,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
 
 #[tokio::test]
 async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-diff-deleted-policy",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
+    let workspace = memory_workspace("git-diff-deleted-policy").await;
     let mut initial = workspace
         .begin_transaction(
             IdempotencyKey::from_bytes([0x4c; 16]),
@@ -535,9 +426,8 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("initial transaction");
+        .expect("initial transaction")
+        .value;
     initial
         .write_text("/drop.tmp", "old")
         .await
@@ -546,9 +436,8 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("before");
+        .expect("before")
+        .value;
 
     let mut changed = workspace
         .begin_transaction(
@@ -557,9 +446,8 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("changed transaction");
+        .expect("changed transaction")
+        .value;
     changed
         .write_text("/.gitignore", "*.tmp\n")
         .await
@@ -571,16 +459,14 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("delete old file");
+        .expect("delete old file")
+        .value;
     publish_fixture(changed).await;
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("after");
+        .expect("after")
+        .value;
 
     let counts = git_compatible_diff_counts(
         &before,
@@ -597,33 +483,13 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
 
 #[tokio::test]
 async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-ignored-parent",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
+    let workspace = memory_workspace("git-ignored-parent").await;
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("before");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x4e; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+        .expect("before")
+        .value;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x4e; 16])).await;
     transaction
         .write_text("/.gitignore", "build/\n")
         .await
@@ -631,9 +497,8 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     transaction
         .create_dir_all("/build", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     transaction
         .write_text("/build/.gitignore", "!keep.txt\n")
         .await
@@ -646,9 +511,8 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("after");
+        .expect("after")
+        .value;
 
     let counts = git_compatible_diff_counts(
         &before,
@@ -686,27 +550,8 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
 
 #[tokio::test]
 async fn filtered_capture_retry_keeps_original_fork_generation() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-capture-retry",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x69; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-capture-retry").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x69; 16])).await;
     transaction
         .write_text("/keep.txt", "keep")
         .await

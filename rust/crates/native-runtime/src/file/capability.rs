@@ -27,32 +27,32 @@ impl NativeFile {
             Some(NativeFileMeter::Owned(meter)) => (Some(meter.as_ref()), Some(meter)),
             None => (None, None),
         };
-        if let Some(meter) = meter {
-            if let Err(error) = meter.check() {
-                return Err((error, file));
-            }
-            #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-            if FILE_HEALTH.get().is_none() {
-                return Err((io::ErrorKind::NotConnected.into(), file));
-            }
-        }
-        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        if owner.is_some() {
-            return Err((io::ErrorKind::Unsupported.into(), file));
-        }
         let file_bytes = std::mem::size_of::<NativeFilePayload>();
-        let allocation = if let Some(owner) = owner {
-            match ReadAllocation::new(owner, file_bytes) {
-                Ok(allocation) => Some(allocation),
-                Err(error) => return Err((error, file)),
+        let admitted = (|| {
+            if let Some(meter) = meter {
+                meter.check()?;
+                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+                if FILE_HEALTH.get().is_none() {
+                    return Err(io::ErrorKind::NotConnected.into());
+                }
             }
-        } else {
-            if let Some(meter) = meter
-                && let Err(error) = meter.allocate(file_bytes as u64)
-            {
-                return Err((error, file));
+            #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+            if owner.is_some() {
+                return Err(io::ErrorKind::Unsupported.into());
             }
-            None
+            match owner {
+                Some(owner) => ReadAllocation::new(owner, file_bytes).map(Some),
+                None => {
+                    if let Some(meter) = meter {
+                        meter.allocate(file_bytes as u64)?;
+                    }
+                    Ok(None)
+                }
+            }
+        })();
+        let allocation = match admitted {
+            Ok(allocation) => allocation,
+            Err(error) => return Err((error, file)),
         };
         let file = Arc::new(NativeFilePayload {
             file,

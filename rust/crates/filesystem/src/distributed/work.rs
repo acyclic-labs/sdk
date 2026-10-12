@@ -59,7 +59,7 @@ impl<'a> AuthorityWork<'a> {
         let original = self
             .original
             .expect("native SDK boundary requires original funding");
-        original.native_read_meter().clone()
+        original.state.clone()
     }
 
     #[cfg(not(target_arch = "wasm32"))]

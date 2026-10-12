@@ -2,33 +2,13 @@ use super::*;
 
 #[tokio::test]
 async fn tree_walk_and_grep_are_generation_bound_and_portable() {
-    let fs = crate::Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-inspection",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x32; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-inspection").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x32; 16])).await;
     transaction
         .create_dir_all("/src", WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("directory");
+        .expect("directory")
+        .value;
     transaction
         .write_text("/src/a.txt", "one\nneedle\n")
         .await
@@ -49,9 +29,8 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
             &CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("binary file");
+        .expect("binary file")
+        .value;
     let generation = publish_fixture(transaction).await;
     let entries = walk_git_tree(&generation, Some("src"), 10)
         .await
@@ -82,27 +61,8 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
 
 #[tokio::test]
 async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
-    let fs = crate::Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-patch",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x33; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-patch").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x33; 16])).await;
     transaction
         .write_text("/a.txt", "one\nold\n")
         .await
@@ -133,9 +93,8 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("patched file")
+            .value
             .as_ref(),
         b"one\nnew\n"
     );
@@ -183,9 +142,8 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .expect("created file")
+            .value
             .as_ref(),
         b"made\n"
     );

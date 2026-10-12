@@ -9,18 +9,11 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
     let authority_id = AuthorityId::from_bytes([0xc1; 16]);
     let operation_id = OperationId::from_bytes([0xc2; 16]);
     ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -29,12 +22,8 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
         __authority_work.receipt(__authority_result)
     })?;
     let original = ({
-        let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-        let __authority_result = authority
-            .head(__authority_args.0, &mut __authority_work)
-            .await;
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
         __authority_work.receipt(__authority_result)
     })?
     .value;
@@ -44,22 +33,9 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
         fault: SimulationFault::AmbiguousAuthorityAppend,
     })?;
     let lost = ({
-        let __authority_args = (
-            authority_id,
-            original,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .reserve_publication(
-                __authority_args.0,
-                __authority_args.1,
-                __authority_args.2,
-                &mut __authority_work,
-            )
+            .reserve_publication(authority_id, original, operation_id, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })
@@ -73,20 +49,9 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
     ));
     assert_eq!(lost.work.backend_write_operations, 1);
     let reservation = ({
-        let __authority_args = (
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .publication_reservation(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .publication_reservation(authority_id, operation_id, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })?
@@ -101,20 +66,9 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
         fault: SimulationFault::PartitionBefore,
     })?;
     let partitioned = ({
-        let __authority_args = (
-            authority_id,
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .publication_reservation(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .publication_reservation(authority_id, operation_id, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })
@@ -130,11 +84,9 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
         fault: SimulationFault::AmbiguousAuthorityAppend,
     })?;
     let released = ({
-        let __authority_args = (reservation, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .release_publication(__authority_args.0, &mut __authority_work)
+            .release_publication(reservation, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })
@@ -147,30 +99,18 @@ async fn reservation_lost_ack_and_readonly_query_faults_use_original_evidence()
         }
     ));
     ({
-        let __authority_args = (reservation, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .release_publication(__authority_args.0, &mut __authority_work)
+            .release_publication(reservation, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })?;
     assert_eq!(
         ({
-            let __authority_args = (
-                authority_id,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            );
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let __authority_result = authority
-                .publication_reservation(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .publication_reservation(authority_id, operation_id, &mut __authority_work)
                 .await;
             __authority_work.receipt(__authority_result)
         })?

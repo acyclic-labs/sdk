@@ -121,18 +121,11 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
 
     let authority_id = AuthorityId::from_bytes([71; 16]);
     (async {
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -142,20 +135,11 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     })
     .await?;
     let missing = (async {
-        let __authority_args = (
-            authority_id,
-            OperationId::from_bytes([72; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let authority_input_1 = OperationId::from_bytes([72; 16]);
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .find_operation(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .find_operation(authority_id, authority_input_1, &mut __authority_work)
             .await
             .map(|(value, _allocation)| value);
         __authority_work.receipt(__authority_result)
@@ -163,26 +147,16 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     .await?;
     assert!(missing.value.is_none());
     let head = (async {
-        let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-        let __authority_result = authority
-            .head(__authority_args.0, &mut __authority_work)
-            .await;
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
         __authority_work.receipt(__authority_result)
     })
     .await?
     .value;
     let fenced = (async {
-        let __authority_args = (authority_id, head, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .fence(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .fence(authority_id, head, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })
@@ -218,15 +192,11 @@ async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_failure = (async {
-        let __authority_args = (
-            AuthorityId::from_bytes([80; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+        let authority_input_0 = AuthorityId::from_bytes([80; 16]);
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .head(__authority_args.0, &mut __authority_work)
+            .head(authority_input_0, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })

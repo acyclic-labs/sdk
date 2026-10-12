@@ -11,7 +11,9 @@ pub(crate) enum MacMetadataTarget {
     },
 }
 
-pub(super) fn open_macos_metadata_target<W: SourceDemandReadWork>(
+pub(super) fn open_macos_metadata_target<
+    W: NativeHostWork<Error = DemandError, Allocation = u64>,
+>(
     root: &Dir,
     path: &Path,
     work: &mut W,
@@ -23,12 +25,7 @@ pub(super) fn open_macos_metadata_target<W: SourceDemandReadWork>(
         if !matches!(kind, libc::S_IFREG | libc::S_IFDIR | libc::S_IFIFO) {
             let parent = clone_directory(parent, work)?;
             let bytes = leaf.to_bytes();
-            let copied = WorkCounters {
-                bytes_copied: bytes.len() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.allocate_for(bytes.len() as u64, copied)?;
-            let leaf = Path::new(OsStr::from_bytes(bytes)).to_path_buf();
+            let (leaf, _allocation) = clone_path(Path::new(OsStr::from_bytes(bytes)), work)?;
             let target = MacMetadataTarget::Noop {
                 parent,
                 leaf,
@@ -65,7 +62,7 @@ pub(super) fn open_macos_metadata_target<W: SourceDemandReadWork>(
     })
 }
 
-pub(super) fn macos_stat_at<W: SourceDemandReadWork>(
+pub(super) fn macos_stat_at<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     parent: &Dir,
     leaf: &std::ffi::CStr,
     work: &mut W,
@@ -95,7 +92,7 @@ impl MacMetadataTarget {
             Self::Noop { leaf, .. } => leaf.capacity() as u64,
         }
     }
-    pub(crate) fn apply<W: SourceDemandReadWork>(
+    pub(crate) fn apply<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
         self,
         metadata: crate::kernel::FileMetadata,
         work: &mut W,
@@ -148,7 +145,7 @@ impl MacMetadataTarget {
                 MetadataField::Unavailable => current.st_gid,
             };
             if uid != current.st_uid || gid != current.st_gid {
-                work.charge(WRITE)?;
+                work.started_io(WRITE)?;
                 // SAFETY: fd pins the admitted inode; no later path lookup occurs.
                 if unsafe { libc::fchown(fd, uid, gid) } != 0 {
                     return Err(io::Error::last_os_error().into());
@@ -157,7 +154,7 @@ impl MacMetadataTarget {
             if let MetadataField::Value(mode) = metadata.posix_mode {
                 let mask = libc::mode_t::try_from(mode & 0o7777)
                     .map_err(|_| NativeMetadataError("posix_mode"))?;
-                work.charge(WRITE)?;
+                work.started_io(WRITE)?;
                 // SAFETY: fd pins the admitted inode; fchmod reads no memory.
                 if unsafe { libc::fchmod(fd, mask) } != 0 {
                     return Err(io::Error::last_os_error().into());
@@ -212,7 +209,9 @@ pub(super) fn validate_macos_metadata_fields(
     Ok(())
 }
 
-pub(super) fn apply_macos_timestamp_metadata<W: SourceDemandReadWork>(
+pub(super) fn apply_macos_timestamp_metadata<
+    W: NativeHostWork<Error = DemandError, Allocation = u64>,
+>(
     fd: libc::c_int,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
@@ -229,7 +228,7 @@ pub(super) fn apply_macos_timestamp_metadata<W: SourceDemandReadWork>(
             forkattr: 0,
         };
         let mut created = macos_timespec(value);
-        work.charge(WRITE)?;
+        work.started_io(WRITE)?;
         // SAFETY: both buffers remain live for the synchronous system call.
         if unsafe {
             libc::fsetattrlist(
@@ -261,7 +260,7 @@ pub(super) fn apply_macos_timestamp_metadata<W: SourceDemandReadWork>(
                 MetadataField::Unavailable => omitted,
             },
         ];
-        work.charge(WRITE)?;
+        work.started_io(WRITE)?;
         // SAFETY: fd pins the inode and times is a live two-element array.
         if unsafe { libc::futimens(fd, times.as_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());

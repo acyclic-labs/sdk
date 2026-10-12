@@ -59,7 +59,7 @@ pub(crate) fn descriptor_digest() -> String {
 
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
-#[path = "tests/accounting.rs"]
+#[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
 mod collection;
