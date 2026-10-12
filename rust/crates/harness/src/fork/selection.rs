@@ -155,7 +155,7 @@ impl ResourceRevision {
         CodecQuota::produce(work, |quota| {
             crate::core::copy_owned(self, quota, |source, work| {
                 source.validate(work)?;
-                crate::core::owned_revision(source)
+                crate::core::owned_bytes(source)
             })
         })
     }
