@@ -1224,7 +1224,7 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
+        let count = with_history_io(self.io(), |work| stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared, work))?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary input exceeds selected model capacity"));
         }
@@ -1745,7 +1745,7 @@ impl StockExecution<'_> {
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let prepared = crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())?;
             let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?;
-            count.validate(&prepared)?;
+            with_history_io(self.io(), |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {
             None
@@ -1857,7 +1857,7 @@ impl StockExecution<'_> {
                 if self.model_capacity()? != Some(accounting.capacity) {
                     return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict, "selected capacity differs from captured accounting"));
                 }
-                let input_tokens = accounting.count.validate(&prepared)?;
+                let input_tokens = with_history_io(self.io(), |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, &records)
                     .await?
@@ -1972,7 +1972,7 @@ impl StockExecution<'_> {
             )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
-                final_accounting.count.validate(&request)?,
+                with_history_io(self.io(), |work| final_accounting.count.validate(&request, work))?,
             )? {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "retained compacted context exceeds selected capacity"));
             }
@@ -2010,7 +2010,7 @@ impl StockExecution<'_> {
         } else {
             stock_count_copy(&accounting.count, self.io())?
         };
-        count.validate(&canonical_request)?;
+        with_history_io(self.io(), |work| count.validate(&canonical_request, work))?;
         let (through, maximum) = crate::context::checked_compaction_budget(
             policy,
             &context,
@@ -2086,7 +2086,7 @@ impl StockExecution<'_> {
             self.io(),
         )?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io())?;
-        let final_count = count.validate(&request)?;
+        let final_count = with_history_io(self.io(), |work| count.validate(&request, work))?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "compacted mandatory content exceeds selected model capacity"));
         }
@@ -3611,7 +3611,7 @@ struct CheckpointDeltaResolver<'a> {
 
 impl CheckpointDeltaResolver<'_> {
     fn authorize(&self, file: &FileRef) -> Result<()> {
-        with_history_io(self.io, |work| self.limits.validate_file_with_work(file, work))?;
+        with_history_io(self.io, |work| self.limits.validate_file(file, work))?;
         if !preparation_read_granted(self.scope.grants(), file, self.io)? {
             return Err(stock_boundary(self.io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint delta"));
         }
@@ -3620,88 +3620,22 @@ impl CheckpointDeltaResolver<'_> {
 }
 
 impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'_> {
-    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    fn supports_read(&self, volume: &crate::conversation::VolumeRef,
+        io: Option<&crate::conversation::ContentIo>) -> Result<bool> {
+        self.inner.supports_read(volume, io)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        let io = self.io.filter(|io| stock_is_native(Some(io))).ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::Unsupported, "native checkpoint resolver has no original work"))?;
-        self.authorize(manifest)?;
-        if u64::from(item_count) > self.limits.attachments as u64
-            || manifest.descriptor().byte_length() > self.limits.render_bytes {
-            return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "checkpoint delta manifest exceeds item bound"));
-        }
-        let future = self.inner.load_manifest_with_native_work(manifest, item_count, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let custody;
-            let attachments;
-            (attachments, custody) = future.await?;
-            if attachments.len() as u64 != u64::from(item_count) {
-                return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
-                    "checkpoint delta manifest count differs"));
-            }
-            for attachment in &attachments {
-                self.authorize(&attachment.file)?;
-            }
-            Ok((attachments, custody))
-        })
+    fn verify<'a>(&'a self, _file: &'a FileRef, _maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(stock_boundary(io, crate::wire::ErrorCode::Unsupported, "projection-only reader"))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        self.io.filter(|io| stock_is_native(Some(io))).ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::Unsupported, "native checkpoint resolver has no original work"))?;
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.authorize(file)?;
-        self.inner.read_with_native_work(file, maximum_bytes.min(self.limits.render_bytes), work)
-    }
-
-    fn load_manifest<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move {
-            self.authorize(manifest)?;
-            if u64::from(item_count) > self.limits.attachments as u64
-                || manifest.descriptor().byte_length() > self.limits.render_bytes
-            {
-                return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "checkpoint delta manifest exceeds item bound"));
-            }
-            let attachments = match self.io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
-                    item_count, io.remaining()?, io.cancellation()).await)?,
-                _ => crate::conversation::load_manifest(self.inner.as_ref(), manifest, item_count, None).await?.0,
-            };
-            if attachments.len() as u64 != u64::from(item_count) {
-                return Err(stock_boundary(self.io, crate::wire::ErrorCode::Storage, "checkpoint delta manifest count differs"));
-            }
-            for attachment in &attachments {
-                self.authorize(&attachment.file)?;
-            }
-            Ok(attachments)
-        })
-    }
-
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(file)?;
-            match self.io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => receive_preparation(io, self.inner.read_measured(file,
-                    self.limits.render_bytes, io.remaining()?, io.cancellation()).await),
-                _ => self.inner.read(file).await,
-            }
-        })
+        self.inner.read(file, maximum_bytes.min(self.limits.render_bytes), io)
     }
 }
 
@@ -3744,7 +3678,7 @@ pub async fn load_canonical_checkpoint(
         load_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
     envelope.validate_projection(&source, &retained, &proof, limits, io)?;
     for file in retained.metadata.values() {
-        with_history_io(io, |work| limits.validate_file_with_work(file, work))?;
+        with_history_io(io, |work| limits.validate_file(file, work))?;
         if let Some(scope) = scope
             && !preparation_read_granted(scope.grants(), file, io)?
         {
@@ -3784,7 +3718,7 @@ pub async fn load_canonical_checkpoint(
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    with_history_io(io, |work| limits.validate_file_with_work(reference, work))?;
+    with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().byte_length() > limits.render_bytes {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint JSON exceeds effective render limit"));
     }

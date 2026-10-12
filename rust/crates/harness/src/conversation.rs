@@ -1373,7 +1373,7 @@ pub fn decode_attachment_manifest(
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
         decoded.substitute_owned(actual)?;
         let encoded_hold;
-        let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));

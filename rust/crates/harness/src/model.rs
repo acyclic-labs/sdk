@@ -1161,7 +1161,7 @@ impl ModelRequest {
         use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         model_step(io, 1)?;
         model_step(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
@@ -1517,7 +1517,7 @@ impl PreparedModelRequest {
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
@@ -1526,7 +1526,7 @@ impl PreparedModelRequest {
         let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
-            crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
+            crate::executor::with_history_io(io, |work| reference.validate(work))?;
             let identity = crate::executor::preparation_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
@@ -1551,32 +1551,12 @@ impl PreparedModelRequest {
             #[cfg(feature = "filesystem")]
             let _bytes_hold;
             crate::context::verify_file(&reference, verifier, io).await?;
-            let bytes = match io {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io.original_native_work().expect("native branch retains original work");
-                    let bytes = verifier.read_with_native_work(
-                        &reference, reference.descriptor().byte_length(), work,
-                    )?.await?;
-                    bytes
-                }
-                #[cfg(feature = "filesystem")]
-                Some(io) => {
-                    io.receive_content(verifier.read_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
-                }
-                _ => {
-                    verifier.read(&reference).await?
-                }
-            };
+            let bytes = verifier.read(&reference, reference.descriptor().byte_length(), io)?.await?;
             #[cfg(feature = "filesystem")]
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            #[cfg(feature = "filesystem")]
-            reference.descriptor().verify_with_io(&bytes, io)?;
-            #[cfg(not(feature = "filesystem"))]
-            reference.descriptor().verify(&bytes)?;
+            crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),

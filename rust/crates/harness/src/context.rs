@@ -340,14 +340,15 @@ impl DurableContextProvider {
             *destination = *byte;
         }
         let operation = crate::OperationId::from_bytes(identity);
-        let content = publisher
+        let (content, _hold) = publisher
             .stage(
                 operation,
                 &format!("context/projections/{operation}.json"),
                 &bytes,
                 "application/json",
                 "context.json",
-            )
+                None,
+            )?
             .await?;
         self.limits.validate_file(&content, &mut None)?;
         if content.volume() != publisher.volume()
@@ -358,7 +359,7 @@ impl DurableContextProvider {
             ));
         }
         content.descriptor().verify(&bytes, &mut None)?;
-        self.content_verifier.verify(&content).await?;
+        self.content_verifier.verify(&content, self.limits.file_bytes, None)?.await?;
         let stored = StoredContextRevision {
             format_version: 5,
             revision,
@@ -753,10 +754,12 @@ fn clone_summary_native(
 ) -> Result<(Option<ContextSummary>, acyclic_fs::NativeAllocation)> {
     match summary {
         Some(summary) => {
-            let output = summary.output.clone_with_native_work(work)?;
+            let mut io = crate::store::history::native_work_io(work)?;
+            let output = summary.output.copy(&mut Some(&mut io))?;
+            let custody = io.take_native_custody(output.logical_owned_bytes()?)?;
             Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
-                output: output.0 }), output.1))
+                output }), custody))
         }
         None => Ok((None, work.retain_owned(0).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?)),
     }
@@ -1421,7 +1424,7 @@ impl BorrowedContext<'_> {
                 message.content.validate_limits(limits, work)?;
             }
             if let Some(content) = self.messages.user { content.validate_limits(limits, work)?; }
-            Ok(())
+            Ok::<(), Error>(())
         })?;
         validate_context_json(self, limits.render_bytes, io)
     }
@@ -1874,7 +1877,7 @@ impl ContextPipeline {
                 work.copy_bytes(copied as u64)?;
             }
             stages.extend(self.0.iter().cloned());
-            Ok(())
+            Ok::<(), Error>(())
         })?;
         Ok(Self(stages))
     }
@@ -3101,7 +3104,8 @@ mod tests {
                 &crate::contract::canonical_json_bytes(&context)?,
                 "application/json",
                 "context.json",
-            )
+                None,
+            )?
             .await?;
         let record = StoredContextRevision {
             format_version: 5,

@@ -766,11 +766,11 @@ pub(super) fn stock_model_call(parent: OperationId, step: u32, call: String, nam
 pub(super) fn stock_tool_lookup<'a>(registry: &'a ToolRegistry, name: &str,
     io: Option<&PreparationIo>) -> Result<&'a crate::tool::Tool> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return registry.get_with_native_work(name, work)?.ok_or_else(|| native_boundary(
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return registry.get(name, io)?.ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::NotFound, "tool is not bound to this stock composition"));
     }
-    registry.get(name).ok_or_else(|| Error::NotFound(format!("tool {name}")))
+    registry.get(name, io)?.ok_or_else(|| Error::NotFound(format!("tool {name}")))
 }
 
 pub(super) fn stock_tool_support(tool: &crate::tool::Tool, io: Option<&PreparationIo>) -> Result<()> {

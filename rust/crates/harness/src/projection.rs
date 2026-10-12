@@ -452,8 +452,8 @@ pub fn validate_model_context_selection_at_revision(
     if let Some(checkpoint) = &selection.checkpoint {
         match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => checkpoint.validate_with_work(&mut Some(&mut io.history_io()))?,
-            _ => checkpoint.validate()?,
+            Some(io) => checkpoint.validate(&mut Some(&mut io.history_io()))?,
+            _ => checkpoint.validate(&mut None)?,
         }
     }
     let mut previous_sequence = 0;
@@ -819,8 +819,11 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let native = io.and_then(crate::executor::PreparationIo::original_native_work);
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let loaded = if let Some(work) = native {
-                let (value, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
+            let loaded = if native.is_some() {
+                let (value, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                let hold = hold.expect("native manifest retains ownership");
+                let custody = io.expect("native manifest observer").take_native_custody(hold.bytes())?;
+                hold.into_retained();
                 ProjectionAttachments::Native(value, custody)
             } else {
                 ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0)
@@ -1024,12 +1027,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
     let _source_hold;
-    #[cfg(not(target_arch = "wasm32"))]
-    let bytes = if let Some(work) = io.original_native_work() {
-        resolver.read_with_native_work(file, maximum_bytes, work)?.await?
-    } else { resolver.read(file).await? };
-    #[cfg(target_arch = "wasm32")]
-    let bytes = resolver.read(file).await?;
+    let bytes = resolver.read(file, maximum_bytes, Some(io))?.await?;
     _source_hold = if io.uses_native_work() { None } else {
         bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
     };
@@ -1056,7 +1054,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?
             "tool artifact type or rendering limit is invalid".into(),
         ));
     }
-    let bytes = resolver.read(file).await?;
+    let bytes = resolver.read(file, maximum_bytes, None)?.await?;
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
