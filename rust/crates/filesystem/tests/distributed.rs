@@ -535,7 +535,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     let lineage = |workspace: acyclic_fs::WorkspaceId| {
@@ -580,7 +580,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;

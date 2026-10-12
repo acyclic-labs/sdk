@@ -7853,7 +7853,7 @@ impl TaskContext {
         }
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-        paid.0.validate_with_work(&mut observed)?;
+        paid.0.validate(&mut observed)?;
         if !scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks interaction:route" });
