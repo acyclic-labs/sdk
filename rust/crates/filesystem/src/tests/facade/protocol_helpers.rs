@@ -495,7 +495,6 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
         )
         .await
         .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value)
     })?;
     let cancellation = CancellationToken::new();
     assert!(matches!(

@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub struct NativeWorkReservation {
     pub(super) meter: NativeMaterializationWork,
     pub(super) state: parking_lot::Mutex<Reservation>,
-    metadata: Option<NativeAllocation>,
+    header_bytes: u64,
 }
 #[derive(Debug, Default)]
 pub(super) struct Reservation {
@@ -31,7 +31,7 @@ impl NativeWorkReservation {
                 remaining,
                 ..Reservation::default()
             }),
-            metadata: None,
+            header_bytes: 0,
         }
     }
     /// Original ledger and attribution.
@@ -225,11 +225,12 @@ impl NativeWorkReservation {
         mut self,
     ) -> Result<Arc<Self>, NativeTreeMaterializationError> {
         self.meter = self.meter.allocation_work();
-        self.metadata = Some(self.meter.claim(
+        let mut header = self.meter.claim(
             std::mem::size_of::<Self>() as u64,
             1,
             WorkCounters::UNCHARGED,
-        )?);
+        )?;
+        self.header_bytes = std::mem::take(&mut header.bytes);
         Ok(Arc::new(self))
     }
     pub(crate) fn runtime_meter(
@@ -254,10 +255,12 @@ impl NativeWorkReservation {
 }
 impl Drop for NativeWorkReservation {
     fn drop(&mut self) {
-        if let Err(error) = self
-            .meter
-            .state(|state| state.refund_native_work(self.state.get_mut().remaining))
-        {
+        let unused = self.state.get_mut().remaining;
+        if let Err(error) = self.meter.state(|state| {
+            let refunded = state.refund_native_work(unused);
+            let retired = state.release_native_owned(self.header_bytes, &None);
+            refunded.and(retired)
+        }) {
             self.meter.poison(native_materialization_work_error(error));
         }
     }

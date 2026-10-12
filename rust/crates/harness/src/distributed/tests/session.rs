@@ -49,7 +49,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
             &mut first,
             &Worker {
                 id: format!("worker-{index}"),
-                available: ResourceSnapshot::default(),
+                available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
             },
             &format!("budget-start-{index}"),

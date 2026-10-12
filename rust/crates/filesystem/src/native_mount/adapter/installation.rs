@@ -30,8 +30,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?
             .ok_or(MountSourceError::Stale)?;
@@ -41,14 +39,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 work,
                 cancellation,
                 Some(lifetime),
-                guard,
+                &mut source_publication_guard(guard, Some(lifetime.clone())),
+                None,
+                &mut None,
             )
-            .await?;
+            .await
+            .map_err(|(error, _)| error)?;
         }
         Ok(())
     }
 
-    pub(super) async fn install_candidate<T>(
+    pub(super) async fn install_candidate(
         &self,
         candidate: CheckoutCandidate<A, O>,
         epoch: u64,
@@ -62,9 +63,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             CheckoutCandidate<A, O>,
             crate::facade::PreparedCandidateAdoption,
         ) -> Result<bool, MountSourceError>,
-        operation: Option<OperationId>,
-        complete: impl FnOnce(MountPublication, &mut SharedCheckoutState<A, O>) -> T,
-    ) -> Result<Option<T>, MountSourceError> {
+    ) -> Result<Option<MountPublication>, MountSourceError> {
         carrier.check(cancellation, lifetime)?;
         if self.view_gate.generation() != epoch || self.ledger.stamp() != stamp {
             return Ok(None);
@@ -72,15 +71,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         // Observers may reenter the source, so dispatch before taking its write lease.
         record(carrier)?;
         let mut state = await_lock(self.lock(), carrier, cancellation, lifetime).await?;
-        if self.view_gate.generation() != epoch {
+        if self.view_gate.generation() != epoch
+            || state.publication_operation.is_some()
+                && state.publication_operation != candidate.operation
+        {
             return Ok(None);
-        }
-        if operation.is_some_and(|operation| {
-            state
-                .publication_operation
-                .is_some_and(|held| held != operation)
-        }) {
-            return Err(MountSourceError::Stale);
         }
         let prepared = if let Some(original) = carrier.original_native_work() {
             state
@@ -93,12 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 )
                 .map_err(MountSourceError::Filesystem)?
         } else {
-            let (budget, live) = carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = carrier.remaining()?;
             let result = state.checkout.prepare_candidate_adoption(
                 &candidate.base,
                 &candidate.checkout,
@@ -118,14 +108,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 .map_err(super::lazy::mount_demand_error)?;
         }
         carrier.check(cancellation, lifetime)?;
+        let operation = candidate.operation;
         if !commit(&mut state.checkout, candidate, prepared)? {
             return Ok(None);
         }
-        state.recorded_view = state.checkout.root().file_table;
-        state.revision.fetch_add(1, Ordering::AcqRel);
         if let Some(operation) = operation {
-            state.publication_operation = Some(operation);
+            state.retain_operation_id(operation)?;
         }
-        Ok(Some(complete(state.publication, &mut state)))
+        state.recorded_view = state.checkout.root().file_table;
+        Ok(Some(state.publication))
     }
 }

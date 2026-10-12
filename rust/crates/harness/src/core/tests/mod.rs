@@ -28,19 +28,19 @@ pub(in crate::core) fn native_snapshot_round_trip(
     let held = reducer
         .snapshot(
             maximum_events,
-            &mut Some(&mut crate::store::history::native_work_io(&source).map_err(Error::from)?),
+            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&source)?)),
         )?
         .0;
     let copy = NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
         .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&copy).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&copy)?);
     let input = held.copy(&mut Some(&mut io))?;
     drop(io);
     let copy_receipt = copy.receipt();
     let metadata =
         NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
             .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&metadata).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&metadata)?);
     let verifier = issuer.verifier(&mut Some(&mut io))?;
     let mut restored =
         Reducer::restore(input, verifier, reducer.schemas.clone(), &mut Some(&mut io))?;
@@ -86,7 +86,7 @@ pub(in crate::core) fn native_component_apply(
     event: Event,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let mut io = crate::store::history::native_work_io(work).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let ApplyResult::Applied { event } = state.apply_committed(event, &mut Some(&mut io))? else {
         panic!("fresh model application replayed")
     };
@@ -106,7 +106,7 @@ pub(in crate::core) fn native_component_fixture(
         registry.clone(),
     );
     reference.set_resident_event_limit(1)?;
-    let mut io = crate::store::history::native_work_io(work).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let mut state = reference.copy(&mut Some(&mut io))?;
     drop(io);
     state.set_resident_event_limit(1)?;

@@ -25,7 +25,6 @@ mod canonical;
 pub use canonical::{canonical_json_bytes_bounded, json_value_bounded};
 mod records;
 pub(super) use records::count_json_bytes_trusted;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use records::json_from_value_bounded;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use records::validate_json_byte_bound_native_trusted;

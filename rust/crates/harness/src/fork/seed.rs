@@ -462,7 +462,7 @@ impl ForkSeed {
         }
         // Inherited files are pinned child-owned content.
         for file in &self.inherited_context {
-            values.push(file.read_capability()?);
+            values.push(file.read_capability(&mut None)?);
         }
         Ok(Capabilities::new(values))
     }

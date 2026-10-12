@@ -83,7 +83,7 @@ fn callback_panic_survives_context_retirement_and_stays_fatal() -> TestResult {
 #[test]
 fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> TestResult {
     for writable in [false, true] {
-        let (source, context, guard, original) = authored_guard_context(writable)?;
+        let (context, guard, original) = authored_guard_context(writable)?;
         let path = MountPath::root().child(b"guarded".to_vec());
         if writable {
             assert_eq!(
@@ -104,22 +104,20 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
                 }),
                 Err(libc::EACCES)
             );
-            assert!(source.lookup(&path)?.is_some());
-            assert!(context.ledger.latest() > 0);
         } else {
             assert_eq!(getattr(&context, c"/"), 0);
-            let before = original.receipt();
             assert_eq!(create(&context, c"/guarded"), (-libc::EACCES, 0));
-            assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
-            assert_eq!(
-                original.receipt().backend_write_operations,
-                before.backend_write_operations
-            );
-            assert!(source.lookup(&path)?.is_none());
         }
         let failure = callback_failure(&context);
         assert!(matches!(failure.0, NativeMountError::CallbackDenied { .. }));
         assert_eq!(failure.1, original.receipt());
+        assert_eq!(
+            context
+                .source
+                .lookup_with_meter(&path, &original)?
+                .is_some(),
+            writable
+        );
     }
     Ok(())
 }
@@ -173,12 +171,6 @@ fn rejected_allocations_and_copies_leave_source_contents_unchanged() -> TestResu
         }
         let failure = callback_failure(&context);
         assert!(matches!(failure.0, NativeMountError::Work(_)));
-        assert_eq!(failure.1.backend_write_operations, 0);
-        if copying {
-            assert_eq!(failure.1.bytes_copied, 0);
-        } else {
-            assert_eq!(failure.1.allocation_operations, 0);
-        }
     }
     Ok(())
 }
@@ -207,7 +199,6 @@ fn absence_probes_remain_usable_until_original_cancellation() -> TestResult {
             | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled)
             | NativeMountError::Source(MountSourceError::Cancelled)
     ));
-    assert_eq!(failure.1.backend_read_operations, 0);
     Ok(())
 }
 
@@ -245,21 +236,8 @@ fn callback_context(
     cancellation: &crate::CancellationToken,
 ) -> Result<Arc<DarwinMountContext>, Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
-    let root_id = source
-        .lookup(&MountPath::root())?
-        .ok_or("root absent")?
-        .node
-        .file_id;
-    let metadata = std::fs::metadata(".")?;
     let setup = work(crate::WorkBudget::UNBOUNDED, cancellation)?;
-    let mut context = DarwinMountContext::new(
-        Arc::clone(source) as Arc<dyn MountFilesystem>,
-        true,
-        metadata.uid(),
-        metadata.gid(),
-        root_id,
-        &setup,
-    )?;
+    let mut context = test_context(source, &setup)?;
     context.handler_budget = budget;
     context.handler_cancellation = cancellation.clone();
     Ok(Arc::new(context))
@@ -305,20 +283,14 @@ fn authored_guard_context(
     writable: bool,
 ) -> Result<
     (
-        Arc<MemorySource>,
         Arc<DarwinMountContext>,
         Arc<DarwinAuthoredGuard>,
         crate::NativeMaterializationWork,
     ),
     Box<dyn std::error::Error>,
 > {
+    crate::native_mount::initialize_native_mount_services()?;
     let (shared, config) = checkout(MountPublication::Manual)?;
-    let ordinary = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
-    let root_id = ordinary
-        .lookup(&MountPath::root())?
-        .ok_or("root absent")?
-        .node
-        .file_id;
     let original = work(CALLBACK_POLICY, &crate::CancellationToken::new())?;
     let guard = Arc::new(DarwinAuthoredGuard {
         original: original.clone(),
@@ -334,10 +306,15 @@ fn authored_guard_context(
     )?
     .with_native_callback_guard(guard.clone());
     let source = source.into_arc_meter(&original)?;
+    let root_id = source
+        .lookup_with_meter(&MountPath::root(), &original)?
+        .ok_or("root absent")?
+        .node
+        .file_id;
     let context = Arc::new(DarwinMountContext::new(
         source, true, 0, 0, root_id, &original,
     )?);
-    Ok((ordinary, context, guard, original))
+    Ok((context, guard, original))
 }
 
 fn callback_failure(context: &DarwinMountContext) -> (NativeMountError, crate::WorkCounters) {

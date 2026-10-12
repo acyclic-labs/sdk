@@ -3,7 +3,7 @@ use super::*;
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct Capabilities(BTreeSet<String>);
+pub struct Capabilities(pub(crate) BTreeSet<String>);
 
 impl Capabilities {
     /// Builds a capability set.
@@ -60,9 +60,6 @@ impl Capabilities {
         Self::new_with_native_work(self.iter(), work)
     }
 
-    pub(crate) fn from_owned_set(values: BTreeSet<String>) -> Self {
-        Self(values)
-    }
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {

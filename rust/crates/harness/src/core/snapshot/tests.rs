@@ -217,10 +217,10 @@ fn native_original_cold_decoder_preserves_digest_and_issuer_mac_rejection() -> R
         let bytes = crate::contract::canonical_json_bytes(&forged)?;
         let source = NativeMaterializationWork::new(budget, &CancellationToken::new())
             .expect("cold decoder ledger");
-        let mut io = crate::store::history::native_work_io(&source).expect("decoder observer");
+        let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&source)?).expect("decoder observer");
         let decoded = Snapshot::decode(&bytes, 4_194_304, &mut Some(&mut io))?;
         drop(io);
-        let mut io = crate::store::history::native_work_io(&source).map_err(Error::from)?;
+        let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&source)?);
         let verifier = owner.verifier(&mut Some(&mut io))?;
         let result = Reducer::restore(decoded, verifier, SchemaRegistry::new(), &mut Some(&mut io));
         drop(io);

@@ -162,7 +162,7 @@ impl NativeReadMeter for NativeWorkReservation {
 }
 impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
     type Error = NativeTreeMaterializationError;
-    type Allocation = acyclic_native_runtime::ReadAllocation;
+    type Allocation = u64;
     type CleanupWrite =
         acyclic_native_runtime::NativeOperationReservation<Arc<dyn NativeReadMeter>>;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
@@ -215,27 +215,23 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         if bytes != 0 {
             return Err(Self::Error::InvalidLayout);
         }
-        Ok(acyclic_native_runtime::ReadAllocation::empty(
-            &self.allocation_owner().expect("original owner"),
-        ))
+        Ok(0)
     }
     fn reserve_opaque_decode(&mut self, _: u64) -> Result<Self::Allocation, Self::Error> {
         Err(Self::Error::InvalidLayout)
     }
     fn reconcile_allocation(
         &mut self,
-        allocation: &mut Self::Allocation,
+        _: &mut Self::Allocation,
         actual: u64,
     ) -> Result<(), Self::Error> {
-        allocation
-            .reconcile_capacity_with_meter(
-                usize::try_from(actual).map_err(|_| crate::WorkError::Overflow)?,
-                self.as_ref(),
-            )
-            .map_err(|error| self.work().runtime_error(error))
+        if actual == 0 {
+            Ok(())
+        } else {
+            Err(Self::Error::InvalidLayout)
+        }
     }
-    fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
-        drop(allocation);
+    fn release(&mut self, _: Self::Allocation) -> Result<(), Self::Error> {
         Ok(())
     }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {

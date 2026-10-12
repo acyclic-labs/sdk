@@ -21,7 +21,7 @@ export function bindModel(identity: Model, provider: ModelProvider): BoundModel 
 }
 export interface InteractionHandler { route(interaction: Interaction): Promise<Answer> }
 declare const policyDigestBrand: unique symbol;
-export type PolicyDigest = readonly number[] & Readonly<{ readonly [policyDigestBrand]: true }>;
+export type PolicyDigest = readonly number[] & { readonly [policyDigestBrand]: true };
 export interface ComponentIdentity {
   readonly name: string;
   readonly version: string;
@@ -71,7 +71,7 @@ export class ToolApprovalError extends Error {
   }
 }
 export interface Invocation { readonly kind: "tool"; readonly tool: string; readonly arguments: unknown }
-export interface EffectiveScope { readonly grants: readonly string[]; readonly limits: Readonly<{ readonly concurrency?: number; readonly deadline?: Date; readonly maxSteps?: number }> }
+export interface EffectiveScope { readonly grants: readonly string[]; readonly limits: { readonly concurrency?: number; readonly deadline?: Date; readonly maxSteps?: number } }
 export type PolicyDecision = { readonly kind: "allow" } | { readonly kind: "deny"; readonly reason: string } | { readonly kind: "require-approval"; readonly prompt: string };
 interface PolicyApproval { readonly prompt: string; readonly policy: PolicyIdentity }
 type EffectivePolicyDecision = PolicyDecision | Readonly<{ kind: "require-approvals"; approvals: readonly PolicyApproval[] }>;
@@ -117,12 +117,6 @@ export class ExecutionScope {
   onlyGrants(...values: readonly string[]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, values, this.limits, true, this.executionProvider); }
   grant(...values: readonly string[]): ExecutionScope { return this.onlyGrants(...this.grants, ...values); }
   withLimits(value: EffectiveScope["limits"]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, value, this.grantsExplicit, this.executionProvider); }
-}
-
-export function narrowGrants(parent: readonly string[], child: readonly string[], explicit: boolean): readonly string[] {
-  if (!explicit) return parent;
-  if (child.some(grant => !parent.includes(grant))) throw new Error("child scope cannot widen grants");
-  return [...new Set(child)];
 }
 
 export function narrowLimits(parent: EffectiveScope["limits"], child: EffectiveScope["limits"]): EffectiveScope["limits"] {

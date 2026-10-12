@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let public_semantic = semantic_root.join("actors");
             fs::create_dir_all(&public_semantic)?;
-            acyclic_actors::domain::export_typescript(&semantic_root)?;
+            acyclic_actors::domain::export::export_typescript(&semantic_root)?;
             fs::write(
                 public_semantic.join("index.ts"),
                 render_semantic_index(&ts_rs::Config::default()),
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         fs::write(
             parent.join("Actors.semantic-names.json"),
-            serde_json::to_vec(&acyclic_actors::domain::typescript_export_metadata(
+            serde_json::to_vec(&acyclic_actors::domain::export::typescript_export_metadata(
                 &ts_rs::Config::default(),
             ))?,
         )?;
@@ -104,7 +104,7 @@ export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker>
 }
 
 fn render_readonly_semantic(config: &ts_rs::Config) -> String {
-    let aliases = acyclic_actors::domain::typescript_export_names(config)
+    let aliases = acyclic_actors::domain::export::typescript_export_names(config)
         .iter()
         .map(|name| format!("export type {name} = ReadonlySemantic<Semantic.{name}>;"))
         .collect::<Vec<_>>()
@@ -120,7 +120,7 @@ import type {{ ReadonlySemantic }} from "../../readonly.js";
 }
 
 fn render_semantic_index(config: &ts_rs::Config) -> String {
-    let exports = acyclic_actors::domain::typescript_export_names(config)
+    let exports = acyclic_actors::domain::export::typescript_export_names(config)
         .iter()
         .map(|name| format!("export * from \"./{name}.js\";"))
         .collect::<Vec<_>>()

@@ -3,14 +3,14 @@ import { type AgentInput, type ModelContent, type ToolDefinition, type ToolRef, 
 import { type SelectedModelContext, publicModelContent } from "./projection.js";
 import { type TaskDefinition, Task, durableMachineDigest, nativeLimits, nativeRunLimits, freezeSchema, type HostTaskAttachment, componentKey, type Admission, observeAdmittedTask, validatedHostTask, pinnedOutputSchema, AdmissionUncertainError, type GroupId, type Outcome, type TaskChildrenPage } from "./task.js";
 import { type RegisteredTool, type AgentHarnessComponents, harnessConstruction } from "./harness-builder.js";
-import { type PolicyIdentity, ExecutionScope, type InteractionHandler, type ComponentIdentity, samePolicyIdentity, validatePolicyIdentity, narrowGrants, narrowLimits, composePolicies, policyApprovals, ToolApprovalError } from "./execution-scope.js";
+import { type PolicyIdentity, ExecutionScope, type InteractionHandler, type ComponentIdentity, samePolicyIdentity, validatePolicyIdentity, narrowLimits, composePolicies, policyApprovals, ToolApprovalError } from "./execution-scope.js";
 import { type FileRef, type Attachment } from "./conversation.js";
 import { type NativeContracts, type WasmExecutionPlacementWire, type WasmTaskAdmissionWire, type WasmTaskAdmissionInput, type WasmToolJsonValue, type ModelEventAdmissionState } from "./native-contracts.js";
 import { type ProjectWorkspaceProvider } from "./project.js";
 import { type InteractionId, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { pinForkParentSnapshot } from "./content.js";
 import { type ForkParentSnapshot, type ForkReport, type ForkPublisher, type ForkSeed } from "./fork.js";
-import { TaskContext, ToolContext } from "./task-context.js";
+import { TaskContext } from "./task-context.js";
 import { type GroupPolicy } from "./enums.js";
 import { TaskGroup } from "./task-group.js";
 import { validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm, validateModelContent, prepareModelRequest as prepareModelRequestWasm, type ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -382,7 +382,8 @@ export class AgentHarness {
   async scoped(scope: ExecutionScope): Promise<AgentHarness> {
     if (scope.modelBinding) this.contracts.encodeCanonicalJson(scope.modelBinding.identity.options);
     const parentPolicy = this.scope.policyProvider ?? this.components.policy;
-    const grants = narrowGrants(this.scope.grants, scope.grants, scope.grantsExplicit || scope.grants.length > 0);
+    const grants = scope.grantsExplicit || scope.grants.length > 0 ? scope.grants : this.scope.grants;
+    if (grants.some(grant => !this.scope.grants.includes(grant))) throw new Error("child scope cannot widen grants");
     const limits = narrowLimits(this.scope.limits, scope.limits);
     const policy = composePolicies(parentPolicy, scope.policyProvider);
     const narrowed = new ExecutionScope(
@@ -495,8 +496,10 @@ export class AgentHarness {
     const registered = (erased as unknown as RegisteredTool<Input, Output>);
     if (registered.handle !== tool) throw new Error("tool definition is not registered or no longer active");
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
-    if (registered.definition.handler) return { invocation,
-      value: publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput)) };
+    if (registered.definition.handler) {
+      const context = Object.assign(new TaskContext(this, signal, taskId, false), { callId, operationId: invocation.operationId });
+      return { invocation, value: publishOutput(await registered.definition.handler(context, parsedInput)) };
+    }
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
     return { invocation, value: publishOutput((await registered.executor.execute(invocation)).value) };
   }

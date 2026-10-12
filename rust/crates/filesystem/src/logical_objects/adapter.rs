@@ -1,14 +1,14 @@
 use super::*;
 
 fn accounting<'a>(
-    context: &'a crate::AuthorityWork<'_>,
+    context: &'a mut crate::AuthorityWork<'_>,
 ) -> Result<KernelAccounting<'a>, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = context.original {
         return Ok(KernelAccounting::native(original, context.cancellation));
     }
     Ok(KernelAccounting::standalone(
-        context.work.remaining(context.budget)?,
+        context.read_budget()?,
         context.cancellation,
     ))
 }
@@ -81,24 +81,6 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         Ok(crate::PublicationHold::none())
     }
 
-    async fn prepare_generation_publication(
-        &self,
-        _request: &crate::kernel::PublishGenerationRequest,
-        _proof: &crate::kernel::GenerationProof,
-        _append: &crate::GuardedAppend,
-        _scope: crate::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        context
-            .cancellation
-            .check()
-            .map_err(|_| ObjectStoreError::Cancelled)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = context.original {
-            original.admit(WorkCounters::UNCHARGED)?;
-        }
-        Ok(())
-    }
 
     async fn read(
         &self,
@@ -152,7 +134,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         if context.original.is_some() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
-        let maximum = context.work.remaining(context.budget)?.object_bytes_read;
+        let maximum = context.read_budget()?.object_bytes_read;
         match self.read(id, maximum, context).await {
             Ok(_) => Ok(true),
             Err(ObjectStoreError::Missing) => Ok(false),

@@ -65,7 +65,6 @@ async fn native_authority_fixture()
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)
     })?
     else {
         return Err("native fixture did not append".into());
@@ -356,7 +355,6 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::NativeOriginalUnsupported)
@@ -377,7 +375,6 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::NativeOriginalUnsupported)

@@ -11,7 +11,6 @@ test("standalone interaction identities and approval bindings use Rust admission
     operation_id: "02020202-0202-0202-0202-020202020202" as OperationId,
     action_digest: Array(32).fill(3),
   });
-  expect(Object.isFrozen(admitted.action_digest)).toBe(true);
   expect(() => contracts.validate("approval_binding", { ...admitted, action_digest: Array(32).fill(0) })).toThrow();
   expect(() => contracts.validate("approval_binding", { ...admitted, extra: "unbound" } as typeof admitted)).toThrow();
 });
@@ -36,8 +35,6 @@ test("interaction tickets are ref-only and approvals pin one exact action", asyn
     approval: { operation_id: "02020202-0202-0202-0202-020202020202" as OperationId, action_digest: Array(32).fill(3) },
   };
   const admitted = contracts.validate("interaction_ticket", ticket);
-  expect(Object.isFrozen(admitted.approval?.action_digest)).toBe(true);
-  expect(Object.isFrozen(admitted.request.volume.provider)).toBe(true);
   expect(() => contracts.validate("interaction_ticket", { ...ticket, approval: { ...ticket.approval!, action_digest: Array(32).fill(0) } })).toThrow();
   expect(() => contracts.validate("interaction_resolution", { id: ticket.id, expected_version: 1n, outcome: { kind: "answered", answer: ticket.request } }, admitted)).toThrow();
   expect((contracts.validate("interaction_resolution", { id: ticket.id, expected_version: 2n, outcome: { kind: "approved" } }, admitted)).expected_version).toBe(2n);

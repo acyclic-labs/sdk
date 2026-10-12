@@ -51,13 +51,13 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
             .value;
         assert_eq!(source.id(), source_id);
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "agent",
                 ForkOptions::from_generation(source, key),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -156,13 +156,13 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
             );
         }
         let retried = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "agent",
                 ForkOptions::from_generation(source, key),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -228,13 +228,13 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
             .await?
             .value;
         let agent = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 "agent",
                 ForkOptions::from_generation(base, IdempotencyKey::new()),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -405,13 +405,13 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)?;
                 let agent = main
-                    .fork(
+                    .fork::<_, _, crate::WorkspaceError>(
                         &format!("agent-{round}"),
                         ForkOptions::from_generation(generation, IdempotencyKey::new()),
                         crate::PublicationPermit::Unrestricted,
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new(),
-                        |_| {
+                        &mut |_| {
                             std::future::ready(Ok(crate::OperationReceipt {
                                 value: (),
                                 work: crate::WorkCounters::UNCHARGED,
@@ -497,13 +497,13 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
             .await?
             .value;
         let child = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
                 crate::PublicationPermit::Unrestricted,
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
-                |_| {
+                &mut |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
@@ -528,13 +528,13 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
         .await?
         .value;
     let grandchild = kept
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "grandchild",
             ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,

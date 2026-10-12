@@ -52,30 +52,6 @@ impl<T> DarwinOwned<T> {
         }
         Ok(())
     }
-
-    pub(super) fn map<U>(self, transform: impl FnOnce(T) -> U) -> DarwinOwned<U> {
-        let Self { value, allocation } = self;
-        DarwinOwned {
-            value: transform(value),
-            allocation,
-        }
-    }
-}
-
-pub(super) fn owned<T>(
-    work: &crate::NativeMaterializationWork,
-    bytes: u64,
-    build: impl FnOnce() -> Result<T, NativeMountError>,
-) -> Result<DarwinOwned<T>, NativeMountError> {
-    let allocation = if bytes == 0 {
-        None
-    } else {
-        Some(work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?)
-    };
-    Ok(DarwinOwned {
-        value: build()?,
-        allocation,
-    })
 }
 
 pub(super) fn vector<T>(
@@ -85,11 +61,9 @@ pub(super) fn vector<T>(
     let bytes = count
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)? as u64;
-    let mut value = owned(work, bytes, || {
-        let mut value = Vec::new();
-        value.try_reserve_exact(count)?;
-        Ok(value)
-    })?;
+    let mut value = DarwinOwned::empty(Vec::new());
+    value.claim_more(bytes, work)?;
+    value.try_reserve_exact(count)?;
     if let Some(allocation) = &mut value.allocation {
         allocation.reconcile_capacity(
             value
@@ -145,11 +119,9 @@ pub(super) fn grow_map<K: std::hash::Hash + Eq, V>(
         ..crate::WorkCounters::UNCHARGED
     };
     work.admit(copied)?;
-    let mut replacement = owned(work, bytes(capacity)?, || {
-        let mut value = HashMap::new();
-        value.try_reserve(capacity)?;
-        Ok(value)
-    })?;
+    let mut replacement = DarwinOwned::empty(HashMap::new());
+    replacement.claim_more(bytes(capacity)?, work)?;
+    replacement.try_reserve(capacity)?;
     let actual = bytes(replacement.capacity())?;
     replacement
         .allocation

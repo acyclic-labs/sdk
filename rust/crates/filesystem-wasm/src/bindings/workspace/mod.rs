@@ -283,13 +283,13 @@ impl BrowserWorkspace {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| js_error(failure.error))?;
-            Box::pin(value.fork(
+            Box::pin(value.fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)
@@ -314,13 +314,13 @@ impl BrowserWorkspace {
         )?;
         let engine = {
             let (value, generation) = (&self.engine, &generation.engine);
-            Box::pin(value.fork(
+            Box::pin(value.fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 browser_fork_options(generation.clone(), idempotency_key, options.paths.clone()),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                publication_ready,
+                &mut publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)

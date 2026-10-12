@@ -137,7 +137,7 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
         request: crate::GuardedAppend,
         work: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>>
+    ) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>>
     {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
@@ -216,7 +216,7 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
         operation: crate::OperationId,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<
-        (Option<crate::DurableCommit>, crate::AuthorityAllocation),
+        Option<crate::DurableCommit>,
         crate::AuthorityStoreError,
     > {
         #[cfg(not(target_arch = "wasm32"))]
@@ -305,7 +305,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        context.work.remaining(context.budget)?;
+        context.read_budget()?;
 
         crate::AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, context).await
     }
@@ -353,7 +353,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             use crate::storage::{ObjectFailure, ObjectStoreError};
