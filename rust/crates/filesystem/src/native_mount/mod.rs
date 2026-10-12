@@ -4340,28 +4340,12 @@ mod tests {
             destination: root.path().to_path_buf(),
             writable: true,
         };
-        let fs = Fs::memory();
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let checkout = runtime.block_on(async {
             let cancellation = CancellationToken::new();
-            let volume = fs
-                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-                .await?
-                .value;
-            volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode {
-                        access: AccessMode::ReadWrite,
-                        consistency: ConsistencyMode::Pinned,
-                        mutations: MutationMode::PrivateOverlay,
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map(|receipt| receipt.value)
+            let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
+            private_checkout(&volume, &cancellation).await
         })?;
         let source = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::new(checkout)),
@@ -4373,6 +4357,12 @@ mod tests {
         ));
         assert_eq!(std::fs::read(root.path().join("existing.txt"))?, b"real");
         Ok(())
+    }
+
+    pub(super) async fn memory_volume(
+        id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+        Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 
     pub(super) async fn private_checkout<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
@@ -5019,16 +5009,7 @@ mod tests {
         let limits = VolumeLimits::default();
         let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([92; 16]),
-                config,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([92; 16]), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let host = tempfile::tempdir()?;
         std::fs::write(host.path().join("a"), b"shared")?;
@@ -5221,16 +5202,7 @@ mod tests {
     async fn baseline_path_limit_stops_unbounded_traversal()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([94; 16]),
-                VolumeConfig::portable(Lifecycle::Ephemeral),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([94; 16]), VolumeConfig::portable(Lifecycle::Ephemeral), &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let host = tempfile::tempdir()?;
         for index in 0..3 {
@@ -5281,16 +5253,7 @@ mod tests {
         let limits = VolumeLimits::default();
         let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([91; 16]),
-                config,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([91; 16]), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let file = NamespacePath::new(
             vec![LogicalName::new(
@@ -5832,11 +5795,7 @@ mod tests {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().join("capture");
@@ -5920,11 +5879,7 @@ mod tests {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let nested = portable_path(limits, &[b"nested"])?;
         let child = portable_path(limits, &[b"nested", b"child.txt"])?;
@@ -6006,11 +5961,7 @@ mod tests {
         config.profile = FilesystemProfile::Windows;
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let name = "watch.txt"
             .encode_utf16()

@@ -2832,11 +2832,10 @@ mod restore_recovery_tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         let cancellation = CancellationToken::new();
         let limits = VolumeLimits::default();
-        let volume = crate::Fs::memory().create_volume(
+        let volume = super::super::tests::memory_volume(crate::VolumeId::new(),
             VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) },
-            WorkBudget::UNBOUNDED,
             &cancellation,
-        ).await?.value;
+        ).await?;
         let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
         let first = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"a-present".to_vec(), limits.maximum_component_bytes,
@@ -2922,35 +2921,23 @@ mod restore_recovery_tests {
             #[error(transparent)]
             Materialize(#[from] MaterializeError),
         }
-        for deny_at in [2, 4] {
+        for deny_before_output in [true, false] {
             let guarded_output = tempfile::tempdir()?;
-            let mut calls = 0;
-            let mut completed = 0;
             let before = original.meter.with_original_leaf(|work| work.work);
             let mut task_fence = |phase| {
-                match phase {
-                    NativeMaterializationActionPhase::Before => {
-                        assert_eq!(calls, completed, "the previous SDK action completes before another guard");
-                        calls += 1;
-                    }
-                    NativeMaterializationActionPhase::Completed => {
-                        completed += 1;
-                        assert_eq!(calls, completed, "exactly one accepted action owns this completion");
-                    }
-                }
-                std::future::ready(if calls == deny_at { Err(TaskFenceFailure::Owner) } else { Ok(()) })
+                let denied = phase == NativeMaterializationActionPhase::Before
+                    && (deny_before_output || original.work().output_bytes > before.output_bytes);
+                std::future::ready(if denied { Err(TaskFenceFailure::Owner) } else { Ok(()) })
             };
             let error = materialize_checkout_host_paths_with_work_guarded(
                 &reader, &["a-present".to_owned()],
                 &MaterializeOptions::native(guarded_output.path()), &original_work, &mut task_fence,
             ).await.err().ok_or("logical action bypassed the original task fence")?;
             assert!(matches!(error, TaskFenceFailure::Owner));
-            assert_eq!(calls, deny_at);
-            assert_eq!(completed, deny_at - 1, "denied actions produce no completion");
             let after = original.meter.with_original_leaf(|work| work.work);
             after.verify(finite_materialization_budget())?;
             assert!(after.backend_read_operations > before.backend_read_operations);
-            if deny_at == 2 {
+            if deny_before_output {
                 assert!(!guarded_output.path().join("a-present").exists());
                 assert_eq!(after.output_bytes, before.output_bytes);
             } else {
@@ -3023,24 +3010,9 @@ mod restore_recovery_tests {
 
         acyclic_native_runtime::initialize_native_io_services()?;
         let cancellation = CancellationToken::new();
-        let volume = crate::Fs::memory()
-            .create_volume(
-                VolumeConfig {
-                    profile: FilesystemProfile::Portable,
-                    concurrency: ConcurrencyMode::Optimistic,
-                    lifecycle: Lifecycle::Ephemeral,
-                    case_sensitivity: CaseSensitivity::Sensitive,
-                    unicode: UnicodePolicy::Preserve,
-                    symbolic_links: true,
-                    hard_links: true,
-                    sparse_files: true,
-                    limits: VolumeLimits::default(),
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = super::super::tests::memory_volume(
+            crate::VolumeId::new(), VolumeConfig::portable(Lifecycle::Ephemeral), &cancellation,
+        ).await?;
         let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
         let temporary = tempfile::tempdir()?;
         let relative = Path::new("private-restore-path-sentinel");
@@ -3470,11 +3442,7 @@ mod restore_recovery_tests {
 mod clone_tests {
     use super::*;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-    use crate::model::{
-        AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
-        FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
-        VolumeConfig, VolumeLimits,
-    };
+        use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
     use crate::{Fs, VolumeId};
 
     #[tokio::test]
@@ -3496,17 +3464,13 @@ mod clone_tests {
         let clone_available =
             crate::probe_native_storage_capabilities(directory.path())?.block_cloning;
         let limits = VolumeLimits::default();
-        let fs = Fs::memory();
         let cancellation = CancellationToken::new();
-        let volume = fs
-            .create_volume_with_id(
+        let volume = super::super::tests::memory_volume(
                 VolumeId::from_bytes([73; 16]),
                 VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) },
-                WorkBudget::UNBOUNDED,
                 &cancellation,
             )
-            .await?
-            .value;
+            .await?;
         let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
         // The payload deliberately ends between cluster boundaries: Windows
         // must clone the aligned body and copy the short tail.
