@@ -165,7 +165,7 @@ impl InteractionTicket {
             decoded.custody.work(), crate::wire::ErrorCode::Invalid,
             "interaction DTO exceeds its original decoder custody"))?;
         decoded.custody.relinquish(release)?;
-        decoded.value.validate_with_work(decoded.custody.work())?;
+        decoded.value.validate(decoded.custody.work())?;
         self.validate_request_binding(&decoded.value, decoded.custody.work())?;
         let measured_owned_bytes = owned;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -191,7 +191,7 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate(work)?;
-        request.validate_with_work(work)?;
+        request.validate(work)?;
         self.validate_request_binding(request, work)
     }
 
@@ -237,7 +237,7 @@ impl InteractionTicket {
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
         )?;
-        let result = request.validate_response_with_work(&response.value, response.custody.work());
+        let result = request.validate_response(&response.value, response.custody.work());
         drop(response);
         result
     }
@@ -313,7 +313,7 @@ impl InteractionTicket {
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        request.validate_response_with_work(response, work)?;
+        request.validate_response(response, work)?;
         match (outcome, response) {
             (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
             | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => Ok(()),
@@ -634,7 +634,7 @@ impl Interaction {
             prompt: prompt.into(),
             response_schema,
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
@@ -646,7 +646,7 @@ impl Interaction {
             min_selections: 1,
             max_selections: 1,
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
@@ -656,7 +656,7 @@ impl Interaction {
             title: title.into(),
             schema,
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
@@ -671,16 +671,12 @@ impl Interaction {
             operation_id,
             action_digest,
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
     /// Validates the interaction before it is admitted.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -748,12 +744,7 @@ impl Interaction {
     }
 
     /// Validates one response against this exact interaction request.
-    pub fn validate_response(&self, response: &InteractionResponse) -> Result<()> {
-        self.validate_response_with_work(response, &mut None)
-    }
-
-    /// The same response/schema engine, borrowing the caller's funded payloads.
-    pub(crate) fn validate_response_with_work(
+    pub fn validate_response(
         &self,
         response: &InteractionResponse,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -773,14 +764,9 @@ impl Interaction {
                 },
                 InteractionResponse::Form { value },
             ) => {
-                if work.is_none() {
-                    crate::contract::validate_json_schema_value(
-                        response_schema, value, "interaction response", None)
-                } else {
-                    crate::contract::validate_json_schema_value_with_work(
-                        response_schema, value, "interaction response", work,
-                    )
-                }
+                crate::contract::validate_json_schema_value_with_work(
+                    response_schema, value, "interaction response", work,
+                )
             }
             (
                 Self::Choice {

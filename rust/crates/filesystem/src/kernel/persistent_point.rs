@@ -145,7 +145,9 @@ where S: AsyncObjectStore, F: Format {
     if root.kind != F::kind() { return Err(query_error(Error::WrongRootKind)); }
     if !limits.page_limits_valid(1) { return Err(query_error(Error::InvalidLimits)); }
     let mut visited = VisitedObjectSet::new_with_accounting(
-        usize::from(limits.maximum_page_height), accounting,
+        usize::from(limits.maximum_page_height).min(
+            usize::try_from(limits.maximum_visited_pages).unwrap_or(usize::MAX),
+        ), accounting,
     )?;
     let mut lower: Option<Owned<F::Key>> = None;
     let mut upper: Option<Owned<F::Key>> = None;

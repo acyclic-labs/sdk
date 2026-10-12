@@ -1,6 +1,7 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner},
@@ -147,7 +148,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?);
+            let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
             drop(encoded_hold);
             command
@@ -204,7 +205,7 @@ impl Fixture {
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
-            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
+            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() }, &mut None)?;
         let machine = Arc::new(Machine {
             identity: MachineIdentity {
                 name: "test.deadline".into(), version: "1".into(),
@@ -219,7 +220,7 @@ impl Fixture {
             machine.clone(), json!({"type":"object"}), json!({}),
         )?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine.clone())?;
+        machines.register(machine.clone(), &mut None)?;
         let clock = Arc::new(Clock(AtomicU64::new(10)));
         let tool = Arc::new(PendingTool {
             clock: clock.clone(), executed: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),

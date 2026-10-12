@@ -1,5 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
@@ -131,7 +132,7 @@ async fn sealed_summary_preparation(
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
-        })?;
+        }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
@@ -146,9 +147,9 @@ async fn sealed_summary_preparation(
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
+    machines.register(implementation, &mut None)?;
     let host = Arc::new(CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&storage.stream, payloads.clone()).await?,
+        DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?,
         storage.stream.clone(), payloads.clone(), reader, authority, signed,
         issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
@@ -276,8 +277,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     let conversation = aggregate
@@ -628,8 +628,7 @@ async fn assert_summary_child_import(
         &storage.stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let parent_history = parent.history_reader()?;
     let child_history = child.history_reader()?;
@@ -711,8 +710,7 @@ async fn assert_summary_child_import(
         &other_stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     unrelated
         .execute(Command {
@@ -757,7 +755,7 @@ async fn assert_summary_child_import(
         Model::new("synthetic", "summary-child", "1", Value::Null)?,
         model.clone(),
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
@@ -897,8 +895,7 @@ async fn append_later_summary_parent_messages(
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     for index in 0..count {

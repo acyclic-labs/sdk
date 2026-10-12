@@ -41,7 +41,7 @@ async fn fixture() -> Result<Fixture> {
     }
     let scope = issuer.issue("parent-owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
-    let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
+    let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
         expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let project_ref = workspace_ref(project.provider().clone(), &project.storage_name()?)?;

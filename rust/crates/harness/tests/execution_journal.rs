@@ -63,8 +63,7 @@ async fn bind_conversation(
             id: id.into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
@@ -629,7 +628,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         executions: executions.clone(),
         reconciliations: reconciliations.clone(),
     });
-    let mut registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::default();
     registry.register(Tool {
         definition: definition.clone(),
         executor: counted.clone(),
@@ -1304,7 +1303,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         executor: Arc::new(NoopTool),
         projection: Arc::new(NoopTool),
     };
-    let mut registry = ToolRegistry::new();
+    let mut registry = ToolRegistry::default();
     assert!(
         registry
             .install_scoped(

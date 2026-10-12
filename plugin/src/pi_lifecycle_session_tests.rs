@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Fixture;
 
 #[tokio::test]
@@ -6,7 +7,7 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
     let fixture = Fixture::new(None).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let key = prepared.binding.project_volumes.keys().next().unwrap();
@@ -53,13 +54,13 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
     let fixture = Fixture::new(None).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     assert!(matches!(fixture.runtime.runtime.task_host().recover_work(task).await.unwrap(),
         WorkPull::Idle));
-    let observed = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, fixture.source.clone(),
+    let observed = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, fixture.root_handle.workspace.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     assert_eq!(observed.binding, prepared.binding);
@@ -88,4 +89,3 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
 }
-

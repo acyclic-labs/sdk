@@ -43,7 +43,7 @@ fn executor(
         acyclic_harness::model::Model::new("test", "model", "1", serde_json::Value::Null)?,
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
-        acyclic_harness::tool::ToolRegistry::new(),
+        acyclic_harness::tool::ToolRegistry::default(),
     )
     .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled))
 }

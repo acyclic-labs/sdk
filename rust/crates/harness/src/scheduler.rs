@@ -606,62 +606,31 @@ impl Scheduler {
         Ok(())
     }
 
-    pub(crate) fn operation_ready_for(
-        &self,
-        operation_id: OperationId,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-        owner: Option<&Authority>,
-    ) -> bool {
-        self.operations
-            .get(&operation_id)
-            .is_some_and(|operation| self.ready_operation(operation, capacity, labels, owner))
-    }
-
-    fn ready_operation(
-        &self,
-        operation: &OperationState,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-        owner: Option<&Authority>,
+    pub(crate) fn is_ready(
+        &self, operation: &OperationState, capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>, owner: Option<&Authority>,
     ) -> bool {
         owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
-            && self.resources_ready(operation, capacity, labels)
-            && self
-                .require_session_capacity(operation.spec.operation_id, &mut None)
-                .is_ok()
+            && matches!(operation.phase, OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity)
+            && !operation.cancellation_requested
+            && self.dependencies_succeeded(operation)
+            && operation.spec.placement.iter().all(|(key, value)| labels.get(key) == Some(value))
+            && operation.spec.resources.0.iter().all(|(resource, requested)| {
+                let admitted = operation.reservation.as_ref()
+                    .and_then(|reservation| reservation.admitted.0.get(resource)).copied().unwrap_or(0);
+                requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
+            })
+            && self.require_session_capacity(operation.spec.operation_id, &mut None).is_ok()
     }
 
     /// Iterates placement- and owner-matched operations that can acquire capacity.
     pub fn ready<'a>(
-        &'a self,
-        capacity: &'a ResourceSnapshot,
-        labels: &'a BTreeMap<String, String>,
-        owner: Option<&'a Authority>,
+        &'a self, capacity: &'a ResourceSnapshot,
+        labels: &'a BTreeMap<String, String>, owner: Option<&'a Authority>,
     ) -> impl Iterator<Item = OperationId> + 'a {
-        self.operations
-            .values()
-            .filter(move |operation| self.ready_operation(operation, capacity, labels, owner))
+        self.operations.values()
+            .filter(move |operation| self.is_ready(operation, capacity, labels, owner))
             .map(|operation| operation.spec.operation_id)
-    }
-
-    fn resources_ready(
-        &self,
-        operation: &OperationState,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-    ) -> bool {
-        matches!(
-            operation.phase,
-            OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-        ) && !operation.cancellation_requested
-            && self.dependencies_succeeded(operation)
-            && operation
-                .spec
-                .placement
-                .iter()
-                .all(|(key, value)| labels.get(key) == Some(value))
-            && remaining_resources_fit(operation, capacity)
     }
 
     /// Subtracts held placement resources on the optional observer.
@@ -691,9 +660,6 @@ impl Scheduler {
     }
 
     /// Applies a borrowed committed event on the optional history ledger.
-    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
-        name = "acyclic.harness.scheduler.apply", level = "debug", skip_all,
-        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)))]
     pub fn apply(
         &mut self, event: &SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1141,7 +1107,7 @@ impl Scheduler {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         drop(custody);
         if let Some(io) = work.as_deref_mut() { io.release_owned(observer_owned)?; }
-        crate::obs::outcome(Ok(()))
+        Ok(())
     }
 
     fn cancellation_descendant(
@@ -1315,8 +1281,7 @@ impl Scheduler {
                             let slot = decimal_slot(index, &mut digits);
                             let slot = clone_scheduler_text(slot, quota.work())?;
                             quota.adopt(slot.capacity() as u64)?;
-                            let file = clone_owned::clone_file_with_work(file, quota.work())?;
-                            quota.adopt(file.logical_owned_bytes()?)?;
+                            let file = crate::core::copy_file(file, &mut quota)?;
                             push_scheduler_item(&mut values, (slot, file), &mut value_slots, quota.work())?;
                         }
                     }
@@ -1325,8 +1290,7 @@ impl Scheduler {
                             let Some(Outcome::Succeeded(file)) = &child.outcome else { continue; };
                             let slot = clone_scheduler_text(slot, quota.work())?;
                             quota.adopt(slot.capacity() as u64)?;
-                            let file = clone_owned::clone_file_with_work(file, quota.work())?;
-                            quota.adopt(file.logical_owned_bytes()?)?;
+                            let file = crate::core::copy_file(file, &mut quota)?;
                             push_scheduler_item(&mut values, (slot, file), &mut value_slots, quota.work())?;
                         }
                     }
@@ -1716,23 +1680,6 @@ impl Scheduler {
     }
 }
 
-fn remaining_resources_fit(operation: &OperationState, capacity: &ResourceSnapshot) -> bool {
-    operation
-        .spec
-        .resources
-        .0
-        .iter()
-        .all(|(resource, requested)| {
-            let admitted = operation
-                .reservation
-                .as_ref()
-                .and_then(|reservation| reservation.admitted.0.get(resource))
-                .copied()
-                .unwrap_or(0);
-            requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
-        })
-}
-
 /// Deterministic output of join/race/quorum/reduce inspection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1815,7 +1762,7 @@ impl BorrowedOutcome<'_> {
 
     fn clone_with_work(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Outcome<FileRef>> {
         match self {
-            Self::Succeeded(file) => clone_owned::clone_file_with_work(file, work).map(Outcome::Succeeded),
+            Self::Succeeded(file) => file.copy(work).map(Outcome::Succeeded),
             Self::Failed(message) => clone_scheduler_text(message, work).map(|message| Outcome::Failed { message }),
             Self::ChildFailed { slot, message } => {
                 let length = slot.len().checked_add(message.len()).and_then(|bytes| bytes.checked_add(14))
@@ -1939,7 +1886,7 @@ fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> 
     false
 }
 
-fn diagnostic(
+pub(crate) fn diagnostic(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
@@ -2091,43 +2038,32 @@ impl TaskInbox {
     }
 
     /// Applies one committed item, deduplicating exact message identities.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.scheduler.inbox_apply",
-            level = "debug",
-            skip_all,
-            fields(items = self.items.len() as u64, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        crate::obs::outcome((|| {
-            if item.task_id != self.task_id || item.message_id.trim().is_empty() {
-                return Err(Error::Invalid(
-                    "inbox item has the wrong task or an empty message identity".into(),
-                ));
-            }
-            item.payload.validate(&mut None)?;
-            if let Some(existing) = self
-                .items
-                .iter()
-                .find(|existing| existing.message_id == item.message_id)
-            {
-                return if existing == &item {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("inbox message identity reused".into()))
-                };
-            }
-            let expected = self.items.len() as u64 + 1;
-            if item.sequence != expected {
-                return Err(Error::Conflict(format!(
-                    "expected inbox sequence {expected}"
-                )));
-            }
-            self.items.push(item);
-            Ok(())
-        })())
+        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+            return Err(Error::Invalid(
+                "inbox item has the wrong task or an empty message identity".into(),
+            ));
+        }
+        item.payload.validate(&mut None)?;
+        if let Some(existing) = self
+            .items
+            .iter()
+            .find(|existing| existing.message_id == item.message_id)
+        {
+            return if existing == &item {
+                Ok(())
+            } else {
+                Err(Error::Conflict("inbox message identity reused".into()))
+            };
+        }
+        let expected = self.items.len() as u64 + 1;
+        if item.sequence != expected {
+            return Err(Error::Conflict(format!(
+                "expected inbox sequence {expected}"
+            )));
+        }
+        self.items.push(item);
+        Ok(())
     }
 
     /// Reads a bounded page after a sequence.

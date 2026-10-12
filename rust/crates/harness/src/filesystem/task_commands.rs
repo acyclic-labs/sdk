@@ -1,6 +1,7 @@
 //! Stock workflow command dispatch through existing journaled executors.
 
-use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress};
+use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, task_runtime::WorkerContext};
+use crate::runtime::TaskStateProvider;
 use crate::{
     Error, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -282,22 +283,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     }
 }
 
-enum CommandContext {
-    Ordinary(TaskContext),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(Arc<crate::runtime::NativeTaskContext>),
-}
-
-impl CommandContext {
-    fn context(&self) -> &TaskContext {
-        match self {
-            Self::Ordinary(context) => context,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(context) => context.context(),
-        }
-    }
-}
-
 impl<P, A, O> TaskCommandHost for FilesystemTaskCommands<'_, P, A, O>
 where
     P: StreamProvider + 'static,
@@ -308,14 +293,14 @@ where
         &'a self, context: TaskContext, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.execute_observed(CommandContext::Ordinary(context), fence, command, payload, false, None))
+        Box::pin(self.execute_observed(WorkerContext::Ordinary(context), fence, command, payload, false, None))
     }
 
     fn reconcile<'a>(
         &'a self, context: TaskContext, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
     ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-        Box::pin(self.execute_observed(CommandContext::Ordinary(context), fence, command, payload, true, None))
+        Box::pin(self.execute_observed(WorkerContext::Ordinary(context), fence, command, payload, true, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -326,7 +311,7 @@ where
         self.validate_native_configuration_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            self.execute_observed(CommandContext::Native(context), fence, command, payload, false, Some(&io)).await
+            self.execute_observed(WorkerContext::Native(context), fence, command, payload, false, Some(&io)).await
         })
     }
 
@@ -338,7 +323,7 @@ where
         self.validate_native_configuration_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            self.execute_observed(CommandContext::Native(context), fence, command, payload, true, Some(&io)).await
+            self.execute_observed(WorkerContext::Native(context), fence, command, payload, true, Some(&io)).await
         })
     }
 }
@@ -369,7 +354,7 @@ where
     }
 
     async fn execute_observed(
-        &self, context: CommandContext, fence: LeaseFence, command: WorkflowCommand,
+        &self, context: WorkerContext, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         use super::task_runtime::observed::{boundary, clone_fence};
@@ -388,7 +373,7 @@ where
             return Err(boundary(io, ErrorCode::Unsupported, "stock routed execution provider is not composed"));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let CommandContext::Native(shared) = &context {
+        if let WorkerContext::Native(shared) = &context {
             if !shared.context().original_task_binding_matches(task, &fence) {
                 return Err(boundary(io, ErrorCode::Unauthorized, "command differs from original task binding"));
             }
@@ -398,14 +383,14 @@ where
             TOOL_TASK_COMMAND_KIND => {
                 match context {
                     #[cfg(not(target_arch = "wasm32"))]
-                    CommandContext::Native(shared) => {
+                    WorkerContext::Native(shared) => {
                         let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original observer" })?;
                         let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native tool requires original work" })?;
                         self.tool_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work).await
                     }
-                    CommandContext::Ordinary(context) => {
+                    WorkerContext::Ordinary(context) => {
                         if reconciliation_only {
-                            let operation = super::task_runtime::execution_operation(task, command.operation_id);
+                            let operation = super::task_runtime::execution_operation(task, command.operation_id, None)?;
                             let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
                             let mut replay = crate::executor::ExecutionReplay::new(operation);
                             let mut dispatched = false;
@@ -424,19 +409,19 @@ where
                 } else { None };
                 match context {
                     #[cfg(not(target_arch = "wasm32"))]
-                    CommandContext::Native(shared) => {
+                    WorkerContext::Native(shared) => {
                         let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original observer" })?;
                         let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original work" })?;
                         self.model_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work, receive).await
                     }
-                    CommandContext::Ordinary(_) => {
+                    WorkerContext::Ordinary(_) => {
                         Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload, reconciliation_only, receive)).await
                     }
                 }
             }
             EFFECT_TASK_COMMAND_KIND => self.effect_command_with_io(task, &fence, command.operation_id, payload, reconciliation_only, io).await,
             MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => self.reconcile_mail_with_io(task, &fence, &command, payload, io).await,
-            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io, admission.task.name == "acyclic.stock_turn").await,
+            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, &fence, &command, payload, io, admission.task.name == "acyclic.stock_turn").await,
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => self.task_command_with_io(task, context.context(), &fence, &command, payload, reconciliation_only, io).await,
             FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
                 self.prepare_fork_command(task, &context, &fence, &command, payload, admission.input, reconciliation_only, io).await
@@ -449,13 +434,7 @@ where
             }
 
             TIMER_TASK_COMMAND_KIND if !reconciliation_only => {
-                let input: TimerTaskCommand = if io.is_some() {
-                    mail::decode_command(payload, io)?
-                } else {
-                    serde_json::from_value(payload).map_err(|error| {
-                        Error::Invalid(format!("invalid timer command: {error}"))
-                    })?
-                };
+                let input: TimerTaskCommand = mail::decode_command(payload, io)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 let ready = if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native timer requires original work" })?;
@@ -465,7 +444,7 @@ where
                 };
                 #[cfg(target_arch = "wasm32")]
                 let ready = self.runtime.task_host().poll_timer(task, fence.clone(), command.operation_id, input.deadline_unix_ms).await?;
-                if ready { mail::mail_ready(Outcome::Succeeded(Value::Null), io) }
+                if ready { ready(Outcome::Succeeded(Value::Null), io) }
                 else { Ok(TaskCommandProgress::Pending) }
             }
             TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => mail::reconciled(io),
@@ -487,7 +466,7 @@ where
     }
 
     async fn prepare_fork_command(
-        &self, task: TaskId, context: &CommandContext, fence: &LeaseFence,
+        &self, task: TaskId, context: &WorkerContext, fence: &LeaseFence,
         command: &WorkflowCommand, payload: Value, retained_input: Value,
         reconciliation_only: bool, io: Option<&super::PreparationIo>,
     ) -> Result<TaskCommandProgress> {
@@ -501,7 +480,7 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
-            let CommandContext::Native(shared) = context else {
+            let WorkerContext::Native(shared) = context else {
                 return Err(boundary(Some(io), ErrorCode::Unauthorized,
                     "native fork requires its original shared context"));
             };
@@ -562,7 +541,7 @@ where
                 &preparation, &fork, work,
             )?.await?;
             io.absorb_native_custody(report.1)?;
-            return mail::mail_ready(Outcome::Succeeded(report.0), Some(io));
+            return ready(Outcome::Succeeded(report.0), Some(io));
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let _guard = super::default_tools::InvocationCancellation(cancellation.clone());
@@ -582,7 +561,7 @@ where
             }
             retained.preparer
         };
-        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?))
+        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?), None)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -681,8 +660,8 @@ where
             )?.await?;
             io.absorb_native_custody(result.1)?;
             return match result.0 {
-                crate::Admission::Accepted(child) => mail::mail_ready(Outcome::Succeeded(child), Some(io)),
-                crate::Admission::Rejected { reason } => mail::mail_ready(Outcome::<Value>::Failed { message: reason }, Some(io)),
+                crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child), Some(io)),
+                crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }, Some(io)),
                 crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
             };
         }
@@ -695,8 +674,8 @@ where
             return mail::reconciled(io);
         }
         match self.runtime.task_host().admit_owned(request.admission, fence.clone()).await? {
-            crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child)),
-            crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }),
+            crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child), None),
+            crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }, None),
             crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
         }
     }
@@ -716,12 +695,12 @@ where
                 task, fence, input.child, command.operation_id, work,
             ).await?;
             io.absorb_native_custody(state.1)?;
-            return mail::mail_ready(Outcome::Succeeded(state.0), Some(io));
+            return ready(Outcome::Succeeded(state.0), Some(io));
         }
         let state = self.runtime.task_host().cancel_child_owned(
             task, fence.clone(), input.child, command.operation_id,
         ).await?;
-        ready(Outcome::Succeeded(state))
+        ready(Outcome::Succeeded(state), None)
     }
 
     async fn effect_command_with_io(
@@ -752,10 +731,10 @@ where
             io.absorb_native_custody(custody)?;
             return match status {
                 crate::core::EffectStatus::Succeeded { result } => {
-                    mail::mail_ready(Outcome::Succeeded(result), Some(io))
+                    ready(Outcome::Succeeded(result), Some(io))
                 }
                 crate::core::EffectStatus::Failed { message } => {
-                    mail::mail_ready(Outcome::<Value>::Failed { message }, Some(io))
+                    ready(Outcome::<Value>::Failed { message }, Some(io))
                 }
                 crate::core::EffectStatus::Planned if reconciliation_only => {
                     mail::reconciled(Some(io))
@@ -772,8 +751,8 @@ where
             effects.run_task_effect(&owner, command, plan).await?
         };
         match status {
-            crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result)),
-            crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }),
+            crate::core::EffectStatus::Succeeded { result } => ready(Outcome::Succeeded(result), None),
+            crate::core::EffectStatus::Failed { message } => ready(Outcome::<Value>::Failed { message }, None),
             crate::core::EffectStatus::Planned if reconciliation_only => Ok(TaskCommandProgress::Ready(Value::Null)),
             crate::core::EffectStatus::Planned
             | crate::core::EffectStatus::Dispatched
@@ -798,108 +777,58 @@ where
                     return Err(super::task_runtime::observed::boundary(io,
                         crate::wire::ErrorCode::Unauthorized, "task scope lacks timer:wait"));
                 }
+                let input: TimerTaskCommand = mail::decode_command(payload, io)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let input: TimerTaskCommand = mail::decode_command(payload, Some(io))?;
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native timer wait requires original observer",
                     ))?;
                     return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
                 }
-                let input: TimerTaskCommand = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
                 self.runtime
                     .task_host()
                     .timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut None)
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
-                if let Some(io) = io {
-                    let input: MailReceiveTaskCommand = mail::decode_command(payload, Some(io))?;
-                    return self.wait_mail_with_io(task, context, input.after, Some(io)).await;
-                }
-                let input: MailReceiveTaskCommand = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                self.wait_mail_with_io(task, context, input.after, None).await
+                let input: MailReceiveTaskCommand = mail::decode_command(payload, io)?;
+                self.wait_mail_with_io(task, input.after, io).await
             }
             TASK_OBSERVE_COMMAND_KIND => {
-                if let Some(io) = io {
-                    let input: TaskObserveCommand = mail::decode_command(payload, Some(io))?;
-                    let child = TaskId::from_bytes(child_operation(
-                        task, input.admission_operation, Some(io),
-                    )?.into_bytes());
-                    if self.runtime.admission_observed(child, Some(io)).await?.parent != Some(task) {
-                        return Err(super::task_runtime::observed::boundary(Some(io),
-                            crate::wire::ErrorCode::Unauthorized, "wait is not for a direct child"));
-                    }
-                    return Ok(matches!(self.runtime.outcome_observed(child, Some(io)).await?,
-                        Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })));
+                let input: TaskObserveCommand = mail::decode_command(payload, io)?;
+                let child = TaskId::from_bytes(child_operation(task, input.admission_operation, io)?.into_bytes());
+                if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
+                    return Err(super::task_runtime::observed::boundary(io,
+                        crate::wire::ErrorCode::Unauthorized, "wait is not for a direct child"));
                 }
-                let input: TaskObserveCommand = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let child = TaskId::from_bytes(
-                    child_operation(task, input.admission_operation, None)?.into_bytes(),
-                );
-                if self
-                    .runtime
-                    .task_host()
-                    .observe_admission(child)
-                    .await?
-                    .parent
-                    != Some(task)
-                {
-                    return Err(Error::Unauthorized("wait is not for a direct child".into()));
-                }
-                Ok(
-                    matches!(self.runtime.task_host().outcome(child).await?, Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
-                )
+                Ok(matches!(self.runtime.outcome_observed(child, io).await?,
+                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })))
             }
             TOOL_TASK_COMMAND_KIND => {
+                let input: ToolTaskCommand = mail::decode_command(payload, io)?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let input: ToolTaskCommand = mail::decode_command(payload, Some(io))?;
-                    let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
-                        Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer",
-                    ))?;
-                    let definition = self.runtime.tool_definition(&input.name, &input.revision, Some(io))?;
-                    let task = context.durable_task_id().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized, reason: "tool has no original task" })?;
-                    let operation = super::task_runtime::execution_operation_with_native_work(task, command.operation_id, work)?;
-                    let invocation = tool_invocation(context, operation, definition, input.arguments, Some(io))?;
-                    return self.runtime.tool_approval_ready(
-                        context, definition, &invocation, Some(io),
-                    ).await;
+                    io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
+                        Some(io), crate::wire::ErrorCode::Unsupported, "native tool wait requires original observer"))?;
                 }
-                let input: ToolTaskCommand = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
-                let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
-                let operation = super::task_runtime::execution_operation(task, command.operation_id);
-                let invocation = tool_invocation(context, operation, &definition, input.arguments, None)?;
-                Box::pin(
-                    self.runtime
-                        .tool_approval_ready(context, &definition, &invocation, None),
-                )
-                .await
+                let definition = self.runtime.tool_definition(&input.name, &input.revision, io)?;
+                let operation = super::task_runtime::execution_operation(task, command.operation_id, io)?;
+                let invocation = tool_invocation(context, operation, definition, input.arguments, io)?;
+                let ready = self.runtime.tool_approval_ready(context, definition, &invocation, io);
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.is_some() { return ready.await; }
+                Box::pin(ready).await
             }
             MODEL_TASK_COMMAND_KIND => {
+                let input: ModelTaskCommand = mail::decode_command(payload, io)?;
+                let ready = self.runtime.model_approval_ready(context, command.operation_id, &input, io);
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
-                    let input: ModelTaskCommand = mail::decode_command(payload, Some(io))?;
                     io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
-                        Some(io), crate::wire::ErrorCode::Unsupported, "native model wait requires original observer",
-                    ))?;
-                    return self.runtime.model_approval_ready(
-                        context, command.operation_id, &input, Some(io),
-                    ).await;
+                        Some(io), crate::wire::ErrorCode::Unsupported, "native model wait requires original observer"))?;
+                    return ready.await;
                 }
-                let input: ModelTaskCommand = serde_json::from_value(payload)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                Box::pin(
-                    self.runtime
-                        .model_approval_ready(context, command.operation_id, &input, None),
-                )
-                .await
+                Box::pin(ready).await
             }
             _ => Ok(false),
         }
@@ -913,11 +842,7 @@ where
         use super::task_runtime::observed::boundary;
         use crate::wire::ErrorCode;
         if command.kind == TASK_ADMIT_COMMAND_KIND {
-            let input: TaskAdmitCommand = if io.is_some() {
-                mail::decode_command(payload, io)?
-            } else {
-                serde_json::from_value(payload).map_err(|error| Error::Invalid(format!("invalid child command: {error}")))?
-            };
+            let input: TaskAdmitCommand = mail::decode_command(payload, io)?;
             let operation = child_operation(task, command.operation_id, io)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -948,8 +873,8 @@ where
                 )?.await?;
                 io.absorb_native_custody(custody)?;
                 return match result {
-                    crate::Admission::Accepted(child) => mail::mail_ready(Outcome::Succeeded(child), Some(io)),
-                    crate::Admission::Rejected { reason } => mail::mail_ready(Outcome::<Value>::Failed { message: reason }, Some(io)),
+                    crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child), Some(io)),
+                    crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }, Some(io)),
                     crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
                 };
             }
@@ -963,25 +888,21 @@ where
                 return mail::reconciled(None);
             }
             match self.runtime.task_host().admit_owned(admission, fence.clone()).await? {
-                crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child)),
-                crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }),
+                crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child), None),
+                crate::Admission::Rejected { reason } => ready(Outcome::<Value>::Failed { message: reason }, None),
                 crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
             }
         } else if reconciliation_only {
             mail::reconciled(io)
         } else {
-            let input: TaskObserveCommand = if io.is_some() {
-                mail::decode_command(payload, io)?
-            } else {
-                serde_json::from_value(payload).map_err(|error| Error::Invalid(format!("invalid child observation: {error}")))?
-            };
+            let input: TaskObserveCommand = mail::decode_command(payload, io)?;
             let child = TaskId::from_bytes(child_operation(task, input.admission_operation, io)?.into_bytes());
             if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
                 return Err(boundary(io, ErrorCode::Unauthorized, "observed task is not this command's direct child"));
             }
             match self.runtime.outcome_observed(child, io).await? {
                 None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
-                Some(outcome) => mail::mail_ready(outcome, io),
+                Some(outcome) => ready(outcome, io),
             }
         }
     }
@@ -1109,12 +1030,12 @@ where
         let (progress, custody) = result?;
         io.absorb_native_custody(custody)?;
         match progress {
-            StockTurnProgress::Ready(output) => mail::mail_ready(Outcome::Succeeded(output), Some(io)),
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), Some(io)),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             StockTurnProgress::Rejected(reason) => {
                 let (message, custody) = work.display(&reason)?;
                 io.absorb_native_custody(custody)?;
-                mail::mail_ready(Outcome::<Value>::Failed { message }, Some(io))
+                ready(Outcome::<Value>::Failed { message }, Some(io))
             }
         }
     }
@@ -1161,7 +1082,7 @@ where
                     Err(Error::InteractionRejected(reason)) => {
                         let (message, custody) = work.display(&reason)?;
                         io.absorb_native_custody(custody)?;
-                        return mail::mail_ready(Outcome::<Value>::Failed { message }, Some(io));
+                        return ready(Outcome::<Value>::Failed { message }, Some(io));
                     }
                     Err(error) => return Err(error),
                 }
@@ -1177,7 +1098,7 @@ where
         io.absorb_native_custody(custody)?;
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => mail::mail_ready(outcome, Some(io)),
+            outcome => ready(outcome, Some(io)),
         }
     }
 
@@ -1190,12 +1111,11 @@ where
         reconciliation_only: bool,
         receive: Option<OperationId>,
     ) -> Result<TaskCommandProgress> {
-        let mut input: ModelTaskCommand = serde_json::from_value(payload)
-            .map_err(|error| Error::Invalid(format!("invalid model command: {error}")))?;
+        let mut input: ModelTaskCommand = mail::decode_command(payload, None)?;
         input.mailbox_operation = input.mailbox_operation.or(receive);
         let journal = if reconciliation_only {
             let journal = self.runtime.execution_journal(task, fence.clone(), turn).await?;
-            let operation = super::task_runtime::execution_operation(task, turn);
+            let operation = super::task_runtime::execution_operation(task, turn, None)?;
             let mut replay = crate::executor::ExecutionReplay::new(operation);
             let mut dispatched = false;
             while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
@@ -1283,11 +1203,11 @@ where
         }
         let progress = execution.execute_progress(turn).await?;
         match progress {
-            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output)),
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), None),
             StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             StockTurnProgress::Rejected(reason) => ready(Outcome::<Value>::Failed {
                 message: reason.to_string(),
-            }),
+            }, None),
         }
     }
 
@@ -1379,14 +1299,13 @@ where
         turn: OperationId,
         payload: Value,
     ) -> Result<TaskCommandProgress> {
-        let input: ToolTaskCommand = serde_json::from_value(payload)
-            .map_err(|error| Error::Invalid(format!("invalid tool command: {error}")))?;
+        let input: ToolTaskCommand = mail::decode_command(payload, None)?;
         let definition = self.runtime.tool_definition(&input.name, &input.revision, None)?;
         let journal = self.runtime.execution_journal(task, fence, turn).await?;
         let context = self
             .runtime
             .bind_context_interactions(context, task, journal.clone())?;
-        let operation = super::task_runtime::execution_operation(task, turn);
+        let operation = super::task_runtime::execution_operation(task, turn, None)?;
         if journal.replay(operation, 0, 1).await?.is_empty() {
             let invocation = tool_invocation(&context, operation, &definition, input.arguments.clone(), None)?;
             match context
@@ -1398,7 +1317,7 @@ where
                 Err(Error::InteractionRejected(reason)) => {
                     return ready(Outcome::<Value>::Failed {
                         message: reason.to_string(),
-                    });
+                    }, None);
                 }
                 Err(error) => return Err(error),
             }
@@ -1417,7 +1336,7 @@ where
             .await?;
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
-            outcome => ready(outcome),
+            outcome => ready(outcome, None),
         }
     }
 }
@@ -1449,11 +1368,27 @@ fn tool_invocation(
     Ok(invocation)
 }
 
-fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
-    serde_json::to_value(value)
-        .map(TaskCommandProgress::Ready)
-        .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
+fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<TaskCommandProgress> {
+    let Some(io) = io else {
+        return serde_json::to_value(value).map(TaskCommandProgress::Ready)
+            .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")));
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(native) = io.original_native_work() {
+        let output = super::PreparationIo::from_native_work(native)?;
+        let encoded_hold;
+        let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        encoded_hold = output.guard_bytes(&encoded)?;
+        let value = crate::filesystem::retain_decoded(output.decode(std::marker::PhantomData::<Value>, &encoded, crate::wire::ErrorCode::Storage)?);
+        drop(encoded);
+        drop(encoded_hold);
+        let retained = output.owned_bytes()?;
+        let custody = output.into_native_custody(retained)?;
+        return Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody });
+    }
+    Err(Error::Unsupported("mail result observer requires the original native work".into()))
 }
+
 
 fn child_operation(
     task: TaskId, command: OperationId, io: Option<&super::PreparationIo>,
