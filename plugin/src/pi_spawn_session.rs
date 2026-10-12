@@ -4,37 +4,11 @@ use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
-    filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandHost, TaskCommandProgress},
+    filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandProgress},
     runtime::NativeTaskContext,
     workflow::WorkflowCommand,
 };
 use serde::de::DeserializeOwned;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RetainedRootSource {
-    caller: TaskId,
-    sdk_operation: String,
-    root_key: String,
-    snapshot: LazySnapshotRef,
-}
-
-const SPAWN_ROOT_SOURCE_LABEL_BYTES: u64 = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
-        "RetainedRootSource", "caller", "sdk_operation", "root_key", "snapshot",
-        "TaskId", "LazySnapshotRef", "id", "workspace_id", "authored_generation",
-        "source", "overlay", "shadows", "LazySnapshotId", "WorkspaceId",
-        "GenerationId", "Digest", "SourceReference", "identity", "epoch",
-        "LazyOverlayId", "LazyShadowId",
-        "a string", "a UUID string", "u64", "u8",
-        "an array of length 16", "an array of length 32",
-    ]);
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SpawnRootSourceAcknowledgement {
-    root_key: String,
-    snapshot: LazySnapshotRef,
-}
 
 #[derive(Serialize)]
 struct SpawnObservedChild<'a> {
@@ -172,8 +146,8 @@ impl PiSession {
         let root_source = if commit.source_task == owner.policy().root_task {
             if let Some(plan) = &plan {
                 Some(plan.frozen)
-            } else if let Some((observed, custody)) = self.spawn_input::<RetainedRootSource>(
-                owner, pi_fork::derived(original, "observe-root-source", &work)?, "root-source-observation", SPAWN_ROOT_SOURCE_LABEL_BYTES,
+            } else if let Some((observed, custody)) = self.spawn_input::<pi_fork_host::ObservedSource>(
+                owner, pi_fork::derived(original, "observe-root-source", &work)?, "root-source-observation", pi_fork_host::OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES,
                 &work,
             ).await? {
                 let observed = observed;
@@ -199,7 +173,7 @@ impl PiSession {
                 let Some((acknowledgement, custody)) = acknowledgement else {
                     return self.spawn_observation(&commit, operations, false, true, &work, owner.policy().maximum_payload_bytes, retained_custody).await;
                 };
-                let acknowledgement: SpawnRootSourceAcknowledgement =
+                let acknowledgement: pi_fork_host::PiRootSource =
                     serde_json::from_value(acknowledgement).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
                 if acknowledgement.root_key != root_key {
                     return Err(acyclic_harness::Error::Invalid("Pi Root source acknowledgement changed its selected resource".to_owned()));
@@ -236,8 +210,8 @@ impl PiSession {
                         drop(admission_custody);
                         return Err(acyclic_harness::Error::Invalid("Pi original preparation admission was substituted".to_owned()));
                     }
-                    let reservation = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(),
-                        self.stream.clone(), &self.resources, native.original_owner(), &self.state, &self.roots, native.clone())
+                    let reservation = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(),
+                        self.stream.clone(), &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?
                         .reservation_with_native_work(plan, &work)?;
                     let reservation = spawn_pending_batch(reservation, &work)?;
                     self.spawn_save_pending(Some(reservation), &commit, operations, &work)?;
@@ -481,15 +455,13 @@ impl PiSession {
         &self, owner: &pi_owner::PiOwnerConfig, native: Arc<pi_native_host::PiNativeCommandHost>,
         command: WorkflowCommand, wake_pending: bool, task: Option<TaskId>, work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
-        let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
-        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+        let selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
         let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&fork, &selected);
+            self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&selected);
         let reply = workflow.control_step_with_native_work(command, wake_pending).await?;
-        let pending = fork.pending_to_save()?;
-        let prepared = match task { Some(task) => fork.take_prepared(task)?, None => None };
+        let pending = selected.pending_to_save()?;
+        let prepared = match task { Some(task) => selected.take_prepared(task)?, None => None };
         Ok((reply, pending, prepared))
     }
 
@@ -498,16 +470,12 @@ impl PiSession {
         context: &Arc<NativeTaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
-        let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native);
+        let fork = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, native.original_owner(), &self.state, &self.roots, native, &work)?;
         let fence = context.context().owned_task_fence()?;
         let (payload, mut input_custody) = pi_root_provider::guarded_pi_value(
             input, owner.policy().maximum_payload_bytes, work)?;
-        let progress = if reconcile {
-            fork.reconcile_with_native_work(context.clone(), fence, command, payload, work)?.await
-        } else {
-            fork.execute_with_native_work(context.clone(), fence, command, payload, work)?.await
-        }?;
+        let progress = fork.run(context.clone(), fence, command, payload, reconcile, work).await?;
         let reply = match progress {
             TaskCommandProgress::ReadyWithNativeCustody { value, mut custody } => {
                 if let Err(cause) = custody.absorb(&mut input_custody) {

@@ -46,17 +46,16 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("fixture transaction");
     transaction
-        .create_dir_all("/src")
-        .await
+        .create_dir_all("/src", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("fixture source directory");
     for (relative, contents) in files {
         transaction
             .create_file(
                 &format!("/{relative}"),
                 Bytes::from(contents),
-                FileMetadata::default(),
-            )
-            .await
+                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("fixture file in SDK workspace");
     }
     assert!(matches!(

@@ -303,7 +303,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
-    let mut messages = projection_vec::<ModelMessage>(selection.message_ids.len(), io)?;
+    let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
     let mut tool_calls = ProjectionIndex::<usize>::new(io);
     for id in &selection.message_ids {
         projection_step(io, 1)?;
@@ -392,7 +392,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
         let projected_count = attachments.as_slice().len().min(maximum_projected_attachments);
         let omitted_count = attachments.as_slice().len() - projected_count;
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
-        let mut parts = projection_vec::<ModelContentPart>(capacity, io)?;
+        let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
@@ -452,8 +452,8 @@ pub fn validate_model_context_selection_at_revision(
     if let Some(checkpoint) = &selection.checkpoint {
         match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => checkpoint.validate_with_work(&mut Some(&mut io.history_io()))?,
-            _ => checkpoint.validate()?,
+            Some(io) => checkpoint.validate(&mut Some(&mut io.history_io()))?,
+            _ => checkpoint.validate(&mut None)?,
         }
     }
     let mut previous_sequence = 0;
@@ -543,35 +543,6 @@ fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>
     }
     let _ = (bytes, io);
     Ok(())
-}
-
-fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<T>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let bytes = capacity.checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        let work = io.original_native_work().expect("checked native work");
-        let mut custody = if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes) }
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut values = Vec::new();
-        values.try_reserve_exact(capacity)
-            .map_err(|_| projection_invalid(Some(io), "projection vector allocation failed"))?;
-        let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        if let Err(cause) = custody.reconcile_capacity(actual) {
-            return Err(Error::NativeWork { cause, custody: Some(custody) });
-        }
-        io.absorb_native_custody(custody)?;
-        return Ok(values);
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let bytes = capacity.checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        projection_allocation(bytes, Some(io))?;
-    }
-    let _ = io;
-    Ok(Vec::with_capacity(capacity))
 }
 
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
@@ -668,39 +639,41 @@ fn validate_projection_tool_identity(
 struct ProjectionIndex<'a, T> {
     values: HashMap<Uuid, T>,
     io: Option<&'a crate::executor::PreparationIo>,
-    #[cfg(feature = "filesystem")]
-    bytes: u64,
 }
 
 impl<T> Drop for ProjectionIndex<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "filesystem")]
+        let bytes = self.values.len() * std::mem::size_of::<(Uuid, T)>();
         drop(std::mem::take(&mut self.values));
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
-            io.release(self.bytes).expect("projection index owns its live logical slots");
+            io.release(bytes as u64).expect("projection index owns its live logical slots");
         }
     }
 }
 
 impl<'a, T> ProjectionIndex<'a, T> {
     fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
-        Self { values: HashMap::new(), io, #[cfg(feature = "filesystem")] bytes: 0 }
+        Self { values: HashMap::new(), io }
     }
 
+    // Callers validate unique ordered message ids before insertion.
     fn insert(&mut self, id: &Uuid, value: T) -> Result<()> {
         projection_step(self.io, 1)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
             let bytes = std::mem::size_of::<(Uuid, T)>() as u64;
-            let total = self.bytes.checked_add(bytes)
+            self.values.len().checked_add(1)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, T)>()))
                 .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
-            io.claim(bytes)?;
-            self.bytes = total;
+            let slot = io.reserve_decode(bytes)?;
             let copied = acyclic_fs::WorkCounters {
                 bytes_copied: 16, ..Default::default()
             };
             io.preflight(copied)?;
             io.charge(copied)?;
+            slot.into_retained();
         }
         self.values.insert(*id, value);
         Ok(())
@@ -714,7 +687,7 @@ impl<'a, T> ProjectionIndex<'a, T> {
 
 enum ProjectionAttachments<'a> {
     Borrowed(&'a [Attachment]),
-    Owned(Vec<Attachment>),
+    Owned(Vec<Attachment>, Option<crate::conversation::ContentHold<'a>>),
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     Native(Vec<Attachment>, acyclic_fs::NativeAllocation),
 }
@@ -723,7 +696,7 @@ impl ProjectionAttachments<'_> {
     fn as_slice(&self) -> &[Attachment] {
         match self {
             Self::Borrowed(items) => items,
-            Self::Owned(items) => items,
+            Self::Owned(items, _) => items,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(items, _) => items,
         }
@@ -747,6 +720,7 @@ impl ProjectionAttachments<'_> {
         // Declare custody first so attachment storage drops before its guard.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut custody = None;
+        let _hold;
         let items = match self {
             Self::Borrowed(items) => {
                 for attachment in items.iter().take(count) {
@@ -756,7 +730,7 @@ impl ProjectionAttachments<'_> {
                 }
                 return Ok(());
             }
-            Self::Owned(items) => items,
+            Self::Owned(items, hold) => { _hold = hold; items },
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(items, guard) => { custody = Some(guard); items }
         };
@@ -817,14 +791,21 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let native = io.and_then(crate::executor::PreparationIo::original_native_work);
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let loaded = if let Some(work) = native {
-                let (value, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
+            let loaded = if native.is_some() {
+                let (value, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                let hold = hold.expect("native manifest retains ownership");
+                let custody = io.expect("native manifest observer").take_native_custody(hold.bytes())?;
+                hold.into_retained();
                 ProjectionAttachments::Native(value, custody)
             } else {
-                ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0)
+                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                ProjectionAttachments::Owned(items, hold)
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let loaded = ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0);
+            let loaded = {
+                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                ProjectionAttachments::Owned(items, hold)
+            };
             if loaded.as_slice().len() != *item_count as usize {
                 return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
             }
@@ -869,39 +850,27 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-// Private, closed source DTOs only. This is not a DeserializeOwned theorem.
 #[cfg(feature = "filesystem")]
-trait ProjectionArtifact: crate::filesystem::PreparationRecord {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64>;
-}
-
-#[cfg(feature = "filesystem")]
-impl ProjectionArtifact for serde_json::Value {
-    fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
-        crate::contract::json_value_logical_owned_bytes(self)
+impl crate::filesystem::UploadRecord for ProjectedToolInvocation {
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ProjectedToolInvocation
     }
-}
-
-#[cfg(feature = "filesystem")]
-impl ProjectionArtifact for ProjectedToolInvocation {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
+    fn logical_owned_bytes(&self) -> Result<u64> {
         let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(arguments))
-            .ok_or_else(|| projection_invalid(Some(io), "projected tool invocation ownership overflows"))
+            .ok_or_else(|| {
+                #[cfg(not(target_arch = "wasm32"))]
+                { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "projected tool invocation ownership overflows" } }
+                #[cfg(target_arch = "wasm32")]
+                { Error::Invalid("projected tool invocation ownership overflows".into()) }
+            })
     }
 }
 
 #[cfg(feature = "filesystem")]
-impl ProjectionArtifact for crate::model::ToolResultContent {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
-        self.logical_owned_bytes()?.checked_sub(std::mem::size_of::<Self>() as u64)
-            .ok_or_else(|| projection_invalid(Some(io), "projected tool result ownership overflows"))
-    }
-}
-
-#[cfg(feature = "filesystem")]
-fn projection_conversion_allowance<T: ProjectionArtifact>(
+fn projection_conversion_allowance<T: crate::filesystem::UploadRecord>(
     shape: crate::contract::JsonValueShape,
     io: &crate::executor::PreparationIo,
 ) -> Result<u64> {
@@ -950,7 +919,7 @@ fn projection_conversion_allowance<T: ProjectionArtifact>(
 }
 
 #[cfg(feature = "filesystem")]
-fn convert_projection_value<'a, T: ProjectionArtifact>(
+fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
     source: (serde_json::Value, crate::filesystem::DecodeReservation<'a>), maximum_bytes: u64,
     io: &'a crate::executor::PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
@@ -992,7 +961,7 @@ fn convert_projection_value<'a, T: ProjectionArtifact>(
             return Err(Error::Invalid(message));
         }
     };
-    let retained = value.heap_owned_bytes(io)?;
+    let retained = value.logical_owned_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut custody) = native_custody.take() {
         if let Err(cause) = custody.substitute(retained) {
@@ -1022,12 +991,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(Some(io), "tool artifact type or rendering limit is invalid"));
     }
     let _source_hold;
-    #[cfg(not(target_arch = "wasm32"))]
-    let bytes = if let Some(work) = io.original_native_work() {
-        resolver.read_with_native_work(file, maximum_bytes, work)?.await?
-    } else { resolver.read(file).await? };
-    #[cfg(target_arch = "wasm32")]
-    let bytes = resolver.read(file).await?;
+    let bytes = resolver.read(file, maximum_bytes, Some(io))?.await?;
     _source_hold = if io.uses_native_work() { None } else {
         bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
     };
@@ -1054,7 +1018,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?
             "tool artifact type or rendering limit is invalid".into(),
         ));
     }
-    let bytes = resolver.read(file).await?;
+    let bytes = resolver.read(file, maximum_bytes, None)?.await?;
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
@@ -1106,9 +1070,11 @@ mod tests {
     };
     use uuid::Uuid;
 
+    #[derive(Default)]
     struct Resolver {
         items: Vec<Attachment>,
         calls: AtomicUsize,
+        bytes: Vec<u8>,
     }
 
     impl ContentResidencyVerifier for Resolver {
@@ -1124,46 +1090,24 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(self.items.clone()) })
         }
-    }
-
-    struct ArtifactResolver {
-        bytes: Vec<u8>,
-    }
-
-    impl ContentResidencyVerifier for ArtifactResolver {
-        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
-        }
-
-        fn load_manifest<'a>(
-            &'a self,
-            _manifest: &'a FileRef,
-            _item_count: u32,
-        ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-            Box::pin(async {
-                Err(Error::Unsupported(
-                    "manifest resolution is unavailable".into(),
-                ))
-            })
-        }
-
         fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async { Ok(acyclic_stream::OwnedBytes::from(self.bytes.clone())) })
+            Box::pin(async { Ok(self.bytes.clone().into()) })
         }
+
     }
 
     fn file(agent: AgentId, path: &str, media_type: &str) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
+                VolumeOwner::Agent(agent), &mut None
             )?,
-            path,
-            "v1",
-            FileDescriptor::from_bytes(b"data", media_type)?,
-            "data",
+            (path).into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(b"data", media_type, &mut None)?,
+            "data".into(), &mut None
         )
     }
 
@@ -1236,10 +1180,10 @@ mod tests {
         let bytes = crate::contract::canonical_json_bytes(&checkpoint)?;
         let pinned = FileRef::new(
             payload.volume().clone(),
-            "checkpoint.json",
-            "v1",
-            FileDescriptor::from_bytes(&bytes, "application/json")?,
-            "checkpoint.json",
+            "checkpoint.json".into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?,
+            "checkpoint.json".into(), &mut None
         )?;
         let selected = select_turn_delta(
             &conversation,
@@ -1333,7 +1277,7 @@ mod tests {
         };
         let resolver = Resolver {
             items: vec![attachment.clone()],
-            calls: AtomicUsize::new(0),
+            ..Resolver::default()
         };
         assert!(
             select_model_context(
@@ -1369,7 +1313,7 @@ mod tests {
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         let resolver = Resolver {
             items: vec![attachment.clone(), attachment],
-            calls: AtomicUsize::new(0),
+            ..Resolver::default()
         };
         let projected =
             select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
@@ -1384,26 +1328,24 @@ mod tests {
         let reference = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
+                VolumeOwner::Agent(agent), &mut None
             )?,
-            "tool.json",
-            "v1",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "tool.json",
+            "tool.json".into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "tool.json".into(), &mut None
         )?;
         let oversized_len = 1_025;
-        let resolver = ArtifactResolver {
+        let resolver = Resolver {
             bytes: vec![0; oversized_len],
+            ..Resolver::default()
         };
-        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
-        let Err(error) = result else {
-            return Err(Error::Invalid(
-                "oversized resolved bytes were accepted".into(),
-            ));
-        };
-        assert!(error.to_string().contains("rendering limit"));
+        assert!(matches!(
+            read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await,
+            Err(Error::Invalid(_))
+        ));
         Ok(())
     }
 
@@ -1470,7 +1412,7 @@ mod tests {
         let error = resolve_projection_attachments(&message, &resolver, 1, Some(&io))
             .await.err().expect("complete native manifest count mismatch");
         assert!(matches!(error, Error::NativeBoundary {
-            reason: "attachment manifest count does not match its declared count", ..
+            code: crate::wire::ErrorCode::Invalid, ..
         }));
         assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
         assert_eq!(resolver.native.load(Ordering::SeqCst), 1);

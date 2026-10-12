@@ -221,7 +221,7 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
                 crate::storage::ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
                 error => error.into(),
             })?;
-            (read.into_read(), None)
+            (read, None)
         }
     };
     let charge_parent_items = !matches!(

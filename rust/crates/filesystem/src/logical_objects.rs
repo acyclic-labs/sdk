@@ -909,13 +909,13 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         maximum_bytes: u64,
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (read, _custody) = self.read_accounted(object_id, maximum_bytes, &mut accounting)
             .await.map_err(read_accounting_error)?;
         match read.retention {
-            ObjectReadRetention::Shared => crate::async_storage::NativeObjectRead::shared(read),
-            ObjectReadRetention::Owned { .. } => crate::async_storage::NativeObjectRead::intrinsic(read, work),
+            ObjectReadRetention::Shared => Ok(read),
+            ObjectReadRetention::Owned { .. } => crate::async_storage::owned_read(read, work),
         }
     }
 
@@ -938,13 +938,13 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         requests: &[ObjectReadRequest],
         work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (reads, custody) = self.read_many_accounted(requests, &mut accounting)
             .await.map_err(read_accounting_error)?;
         match custody {
             KernelOwnedAllocation::NativeOriginal(custody) =>
-                crate::async_storage::NativeObjectReadBatch::new(reads, custody),
+                crate::async_storage::native_read_batch(reads, custody),
             KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
         }
     }
@@ -1621,7 +1621,7 @@ mod tests {
         assert_eq!(work.receipt().bytes_hashed, 4);
         assert_eq!(work.receipt().bytes_copied,
             store.bucket.name.len() as u64 + object_key(native_test_id()).len() as u64 + 4);
-        let read = read.into_read();
+        let read = read;
         let alias = read.bytes.slice(1..);
         let retained = work.remaining()?.peak_allocation_bytes;
         assert!(retained < baseline - 4);
@@ -1685,11 +1685,11 @@ mod tests {
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
         let shared = memory.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
-        assert_eq!(shared.read().retention, ObjectReadRetention::Shared);
+        assert_eq!(shared.retention, ObjectReadRetention::Shared);
         assert_eq!(work.receipt().allocation_operations, before);
         let (logical, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, false, false, false);
         let opaque = logical.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
-        assert_eq!(opaque.read().retention, ObjectReadRetention::Owned { logical_bytes: 4 });
+        assert_eq!(opaque.retention, ObjectReadRetention::Owned { logical_bytes: 4 });
         Ok(())
     }
 
@@ -1730,8 +1730,8 @@ mod tests {
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
         let native = store.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
-        assert_eq!(native.read().bytes, ordinary.value.bytes);
-        assert_eq!(native.read().retention, ObjectReadRetention::Shared);
+        assert_eq!(native.bytes, ordinary.value.bytes);
+        assert_eq!(native.retention, ObjectReadRetention::Shared);
         assert_eq!(work.receipt().object_bytes_read, ordinary.work.object_bytes_read);
         assert_eq!(work.receipt().bytes_hashed, ordinary.work.bytes_hashed);
         assert!(work.receipt().bytes_copied >= ordinary.work.bytes_copied);
@@ -1763,8 +1763,8 @@ mod tests {
         assert!(work.receipt().allocation_operations - initial_operations >= 16);
         assert_eq!(work.receipt().bytes_copied,
             2 * (store.bucket.name.len() as u64 + object_key(native_test_id()).len() as u64) + 8);
-        let alias = batch.reads()[0].bytes.clone();
-        let (reads, vector_custody) = batch.into_parts();
+        let alias = batch.0[0].bytes.clone();
+        let (reads, vector_custody) = batch;
         assert!(vector_custody.work().shares_ledger(&work));
         assert_eq!(vector_custody.bytes(), reads.capacity() as u64 * size_of::<ObjectRead>() as u64);
         drop(reads);
@@ -1845,8 +1845,8 @@ mod tests {
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
         let native = store.read_many_with_native_work(&requests, &work, &cancellation).await?;
-        assert_eq!(native.reads().len(), ordinary.value.len());
-        for (native, ordinary) in native.reads().iter().zip(&ordinary.value) {
+        assert_eq!(native.0.len(), ordinary.value.len());
+        for (native, ordinary) in native.0.iter().zip(&ordinary.value) {
             assert_eq!(native.bytes, ordinary.bytes);
             assert_eq!(native.retention, ObjectReadRetention::Shared);
         }

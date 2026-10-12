@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::kernel::Child;
 fn name(value: &[u8]) -> Result<LogicalName, TreePageError> {
     LogicalName::new(NameEncoding::Utf8, value.to_vec(), 255)
 }
@@ -16,7 +17,7 @@ fn leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::error::
         hex::encode(&encoded),
         "4143594653545245010001010000000101000000610707070707070707070707070707070701"
     );
-    assert_eq!(decode_tree_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)?, page);
+    assert_eq!(decode_tree_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, page);
     Ok(())
 }
 
@@ -78,7 +79,7 @@ fn malformed_and_noncanonical_pages_fail_closed() -> Result<(), Box<dyn std::err
     let mut empty = encode_tree_page(&TreePage::Leaf(Vec::new()), 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     empty.push(0);
     assert_eq!(
-        decode_tree_page(&empty, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name),
+        decode_tree_page(&empty, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::TrailingBytes)
     );
     Ok(())
@@ -86,8 +87,8 @@ fn malformed_and_noncanonical_pages_fail_closed() -> Result<(), Box<dyn std::err
 
 #[test]
 fn internal_children_require_tree_page_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let invalid = TreePage::Internal(vec![TreeChild {
-        first_name: name(b"a")?,
+    let invalid = TreePage::Internal(vec![Child {
+        first: name(b"a")?,
         page: ObjectId {
             kind: ObjectKind::Blob,
             digest: crate::foundation::Digest::ZERO,
@@ -110,8 +111,8 @@ fn tree_encoder_rejects_every_item_order_and_bound_violation()
     assert!(encode_tree_page(&TreePage::Leaf(vec![entry(b"a", 1)?]), 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     assert!(encode_tree_page(&TreePage::Internal(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     let child = |value: &[u8], byte| {
-        Ok::<_, TreePageError>(TreeChild {
-            first_name: name(value)?,
+        Ok::<_, TreePageError>(Child {
+            first: name(value)?,
             page: ObjectId {
                 kind: ObjectKind::TreePage,
                 digest: crate::foundation::Digest::from_bytes([byte; 32]),
@@ -140,7 +141,7 @@ fn malformed_tree_page_tags_and_bounds_fail_in_shape_and_full_decoders()
     };
     for result in [
         tree_page_decode_shape(&encoded, tight).map(|_| ()),
-        decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name).map(|_| ()),
+        decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -154,7 +155,7 @@ fn malformed_tree_page_tags_and_bounds_fail_in_shape_and_full_decoders()
     unknown[DOMAIN.len() + 2] = 9;
     for result in [
         tree_page_decode_shape(&unknown, DecodeLimits::default()).map(|_| ()),
-        decode_tree_page(&unknown, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name).map(|_| ()),
+        decode_tree_page(&unknown, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,

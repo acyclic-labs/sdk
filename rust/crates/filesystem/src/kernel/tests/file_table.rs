@@ -10,6 +10,7 @@ use acyclic_stream::OwnedBytes;
 #[cfg(feature = "memory")]
 use std::task::{Context, Poll, Waker};
 
+use crate::kernel::Child;
 #[cfg(feature = "memory")]
 fn put_memory_page(
     store: &MemoryObjectStore,
@@ -46,12 +47,12 @@ fn two_level_file_table(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn s
     put_memory_page(
         store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: first,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([2; 16]),
+            Child {
+                first: FileId::from_bytes([2; 16]),
                 page: second,
             },
         ]),
@@ -215,7 +216,7 @@ fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
     }]);
     let encoded = encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         page
     );
     Ok(())
@@ -242,7 +243,7 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
     }]);
     let encoded = encode_file_table_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         page
     );
     assert_eq!(encoded.len(), 78);
@@ -403,12 +404,12 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
     assert_eq!(shape.items, 7);
     assert_eq!(shape.nested_bytes, 0);
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         page
     );
 
-    let child = FileTableChild {
-        first_file_id: FileId::from_bytes([1; 16]),
+    let child = Child {
+        first: FileId::from_bytes([1; 16]),
         page: typed(ObjectKind::FileTablePage, 25),
     };
     let internal = FileTablePage::Internal(vec![child]);
@@ -417,7 +418,7 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
     assert_eq!(shape.kind, DecodedPageKind::Internal);
     assert_eq!(shape.items, 1);
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         internal
     );
     Ok(())
@@ -435,8 +436,8 @@ fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
         },
         payload: FilePayload::Empty,
     };
-    let child = |byte, kind| FileTableChild {
-        first_file_id: FileId::from_bytes([byte; 16]),
+    let child = |byte, kind| Child {
+        first: FileId::from_bytes([byte; 16]),
         page: ObjectId {
             kind,
             digest: Digest::from_bytes([byte; 32]),
@@ -491,7 +492,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
         obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
         for result in [
             file_table_page_decode_shape(&obsolete, DecodeLimits::default()).map(|_| ()),
-            decode_file_table_page(&obsolete, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
+            decode_file_table_page(&obsolete, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
         ] {
             assert!(
                 matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(actual)) if actual == version)
@@ -504,7 +505,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     };
     for result in [
         file_table_page_decode_shape(&encoded, tight).map(|_| ()),
-        decode_file_table_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
+        decode_file_table_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -519,7 +520,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     unknown_page[DOMAIN.len() + 2] = 9;
     for result in [
         file_table_page_decode_shape(&unknown_page, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&unknown_page, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
+        decode_file_table_page(&unknown_page, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -534,7 +535,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     unknown_payload[RECORD_PAYLOAD_OFFSET] = 9;
     for result in [
         file_table_page_decode_shape(&unknown_payload, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&unknown_payload, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
+        decode_file_table_page(&unknown_payload, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -549,7 +550,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     oversized_inline[RECORD_PAYLOAD_OFFSET + 1] = u8::try_from(MAXIMUM_INLINE_FILE_BYTES + 1)?;
     for result in [
         file_table_page_decode_shape(&oversized_inline, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&oversized_inline, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
+        decode_file_table_page(&oversized_inline, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -775,8 +776,8 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)]))?;
     let forged = put_memory_page(
         &store,
-        &FileTablePage::Internal(vec![FileTableChild {
-            first_file_id: FileId::from_bytes([0; 16]),
+        &FileTablePage::Internal(vec![Child {
+            first: FileId::from_bytes([0; 16]),
             page: leaf,
         }]),
     )?;

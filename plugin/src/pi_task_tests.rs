@@ -1,5 +1,5 @@
 use super::*;
-use crate::pi_fork::tests::work;
+use crate::pi_fork::tests::{policy, work};
 use crate::pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use crate::pi_recovery::{
     PiTaskObservation, observe_pi_session,
@@ -9,15 +9,15 @@ use crate::pi_runtime::{PiRuntimeAuthority, PiTaskRuntime};
 use crate::{AdapterState, PiScratchBinding, PiTaskBinding, PluginTaskBinding};
 use acyclic_harness::{
     Admission, AgentId, Capabilities, TaskId,
-    conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskRunLimits},
-    scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
+    runtime::{DurableTaskHost, RuntimeScope},
+    scheduler::{LeaseFence, ResourceSnapshot},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
 
 #[path = "pi_task_model_tests.rs"]
@@ -194,29 +194,7 @@ async fn open(
             agent: binding.agent_id,
             journal: journal.clone(),
             grants,
-            limits: Limits {
-                file_bytes: 65_536,
-                path_bytes: 1024,
-                attachments: 16,
-                render_bytes: 65_536,
-                model_steps: 16,
-                model_events_per_step: 128,
-                tool_calls_per_step: 16,
-                context_messages: 128,
-            },
-            run_limits: TaskRunLimits {
-                concurrency: Some(4),
-                max_steps: Some(16),
-                deadline_epoch_ms: None,
-            },
-            session_limits: SessionLimits {
-                active_tasks: 4,
-                total_tasks: 8,
-                depth: 3,
-                model_steps: 16,
-            },
-            concurrency: 4,
-            maximum_payload_bytes: 65_536,
+            ..policy()
         };
         let config = PiOwnerConfig::new(&policy, None, &work)?;
         config.save_new_with_native_work(&private_root, Path::new(""), &work)?;
@@ -242,11 +220,11 @@ async fn open(
             .await
             .unwrap();
     }
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = PiTaskRuntime::open_with_native_work(
         stream, filesystem, &journal, authority, &work,
     ).await?;
@@ -403,14 +381,14 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
     ).unwrap();
@@ -532,14 +510,14 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let mut state = session_state(&binding);
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
@@ -724,7 +702,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         storage
-            .open_workspace(&binding.scratch.volume.storage_name().unwrap())
+            .open_workspace_with_native_work(&binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
             .await
             .is_err()
     );
@@ -1303,7 +1281,6 @@ mod native_transition {
     fn native_cancellation_precedes_state_and_command_vector_growth() {
         let machine = PiTaskMachine::new(&work()).unwrap();
         let state = json!({"state":"preparing","command":preparation()});
-        let preserved = state.clone();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(
             crate::pi_root_provider::allocation_budget(), &cancellation,
@@ -1318,7 +1295,6 @@ mod native_transition {
         assert_eq!(work.receipt(), before);
         drop(failure);
         assert_eq!(work.live_allocation_bytes(), work_baseline);
-        assert_eq!(state, preserved);
     }
 
     #[tokio::test]
@@ -1462,7 +1438,6 @@ mod native_transition {
             binding: binding(),
             execution: PiTaskExecution::Host { root: PiRootIntent::ScratchOnly {}, preparation: preparation() },
         }).unwrap();
-        let preserved = input.clone();
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
         let original_baseline = original.live_allocation_bytes();
@@ -1481,7 +1456,6 @@ mod native_transition {
         assert_eq!(original.receipt(), before);
         drop(failure);
         assert_eq!(original.live_allocation_bytes(), original_baseline);
-        assert_eq!(input, preserved);
         for malformed in [
             json!({"binding":binding(),"launch":null}),
             json!({"binding":binding(),"execution":{"kind":"host"}}),

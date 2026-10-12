@@ -169,12 +169,13 @@ impl NativeTaskContext {
             .filter(|binding| binding.writer.is_some())
             .ok_or_else(|| boundary(crate::wire::ErrorCode::Unauthorized,
                 "output volume has no authenticated created writer"))?;
-        let (permission, permission_custody) = volume.capability_with_native_work(
-            crate::conversation::VolumeOperation::Write, work,
+        let mut permission_io = crate::store::history::native_work_io(work)?;
+        let permission = volume.capability(
+            crate::conversation::VolumeOperation::Write, &mut Some(&mut permission_io),
         )?;
         let allowed = self.context.scope.grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if !allowed {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "original task scope cannot write the selected output volume"));
@@ -420,7 +421,7 @@ impl ToolContext {
         let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if allowed { Ok(()) } else {
             Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "effective tool scope cannot access the selected mounted volume"))
@@ -761,43 +762,35 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
 }
 
 impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for NativeContextVerifier<P> {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            drop(self.context.context.read_file(reference).await?);
-            self.authorize(reference).await
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            drop(self.read(reference, maximum_bytes, io)?.await?);
+            Ok(())
         })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            let bytes = self.context.context.read_file(reference).await?;
-            self.authorize(reference).await?;
-            Ok(bytes)
-        })
-    }
-
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, ()>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            drop(self.context.context.read_file_with_native_work(reference, work).await?);
-            self.authorize_native(reference, maximum_bytes, work).await
-        })
-    }
-
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            let output = self.context.context.read_file_with_native_work(reference, work).await?;
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            Ok(output)
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or_else(|| boundary(
+                    crate::wire::ErrorCode::Unsupported, "content reader requires original native work"))?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                let bytes = self.context.context.read_file_with_native_work(reference, work).await?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                Ok(bytes)
+            } else {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "content exceeds the callback byte bound"));
+                }
+                self.authorize(reference).await?;
+                let bytes = self.context.context.read_file(reference).await?;
+                self.authorize(reference).await?;
+                Ok(bytes)
+            }
         })
     }
 }
@@ -807,24 +800,10 @@ mod tests {
     use super::*;
     use crate::durable_host::tests::created_resource_access::CreationFixture;
 
-    fn budget() -> acyclic_fs::WorkBudget {
-        let units = 16_384;
-        let bytes = 16 * 1_024 * 1_024;
-        acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }
-    }
+    const BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
-        NativeMaterializationWork::new(budget(), cancellation)
+        NativeMaterializationWork::new(BUDGET, cancellation)
             .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
     }
 
@@ -832,7 +811,7 @@ mod tests {
     async fn native_read_context_cannot_bind_an_approved_mcp_dispatch() -> Result<()> {
         let fixture = CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let original = NativeMaterializationWork::new(budget(), &cancellation)
+        let original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .expect("finite original process binding ledger");
         let operation = fixture.root_lease.operation.operation_id;
         let (context, custody) = fixture.harness.durable_context_with_native_work(
@@ -1070,7 +1049,7 @@ mod tests {
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt().backend_read_operations, reads);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
@@ -1153,7 +1132,7 @@ mod tests {
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
         assert_eq!(original.receipt().allocation_operations, before);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
