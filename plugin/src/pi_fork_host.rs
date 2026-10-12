@@ -1094,10 +1094,9 @@ where
 }
 
 pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
-    let (source, custody) = source.into_native_failure();
     match source {
-        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => Error::NativeWork { cause, custody },
-        source => Error::NativeSource { source, custody },
+        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => cause.into(),
+        source => source.into(),
     }
 }
 
