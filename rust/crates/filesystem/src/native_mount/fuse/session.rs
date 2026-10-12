@@ -31,7 +31,7 @@ impl FuseSession {
                 "volume root is not a directory",
             ));
         }
-        let metadata = crate::native_host::unix_name_with_work(
+        let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(),
             &mut &*materialization,
             fuse_recovery_stat,
@@ -171,7 +171,12 @@ impl FuseSession {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         }
-        physical.authenticate_root(&request.destination, source_work)?;
+        let mut host = source_work;
+        let (directory, identity) =
+            crate::native_host::open_root_directory(&request.destination, &mut host)?;
+        physical.active_root = Some(directory);
+        physical.native_root_identity = Some(identity);
+        close_fuse_root(&mut physical.active_root, source_work)?;
         loan.committed = true;
         Ok(())
     }
@@ -294,7 +299,7 @@ impl FuseSession {
             }
             Ok(())
         });
-        result.map(|receipt| receipt.value).map_err(|failure| {
+        result.map_err(|failure| {
             if fatal_handler_error(&failure.0) {
                 if let Some(cause) = clone_fatal_handler_error(&failure.0) {
                     self.control.core.retain_handler_failure((cause, failure.1));

@@ -94,14 +94,14 @@ impl FuseProjection {
                     })?;
                     resolve_node(
                         source,
-                        Err(NodeFacts::Names {
+                        NodeFacts::Names {
                             file_id: Some(current.lookup.node.file_id),
                             paths: {
                                 let mut paths = fuse_vec(1, work)?;
                                 paths.push(path);
                                 paths
                             },
-                        }),
+                        },
                         work,
                     )?
                 }
@@ -433,20 +433,6 @@ pub(super) fn copy_open_range(
     let mut transferred = 0_u64;
     let mut failure = None;
     while transferred < copy_length {
-        if let Err(error) = projection.check_source_write(work) {
-            if transferred == 0 {
-                return Err(error);
-            }
-            failure = Some(error);
-            break;
-        }
-        if let Err(error) = fuse_item(work) {
-            if transferred == 0 {
-                return Err(error);
-            }
-            failure = Some(error);
-            break;
-        }
         let remaining = copy_length - transferred;
         let chunk = remaining.min(u64::from(DETACHED_COPY_CHUNK_BYTES));
         let relative = if backwards {
@@ -455,30 +441,30 @@ pub(super) fn copy_open_range(
             transferred
         };
         let chunk = u32::try_from(chunk).unwrap_or(DETACHED_COPY_CHUNK_BYTES);
-        let sparse = match source_open
-            .file(work)
-            .and_then(|file| file.read_sparse_range(source_offset + relative, chunk, work))
-        {
-            Ok(sparse) => sparse,
-            Err(error) if transferred == 0 => return Err(error.into()),
+        let copied = (|| -> Result<u64, NativeMountError> {
+            projection.check_source_write(work)?;
+            fuse_item(work)?;
+            let sparse =
+                source_open
+                    .file(work)?
+                    .read_sparse_range(source_offset + relative, chunk, work)?;
+            let copied = sparse.0.logical_bytes;
+            projection.source_write(work, || {
+                destination_open
+                    .file(work)?
+                    .write_sparse_range(destination_offset + relative, sparse, work)
+                    .map_err(NativeMountError::from)
+            })?;
+            Ok(copied)
+        })();
+        let copied = match copied {
+            Ok(copied) => copied,
+            Err(error) if transferred == 0 => return Err(error),
             Err(error) => {
-                failure = Some(error.into());
+                failure = Some(error);
                 break;
             }
         };
-        let copied = sparse.0.logical_bytes;
-        if let Err(error) = projection.source_write(work, || {
-            destination_open
-                .file(work)?
-                .write_sparse_range(destination_offset + relative, sparse, work)
-                .map_err(NativeMountError::from)
-        }) {
-            if transferred == 0 {
-                return Err(error);
-            }
-            failure = Some(error);
-            break;
-        }
         transferred = transferred.saturating_add(copied);
         if copied < u64::from(chunk) {
             break;

@@ -1,12 +1,5 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) struct AttributeDefaults {
-    pub(super) writable: bool,
-    pub(super) mount_uid: u32,
-    pub(super) mount_gid: u32,
-}
-
 pub(super) struct Resolved {
     pub(super) lookup: MountLookup,
     pub(super) stamp: Option<ViewStamp>,
@@ -14,6 +7,7 @@ pub(super) struct Resolved {
 }
 
 pub(super) enum NodeFacts {
+    Current(Resolved),
     Handle(FuseOpenFile),
     Names {
         file_id: Option<crate::FileId>,
@@ -47,10 +41,6 @@ impl ChildName {
     pub(super) fn key(&self) -> &MountPath {
         self.folded.as_deref().unwrap_or(&self.spelled)
     }
-
-    pub(super) fn is_exact(&self) -> bool {
-        self.folded.is_none()
-    }
 }
 
 pub(super) struct Entry {
@@ -59,7 +49,9 @@ pub(super) struct Entry {
 }
 
 pub(super) struct ProjectionState {
-    pub(super) defaults: AttributeDefaults,
+    pub(super) writable: bool,
+    pub(super) mount_uid: u32,
+    pub(super) mount_gid: u32,
     pub(super) next_inode: u64,
     pub(super) next_handle: u64,
     pub(super) by_inode: HashMap<u64, InodeEntry>,
@@ -73,9 +65,11 @@ pub(super) struct ProjectionState {
 }
 
 impl ProjectionState {
-    pub(super) fn new(defaults: AttributeDefaults) -> Self {
+    pub(super) fn new(writable: bool, mount_uid: u32, mount_gid: u32) -> Self {
         Self {
-            defaults,
+            writable,
+            mount_uid,
+            mount_gid,
             next_inode: ROOT_INODE + 1,
             next_handle: 1,
             by_inode: HashMap::new(),
@@ -125,7 +119,7 @@ impl ProjectionState {
     }
 
     pub(super) fn admit_write(&self) -> Result<(), i32> {
-        self.defaults.writable.then_some(()).ok_or(libc::EROFS)
+        self.writable.then_some(()).ok_or(libc::EROFS)
     }
 
     pub(super) fn intern(
@@ -339,7 +333,7 @@ impl ProjectionState {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if !name.is_exact() {
+        if name.folded.is_some() {
             return Ok(Duration::ZERO);
         }
         let Some(entry) = self.by_inode.get(&inode) else {
@@ -360,10 +354,6 @@ impl ProjectionState {
         Ok(if admitted { attributes } else { Duration::ZERO })
     }
 
-    pub(super) fn empty_since(&self, inode: u64) -> Option<ViewStamp> {
-        self.by_inode.get(&inode)?.empty_since
-    }
-
     pub(super) fn negative_entry(
         &mut self,
         source: &dyn MountFilesystem,
@@ -382,7 +372,8 @@ impl ProjectionState {
 
     pub(super) fn absent_since(&self, parent: u64, name: &ChildName) -> Option<ViewStamp> {
         let component = name.key().components().last()?;
-        name.is_exact()
+        name.folded
+            .is_none()
             .then(|| {
                 self.by_inode
                     .get(&parent)?
@@ -404,7 +395,7 @@ impl ProjectionState {
         let Some(stamp) = stamp else {
             return Ok(None);
         };
-        if !name.is_exact() || !self.admissible(source, name.key(), None, Some(stamp), work)? {
+        if name.folded.is_some() || !self.admissible(source, name.key(), None, Some(stamp), work)? {
             return Ok(None);
         }
         let Some(component) = name.key().components().last() else {
@@ -481,18 +472,18 @@ impl ProjectionState {
         inode: u64,
         handle: Option<u64>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Result<Resolved, NodeFacts>, NativeMountError> {
+    ) -> Result<NodeFacts, NativeMountError> {
         fuse_item(work)?;
         let entry = self.by_inode.get(&inode).ok_or(libc::ESTALE)?;
         if let Some(handle) = handle {
             let open_file = self.open_handle(inode, handle, work)?;
             return Ok(match entry.current_facts(source, work)? {
-                Some(stamp) => Ok(Resolved {
+                Some(stamp) => NodeFacts::Current(Resolved {
                     lookup: entry.lookup,
                     stamp: Some(stamp),
                     through: None,
                 }),
-                None => Err(NodeFacts::Handle(open_file)),
+                None => NodeFacts::Handle(open_file),
             });
         }
         if let Some(stamp) = entry.current_facts(source, work)? {
@@ -501,7 +492,7 @@ impl ProjectionState {
                 .first()
                 .map(|binding| fuse_clone_path(&binding.path, work))
                 .transpose()?;
-            return Ok(Ok(Resolved {
+            return Ok(NodeFacts::Current(Resolved {
                 lookup: entry.lookup,
                 stamp: Some(stamp),
                 through,
@@ -510,7 +501,7 @@ impl ProjectionState {
         if entry.bindings.is_empty() {
             return self
                 .open_inode(inode, work)?
-                .map(|file| Err(NodeFacts::Handle(file)))
+                .map(NodeFacts::Handle)
                 .ok_or(libc::ESTALE.into());
         }
         let mut paths = fuse_vec(entry.bindings.len(), work)?;
@@ -518,10 +509,10 @@ impl ProjectionState {
             fuse_item(work)?;
             paths.push(fuse_clone_path(&binding.path, work)?);
         }
-        Ok(Err(NodeFacts::Names {
+        Ok(NodeFacts::Names {
             file_id: (inode != ROOT_INODE).then_some(entry.lookup.node.file_id),
             paths,
-        }))
+        })
     }
 
     pub(super) fn node_attr(&self, inode: u64) -> Result<FileAttr, i32> {
@@ -532,8 +523,7 @@ impl ProjectionState {
     pub(super) fn attr(&self, inode: u64, lookup: &MountLookup) -> Result<FileAttr, i32> {
         let node = lookup.node;
         let kind = file_type(node.kind)?;
-        let defaults = self.defaults;
-        let default_mode = if defaults.writable { 0o755 } else { 0o555 };
+        let default_mode = if self.writable { 0o755 } else { 0o555 };
         Ok(FileAttr {
             ino: INodeNo(inode),
             size: node.logical_bytes,
@@ -546,8 +536,8 @@ impl ProjectionState {
             perm: u16::try_from(metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777)
                 .unwrap_or(0o7777),
             nlink: u32::try_from(node.link_count).unwrap_or(u32::MAX),
-            uid: metadata_or(lookup.metadata.posix_uid, defaults.mount_uid),
-            gid: metadata_or(lookup.metadata.posix_gid, defaults.mount_gid),
+            uid: metadata_or(lookup.metadata.posix_uid, self.mount_uid),
+            gid: metadata_or(lookup.metadata.posix_gid, self.mount_gid),
             rdev: node
                 .device
                 .map(|(major, minor)| native_device_number(major, minor))

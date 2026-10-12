@@ -12,7 +12,7 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
             self.0.set(true);
         }
     }
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let mut policy = FINITE_HANDLER_POLICY;
     policy.bytes_copied = 0;
     let core = crate::native_mount::fuse::ProjectionCore::new(
@@ -210,11 +210,7 @@ pub(super) fn name(value: &str) -> MountPath {
 }
 
 pub(super) fn empty_projection_state() -> crate::native_mount::fuse::ProjectionState {
-    crate::native_mount::fuse::ProjectionState::new(crate::native_mount::fuse::AttributeDefaults {
-        writable: true,
-        mount_uid: 0,
-        mount_gid: 0,
-    })
+    crate::native_mount::fuse::ProjectionState::new(true, 0, 0)
 }
 
 #[test]
@@ -645,22 +641,13 @@ pub(super) fn page_stores_and_content_claims_exclude_each_other() {
     stores.release(claimed);
     assert!(stores.may_begin(claimed));
 
-    stores.land(stored);
+    stores.in_flight.remove(&stored);
     assert!(!stores.precede(target));
     stores.begin(stored, after, &fuse_fixture_work()).unwrap();
     assert!(!stores.precede(target), "a newer read supersedes nothing");
-    stores.land(stored);
+    stores.in_flight.remove(&stored);
     stores.claim(stored, &fuse_fixture_work()).unwrap();
     assert!(!stores.may_begin(stored));
-}
-
-#[test]
-pub(super) fn only_content_changing_opens_claim() {
-    assert!(!changes_content(libc::O_RDONLY));
-    assert!(!changes_content(libc::O_RDONLY | libc::O_DIRECT));
-    assert!(changes_content(libc::O_WRONLY));
-    assert!(changes_content(libc::O_RDWR));
-    assert!(changes_content(libc::O_RDONLY | libc::O_TRUNC));
 }
 
 #[test]
@@ -847,7 +834,7 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
     use crate::native_mount::fuse::ProjectionCore;
     use std::sync::PoisonError;
     for finishing in [false, true] {
-        let (source, _) = shared_sources()?;
+        let (source, _) = shared_sources(posix_config())?;
         let core = Arc::new(ProjectionCore::new(
             Arc::new(source),
             empty_projection_state(),
@@ -890,7 +877,7 @@ pub(super) fn releasing_deferred_items_wakes_the_invalidator()
 #[test]
 pub(super) fn a_confirmation_at_a_position_lapses_when_its_name_changes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&name("a"), FileMetadata::default(), None, work)
     })?;
@@ -955,7 +942,7 @@ pub(super) fn a_confirmation_at_a_position_lapses_when_its_name_changes()
 #[test]
 pub(super) fn node_facts_follow_the_node_and_directory_facts_its_listing()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&name("file"), FileMetadata::default(), None, work)
     })?;
@@ -1056,13 +1043,6 @@ pub(super) fn node_facts_follow_the_node_and_directory_facts_its_listing()
             .expect("node history")
     );
     Ok(())
-}
-
-#[test]
-pub(super) fn read_only_mount_rejects_truncating_open_before_source_mutation() {
-    assert_eq!(admit_open(false, libc::O_TRUNC), Err(libc::EROFS));
-    assert_eq!(admit_open(false, libc::O_RDONLY), Ok(()));
-    assert_eq!(admit_open(true, libc::O_TRUNC), Ok(()));
 }
 
 #[test]

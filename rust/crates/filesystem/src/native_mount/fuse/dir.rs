@@ -185,7 +185,10 @@ impl ProjectionState {
         listing: &mut Option<DirectoryReply>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let counts_lookups = listing.as_ref().expect("unsent listing").counts_lookups();
+        let counts_lookups = matches!(
+            listing.as_ref().expect("unsent listing"),
+            DirectoryReply::Plus(_)
+        );
         let mut listed = false;
         let mut unlisted_reference = None;
         let result = (|| -> Result<(), NativeMountError> {
@@ -312,10 +315,6 @@ pub(super) enum DirectoryReply {
 }
 
 impl DirectoryReply {
-    pub(super) fn counts_lookups(&self) -> bool {
-        matches!(self, Self::Plus(_))
-    }
-
     pub(super) fn push(
         &mut self,
         offset: u64,
@@ -438,11 +437,8 @@ impl FuseProjection {
                 ChildName::new(source, fuse_child_path(directory, &entry.name, work)?, work)?;
             listed.push((fuse_clone_path(name.key(), work)?, entry.node));
         }
-        let mut confirmed = self.confirm_names(
-            HashMap::new(),
-            listed.iter().map(|(path, node)| (&**path, *node)),
-            work,
-        )?;
+        let mut confirmed =
+            self.confirm_names(listed.iter().map(|(path, node)| (&**path, *node)), work)?;
         for (path, node) in listed.drain(..) {
             confirm_name(&mut confirmed, node.file_id, path, stamp, work)?;
         }

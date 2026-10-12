@@ -48,10 +48,6 @@ impl PageStores {
         Ok(())
     }
 
-    pub(super) fn land(&mut self, file_id: crate::FileId) {
-        self.in_flight.remove(&file_id);
-    }
-
     pub(super) fn claim(
         &mut self,
         file_id: crate::FileId,
@@ -165,7 +161,7 @@ impl FuseProjection {
             }
         };
         let mut state = self.core.state_to_finish();
-        state.page_stores.land(store.file_id);
+        state.page_stores.in_flight.remove(&store.file_id);
         self.core.page_stored.notify_all();
         let admitted = match state.admissible(
             self.core.source.as_ref(),

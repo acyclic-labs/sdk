@@ -151,11 +151,7 @@ impl ProjectionCore {
             &mut crate::demand::NativeSourceWork::from_native_materialization_work(native),
         )
         .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
-        let state = ProjectionState::new(AttributeDefaults {
-            writable,
-            mount_uid: uid,
-            mount_gid: gid,
-        });
+        let state = ProjectionState::new(writable, uid, gid);
         let (budget, cancellation) = {
             let work = native.native_read_meter().lock();
             (work.budget, work.cancellation().clone())
@@ -324,7 +320,7 @@ impl ProjectionCore {
     pub(super) fn request<T>(
         &self,
         callback: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-    ) -> Result<crate::OperationReceipt<T>, (NativeMountError, crate::WorkCounters)> {
+    ) -> Result<T, (NativeMountError, crate::WorkCounters)> {
         let _origin = self.origin.enter();
         let meter = self.callback_meter().map_err(|cause| {
             (
@@ -341,11 +337,8 @@ impl ProjectionCore {
             callback(work)
         };
         if let Some(meter) = meter {
-            let result = crate::native_mount::run_native_mount_handler_on_meter(&meter, run);
-            let work = meter.native_read_meter().lock().work;
-            result
-                .map(|value| crate::OperationReceipt { value, work })
-                .map_err(|cause| (cause, work))
+            crate::native_mount::run_native_mount_handler_on_meter(&meter, run)
+                .map_err(|cause| (cause, meter.native_read_meter().lock().work))
         } else {
             let result = crate::native_mount::run_native_mount_handler(
                 self.handler_budget,
@@ -357,15 +350,15 @@ impl ProjectionCore {
                 Err(failure) => &failure.1,
             };
             self.conserve_completed_request(work);
-            result
+            result.map(|receipt| receipt.value)
         }
     }
 
     pub(super) fn finish<T>(
         &self,
-        result: Result<crate::OperationReceipt<T>, (NativeMountError, crate::WorkCounters)>,
+        result: Result<T, (NativeMountError, crate::WorkCounters)>,
     ) -> Result<T, i32> {
-        result.map(|receipt| receipt.value).map_err(|failure| {
+        result.map_err(|failure| {
             let errno = native_callback_errno(&failure.0);
             if fatal_handler_error(&failure.0) {
                 self.retain_handler_failure(failure);

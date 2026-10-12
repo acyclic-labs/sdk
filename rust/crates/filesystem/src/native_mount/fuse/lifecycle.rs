@@ -51,7 +51,7 @@ impl FuseRecoveryControl {
             return Ok(());
         }
         if self.helper.is_none() {
-            let direct = crate::native_host::unix_name_with_work(
+            let direct = crate::native_host::unix_name(
                 destination.as_os_str(),
                 &mut &*work,
                 |path, work| {
@@ -84,7 +84,7 @@ impl FuseRecoveryControl {
             }
             let program = fuse_recovery_helper(work)?;
             self.helper_work = Some(work.clone());
-            let spawned = crate::native_host::unix_name_with_work(
+            let spawned = crate::native_host::unix_name(
                 destination.as_os_str(),
                 &mut &*work,
                 |path, work| {
@@ -187,16 +187,10 @@ pub(super) fn fuse_recovery_is_mounted(
     let parent = destination
         .parent()
         .ok_or(NativeMountError::InvalidDestination)?;
-    let parent = crate::native_host::unix_name_with_work(
-        parent.as_os_str(),
-        &mut &*work,
-        fuse_recovery_stat,
-    )?;
-    let destination = crate::native_host::unix_name_with_work(
-        destination.as_os_str(),
-        &mut &*work,
-        fuse_recovery_stat,
-    );
+    let parent =
+        crate::native_host::unix_name(parent.as_os_str(), &mut &*work, fuse_recovery_stat)?;
+    let destination =
+        crate::native_host::unix_name(destination.as_os_str(), &mut &*work, fuse_recovery_stat);
     match destination {
         Ok(metadata) => Ok(metadata.st_dev != parent.st_dev),
         Err(crate::NativeTreeMaterializationError::Io(error))

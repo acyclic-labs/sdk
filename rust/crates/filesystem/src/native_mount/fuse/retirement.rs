@@ -419,19 +419,6 @@ impl FusePhysicalSession {
         drop(retirement_helper.take());
         Ok(())
     }
-
-    pub(super) fn authenticate_root(
-        &mut self,
-        destination: &Path,
-        native: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        let mut host = native;
-        let (directory, identity) =
-            crate::native_host::open_root_directory_identity_with_work(destination, &mut host)?;
-        self.active_root = Some(directory);
-        self.native_root_identity = Some(identity);
-        close_fuse_root(&mut self.active_root, native)
-    }
 }
 
 pub(super) fn close_fuse_root(

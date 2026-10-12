@@ -417,7 +417,9 @@ impl FuseProjection {
         let source = self.core.source.as_ref();
         let (path, file_id, stamp_before, binding_before, held) = {
             let state = self.core.state()?;
-            admit_open(state.defaults.writable, flags)?;
+            if !state.writable && flags & libc::O_TRUNC != 0 {
+                return Err(libc::EROFS.into());
+            }
             let node = state.node(inode)?;
             if node.kind != MountNodeKind::Regular {
                 return Err(libc::EISDIR.into());
@@ -444,7 +446,7 @@ impl FuseProjection {
                 .then_some((lookup, facts)),
             _ => None,
         };
-        let (open_file, refreshed, stamp, truncated) = match held {
+        let (open_file, refreshed, stamp) = match held {
             Some((lookup, facts)) => {
                 let allocation = work.claim(
                     std::mem::size_of::<DeferredOpenFile>() as u64,
@@ -458,7 +460,7 @@ impl FuseProjection {
                     file: Mutex::new(None),
                     _allocation: allocation,
                 }));
-                (deferred, lookup, Some(facts), false)
+                (deferred, lookup, Some(facts))
             }
             None => self.open_source(source, &path, file_id, flags, stamp_before, work)?,
         };
@@ -487,7 +489,7 @@ impl FuseProjection {
                 stamp,
                 flags,
                 open_file,
-                dirty: truncated,
+                dirty: flags & libc::O_TRUNC != 0,
                 stores_pages: storing,
             },
             work,
@@ -496,10 +498,6 @@ impl FuseProjection {
         Ok((handle, self.store_pages(store, open_flags, work)))
     }
 
-    #[allow(
-        clippy::type_complexity,
-        reason = "returns the opened file with its facts, stamp, and truncation flag in one tuple"
-    )]
     pub(super) fn open_source(
         &self,
         source: &dyn MountFilesystem,
@@ -508,7 +506,7 @@ impl FuseProjection {
         flags: i32,
         stamp_before: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>, bool), NativeMountError> {
+    ) -> Result<(FuseOpenFile, MountLookup, Option<ViewStamp>), NativeMountError> {
         if flags & libc::O_TRUNC != 0 {
             self.check_source_write(work)?;
         }
@@ -551,7 +549,7 @@ impl FuseProjection {
             }
             (lookup, stamp)
         };
-        Ok((open_file, refreshed, stamp, truncated))
+        Ok((open_file, refreshed, stamp))
     }
 
     pub(super) fn create_file(
@@ -569,7 +567,7 @@ impl FuseProjection {
         let (child, absent_since) = {
             let state = self.core.state()?;
             state.admit_write()?;
-            let child = self.child(&state, parent, name, work)?;
+            let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
             let absent_since = state.absent_since(parent, &child);
             (child, absent_since)
         };
@@ -600,8 +598,7 @@ impl FuseProjection {
                     return Err(libc::EISDIR.into());
                 }
                 // Confirmed before the open changes anything.
-                let confirmed =
-                    self.confirm_names(HashMap::new(), [(child.key(), existing.node)], work)?;
+                let confirmed = self.confirm_names([(child.key(), existing.node)], work)?;
                 let claimed = claim(existing.node.file_id)?;
                 let open_file = FuseOpenFile::Source(fuse_open_file(
                     source.open_file_with_meter(path, work)?,

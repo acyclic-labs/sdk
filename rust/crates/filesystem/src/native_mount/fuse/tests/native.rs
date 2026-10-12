@@ -57,7 +57,7 @@ pub(super) fn memory_checkout(
     config: crate::model::VolumeConfig,
     mode: crate::model::CheckoutMode,
     count: usize,
-) -> Result<(Vec<MemoryCheckout>, crate::model::VolumeConfig), Box<dyn std::error::Error>> {
+) -> Result<Vec<MemoryCheckout>, Box<dyn std::error::Error>> {
     use crate::model::GenerationSelector;
     let fs = crate::Fs::memory();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
@@ -83,14 +83,15 @@ pub(super) fn memory_checkout(
         }
         Ok::<_, crate::OperationFailure<crate::FsError>>(checkouts)
     })?;
-    Ok((checkouts, config))
+    Ok(checkouts)
 }
 
 pub(super) fn tracking_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>>
 {
     use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
-    let (checkouts, config) = memory_checkout(
-        posix_config(),
+    let config = posix_config();
+    let checkouts = memory_checkout(
+        config,
         CheckoutMode {
             access: AccessMode::ReadWrite,
             consistency: ConsistencyMode::TrackingSafe,
@@ -110,16 +111,12 @@ pub(super) fn tracking_sources() -> Result<(MemorySource, MemorySource), Box<dyn
     }
 }
 
-pub(super) fn shared_sources() -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    shared_sources_of(posix_config())
-}
-
-pub(super) fn shared_sources_of(
+pub(super) fn shared_sources(
     config: crate::model::VolumeConfig,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
     use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
     acyclic_native_runtime::initialize_native_io_services()?;
-    let (checkouts, config) = memory_checkout(
+    let checkouts = memory_checkout(
         config,
         CheckoutMode {
             access: AccessMode::ReadWrite,
@@ -186,8 +183,9 @@ impl crate::native_mount::NativeMountCallbackGuard for FuseWriteGuard {
 pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
-    let (checkouts, config) = memory_checkout(
-        posix_config(),
+    let config = posix_config();
+    let checkouts = memory_checkout(
+        config,
         crate::model::CheckoutMode::tracking_transaction(),
         1,
     )?;
@@ -359,7 +357,7 @@ pub(super) const FINITE_HANDLER_POLICY: crate::WorkBudget =
 #[test]
 pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, around) = shared_sources()?;
+    let (source, around) = shared_sources(posix_config())?;
     let path = name("removed-before-cancellation");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&path, FileMetadata::default(), None, work)
@@ -415,7 +413,7 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
 #[test]
 pub(super) fn authentic_missing_source_name_does_not_poison_handler_health()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let source = Arc::new(source);
     let cancellation = crate::CancellationToken::new();
     let core = crate::native_mount::fuse::ProjectionCore::new(
@@ -455,7 +453,7 @@ pub(super) fn authentic_missing_source_name_does_not_poison_handler_health()
 #[test]
 pub(super) fn active_callback_borrows_original_meter_without_future_receipt_double_count()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, around) = shared_sources()?;
+    let (source, around) = shared_sources(posix_config())?;
     let path = name("shared-original-callback");
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&path, FileMetadata::default(), None, work)
@@ -512,7 +510,7 @@ pub(super) fn active_callback_borrows_original_meter_without_future_receipt_doub
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, around) = shared_sources()?;
+    let (source, around) = shared_sources(posix_config())?;
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(
             &name("cancelled-native-lookup"),
@@ -550,7 +548,7 @@ pub(super) fn linux_installed_callbacks_observe_original_finite_mount_cancellati
 #[test]
 pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let path = name("copy-denied");
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&path, FileMetadata::default(), None, work)
@@ -577,7 +575,7 @@ pub(super) fn measured_write_copy_refusal_precedes_the_real_source_write()
 #[test]
 pub(super) fn measured_deferred_open_refuses_an_actual_rebound_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let source: Arc<dyn MountFilesystem> = Arc::new(source);
     let path = name("deferred-rebound");
     let opened = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
@@ -667,7 +665,7 @@ pub(super) fn listing(directory: &std::path::Path) -> std::io::Result<Vec<std::f
 #[test]
 pub(super) fn last_facade_drop_signals_the_original_keeper_and_retires_its_actual_root()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources()?;
+    let (source, _) = shared_sources(posix_config())?;
     let core = Arc::new(crate::native_mount::fuse::ProjectionCore::new(
         Arc::new(source),
         empty_projection_state(),

@@ -15,7 +15,7 @@ pub(super) struct InvalidationQueue {
     pub(super) scanned: Option<ViewStamp>,
     pub(super) processed: Option<ViewStamp>,
     pub(super) deferred: FuseOwned<Vec<KernelCacheItem>>,
-    pub(super) pending_tail: Option<FuseOwned<std::vec::IntoIter<KernelCacheItem>>>,
+    pub(super) pending_tail: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     pub(super) in_flight: bool,
     pub(super) failure: Option<(NativeMountError, crate::WorkCounters)>,
 }
@@ -28,18 +28,17 @@ impl InvalidationQueue {
     pub(super) fn is_pending(&self, target: Option<ViewStamp>) -> bool {
         self.processed < target
             || !self.deferred.is_empty()
-            || self
-                .pending_tail
-                .as_ref()
-                .is_some_and(|items| !items.as_slice().is_empty())
+            || !self.pending_tail.as_slice().is_empty()
             || self.in_flight
     }
 
     pub(super) fn take_deferred(&mut self) -> FuseOwned<std::vec::IntoIter<KernelCacheItem>> {
         self.in_flight = true;
-        self.pending_tail
-            .take()
-            .unwrap_or_else(|| std::mem::take(&mut self.deferred).map(Vec::into_iter))
+        if self.pending_tail.as_slice().is_empty() {
+            std::mem::take(&mut self.deferred).map(Vec::into_iter)
+        } else {
+            std::mem::take(&mut self.pending_tail)
+        }
     }
 
     pub(super) fn retain_pending_tail(
@@ -47,11 +46,11 @@ impl InvalidationQueue {
         items: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     ) {
         assert!(
-            self.pending_tail.is_none(),
+            self.pending_tail.as_slice().is_empty(),
             "one original invalidator pass owns its tail"
         );
         if !items.as_slice().is_empty() {
-            self.pending_tail = Some(items);
+            self.pending_tail = items;
         }
     }
 
@@ -60,7 +59,7 @@ impl InvalidationQueue {
         through: Option<ViewStamp>,
         dropped: Result<(), (NativeMountError, crate::WorkCounters)>,
     ) {
-        if self.pending_tail.is_none() {
+        if self.pending_tail.as_slice().is_empty() {
             self.processed = self.processed.max(through);
         }
         self.in_flight = false;
@@ -292,7 +291,6 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &Notifier) {
             dropped?;
             sdk_failure.take().map_or(Ok(()), Err)
         });
-        let result = result.map(|receipt| receipt.value);
         let denied = result.is_err();
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
         if denied {

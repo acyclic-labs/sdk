@@ -19,12 +19,12 @@ pub(super) fn resolve_path(
 
 pub(super) fn resolve_node(
     source: &dyn MountFilesystem,
-    facts: Result<Resolved, NodeFacts>,
+    facts: NodeFacts,
     work: &crate::NativeMaterializationWork,
 ) -> Result<Resolved, NativeMountError> {
     match facts {
-        Ok(current) => Ok(current),
-        Err(NodeFacts::Handle(open_file)) => {
+        NodeFacts::Current(current) => Ok(current),
+        NodeFacts::Handle(open_file) => {
             let stamp = source.view_stamp_with_meter(work)?;
             Ok(Resolved {
                 lookup: open_file.file(work)?.lookup_with_meter(work)?,
@@ -32,7 +32,7 @@ pub(super) fn resolve_node(
                 through: None,
             })
         }
-        Err(NodeFacts::Names { file_id, mut paths }) => {
+        NodeFacts::Names { file_id, mut paths } => {
             for path in paths.drain(..) {
                 let (lookup, stamp) = resolve_path(source, &path, work)?;
                 if let Some(lookup) = lookup
@@ -51,28 +51,14 @@ pub(super) fn resolve_node(
 }
 
 impl FuseProjection {
-    pub(super) fn child(
-        &self,
-        state: &ProjectionState,
-        parent: u64,
-        name: &OsStr,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<ChildName, NativeMountError> {
-        Ok(ChildName::new(
-            self.core.source.as_ref(),
-            state.child_path(parent, name, work)?,
-            work,
-        )?)
-    }
-
     pub(super) fn confirm_names<'a>(
         &self,
-        mut confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError>
     {
         let source = self.core.source.as_ref();
+        let mut confirmed = HashMap::new();
         for (path, node) in resolved {
             fuse_item(work)?;
             if node.link_count <= 1 {
@@ -108,7 +94,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let child = {
             let mut state = self.core.state()?;
-            let child = self.child(&state, parent, name, work)?;
+            let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
             let ProjectionState {
                 by_inode,
                 inode_by_path,
@@ -129,8 +115,11 @@ impl FuseProjection {
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
             }
-            if let Some(empty) = state.empty_since(parent)
-                && child.is_exact()
+            if let Some(empty) = state
+                .by_inode
+                .get(&parent)
+                .and_then(|entry| entry.empty_since)
+                && child.folded.is_none()
                 && source.unchanged_since_with_meter(child.key(), None, empty, work)?
             {
                 return Ok(state.negative_entry(source, parent, &child, Some(empty), work)?);
@@ -139,9 +128,7 @@ impl FuseProjection {
         };
         let (found, stamp) = resolve_path(source, &child.spelled, work)?;
         let confirmed = match found {
-            Some(lookup) => {
-                self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?
-            }
+            Some(lookup) => self.confirm_names([(child.key(), lookup.node)], work)?,
             None => HashMap::new(),
         };
         let mut state = self.core.state()?;
@@ -179,7 +166,7 @@ impl FuseProjection {
         let facts = {
             let mut state = self.core.state()?;
             match state.node_facts(source, inode, handle, work)? {
-                Ok(current) => {
+                NodeFacts::Current(current) => {
                     let attr = state.attr(inode, &current.lookup)?;
                     let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
                     return Ok((attr, ttl));
@@ -207,7 +194,7 @@ impl FuseProjection {
         let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name, work)?
+            ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
         let stamp = source.view_stamp_with_meter(work)?;
         let lookup = self.source_write(work, || create(&child.spelled, work))?;
@@ -225,7 +212,7 @@ impl FuseProjection {
             None
         };
         // A node just created has no recorded name to confirm.
-        let confirmed = self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?;
+        let confirmed = self.confirm_names([(child.key(), lookup.node)], work)?;
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -277,7 +264,7 @@ impl FuseProjection {
         let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name, work)?
+            ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
         let path = &child.spelled;
         let current = source.lookup_with_meter(path, work)?;
@@ -326,8 +313,8 @@ impl FuseProjection {
             let state = self.core.state()?;
             state.admit_write()?;
             (
-                self.child(&state, parent, name, work)?,
-                self.child(&state, new_parent, new_name, work)?,
+                ChildName::new(source, state.child_path(parent, name, work)?, work)?,
+                ChildName::new(source, state.child_path(new_parent, new_name, work)?, work)?,
             )
         };
         let replaced = if replace {
@@ -378,7 +365,7 @@ impl FuseProjection {
             state.admit_write()?;
             (
                 fuse_clone_path(state.path(inode)?, work)?,
-                self.child(&state, new_parent, new_name, work)?,
+                ChildName::new(source, state.child_path(new_parent, new_name, work)?, work)?,
                 state.node_facts(source, inode, None, work)?,
             )
         };
