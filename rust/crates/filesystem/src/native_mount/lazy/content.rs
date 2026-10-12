@@ -380,13 +380,7 @@ where
         let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
         stream_pieces(offset, end, piece, sink, |offset, length| {
             if let Some(file) = &source_file {
-                return crate::demand::read_file(
-                    file.as_ref(),
-                    offset,
-                    u64::from(length),
-                    work,
-                    work.cancellation(),
-                )
+                return file.read_range(offset, u64::from(length), &mut accounting)
                 .map_err(mount_demand_error);
             }
             self.runtime.wait(|| async {

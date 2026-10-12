@@ -135,13 +135,7 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        crate::demand::read_file(
-            &*self.source_file,
-            offset,
-            length,
-            work,
-            work.cancellation(),
-        )
+        self.source_file.read_range(offset, length, &mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
         .map_err(mount_demand_error)
     }
 }

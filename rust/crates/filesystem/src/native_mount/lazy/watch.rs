@@ -21,39 +21,20 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn source_changed(
-        &self,
-        changes: &[SourceChange],
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::demand::DemandResult<()> {
-        let work = crate::NativeMaterializationWork::new(budget, cancellation).map_err(
-            |(error, work)| {
-                crate::OperationFailure::new(
-                    demand_error(MountSourceError::NativeWork(error)),
-                    work,
-                )
-            },
-        )?;
-        let result = self.record(
-            changes,
-            crate::demand::NativeSourceWork::from_native_materialization_work(&work),
-        );
-        result
-            .map(|value| crate::OperationReceipt {
-                value,
-                work: work.receipt(),
-            })
-            .map_err(|error| crate::OperationFailure::new(demand_error(error), work.receipt()))
+    fn source_changed(&self, changes: &[SourceChange], accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        if let Some(original) = accounting.native_work() { return self.record(changes, original.clone()).map_err(demand_error); }
+        let cancellation = match &*accounting {
+            crate::kernel::KernelAccounting::Standalone { cancellation, .. } | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. } | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => (*cancellation).clone(),
+        };
+        let budget = accounting.remaining().map_err(DemandError::from)?;
+        let work = crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, completed)| {
+            let failure: crate::demand::DemandResult<()> = Err(crate::OperationFailure::new(demand_error(MountSourceError::NativeWork(error)), completed));
+            crate::demand::accept_source_result(failure, accounting).unwrap_err()
+        })?;
+        let result = self.record(changes, work.clone()).map_err(demand_error);
+        crate::demand::accept_source_result(result.map(|value| crate::OperationReceipt { value, work: work.receipt() }).map_err(|error| crate::OperationFailure::new(error, work.receipt())), accounting)
     }
 
-    fn source_changed_with_native_work(
-        &self,
-        changes: &[SourceChange],
-        source: crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        self.record(changes, source).map_err(demand_error)
-    }
 }
 
 impl<A, O, D, S> SourceChangeRecorder<A, O, D, S>
@@ -66,10 +47,10 @@ where
     fn record(
         &self,
         changes: &[SourceChange],
-        source: crate::demand::NativeSourceWork<'_>,
+        source: crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-        let work = source.materialization_work().map_err(mount_demand_error)?;
+        let work = source.clone();
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let (Some(lazy), Some(authored)) = (self.lazy.upgrade(), self.authored.upgrade()) else {
