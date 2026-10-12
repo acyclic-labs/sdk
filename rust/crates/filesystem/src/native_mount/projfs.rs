@@ -1062,32 +1062,6 @@ impl WrittenEntry {
     }
 }
 
-#[derive(Default)]
-struct Carried {
-    basis: Option<ReadBasis>,
-    files: MemoVec<(RetainedBuffer<MountPath>, EntryFacts)>,
-}
-
-impl Carried {
-    fn read(
-        projection: Projection<'_>, from: &MountPath, to: &MountPath,
-        current: &[RetainedBuffer<MountPath>],
-    ) -> Result<Self, NativeMountError> {
-        let basis = ReadBasis::sample(projection)?;
-        let mut files = MemoVec::default();
-        for path in current {
-            examine_memo(projection)?;
-            let Some(moved) = owned_rebased(path, from, to, projection)? else { continue; };
-            let Some((lookup, pin)) = projection.source.lookup_pinned_with_meter(&moved, projection.work)
-                .map_err(detach_source_error)? else { continue; };
-            if lookup.node.kind != MountNodeKind::Directory {
-                files.push((moved, EntryFacts { lookup, pin }), projection)?;
-            }
-        }
-        Ok(Self { basis, files })
-    }
-}
-
 struct Materialized {
     /// The view its listing was read in; `None` when the source cannot version it or was moving.
     basis: Option<ReadBasis>,
@@ -1340,12 +1314,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
     }
 
     fn insert_owned(
-        &mut self, key: RetainedBuffer<K>, value: V, projection: Projection<'_>,
-    ) -> Result<Option<V>, NativeMountError> {
-        self.insert_owned_get(key, value, projection).map(|(_, old)| old)
-    }
-
-    fn insert_owned_get(
         &mut self, key: RetainedBuffer<K>, value: V, projection: Projection<'_>,
     ) -> Result<(&K, Option<V>), NativeMountError> {
         match self.index(&key, projection.work)? {
@@ -2039,8 +2007,20 @@ impl Projector {
     }
 
     fn renamed(
-        &self, projection: Projection<'_>, from: &MountPath, to: &MountPath, mut carried: Carried,
+        &self, projection: Projection<'_>, from: &MountPath, to: &MountPath,
+        current: &[RetainedBuffer<MountPath>],
     ) -> Result<(), NativeMountError> {
+        let basis = ReadBasis::sample(projection)?;
+        let mut files = MemoVec::default();
+        for path in current {
+            examine_memo(projection)?;
+            let Some(moved) = owned_rebased(path, from, to, projection)? else { continue; };
+            let Some((lookup, pin)) = projection.source.lookup_pinned_with_meter(&moved, projection.work)
+                .map_err(detach_source_error)? else { continue; };
+            if lookup.node.kind != MountNodeKind::Directory {
+                files.push((moved, EntryFacts { lookup, pin }), projection)?;
+            }
+        }
         let mut state = lock_recover(&self.state);
         let state = &mut *state;
         rebase_memo(&mut state.directories, from, to, projection)?;
@@ -2057,14 +2037,14 @@ impl Projector {
         {
             materialized.names.insert(name, is_directory, projection)?;
         }
-        for (path, facts) in carried.files.items.drain(..) {
+        for (path, facts) in files.items.drain(..) {
             examine_memo(projection)?;
             let owned = match state.written.get(&path, projection)? {
                 Some(written) => written.owned.clone(),
                 None => state.pending.get(&path, projection)?.and_then(|written| written.owned.clone()),
             };
-            let (key, _) = state.written.insert_owned_get(path, WrittenEntry {
-                owned, facts: Some(facts), basis: carried.basis,
+            let (key, _) = state.written.insert_owned(path, WrittenEntry {
+                owned, facts: Some(facts), basis,
             }, projection)?;
             state.pending.remove(key, projection)?;
         }
@@ -2219,7 +2199,7 @@ impl Projector {
             {
                 if let Some(written) = state.written.get_mut(&path, projection)? { written.basis = basis; }
             } else {
-                let (key, _) = state.pending.insert_owned_get(path, attempted, projection)?;
+                let (key, _) = state.pending.insert_owned(path, attempted, projection)?;
                 state.written.remove(key, projection)?;
             }
         }
@@ -3629,27 +3609,6 @@ fn has_pending_capture(
     Ok(false)
 }
 
-struct ProjectionRootCustody {
-    directory: Option<cap_std::fs::Dir>,
-    identity: crate::NativeRootIdentity,
-    close: crate::materializer::NativeWorkReservation,
-}
-
-impl ProjectionRootCustody {
-    fn close_directory(&mut self) {
-        if self.directory.is_some() {
-            self.close.started_drop_io(crate::WorkCounters {
-                backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-            });
-            drop(self.directory.take());
-        }
-    }
-}
-
-impl Drop for ProjectionRootCustody {
-    fn drop(&mut self) { self.close_directory(); }
-}
-
 struct WindowsRetirementIngress {
     state: Mutex<WindowsRetirementState>,
     wake: Condvar,
@@ -3814,7 +3773,6 @@ impl ProjFsNamespaceOutcome {
 pub(super) struct ProjFsSession {
     context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
     runtime: Option<Arc<RetainedArcValue<Runtime>>>,
-    root_custody: Option<ProjectionRootCustody>,
     /// Original authored execution until drain, then the same identity's metadata-only physical frame through every remaining cleanup owner.
     original_stop_work: Option<crate::NativeMaterializationWork>,
     sdk_stop_credit: Option<crate::materializer::NativeWorkReservation>,
@@ -3871,9 +3829,6 @@ impl ProjFsSession {
         let worker_join_credit = physical_materialization.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
-        let root_close = physical_materialization.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(detach_work_error)?;
         let sdk_info_credit = physical_materialization.reserve_work(crate::WorkCounters {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
@@ -3882,13 +3837,6 @@ impl ProjFsSession {
         let metadata_root = retained_arc(
             HostRoot::open(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
         )?;
-        let root_directory = reopen_for_delete_measured(
-            &metadata_root.directory_handle(), &mut host_work, None,
-        )?;
-        let root_custody = ProjectionRootCustody {
-            directory: Some(cap_std::fs::Dir::from_std_file(root_directory)),
-            identity: metadata_root.identity(), close: root_close,
-        };
         let root = clone_host_path_with_work(&request.destination, &custody, meter)?;
         let projector = {
             let policy = meter.native_read_meter().lock();
@@ -3932,7 +3880,6 @@ impl ProjFsSession {
             original_stop_work: Some(work.clone()), sdk_stop_credit: Some(sdk_stop_credit),
             worker_join_credit: Some(worker_join_credit),
             sdk_info_credit: Some(sdk_info_credit), namespace_qualification: warm_namespace,
-            root_custody: Some(root_custody),
             ingress: Some(ingress.clone()), projector_control: Some(projector_control.clone()),
             worker_handle_close_credit: Some(worker_handle_close_credit), worker_raw_handle: None,
             authored_capture_attempted: false, capture_residue: None, capture_failure: None,
@@ -4210,7 +4157,6 @@ impl ProjFsSession {
             projector.drop_retired_memos(self.capture_failure.is_some());
         }
         drop(self.runtime.take());
-        drop(self.root_custody.take());
         if let Some(retirement) = self.retirement.as_mut() {
             let retired = match cleanup_wait {
                 Some(wait) => retirement.retire(Some(wait)),
@@ -4253,7 +4199,7 @@ impl ProjFsSession {
     fn take_physical_owner(&mut self) -> Self {
         Self {
             context: self.context.take(), runtime: self.runtime.take(),
-            root_custody: self.root_custody.take(), original_stop_work: self.original_stop_work.take(),
+            original_stop_work: self.original_stop_work.take(),
             sdk_stop_credit: self.sdk_stop_credit.take(), worker_join_credit: self.worker_join_credit.take(),
             sdk_info_credit: self.sdk_info_credit.take(), namespace_qualification: self.namespace_qualification.take(),
             ingress: None, projector_control: self.projector_control.clone(),
@@ -4269,8 +4215,7 @@ impl ProjFsSession {
         }
     }
     fn physically_retired(&self) -> bool {
-        self.context.is_none() && self.runtime.is_none()
-            && self.root_custody.is_none() && self.retirement.is_none()
+        self.context.is_none() && self.runtime.is_none() && self.retirement.is_none()
     }
 
     fn close_own_worker_handle(&mut self) -> Result<(), NativeMountError> {
@@ -6327,8 +6272,7 @@ unsafe fn notification(
                     && let Some(destination) = destination.as_deref()
                 {
                     lock_recover(projection.captures).rename_pending_captures(&path, destination, projection)?;
-                    let carried = Carried::read(projection, &path, destination, &current.items)?;
-                    runtime.projector.renamed(projection, &path, destination, carried)?;
+                    runtime.projector.renamed(projection, &path, destination, &current.items)?;
                 }
                 Ok(())
             } else {
