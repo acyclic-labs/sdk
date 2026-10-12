@@ -310,7 +310,7 @@ impl RuntimeScope {
 
     /// Pins one committed agent selection for this scope and all descendants.
     pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
-        self.with_original_extensions(agent.original_extension_binding()?)
+        self.with_original_extensions((agent.extension_admission()?, agent.schemas().clone()))
     }
 
     pub(crate) fn with_original_extensions(
