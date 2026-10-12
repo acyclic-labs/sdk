@@ -9,7 +9,6 @@
 #![doc = include_str!("../../docs/filesystem.md")]
 
 use crate::contract::capability;
-use acyclic_fs::WorkCounters;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
     conversation::{
@@ -27,21 +26,21 @@ use crate::{
     merge::{ProjectMergeReceipt, ProjectMergeVerifier, ProviderJoinProof},
     resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
+use acyclic_fs::WorkCounters;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
-    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, ForkOptions, Fs,
-    Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
-    JoinOutcome, JoinPlan, MergeConflict, MergePlan,
-    PublicationReservation, TransactionCommit, Workspace, DirectoryPage, WorkspaceError,
-    WorkspaceStat,
+    ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, DirectoryPage,
+    ForkOptions, Fs, Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness,
+    JoinHistory, JoinOutcome, JoinPlan, MergeConflict, MergePlan, PublicationReservation,
+    TransactionCommit, Workspace, WorkspaceError, WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
     future::Future,
+    sync::Arc,
 };
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
@@ -52,14 +51,18 @@ pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
-use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::AllocationClaim;
+use fork_preparer::bounded_io as fork_preparer_io;
+pub use fork_preparer::bounded_io::PreparationIo;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
-pub use fork_preparer::bounded_io::PreparationIo;
-pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, UploadRecord, PreparationRecord, DecodeReservation, retain_decoded};
+pub(crate) use fork_preparer::bounded_io::{
+    DecodeReservation, PreparationRecord, UploadRecord, preparation_slot_bytes, retain_decoded,
+};
 mod summary_fork;
-pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
+pub use fork_preparer::{
+    FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation,
+};
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
@@ -74,7 +77,9 @@ pub use text_tools::ExactTextReplacement;
 #[cfg(not(target_arch = "wasm32"))]
 mod root_binding;
 #[cfg(not(target_arch = "wasm32"))]
-pub use root_binding::{bind_original_root_conversation_with_native_work, native_root_output_binding_operation};
+pub use root_binding::{
+    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
+};
 mod root_source;
 pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -84,144 +89,106 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeProcessDrainProof, NativeProcessPublishedVolume};
+pub use native_process::{
+    NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider,
+    NativeProcessPublishedVolume, NativeProcessReceipt,
+};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
-    NATIVE_PROCESS_EFFECT_KIND, NativeVolumeNamespace, NativeProcessRequest, NativeProcessResult,
-    NativeProcessStop, NativeProcessStopKind, NativeViewManifest, NativeViewOptions,
-    NativeVolumeMapping,
+    NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
+    NativeProcessStopKind, NativeViewManifest, NativeViewOptions, NativeVolumeMapping,
+    NativeVolumeNamespace,
 };
+mod configured_recursive_tools;
+mod default_tools;
+mod mailbox_machine;
+mod recursive;
 mod task_commands;
 mod task_runtime;
-mod recursive;
-mod mailbox_machine;
-mod default_tools;
-mod configured_recursive_tools;
 pub use configured_recursive_tools::{
-    ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
-    ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveToolsConfig,
-    ConfiguredRecursiveToolSource, ConfiguredRecursiveSourceCheckpoint,
-};
-pub use default_tools::{
-    recursive_default_tools, RecursiveDefaultToolset, RecursiveDefaultToolSource,
-    RecursiveToolOwner, RecursiveForkToolBinding, RecursiveForkToolPlan,
-    RecursiveForkSourceIntent,
-    RecursiveMergeToolBinding, RecursiveMergeToolPlan,
-    MergeToolArguments, MergeToolSelection, MergeToolSide,
+    ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint, ConfiguredRecursiveToolSource,
+    ConfiguredRecursiveToolsConfig,
 };
 pub(crate) use default_tools::InvocationCancellation;
+pub use default_tools::{
+    MergeToolArguments, MergeToolSelection, MergeToolSide, RecursiveDefaultToolSource,
+    RecursiveDefaultToolset, RecursiveForkSourceIntent, RecursiveForkToolBinding,
+    RecursiveForkToolPlan, RecursiveMergeToolBinding, RecursiveMergeToolPlan, RecursiveToolOwner,
+    recursive_default_tools,
+};
 pub use mailbox_machine::MailboxModelMachine;
-pub use recursive::{
-    ForkToolArguments, ForkPreparationLimits, ForkPreparationMachine, fork_preparation_request,
-    RecursiveSourceSnapshot, RecursiveForkConfig, RetainedSourceBinding,
-    recursive_fork_source, restore_recursive_fork_source,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use recursive::{
-    restore_recursive_fork_source_with_native_work,
-};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_execution::{
-    NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
-    BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
-    NativeProcessView, NativePublicationFailure, NativeVolumeView,
-    NativePublicationCleanup, NativePublicationReservationFailure,
-    NativeRecordedPreparation, observe_preparation,
-    NativeViewPublicationError, NativeViewPublicationReceipt,
-    NativeTaskViewDrainReceipt,
-    copy_native_mapping_with_work,
+    BorrowedNativeVolumeBinding, NativeExistingLazyVolume, NativePreparationReceipt,
+    NativePreparationRoot, NativeProcessView, NativePublicationCleanup, NativePublicationFailure,
+    NativePublicationReservationFailure, NativeRecordedPreparation, NativeRootOutputSource,
+    NativeTaskViewDrainReceipt, NativeTaskWorkingView, NativeViewPublicationError,
+    NativeViewPublicationReceipt, NativeVolumeView, observe_preparation,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use recursive::restore_recursive_fork_source_with_native_work;
+pub use recursive::{
+    ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
+    RecursiveSourceSnapshot, RetainedSourceBinding, fork_preparation_request,
+    recursive_fork_source, restore_recursive_fork_source,
 };
 pub use task_commands::{
-    EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
-    MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand,
-    MailSendTaskCommand, ModelTaskCommand, TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND,
-    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskObserveCommand,
-    TimerTaskCommand, ToolTaskCommand,
-    FORK_PREPARE_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND,
-    PreparedTaskAdmitCommand, TASK_CANCEL_COMMAND_KIND, TaskCancelCommand,
+    EFFECT_TASK_COMMAND_KIND, FORK_PREPARE_TASK_COMMAND_KIND, FilesystemTaskCommands,
+    MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND, MODEL_TASK_COMMAND_KIND,
+    MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand, PreparedTaskAdmitCommand,
+    TASK_ADMIT_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, TASK_CANCEL_COMMAND_KIND,
+    TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskAdmitCommand,
+    TaskCancelCommand, TaskObserveCommand, TimerTaskCommand, ToolTaskCommand,
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
-    TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome, TaskWorkerTick,
-    TaskSourceInspection,
+    TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
+    TaskWorkerTick,
 };
 
 mod config;
 use config::*;
-pub use config::{WorkspaceObservation, WorkspaceMutation};
+pub use config::{WorkspaceMutation, WorkspaceObservation};
 mod host;
+pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, workspace_ref};
-pub(crate) use host::map_error;
 mod scheduler_payload;
 pub use scheduler_payload::FilesystemSchedulerPayloadStore;
 mod content_verifier;
-use content_verifier::*;
 pub use content_verifier::FilesystemContentVerifier;
+use content_verifier::*;
 mod fork_verifier;
-use fork_verifier::*;
 pub use fork_verifier::FilesystemForkVerifier;
+use fork_verifier::*;
 mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
-pub use parent::{ParentProjectController, ParentMergePlan, VolumeImportPlan, InheritedContextCapture};
+pub use parent::{
+    InheritedContextCapture, ParentMergePlan, ParentProjectController, VolumeImportPlan,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
-struct SourcePublicationFailureSlot {
-    source: Box<Error>,
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
+mod source_publication;
 #[cfg(not(target_arch = "wasm32"))]
-impl SourcePublicationFailureSlot {
-    fn prepare(io: Option<&PreparationIo>) -> Result<Self> {
-        let bytes = std::mem::size_of::<Error>() as u64;
-        let custody = if let Some(io) = io {
-            io.retain_owned(bytes)?;
-            io.allocation_attempt(bytes)?;
-            if io.original_native_work().is_some() {
-                Some(io.take_native_custody(bytes)?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        Ok(Self { source: Box::new(Error::NativeBoundary { code: crate::wire::ErrorCode::Indeterminate, reason: "reserved source publication failure" }), custody })
-    }
-
-    fn finish(
-        self, generation: acyclic_fs::GenerationId, source: Error,
-        retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
-    ) -> Error {
-        let Self { source: mut slot, custody } = self;
-        *slot = source;
-        Error::NativeSourcePublicationUncertain {
-            generation, source: slot, retention_failure, custody,
-        }
-    }
-
-    fn discard(self, io: Option<&PreparationIo>) -> Result<()> {
-        drop(self);
-        if let Some(io) = io
-            && io.original_native_work().is_none() {
-            io.release(std::mem::size_of::<Error>() as u64)?;
-        }
-        Ok(())
-    }
-}
+use source_publication::SourcePublicationFailureSlot;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
-        &self, volume: &VolumeRef, grant: &ContentGrant, key: &IdempotencyKey,
-        expected_path: Option<&str>, maximum_bytes: u64, io: Option<&PreparationIo>,
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        key: &IdempotencyKey,
+        expected_path: Option<&str>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
         grant.require(volume, VolumeOperation::Write, io)?;
-        self.content_for_operation_record_io(
-            volume, key, expected_path, maximum_bytes, None, io).await
+        self.content_for_operation_record_io(volume, key, expected_path, maximum_bytes, None, io)
+            .await
     }
-
 
     #[allow(
         clippy::too_many_arguments,
@@ -243,14 +210,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&fork_preparer_io::PreparationIo>,
         publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> where A: 'static, O: 'static {
+    ) -> Result<FileRef>
+    where
+        A: 'static,
+        O: 'static,
+    {
         if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized,
-                "Root publication allocation names another original volume"));
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "Root publication allocation names another original volume",
+            ));
         }
         #[cfg(target_arch = "wasm32")]
         if publication_lease.is_some() {
-            return Err(Error::Unsupported("Root publication lease is native-platform only".into()));
+            return Err(Error::Unsupported(
+                "Root publication lease is native-platform only".into(),
+            ));
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(lease) = publication_lease {
@@ -262,17 +238,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require(volume, VolumeOperation::Write, io)?;
         let publication_permit = acyclic_fs::PublicationPermit::Unrestricted;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content provider or size limit mismatch"));
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "content provider or size limit mismatch",
+            ));
         }
-        crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
-        let descriptor = crate::executor::with_history_io(io,
-            |work| FileDescriptor::from_bytes(bytes, media_type, work))?;
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
+        let descriptor = crate::executor::with_history_io(io, |work| {
+            FileDescriptor::from_bytes(bytes, media_type, work)
+        })?;
         let provisional = crate::executor::with_history_io(io, |work| {
-            FileRef::new(volume.copy(work)?, fork_preparer_io::clone_text(path, io)?,
+            FileRef::new(
+                volume.copy(work)?,
+                fork_preparer_io::clone_text(path, io)?,
                 fork_preparer_io::clone_text("pending", io)?,
-                FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(),
-                    fork_preparer_io::clone_text(descriptor.media_type(), io)?)?,
-                fork_preparer_io::clone_text(display_name, io)?, work)
+                FileDescriptor::new(
+                    *descriptor.sha256(),
+                    descriptor.byte_length(),
+                    fork_preparer_io::clone_text(descriptor.media_type(), io)?,
+                )?,
+                fork_preparer_io::clone_text(display_name, io)?,
+                work,
+            )
         })?;
         match internal_class {
             Some(class)
@@ -295,22 +285,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || provisional.path() == "turns/.canonical"
                 || provisional.path().starts_with("turns/.canonical/") =>
             {
-                return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "internal storage paths are reserved"));
+                return Err(fork_preparer_io::failure(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "internal storage paths are reserved",
+                ));
             }
             None => {}
         }
-        let receipt_identity = if internal_class.is_some() { provisional.path() } else { idempotency_key.as_str() };
-        let receipt_path = content_identity_path_io(receipt_identity, false, ".system/harness-uploads/", io)?;
+        let receipt_identity = if internal_class.is_some() {
+            provisional.path()
+        } else {
+            idempotency_key.as_str()
+        };
+        let receipt_path =
+            content_identity_path_io(receipt_identity, false, ".system/harness-uploads/", io)?;
         let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
         let metadata_bytes = match io {
             Some(io) => io.encode(&provisional, io.remaining()?.bytes_encoded, false)?,
             None => acyclic_stream::OwnedBytes::from(
-                serde_json::to_vec(&provisional).map_err(|error| Error::Invalid(error.to_string()))?),
+                serde_json::to_vec(&provisional)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+            ),
         };
         let receipt_bytes = match io {
-            Some(io) => io.encode(&(&provisional, expected_generation), io.remaining()?.bytes_encoded, true)?,
-            None => acyclic_stream::OwnedBytes::from(
-                crate::contract::canonical_json_bytes(&(&provisional, expected_generation))?),
+            Some(io) => io.encode(
+                &(&provisional, expected_generation),
+                io.remaining()?.bytes_encoded,
+                true,
+            )?,
+            None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(&(
+                &provisional,
+                expected_generation,
+            ))?),
         };
         let reconcile_source = root_allocation.is_some();
         let workspace = fork_preparer_io::content_workspace(&self.provider, volume, io)?;
@@ -322,26 +329,53 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => self.open(&workspace).await?,
             };
             match io {
-            Some(io) => {
-                let hash = acyclic_fs::WorkCounters { bytes_hashed: idempotency_key.as_str().len() as u64, ..Default::default() };
-                io.preflight(hash)?;
-                let key = filesystem_key(idempotency_key);
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = io.original_native_work() {
-                    original.spent(hash).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    opened.operation_generation(key, original, io.cancellation()).await
-                        .map_err(|source| Error::NativeWorkspace { source, custody: None })?
-                } else {
-                    io.charge(hash)?;
-                    io.receive(opened.operation_generation(key, io.remaining()?, io.cancellation()).await)?
+                Some(io) => {
+                    let hash = acyclic_fs::WorkCounters {
+                        bytes_hashed: idempotency_key.as_str().len() as u64,
+                        ..Default::default()
+                    };
+                    io.preflight(hash)?;
+                    let key = filesystem_key(idempotency_key);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = io.original_native_work() {
+                        original.spent(hash).map_err(|cause| Error::NativeWork {
+                            cause,
+                            custody: None,
+                        })?;
+                        opened
+                            .operation_generation(key, original, io.cancellation())
+                            .await
+                            .map_err(|source| Error::NativeWorkspace {
+                                source,
+                                custody: None,
+                            })?
+                    } else {
+                        io.charge(hash)?;
+                        io.receive(
+                            opened
+                                .operation_generation(key, io.remaining()?, io.cancellation())
+                                .await,
+                        )?
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        io.charge(hash)?;
+                        io.receive(
+                            opened
+                                .operation_generation(key, io.remaining()?, io.cancellation())
+                                .await,
+                        )?
+                    }
                 }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    io.charge(hash)?;
-                    io.receive(opened.operation_generation(key, io.remaining()?, io.cancellation()).await)?
-                }
-            }
-            None => opened.operation_generation(filesystem_key(idempotency_key), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?,
+                None => opened
+                    .operation_generation(
+                        filesystem_key(idempotency_key),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| map_error(failure.error))?,
             }
         };
         if let Some(prior) = prior {
@@ -351,34 +385,80 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => self.retain_generation(&workspace, &generation).await?,
             }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-            let receipt_descriptor = crate::executor::with_history_io(io,
-                |work| FileDescriptor::from_bytes(&receipt_bytes, "application/json", work))?;
-            let receipt = crate::executor::with_history_io(io, |work| {
-                FileRef::new(volume.copy(work)?, fork_preparer_io::clone_text(&receipt_path, io)?,
-                    fork_preparer_io::clone_text(&version, io)?, receipt_descriptor,
-                    fork_preparer_io::clone_text("receipt.json", io)?, work)
+            let receipt_descriptor = crate::executor::with_history_io(io, |work| {
+                FileDescriptor::from_bytes(&receipt_bytes, "application/json", work)
             })?;
-            self.read_pinned_io(&receipt, receipt_bytes.len() as u64, io).await?;
+            let receipt = crate::executor::with_history_io(io, |work| {
+                FileRef::new(
+                    volume.copy(work)?,
+                    fork_preparer_io::clone_text(&receipt_path, io)?,
+                    fork_preparer_io::clone_text(&version, io)?,
+                    receipt_descriptor,
+                    fork_preparer_io::clone_text("receipt.json", io)?,
+                    work,
+                )
+            })?;
+            self.read_pinned_io(&receipt, receipt_bytes.len() as u64, io)
+                .await?;
             let indexed = match io {
                 Some(io) => {
-                    let indexed_path = crate::contract::preparation_format(format_args!("/{metadata_path}"), Some(io))?;
-                    read_generation_with_io(&prior, &indexed_path, metadata_bytes.len() as u64, io).await?
+                    let indexed_path = crate::contract::preparation_format(
+                        format_args!("/{metadata_path}"),
+                        Some(io),
+                    )?;
+                    read_generation_with_io(&prior, &indexed_path, metadata_bytes.len() as u64, io)
+                        .await?
                 }
-                None => self.read(&workspace, Some(&generation), &format!("/{metadata_path}"), metadata_bytes.len() as u64).await?,
+                None => {
+                    self.read(
+                        &workspace,
+                        Some(&generation),
+                        &format!("/{metadata_path}"),
+                        metadata_bytes.len() as u64,
+                    )
+                    .await?
+                }
             };
             if indexed.as_ref() != metadata_bytes.as_slice() {
-                return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "upload metadata index does not match"));
+                return Err(fork_preparer_io::failure(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "upload metadata index does not match",
+                ));
             }
-            let reference = { let io = io; let descriptor = &descriptor; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
-            let committed = self
-                .read_pinned_io(&reference, maximum_bytes, io)
-                .await?;
+            let reference = {
+                let io = io;
+                let descriptor = &descriptor;
+                crate::executor::with_history_io(io, |work| {
+                    crate::conversation::FileRef::new(
+                        (volume).copy(work)?,
+                        crate::filesystem::fork_preparer_io::clone_text(path, io)?,
+                        crate::filesystem::fork_preparer_io::clone_text(&version, io)?,
+                        crate::conversation::FileDescriptor::new(
+                            *descriptor.sha256(),
+                            descriptor.byte_length(),
+                            crate::filesystem::fork_preparer_io::clone_text(
+                                descriptor.media_type(),
+                                io,
+                            )?,
+                        )?,
+                        crate::filesystem::fork_preparer_io::clone_text(display_name, io)?,
+                        work,
+                    )
+                })
+            }?;
+            let committed = self.read_pinned_io(&reference, maximum_bytes, io).await?;
             if committed.as_ref() != bytes {
-                return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "upload identity belongs to different content"));
+                return Err(fork_preparer_io::failure(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "upload identity belongs to different content",
+                ));
             }
             return Ok(reference);
         }
-        let absolute = crate::contract::preparation_format(format_args!("/{}", provisional.path()), io)?;
+        let absolute =
+            crate::contract::preparation_format(format_args!("/{}", provisional.path()), io)?;
         let mut mutations = fork_preparer_io::vector(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
             && !parent.is_empty()
@@ -407,67 +487,105 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bytes: receipt_bytes,
         });
         let publication = async {
-        let generation = match io {
-            Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(lease) = publication_lease {
-                    if io.original_native_work().is_some() {
-                        let lease = Arc::clone(lease);
-                        let mut before_publication = move |original: &acyclic_fs::NativeMaterializationWork| {
-                            let lease = Arc::clone(&lease);
-                            let original = original.clone();
-                            async move { lease.verify_with_native_work(&original)?.await }
-                        };
-                        fork_preparer_io::publish_native(
-                            self, &workspace, expected_generation, &mutations,
-                            idempotency_key, io, &mut before_publication,
-                        ).await?
+            let generation = match io {
+                Some(io) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(lease) = publication_lease {
+                        if io.original_native_work().is_some() {
+                            let lease = Arc::clone(lease);
+                            let mut before_publication =
+                                move |original: &acyclic_fs::NativeMaterializationWork| {
+                                    let lease = Arc::clone(&lease);
+                                    let original = original.clone();
+                                    async move { lease.verify_with_native_work(&original)?.await }
+                                };
+                            fork_preparer_io::publish_native(
+                                self,
+                                &workspace,
+                                expected_generation,
+                                &mutations,
+                                idempotency_key,
+                                io,
+                                &mut before_publication,
+                            )
+                            .await?
+                        } else {
+                            let mut before_publication =
+                                || io.verify_publication_lease(lease.as_ref());
+                            fork_preparer_io::publish_generation(
+                                self,
+                                &workspace,
+                                expected_generation,
+                                &mutations,
+                                idempotency_key,
+                                Some(io),
+                                &mut before_publication,
+                            )
+                            .await?
+                        }
                     } else {
-                        let mut before_publication = || io.verify_publication_lease(lease.as_ref());
-                        fork_preparer_io::publish_generation(
-                            self, &workspace, expected_generation, &mutations,
-                            idempotency_key, Some(io), &mut before_publication,
-                        ).await?
+                        fork_preparer_io::apply_generation(
+                            self,
+                            &workspace,
+                            expected_generation,
+                            &mutations,
+                            idempotency_key,
+                            io,
+                        )
+                        .await?
                     }
-                } else {
+                    #[cfg(target_arch = "wasm32")]
                     fork_preparer_io::apply_generation(
-                        self, &workspace, expected_generation, &mutations,
-                        idempotency_key, io,
-                    ).await?
+                        self,
+                        &workspace,
+                        expected_generation,
+                        &mutations,
+                        idempotency_key,
+                        io,
+                    )
+                    .await?
                 }
-                #[cfg(target_arch = "wasm32")]
-                fork_preparer_io::apply_generation(
-                    self, &workspace, expected_generation, &mutations,
-                    idempotency_key, io,
-                ).await?
-            }
-            None => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(lease) = publication_lease {
-                    let mut before_publication = || lease.verify();
-                    fork_preparer_io::publish_generation(
-                        self, &workspace, expected_generation, &mutations,
-                        idempotency_key, None, &mut before_publication,
-                    ).await?
-                } else {
+                None => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(lease) = publication_lease {
+                        let mut before_publication = || lease.verify();
+                        fork_preparer_io::publish_generation(
+                            self,
+                            &workspace,
+                            expected_generation,
+                            &mutations,
+                            idempotency_key,
+                            None,
+                            &mut before_publication,
+                        )
+                        .await?
+                    } else {
+                        self.apply_generation(
+                            &workspace,
+                            expected_generation,
+                            &mutations,
+                            idempotency_key,
+                        )
+                        .await?
+                    }
+                    #[cfg(target_arch = "wasm32")]
                     self.apply_generation(
-                        &workspace, expected_generation, &mutations, idempotency_key,
-                    ).await?
+                        &workspace,
+                        expected_generation,
+                        &mutations,
+                        idempotency_key,
+                    )
+                    .await?
                 }
-                #[cfg(target_arch = "wasm32")]
-                self.apply_generation(
-                    &workspace, expected_generation, &mutations, idempotency_key,
-                ).await?
-            }
-        };
-        Ok::<_, Error>(generation)
+            };
+            Ok::<_, Error>(generation)
         };
         #[cfg(not(target_arch = "wasm32"))]
         let (generation, source_snapshot) = if let Some(allocation) = root_allocation {
             let failure_slot = SourcePublicationFailureSlot::prepare(io)?;
-            let (generation, snapshot) = allocation.publish_lazy_candidate_with_io(
-                &mutations, idempotency_key, publication_permit, io,
-            ).await?;
+            let (generation, snapshot) = allocation
+                .publish_lazy_candidate_with_io(&mutations, idempotency_key, publication_permit, io)
+                .await?;
             (generation, Some((snapshot, failure_slot)))
         } else {
             (publication.await?, None)
@@ -483,14 +601,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             match (snapshot, retention) {
                 (Ok(_), Ok(())) => failure_slot.discard(io)?,
                 (Err(source), retention) => {
-                    return Err(failure_slot.finish(
-                        generation.id(), source, retention.err(),
-                    ));
+                    return Err(failure_slot.finish(generation.id(), source, retention.err()));
                 }
                 (Ok(_), Err(source)) => {
-                    return Err(failure_slot.finish(
-                        generation.id(), Error::from(source), None,
-                    ));
+                    return Err(failure_slot.finish(generation.id(), Error::from(source), None));
                 }
             }
             true
@@ -504,24 +618,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if !root_retained {
             match io {
                 Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
-                None => { generation.pin(format!("harness-generation-{version}"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?; }
+                None => {
+                    generation
+                        .pin(
+                            format!("harness-generation-{version}"),
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| map_error(failure.error))?;
+                }
             }
         }
-        let reference = { let io = io; let descriptor = &descriptor; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
+        let reference = {
+            let io = io;
+            let descriptor = &descriptor;
+            crate::executor::with_history_io(io, |work| {
+                crate::conversation::FileRef::new(
+                    (volume).copy(work)?,
+                    crate::filesystem::fork_preparer_io::clone_text(path, io)?,
+                    crate::filesystem::fork_preparer_io::clone_text(&version, io)?,
+                    crate::conversation::FileDescriptor::new(
+                        *descriptor.sha256(),
+                        descriptor.byte_length(),
+                        crate::filesystem::fork_preparer_io::clone_text(
+                            descriptor.media_type(),
+                            io,
+                        )?,
+                    )?,
+                    crate::filesystem::fork_preparer_io::clone_text(display_name, io)?,
+                    work,
+                )
+            })
+        }?;
         self.read_pinned_io(&reference, maximum_bytes, io).await?;
         Ok(reference)
     }
 
     async fn read_pinned_io(
-        &self, reference: &FileRef, maximum_bytes: u64,
+        &self,
+        reference: &FileRef,
+        maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some((io, original)) = io.and_then(|io| {
-            io.original_native_work().map(|original| (io, original))
-        }) {
+        if let Some((io, original)) =
+            io.and_then(|io| io.original_native_work().map(|original| (io, original)))
+        {
             use sha2::Digest as _;
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(original)?))?;
+            reference.validate(&mut Some(&mut crate::store::history::native_work_io(
+                original,
+            )?))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {
@@ -530,29 +678,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     reason: "content provider or size limit mismatch",
                 });
             }
-            let generation = self.file_generation_with_io(reference, Some(io))?;
-            let workspace = fork_preparer_io::content_workspace(
-                &self.provider, reference.volume(), Some(io),
-            )?;
-            let rendered = original.display(&format_args!("/{}", reference.path()))
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let generation = self.file_generation(reference, Some(io))?;
+            let workspace =
+                fork_preparer_io::content_workspace(&self.provider, reference.volume(), Some(io))?;
+            let rendered = original
+                .display(&format_args!("/{}", reference.path()))
+                .map_err(|cause| Error::NativeWork {
+                    cause,
+                    custody: None,
+                })?;
             let path_custody = rendered.1;
             let path = rendered.0;
             let opened = fork_preparer_io::open(self, &workspace, io).await?;
             let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
-            let bytes = pinned.read(
-                &path, maximum_bytes, original, io.cancellation(),
-            ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+            let bytes = pinned
+                .read(&path, maximum_bytes, original, io.cancellation())
+                .await
+                .map_err(|source| Error::NativeWorkspace {
+                    source,
+                    custody: None,
+                })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: bytes.len() as u64,
                 ..acyclic_fs::WorkCounters::default()
             };
-            original.admit(hashed)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            original.admit(hashed).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
             let digest = sha2::Sha256::digest(&bytes);
-            original.spent(hashed)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            original.spent(hashed).map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
             if bytes.len() as u64 != reference.descriptor().byte_length()
                 || digest.as_slice() != reference.descriptor().sha256()
             {
@@ -575,24 +734,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(io) = io {
             io.retain_owned((reference.path().len() + 1) as u64)?;
         }
-        let generation = self.file_generation_with_io(reference, io)?;
-        let generation_hold = io.map(|io| io.guard_owned(generation.logical_owned_bytes()?)).transpose()?;
-        let workspace = fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
+        let generation = self.file_generation(reference, io)?;
+        let generation_hold = io
+            .map(|io| io.guard_owned(generation.logical_owned_bytes()?))
+            .transpose()?;
+        let workspace =
+            fork_preparer_io::content_workspace(&self.provider, reference.volume(), io)?;
         let path = format!("/{}", reference.path());
         let bytes = match io {
             Some(io) => {
                 let opened = fork_preparer_io::open(self, &workspace, io).await?;
                 let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
-                let bytes = io.receive(pinned.read(&path, maximum_bytes, io.remaining()?, io.cancellation()).await)?;
+                let bytes = io.receive(
+                    pinned
+                        .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
+                        .await,
+                )?;
                 let capacity = bytes.retained_capacity().ok_or_else(|| {
-                    fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
-                        "content producer does not expose its owned capacity")
+                    fork_preparer_io::failure(
+                        Some(io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "content producer does not expose its owned capacity",
+                    )
                 })?;
                 io.retain_owned(capacity as u64)?;
                 fork_preparer_io::retain(&pinned, Some(io)).await?;
                 bytes
             }
-            None => self.read(&workspace, Some(&generation), &path, maximum_bytes).await?,
+            None => {
+                self.read(&workspace, Some(&generation), &path, maximum_bytes)
+                    .await?
+            }
         };
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
         drop(generation);
@@ -607,11 +779,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "file belongs to another Filesystem provider".into(),
             ));
         }
-        let workspace = workspace_ref(self.provider.clone(), &file.volume().storage_name(&mut None)?)?;
-        self.retain_generation(&workspace, &self.file_generation(file)?)
+        let workspace = workspace_ref(
+            self.provider.clone(),
+            &file.volume().storage_name(&mut None)?,
+        )?;
+        self.retain_generation(&workspace, &self.file_generation(file, None)?)
             .await
     }
-
 }
 
 #[cfg(test)]

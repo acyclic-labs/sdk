@@ -3,15 +3,21 @@ use super::*;
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
     pub async fn read_content(
-        &self, reference: &FileRef, grant: &ContentGrant, maximum_bytes: u64,
+        &self,
+        reference: &FileRef,
+        grant: &ContentGrant,
+        maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         reference.validate(&mut None)?;
         grant.require_file_read(reference, io)?;
         let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
         if io.is_none() {
-            let generation = self.file_generation(reference)?;
-            let workspace = workspace_ref(self.provider.clone(), &reference.volume().storage_name(&mut None)?)?;
+            let generation = self.file_generation(reference, None)?;
+            let workspace = workspace_ref(
+                self.provider.clone(),
+                &reference.volume().storage_name(&mut None)?,
+            )?;
             self.retain_generation(&workspace, &generation).await?;
         }
         Ok(bytes)
@@ -64,11 +70,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Uses the ordinary immutable list engine, with a fresh owner check around each SDK logical action.
     #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "exact subtree and guarded pinned pagination")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "exact subtree and guarded pinned pagination"
+    )]
     pub(in crate::filesystem) async fn list_private_directory_guarded_with_native_work<F, Fut>(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
-        expected_generation: Option<&GenerationRef>, after: Option<&LogicalName>,
-        maximum_entries: u32, work: &acyclic_fs::NativeMaterializationWork,
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        after: Option<&LogicalName>,
+        maximum_entries: u32,
+        work: &acyclic_fs::NativeMaterializationWork,
         mut guard: F,
     ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
     where
@@ -83,9 +97,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
         }
         if !path.is_empty() {
-            crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            crate::conversation::validate_content_path(
+                path,
+                &mut Some(&mut crate::store::history::native_work_io(work)?),
+            )?;
         }
-        grant.require_directory_path(volume, path, Some(&PreparationIo::from_native_work(work)?))?;
+        grant.require_directory_path(
+            volume,
+            path,
+            Some(&PreparationIo::from_native_work(work)?),
+        )?;
         if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -95,41 +116,62 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let scratch = PreparationIo::from_native_work(work)?;
         let output = PreparationIo::from_native_work(work)?;
         output.retain_owned(std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64)?;
-        let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(&scratch))?;
+        let workspace_ref =
+            fork_preparer_io::content_workspace(&self.provider, volume, Some(&scratch))?;
         guard().await?;
         let workspace = fork_preparer_io::open(self, &workspace_ref, &scratch).await?;
         guard().await?;
         let generation = if let Some(expected) = expected_generation {
             fork_preparer_io::generation(self, &workspace, expected, &scratch).await?
         } else {
-            workspace.head(work, work.cancellation()).await.map_err(|error| (error, None))
+            workspace
+                .head(work, work.cancellation())
+                .await
+                .map_err(|error| (error, None))
                 .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
         };
         guard().await?;
         fork_preparer_io::retain(&generation, Some(&scratch)).await?;
         guard().await?;
-        let (requested, requested_custody) = work.display(&format_args!("/{path}"))
+        let (requested, requested_custody) = work
+            .display(&format_args!("/{path}"))
             .map_err(Error::from)?;
         scratch.absorb_native_custody(requested_custody)?;
         let page_custody;
         let mut page;
-        (page, page_custody) = generation.list_directory(
-            &requested, after, maximum_entries.checked_add(u32::from(path.is_empty())).ok_or_else(|| Error::NativeWorkspace { source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow), custody: None })?,
-            work, work.cancellation(),
-        ).await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+        (page, page_custody) = generation
+            .list_directory(
+                &requested,
+                after,
+                maximum_entries
+                    .checked_add(u32::from(path.is_empty()))
+                    .ok_or_else(|| Error::NativeWorkspace {
+                        source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow),
+                        custody: None,
+                    })?,
+                work,
+                work.cancellation(),
+            )
+            .await
+            .map(|(page, allocation)| (page, allocation.expect("native directory allocation")))
+            .map_err(|source| Error::NativeWorkspace {
+                source,
+                custody: None,
+            })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {
             work.charge(acyclic_fs::WorkCounters {
-                items_examined: page.entries.len() as u64, ..Default::default()
-            }).map_err(Error::from)?;
+                items_examined: page.entries.len() as u64,
+                ..Default::default()
+            })
+            .map_err(Error::from)?;
             let mut removed_bytes = 0;
             page.entries.retain(|entry| {
                 let name = &entry.name;
                 let internal = match name.encoding() {
                     NameEncoding::Utf8 | NameEncoding::PosixBytes => name.as_bytes() == b".system",
-                    NameEncoding::WindowsUtf16Le =>
-                        name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
+                    NameEncoding::WindowsUtf16Le => name.as_bytes() == b".\0s\0y\0s\0t\0e\0m\0",
                 };
                 if internal {
                     removed_bytes += name.logical_owned_bytes();
@@ -153,15 +195,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Resolves a private file and verifies its bytes with optional original IO.
     pub async fn read_private_path(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
-        expected_generation: Option<&GenerationRef>, maximum_bytes: u64,
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.require_private_directory(volume, grant, path, io)?;
         let name = path.rsplit('/').next().unwrap_or(path);
-        crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
         if name.len() > crate::conversation::MAX_LABEL_BYTES {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file or volume label is invalid"));
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "file or volume label is invalid",
+            ));
         }
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
         let observation = self.resolve(&workspace).await?;
@@ -208,8 +260,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Err(error) => return Err(error),
         };
         let reference = FileRef::new(
-            volume.clone(), path.to_owned(), hex::encode(generation.as_resource().key()),
-            descriptor, display_name, &mut None,
+            volume.clone(),
+            path.to_owned(),
+            hex::encode(generation.as_resource().key()),
+            descriptor,
+            display_name,
+            &mut None,
         )?;
         grant.require_file_read(&reference, io)?;
         Ok((reference, bytes))
@@ -217,18 +273,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Reads a finite private prefix at an explicitly pinned generation.
     pub async fn read_private_prefix(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
-        generation: &GenerationRef, maximum_bytes: u64, io: Option<&PreparationIo>,
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        generation: &GenerationRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.require_private_directory(volume, grant, path, io)?;
-        crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
+        crate::executor::with_history_io(io, |work| {
+            crate::conversation::validate_content_path(path, work)
+        })?;
         if maximum_bytes == 0 {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "prefix read limit must be positive"));
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "prefix read limit must be positive",
+            ));
         }
         let unmeasured;
         let io = match io {
             Some(io) => io,
-            None => { unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?; &unmeasured }
+            None => {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            }
         };
         let reference = fork_preparer_io::content_workspace(&self.provider, volume, Some(io))?;
         let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
@@ -237,45 +307,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         fork_preparer_io::retain(&pinned, Some(io)).await?;
         let path = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let path_hold = io.guard_owned(path.capacity() as u64)?;
-        let stat = fork_preparer_io::filesystem_call!(io, work,
-            async { pinned.stat(&path, work, io.cancellation()).await.map_err(|error| (error, None)) },
-            pinned.stat(&path, io.remaining()?, io.cancellation()))?;
-        if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
-        let length = stat.logical_bytes.ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Storage, "file length is missing"))?;
-        let chunk = fork_preparer_io::filesystem_call!(io, work,
-            async { pinned.read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await.map_err(|error| (error, None)) },
-            pinned.read_range(&path, 0, maximum_bytes.min(length), io.remaining()?, io.cancellation()))?;
-        drop(path); drop(path_hold); drop(reference); drop(reference_hold);
+        let stat = fork_preparer_io::filesystem_call!(
+            io,
+            work,
+            async {
+                pinned
+                    .stat(&path, work, io.cancellation())
+                    .await
+                    .map_err(|error| (error, None))
+            },
+            pinned.stat(&path, io.remaining()?, io.cancellation())
+        )?;
+        if stat.kind != FileKind::Regular {
+            return Err(io.invalid("prefix requires a regular file"));
+        }
+        let length = stat.logical_bytes.ok_or_else(|| {
+            fork_preparer_io::failure(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "file length is missing",
+            )
+        })?;
+        let chunk = fork_preparer_io::filesystem_call!(
+            io,
+            work,
+            async {
+                pinned
+                    .read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation())
+                    .await
+                    .map_err(|error| (error, None))
+            },
+            pinned.read_range(
+                &path,
+                0,
+                maximum_bytes.min(length),
+                io.remaining()?,
+                io.cancellation()
+            )
+        )?;
+        drop(path);
+        drop(path_hold);
+        drop(reference);
+        drop(reference_hold);
         Ok(chunk.bytes)
     }
 
     pub(in crate::filesystem) fn require_private_directory(
-        &self, volume: &VolumeRef, grant: &ContentGrant, path: &str,
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if let Some(io) = io { io.remaining()?; }
+        if let Some(io) = io {
+            io.remaining()?;
+        }
         crate::executor::with_history_io(io, |work| -> Result<()> {
             volume.validate(work)?;
-            if !path.is_empty() { crate::conversation::validate_content_path(path, work)?; }
+            if !path.is_empty() {
+                crate::conversation::validate_content_path(path, work)?;
+            }
             Ok(())
         })?;
         if volume.provider() != &self.provider {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
-                "private directory belongs to another provider or class"));
+            return Err(fork_preparer_io::failure(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "private directory belongs to another provider or class",
+            ));
         }
         grant.require_directory_path(volume, path, io)
     }
 
-    pub(in crate::filesystem) async fn read_pinned(&self, reference: &FileRef, maximum_bytes: u64) -> Result<acyclic_stream::OwnedBytes> {
+    pub(in crate::filesystem) async fn read_pinned(
+        &self,
+        reference: &FileRef,
+        maximum_bytes: u64,
+    ) -> Result<acyclic_stream::OwnedBytes> {
         self.read_pinned_io(reference, maximum_bytes, None).await
     }
 
-    pub(in crate::filesystem) fn file_generation(&self, reference: &FileRef) -> Result<GenerationRef> {
-        self.file_generation_with_io(reference, None)
-    }
-
-    pub(crate) fn file_generation_with_io(
-        &self, reference: &FileRef, io: Option<&PreparationIo>,
+    pub(crate) fn file_generation(
+        &self,
+        reference: &FileRef,
+        io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
         if let Some(io) = io {
             return GenerationRef::from_hex_with_io(&self.provider, reference.version(), io);
@@ -284,20 +399,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
         GenerationRef::new(self.provider.clone(), raw.into(), None)
     }
-
 }
-pub(in crate::filesystem) async fn read_generation_with_io<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    generation: &acyclic_fs::Generation<A, O>, path: &str, maximum: u64, io: &PreparationIo,
+pub(in crate::filesystem) async fn read_generation_with_io<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    generation: &acyclic_fs::Generation<A, O>,
+    path: &str,
+    maximum: u64,
+    io: &PreparationIo,
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        return generation.read(path, maximum, original, io.cancellation()).await
-            .map_err(|source| Error::NativeWorkspace { source, custody: None });
+        return generation
+            .read(path, maximum, original, io.cancellation())
+            .await
+            .map_err(|source| Error::NativeWorkspace {
+                source,
+                custody: None,
+            });
     }
-    let bytes = io.receive(generation.read(path, maximum, io.remaining()?, io.cancellation()).await)?;
+    let bytes = io.receive(
+        generation
+            .read(path, maximum, io.remaining()?, io.cancellation())
+            .await,
+    )?;
     let capacity = bytes.retained_capacity().ok_or_else(|| {
-        fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
-            "content producer does not expose its owned capacity")
+        fork_preparer_io::failure(
+            Some(io),
+            crate::wire::ErrorCode::Unsupported,
+            "content producer does not expose its owned capacity",
+        )
     })?;
     io.retain_owned(capacity as u64)?;
     Ok(bytes)
