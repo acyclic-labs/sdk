@@ -1177,11 +1177,10 @@ where
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
-        let fence = context.task().owned_task_fence()?;
         let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
         let journal_owner = workflow.task_journal_owner()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
-        Ok(super::RecursiveToolOwner { runtime:self.clone(), fence, workflow, journal_owner, cancellation:cancellation.clone() })
+        Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner, cancellation:cancellation.clone() })
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.

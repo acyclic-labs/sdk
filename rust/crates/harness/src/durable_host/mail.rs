@@ -74,7 +74,7 @@ fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
             crate::wire::ErrorCode::Unsupported, "mail file validation requires original native work"))?;
-        file.validate_with_native_work(work)?;
+        file.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if file.path().len() > limits.path_bytes || file.descriptor().byte_length() > limits.file_bytes {
             return Err(boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "mail file exceeds original admission limits"));
