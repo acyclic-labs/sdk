@@ -2136,7 +2136,7 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     let chunk = ObjectId { kind: ObjectKind::BlobChunk, digest: object_digest(ObjectKind::BlobChunk, b"prefix!") };
     assert_eq!(crate::async_storage::AsyncObjectStore::read(&store, chunk, 7, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value.as_ref(), b"prefix!");
     let prefix = original.receipt();
-    assert!(matches!(original.claim(u64::MAX),
+    assert!(matches!(original.claim(u64::MAX, 1, crate::WorkCounters::UNCHARGED),
         Err(crate::NativeTreeMaterializationError::Work(WorkError::Overflow))));
     assert!(matches!(original.spent(WorkCounters { bytes_hashed: u64::MAX, ..WorkCounters::UNCHARGED }),
         Err(crate::NativeTreeMaterializationError::Work(WorkError::Overflow))));

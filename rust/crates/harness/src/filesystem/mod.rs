@@ -598,8 +598,8 @@ where
                     reason: "directory cursor or path exceeds its issued task boundary",
                 });
             }
-            let cursor_header = work.retain_owned(
-                if after.is_some() { std::mem::size_of::<LogicalName>() as u64 } else { 0 },
+            let cursor_header = work.claim(
+                if after.is_some() { std::mem::size_of::<LogicalName>() as u64 } else { 0 }, 0, acyclic_fs::WorkCounters::UNCHARGED,
             ).map_err(Error::from)?;
             let cursor_custody;
             let cursor = if let Some(name) = after {
@@ -994,7 +994,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
         let binding = self.native_binding.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
         binding.authenticate(work)?;
-        let mut header = work.claim(std::mem::size_of::<Self>() as u64)
+        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         binding.custody.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
@@ -1562,7 +1562,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let native_binding = NativeFilesystemVerificationBinding::new(&binding.verifier, &binding.scope, work)?;
             let header;
             let mut guard = {
-                header = work.claim(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64)
+                header = work.claim(std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64, u64::from((std::mem::size_of::<FilesystemForkPublicationGuard<A, O>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(Error::from)?;
                 Box::new(FilesystemForkPublicationGuard {
                     workspace, reservation: None, native_work: Some(work.clone()),
@@ -1767,7 +1767,7 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
         let binding = self.native_binding.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "merge verifier has no native authority" })?;
         binding.authenticate(work)?;
-        let mut header = work.claim(std::mem::size_of::<Self>() as u64)
+        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         binding.custody.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
@@ -2672,7 +2672,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let plan_custody;
         let (plan, custody) = source_workspace.join_into(&target_workspace)
             .plan_at(&source_generation, &target_generation, work, work.cancellation()).await
-            .and_then(|plan| work.claim_allocation(0, 0, acyclic_fs::WorkCounters::default()).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
+            .and_then(|plan| work.claim(0, 0, acyclic_fs::WorkCounters::default()).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
             .map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         plan_custody = custody;
         guard().await?;
@@ -2993,7 +2993,7 @@ impl<A, O> FilesystemHost<A, O> {
                 reason: "Filesystem adapter requires the filesystem provider family" });
         }
         let io = PreparationIo::from_native_work(work)?;
-        let header = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let header = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         io.absorb_native_custody(header)?;
         let provider = provider.clone_with_io(&io)?;
