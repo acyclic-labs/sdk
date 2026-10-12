@@ -65,7 +65,7 @@ async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>
                 let name = entry
                     .name
                     .unicode_text()
-                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
+                    .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let path = if directory_display.is_empty() {
                     name.to_string()
                 } else {
@@ -4451,7 +4451,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 let name = entry
                     .name
                     .unicode_text()
-                    .ok_or_else(|| WorkspaceError::path("non-portable Git path"))?;
+                    .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let parent = directory.trim_start_matches('/');
                 let path = if parent.is_empty() {
                     name.to_string()
@@ -4590,7 +4590,7 @@ pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let next = if commit.tracked_paths.contains(relative) {
             let bytes = generation.read(&absolute, maximum_file_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             std::str::from_utf8(&bytes)
-                .map_err(|_| WorkspaceError::path("Git blame requires UTF-8 text"))?
+                .map_err(|_| WorkspaceError::Path("Git blame requires UTF-8 text".to_owned()))?
                 .lines()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()

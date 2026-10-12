@@ -890,7 +890,7 @@ fn closure_error(error: crate::FsError) -> ClosureError {
 
 // Shared standalone state is borrowed only by synchronous accounting leaves.
 // Native mode keeps the actual original meter, never a reconstructed receipt.
-struct StandaloneProofState {
+pub(crate) struct StandaloneProofState {
     allocations: super::allocation::AllocationLedger,
     work: WorkCounters,
     budget: WorkBudget,
@@ -1167,11 +1167,15 @@ impl ProofGuard {
 
 impl Drop for ProofGuard {
     fn drop(&mut self) {
-        if let Self::Standalone { state, bytes } = self {
-            if *bytes != 0 {
-                state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .allocations.release(*bytes).expect("proof allocation ownership invariant");
+        match self {
+            Self::Standalone { state, bytes } => {
+                if *bytes != 0 {
+                    state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .allocations.release(*bytes).expect("proof allocation ownership invariant");
+                }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
     }
 }

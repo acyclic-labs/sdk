@@ -14,7 +14,7 @@ use crate::kernel::{
     merge_generation_with_borrowed_map_resolutions_with_accounting,
     merge_generation_with_borrowed_resolutions_with_accounting, observe_path_edges_async,
     plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
-    read_generation_root_with_accounting, retire_allocation, split_allocation, types,
+    read_generation_root_with_accounting, retire_allocation, types,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{
@@ -48,8 +48,7 @@ use crate::kernel::{
     RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor,
     TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError, apply_regular_mutation_async,
     authenticate_generation_export_manifest_async, build_blob,
-    build_generation_export_manifest_async, contextual_publication_fingerprint, decode_file_metadata,
-    decode_volume_created, decode_workspace_deleted, export_generation_batch_async,
+    build_generation_export_manifest_async, contextual_publication_fingerprint, decode_workspace_deleted, export_generation_batch_async,
     import_generation_batch_async, list_attributes, lookup_file_record,
     lookup_file_records, merge_generation_async, plan_extent_range,
     prove_generation_closure, publish_generation, publish_generation_async_with_permit,

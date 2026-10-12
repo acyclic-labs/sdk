@@ -202,7 +202,7 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate(&mut Some(&mut crate::store::native_work_io(native)?))?;
+            provider.validate(work)?;
         }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
@@ -793,10 +793,7 @@ impl FileRef {
     /// Owner-issued capability for reading precisely this immutable version.
     pub fn read_capability(&self) -> Result<String> {
         self.validate(&mut None)?;
-        Ok(format!(
-            "file:read:{}",
-            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(self)?).to_hex()
-        ))
+        content_label("file:read:", crate::contract::canonical_json_digest(self)?, &mut None)
     }
 }
 
@@ -962,7 +959,7 @@ impl<T> std::future::Future for BoundedContentFuture<'_, T> {
     }
 }
 
-fn content_error(io: Option<&ContentIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn content_error(io: Option<&ContentIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some_and(|io| io.original_native_work().is_some()) {
         return Error::NativeBoundary { code, reason };
@@ -1260,16 +1257,7 @@ pub fn decode_attachment_manifest(
             ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
             bytes, crate::wire::ErrorCode::Invalid,
         );
-        let mut decoded = match result {
-            Ok(decoded) => decoded,
-            Err(transport) => {
-                if let Some(primary) = failure.take() {
-                    drop(transport);
-                    return Err(primary);
-                }
-                return Err(transport);
-            }
-        };
+        let mut decoded = result.map_err(|transport| failure.take().unwrap_or(transport))?;
         let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
             .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
@@ -1525,15 +1513,10 @@ pub(crate) fn clone_native_reference_text(
 
 impl FileRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let owner = match &self.volume.owner {
-            VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.capacity() as u64,
-            VolumeOwner::Agent(_) => 0,
-        };
-        [self.volume.id.capacity(), self.path.capacity(), self.version.capacity(),
+        [self.path.capacity(), self.version.capacity(),
             self.descriptor.media_type.capacity(), self.display_name.capacity()]
-            .into_iter().try_fold(self.volume.provider.logical_owned_bytes()?,
+            .into_iter().try_fold(self.volume.logical_owned_bytes()?,
                 |bytes, capacity| bytes.checked_add(capacity as u64))
-            .and_then(|bytes| bytes.checked_add(owner))
             .ok_or_else(|| {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -1671,7 +1654,7 @@ pub(crate) struct ConversationStateWire {
     pub(crate) archived_prefix: Option<ArchivedConversationPrefix>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct NativeConversationCustody {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     messages: Option<acyclic_fs::NativeAllocation>,
@@ -1690,11 +1673,6 @@ struct NativeConversationCustody {
 
 const INDEX_ROW_BYTES: usize = std::mem::size_of::<(Uuid, (Option<usize>, Option<usize>))>();
 
-impl std::fmt::Debug for NativeConversationCustody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeConversationCustody").finish_non_exhaustive()
-    }
-}
 impl PartialEq for NativeConversationCustody {
     fn eq(&self, _: &Self) -> bool { true }
 }
@@ -1911,22 +1889,25 @@ impl ConversationState {
         maximum_encoded_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
+        Self { agent: wire.agent, messages: wire.messages, archived_prefix: wire.archived_prefix,
+            ..Self::default() }.rebuild(maximum_encoded_bytes, work)
+    }
+
+    fn rebuild(
+        self, maximum_encoded_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
-        if let Some(prefix) = &wire.archived_prefix {
+        let mut state = self;
+        if let Some(prefix) = &state.archived_prefix {
             prefix.checkpoint.validate(cache.work())?;
-            if wire.agent.is_none() || prefix.through_sequence == 0 {
+            if state.agent.is_none() || prefix.through_sequence == 0 {
                 return Err(conversation_error(cache.work(), crate::wire::ErrorCode::Invalid,
                     "archived conversation prefix is unbound"));
             }
         }
-        let mut previous = wire.archived_prefix.as_ref()
+        let mut previous = state.archived_prefix.as_ref()
             .map_or(0, |prefix| prefix.through_sequence);
-        let mut state = Self {
-            agent: wire.agent,
-            messages: wire.messages,
-            archived_prefix: wire.archived_prefix,
-            ..Self::default()
-        };
         let retained = reserve_conversation_buffer(
             &mut state.prefix_digests, state.messages.len(),cache.work(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2316,14 +2297,13 @@ impl ConversationState {
         drop(temporary);
         let digest = self.history_prefix_digest(cut, work)?;
         let start = self.messages.partition_point(|message| message.sequence <= cut);
-        let suffix = self.messages.get(start..)
-            .ok_or_else(|| conversation_error(work, crate::wire::ErrorCode::Invalid, "history retirement cut is invalid"))?;
+        let suffix = self.messages.iter().skip(start);
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut carrier = Self::default();
+        let mut state = Self { agent: self.agent, ..Self::default() };
         let retained = reserve_conversation_buffer(
-            &mut carrier.messages, suffix.len(),cache.work(),
+            &mut state.messages, suffix.len(),cache.work(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            &mut carrier.native_custody.messages,
+            &mut state.native_custody.messages,
         )?;
         cache.adopt(retained)?;
         for message in suffix {
@@ -2334,24 +2314,12 @@ impl ConversationState {
                 retain(message.sequence, produced, cache.work())?;
                 cache.transfer();
             }
-            carrier.messages.push(message);
+            state.messages.push(message);
         }
-        let retained = carrier.copy_archive_checkpoint(cut, digest, reference, cache.work())?;
+        let retained = state.copy_archive_checkpoint(cut, digest, reference, cache.work())?;
         cache.adopt(retained)?;
-        let wire = ConversationStateWire {
-            agent: self.agent, messages: std::mem::take(&mut carrier.messages),
-            archived_prefix: carrier.archived_prefix.take(),
-        };
-        let (state, retained) = Self::from_wire(
-            wire, acyclic_stream::MAX_RECORD_BYTES as u64, cache.work())?;
+        let (state, retained) = state.rebuild(acyclic_stream::MAX_RECORD_BYTES as u64, cache.work())?;
         cache.adopt(retained)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let state = {
-            let mut state = state;
-            state.native_custody.messages = carrier.native_custody.messages.take();
-            state.native_custody.archive = carrier.native_custody.archive.take();
-            state
-        };
         let retained = cache.retained();
         cache.transfer();
         Ok((state, retained))
