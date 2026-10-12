@@ -105,83 +105,98 @@ impl<D: Domain> Client<D> {
         Ok(roots)
     }
 
-    /// Consume verified evidence using the existing domain semantics.
-    fn observe(
-        &self,
-        evidence: &Self::Evidence,
-        current: Option<&Fact<Self::Key, Self::Basis, Self::Value>>,
-        work: usize,
-    ) -> Result<DomainObservation<Self>, Error>;
-    /// Compare exact canonical result and prediction under this adapter.
-    fn corresponds(
-        &self,
-        predicted: &Self::Value,
-        canonical: &Self::Value,
-        work: usize,
-    ) -> Result<(Correspondence, usize), Error>;
-}
-
-/// Data-only persistence/share representation. It carries no authoritative fact.
-/// Restoring requires fresh authoritative demand and ordinary `begin` validation;
-/// this module supplies no journal, transport or automatic import/promotion.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Hypothesis<K, B, O, A, V> {
-    /// Stable hypothesis identity.
-    pub id: BranchId,
-    /// Correspondence adapter pin.
-    pub adapter: u128,
-    /// Target normalized record identity.
-    pub key: K,
-    /// Original admitted operation identity, if any.
-    pub operation: Option<O>,
-    /// Exact authoritative basis pinned at prediction.
-    pub basis: Arc<B>,
-    /// Domain-typed assumptions.
-    pub assumption: A,
-    /// Dependencies must be live and older, so cycles cannot be introduced.
-    pub dependencies: Vec<Dependency>,
-    /// Deterministic, immutable predicted projection.
-    pub predicted: Arc<V>,
-    /// Logical expiry supplied by the embedding host.
-    pub expires: u64,
-    /// Prediction status remains separate from the operation.
-    pub prediction: PredictionOutcome,
-    /// Last trusted correlated operation status.
-    pub outcome: OperationOutcome,
-    /// Conservatively accounted retained bytes including kernel/index metadata.
-    pub bytes: usize,
-}
-
-/// Arguments for a pure `begin` or dependent `fork`.
-pub struct Begin<K, B, O, A, V> {
-    /// Target demanded key.
-    pub key: K,
-    /// Exact pinned basis.
-    pub basis: Arc<B>,
-    /// Optional original operation identity.
-    pub operation: Option<O>,
-    /// Domain assumptions.
-    pub assumption: A,
-    /// Deterministic prediction.
-    pub predicted: Arc<V>,
-    /// Explicit dependencies; no speculative fanout is started.
-    pub dependencies: Vec<Dependency>,
-    /// Logical expiry.
-    pub expires: u64,
-}
-
-/// Provenance of a selected immutable value.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Provenance<B> {
-    /// Exact authoritative basis.
-    Authoritative(Arc<B>),
-    /// A local hypothesis under an exact authoritative basis and adapter.
-    Hypothesis {
-        /// Stable local identity.
-        id: BranchId,
-        /// Exact authority/generation/revision/content basis.
-        basis: Arc<B>,
-        /// Pinned correspondence implementation and revision.
-        adapter: u128,
-    },
+    /// Observe trusted evidence for one demanded key.
+    pub fn observe(&mut self, key: D::Key, evidence: &D::Evidence) -> Result<Changes, Error> {
+        if self.domain.identity() != self.adapter {
+            return Err(Error::Conflict);
+        }
+        let current = self.facts.get(&key);
+        let observation = self.domain.observe(evidence, current, self.limits.work)?;
+        let mut work = observation.work;
+        if work > self.limits.work {
+            return Err(Error::Budget);
+        }
+        let mut next_bytes = self.bytes;
+        if let Some(fact) = &observation.fact {
+            let record_metadata = metadata_bytes::<Record<D>>()?;
+            let fact_bytes = fact
+                .bytes
+                .checked_add(record_metadata)
+                .ok_or(Error::Budget)?;
+            if fact.key != key {
+                return Err(Error::Conflict);
+            }
+            if current.is_none() && self.facts.len() >= self.limits.records {
+                return Err(Error::Budget);
+            }
+            if current.is_none_or(|old| old.basis != fact.basis) {
+                let old_bytes = current
+                    .map(|old| old.bytes.checked_add(record_metadata).ok_or(Error::Budget))
+                    .transpose()?
+                    .unwrap_or(0);
+                next_bytes = next_bytes
+                    .checked_sub(old_bytes)
+                    .and_then(|bytes| bytes.checked_add(fact_bytes))
+                    .ok_or(Error::Budget)?;
+            }
+            if next_bytes > self.limits.bytes {
+                return Err(Error::Budget);
+            }
+        }
+        let mut correlated = self.resolve_operation(&key, &observation, current, &mut work)?;
+        let changed_basis = observation
+            .fact
+            .as_ref()
+            .is_some_and(|fact| current.is_some_and(|old| old.basis != fact.basis));
+        let roots = self.invalidation_roots(&key, changed_basis, correlated, &mut work)?;
+        let affected = self.affected(roots, &mut work)?;
+        if work > self.limits.work {
+            return Err(Error::Budget);
+        }
+        if let Some((id, _, prediction)) = &mut correlated
+            && affected.contains(id)
+            && matches!(
+                *prediction,
+                PredictionOutcome::Pending | PredictionOutcome::Confirmed
+            )
+        {
+            *prediction = PredictionOutcome::Invalidated;
+        }
+        // All fallible planning precedes mutation, including dependency closure.
+        let mut changed = Vec::new();
+        for id in affected {
+            if let Some(branch) = self.branches.get_mut(&id)
+                && branch.prediction != PredictionOutcome::Invalidated
+            {
+                branch.prediction = PredictionOutcome::Invalidated;
+                changed.push(id);
+            }
+        }
+        if let Some((id, outcome, prediction)) = correlated
+            && let Some(branch) = self.branches.get_mut(&id)
+            && (branch.outcome != outcome || branch.prediction != prediction)
+        {
+            branch.outcome = outcome;
+            branch.prediction = prediction;
+            if !changed.contains(&id) {
+                changed.push(id);
+            }
+        }
+        let authoritative = observation
+            .fact
+            .as_ref()
+            .is_some_and(|fact| current.is_none_or(|old| old.basis != fact.basis));
+        if let Some(fact) = observation.fact {
+            // Same exact content basis preserves the existing reference identity.
+            if current.is_none_or(|old| old.basis != fact.basis) {
+                self.facts.insert(key, fact);
+            }
+        }
+        self.bytes = next_bytes;
+        Ok(Changes {
+            authoritative,
+            hypotheses: changed,
+            work,
+        })
+    }
 }

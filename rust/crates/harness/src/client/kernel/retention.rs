@@ -28,8 +28,7 @@ impl<D: Domain> Client<D> {
         Ok(result)
     }
 
-    /// Discard one hypothesis and invalidate descendants. Does not cancel,
-    /// reject, undo or forget the original operation in the authoritative journal.
+    /// Discard one hypothesis and invalidate descendants.
     pub fn discard(&mut self, id: BranchId) -> Result<Vec<BranchId>, Error> {
         if !self.branches.contains_key(&id) {
             return Err(Error::Missing);
@@ -85,8 +84,7 @@ impl<D: Domain> Client<D> {
         }
     }
 
-    /// Explicit logical retention maintenance, bounded by active demand. Host
-    /// ticks are monotonic; there is no clock, timer or background worker.
+    /// Advance monotonic logical retention within the work bound.
     pub fn advance(&mut self, now: u64) -> Result<Vec<BranchId>, Error> {
         if now < self.now {
             return Err(Error::Time);
@@ -118,7 +116,6 @@ impl<D: Domain> Client<D> {
     }
 
     /// Release demanded canonical data when no hypothesis references it.
-    /// Caller snapshots remain valid; the adapter's journal is unaffected.
     pub fn release(&mut self, key: &D::Key) -> Result<(), Error> {
         if self.by_key.contains_key(key) {
             return Err(Error::Conflict);
