@@ -19,8 +19,6 @@ use futures::{StreamExt as _, stream};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock, mpsc, watch};
-#[cfg(test)]
-use tracing::Instrument as _;
 use tracing::field::Empty;
 
 use crate::journal::{Command, decode_command, replay};
@@ -69,17 +67,6 @@ use journal::*;
 use native::*;
 use publication::*;
 use snapshot::*;
-#[cfg(test)]
-static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =
-    Mutex::new(None);
-#[cfg(test)]
-type JournalPersistBlocker = (
-    usize,
-    std::sync::mpsc::SyncSender<()>,
-    std::sync::mpsc::Receiver<()>,
-);
-#[cfg(test)]
-static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 
 /// How the journal is made durable before a mutation becomes observable.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -218,19 +205,6 @@ impl LocalInner {
         durability: LocalDurability,
         mut admission: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
     ) -> MemoryResult<()> {
-        #[cfg(test)]
-        {
-            let inner_identity = self as *const Self as usize;
-            if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
-                && hook
-                    .as_ref()
-                    .is_some_and(|(expected_inner, _, _)| *expected_inner == inner_identity)
-                && let Some((_, started, release)) = hook.take()
-            {
-                let _ = started.send(());
-                let _ = release.recv();
-            }
-        }
         let (flushed, observed) = match &mut admission {
             Some(admission) => admission.attempt(|| sync_file_data(&self.sync, durability)),
             None => (sync_file_data(&self.sync, durability), Ok(())),
