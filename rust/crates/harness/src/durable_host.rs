@@ -689,7 +689,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             None => {
                 bytes_hold = None;
                 self.verify(true, &mut None).await?;
-                acyclic_stream::OwnedBytes::from(reader.read(file).await?)
+                acyclic_stream::OwnedBytes::from(reader.read(file, file.descriptor().byte_length(), None)?.await?)
             }
         };
         file.descriptor().verify(&bytes, &mut None)?;
@@ -731,7 +731,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let (bytes, retained) = match quota.work().as_deref_mut() {
             Some(observer) => crate::store::history::read_content_with_work(
                 observer, self.host.reader.as_ref(), &binding.configuration.content).await?,
-            None => (self.host.reader.read(&binding.configuration.content).await?, 0),
+            None => (self.host.reader.read(&binding.configuration.content, self.input_limits.render_bytes, None)?.await?, 0),
         };
         quota.adopt(retained)?;
         match io {
@@ -2748,7 +2748,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(child.into_bytes()),
             IdempotencyKey::new(format!("task-child-cancel:{parent}:{operation}"))?,
-            OperationId::from_bytes(parent.into_bytes()), fence,
+            OperationId::from_bytes(parent.into_bytes()), &fence,
          &mut None,).await
     }
 
@@ -2925,7 +2925,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                event.operation_id,
+                event.event.operation_id(),
              &mut None,).cloned()?;
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
@@ -2934,7 +2934,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .as_ref()
                     .is_some_and(|slot| slot.waiting_command.is_some())
             {
-                tasks.insert(crate::runtime::task_id_for_admission(event.operation_id));
+                tasks.insert(crate::runtime::task_id_for_admission(event.event.operation_id()));
             }
         }
         Ok((after_revision + u64::from(count), through_revision, count, tasks.into_iter().collect()))
@@ -4695,7 +4695,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            reference.validate_with_native_work(native)?;
+            reference.validate(&mut Some(&mut crate::store::history::native_work_io(native)?))?;
         } else {
             reference.validate(&mut None)?;
         }
@@ -4709,7 +4709,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let (bytes, byte_retained) = match custody.work().as_deref_mut() {
             Some(io) => io.read_content(self.reader.as_ref(), reference)?.await?,
-            None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference).await?), 0),
+            None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference, reference.descriptor().byte_length(), None)?.await?), 0),
         };
         custody.adopt(byte_retained)?;
         reference.descriptor().verify(&bytes, custody.work())?;
@@ -5301,7 +5301,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let reader = reader.unwrap_or(self.reader.as_ref());
         let bytes = match quota.work().as_deref_mut() {
             Some(io) => crate::store::history::read_content_with_work(io, reader, payload).await?.0,
-            None => reader.read(payload).await?,
+            None => reader.read(payload, payload.descriptor().byte_length(), None)?.await?,
         };
         payload.descriptor().verify(&bytes, quota.work())?;
         Ok(bytes)
