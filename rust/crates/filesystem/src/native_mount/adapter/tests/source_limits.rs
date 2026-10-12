@@ -518,6 +518,11 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
             Self::Source(cause)
         }
     }
+    impl From<crate::FsError> for GuardFailure {
+        fn from(cause: crate::FsError) -> Self {
+            Self::Source(cause.into())
+        }
+    }
 
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
@@ -555,9 +560,9 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let guard_stop = local_stop.clone();
     let guard_reached = Arc::clone(&reached);
     let guard_prefix = Arc::clone(&observed_prefix);
-    let expected_meter = Arc::clone(root.native_read_meter());
+    let expected_work = root.clone();
     let mut before_publication = move |original: &crate::NativeMaterializationWork| {
-        assert!(Arc::ptr_eq(original.native_read_meter(), &expected_meter));
+        assert!(original.shares_ledger(&expected_work));
         assert!(original.cancellation().same_state(&guard_stop));
         let stop = guard_stop.clone();
         let reached = Arc::clone(&guard_reached);
@@ -574,12 +579,12 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let failure = source
         .runtime
         .block_on(|| async {
-            source
-                .sync_async_with_permit_carrier_guarded_context_with_ack(
+            source.checkout
+                .publish(
                     crate::PublicationPermit::Unrestricted,
-                    true,
-                    &mut NativeDemandCarrier::Native(&native),
+                    &native,
                     &local_stop,
+                    Some(source.cancellation()),
                     &mut before_publication,
                     Some(context),
                     &mut acknowledged,
@@ -636,7 +641,6 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let retained_operation = source.runtime.block_on(|| async {
         let checkout = source.checkout.lock().await;
         assert!(checkout.has_pending_mutations());
-        assert!(checkout.publication_evidence.is_some());
         checkout
             .publication_operation
             .expect("failed publication retains the actual SDK operation")
@@ -648,15 +652,15 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let (retry, retry_stop) = root.invocation_view()?;
     let retry = retry.with_source_io_lease(source.native_source_io_lease()?)?;
     let retry_native = retry.clone();
-    let published = source
+    source
         .runtime
         .block_on(|| async {
-            source
-                .sync_async_with_permit_carrier_guarded_context_with_ack(
+            source.checkout
+                .publish(
                     crate::PublicationPermit::Unrestricted,
-                    false,
-                    &mut NativeDemandCarrier::Native(&retry_native),
+                    &retry_native,
                     &retry_stop,
+                    Some(source.cancellation()),
                     &mut |_original: &crate::NativeMaterializationWork| {
                         std::future::ready(Ok::<(), GuardFailure>(()))
                     },
@@ -666,6 +670,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                 .await
         })
         .expect("healthy current invocation retries the original retained SDK operation");
+    let published = acknowledged.expect("the SDK acknowledged the retained operation");
     assert_eq!(published.operation(), Some(retained_operation));
     assert_eq!(published.snapshot().workspace_id(), workspace_id);
     assert_eq!(published.snapshot().volume_config(), config);

@@ -193,7 +193,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let token = owner
         .resource_preparation(request.clone(), &mut None)
         .await?;
-    token.verify_creation().await?;
+    token.verify(false, None)?.await?;
     #[cfg(not(target_arch = "wasm32"))]
     check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
     assert_eq!(token.origin().preparation_task, prep);
@@ -303,14 +303,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             &mut None,
         )
         .await?;
-    assert!(token.verify_creation().await.is_err());
+    assert!(token.verify(false, None)?.await.is_err());
     assert!(
         owner
             .resource_preparation(request, &mut None)
             .await
             .is_err()
     );
-    token.verify_reconciliation().await?;
+    token.verify(true, None)?.await?;
     Ok(())
 }
 
@@ -327,9 +327,10 @@ async fn check_native_preparation_authority(
         acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
         &cancellation,
     )?;
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let before = work.receipt();
     assert!(matches!(
-        ordinary.verify_creation_with_native_work(&work),
+        ordinary.verify(false, Some(&io)),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
@@ -379,16 +380,17 @@ async fn check_native_preparation_authority(
         .resource_preparation_with_native_work(request, &work)?
         .await?;
     assert_eq!(token.origin(), ordinary.origin());
-    token.verify_creation_with_native_work(&work)?.await?;
+    token.verify(false, Some(&io))?.await?;
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(
         acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024),
         &foreign_cancellation,
     )?;
+    let foreign_io = crate::filesystem::PreparationIo::from_native_work(&foreign)?;
     let before = foreign.receipt();
     assert!(matches!(
-        token.verify_creation_with_native_work(&foreign),
+        token.verify(false, Some(&foreign_io)),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
