@@ -422,7 +422,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
-        let schemas = self.schemas.clone_with_work(&mut Some(&mut io))?;
+        let schemas = self.schemas.copy(&mut Some(&mut io))?;
         let providers = self.providers.clone_with_native_work(work)?;
         let mut host = Self::new_with_native_work(
             self.stream.clone(), authority, issuer, scope, schemas,
@@ -463,11 +463,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
             let verifier = self.issuer.verifier(&mut Some(&mut io))?;
-            let aggregate = StreamAggregate::open_inner(
-                stream, authority, verifier, self.schemas.clone(), None,
-                default_projection_read_limits(), self.terminal_effect_limit, None,
-                &mut Some(&mut io),
-            ).await?.with_content_verifier(Arc::clone(&self.content))
+            let aggregate = StreamAggregate::open(
+                stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, &mut Some(&mut io)).await?.with_content_verifier(Arc::clone(&self.content))
                 .with_effect_history_read_limits(self.effect_history_limits)?;
             return Ok(ObservedEffectAggregate {
                 aggregate, history_limits: self.effect_history_limits,
@@ -478,10 +475,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             Some(io) => io.clone_authority(&self.authority)?, None => self.authority.clone(),
         };
         let verifier = self.issuer.verifier(work)?;
-        let aggregate = StreamAggregate::open_inner(
-            stream, authority, verifier, self.schemas.clone(), None,
-            default_projection_read_limits(), self.terminal_effect_limit, None, work,
-        ).await?.with_content_verifier(Arc::clone(&self.content))
+        let aggregate = StreamAggregate::open(
+            stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, work).await?.with_content_verifier(Arc::clone(&self.content))
             .with_effect_history_read_limits(self.effect_history_limits)?;
         Ok(ObservedEffectAggregate {
             aggregate,
@@ -707,7 +702,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let mut command_custody = crate::wire_codec::CodecQuota::new(retained.work(), 0)?;
             let scope = self.scope.copy(command_custody.work())?;
             command_custody.adopt(scope.logical_owned_bytes()?)?;
-            let observation = attestation.clone_with_work(command_custody.work())?;
+            let observation = attestation.copy(command_custody.work())?.0;
             command_custody.adopt(attestation_owned_bytes(&observation)?)?;
             let (key, key_bytes) = effect_key("effect-reconcile:", operation_id, None, command_custody.work())?;
             command_custody.adopt(key_bytes)?;
@@ -812,7 +807,7 @@ mod native_metadata_controls {
         )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
-            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?,
         )
     }
 
@@ -849,14 +844,14 @@ mod native_metadata_controls {
         let work = NativeMaterializationWork::new(denied, &cancellation)
             .expect("only meter backing is admitted");
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
 
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original cancellable ledger");
         cancellation.cancel();
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
     }
 

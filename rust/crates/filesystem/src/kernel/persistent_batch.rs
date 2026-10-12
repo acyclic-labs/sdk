@@ -9,17 +9,11 @@ use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use std::marker::PhantomData;
 use std::ops::Range;
 use thiserror::Error;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Receipt<V> {
-    pub(crate) values: Vec<Option<V>>,
-    pub(crate) work: WorkCounters,
-}
 
 pub(crate) type Failure = OperationFailure<Error>;
 
@@ -85,7 +79,7 @@ pub(crate) fn lookup<S, F>(
     maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
 where
     S: crate::ImmediateObjectStore,
     F: Format,
@@ -104,7 +98,7 @@ where
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
 where S: AsyncObjectStore, F: Format {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = lookup_async_with_accounting::<S, F>(
@@ -119,7 +113,7 @@ pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError>
+) -> Result<(OperationReceipt<Vec<Option<F::Value>>>, KernelOwnedAllocation), crate::FsError>
 where S: AsyncObjectStore, F: Format {
     accounting.check()?;
     let mut machine = Machine::<F>::new(root, keys, maximum_queries, limits, accounting)?;
@@ -425,13 +419,13 @@ impl<'a, F: Format> Machine<'a, F> {
         self.cleanup_scratch(accounting)?.retire(accounting)
     }
 
-    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError> {
+    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<(OperationReceipt<Vec<Option<F::Value>>>, KernelOwnedAllocation), crate::FsError> {
         let returned = accounting.charge(WorkCounters { items_returned: usize_to_u64(self.values.value.len()), ..WorkCounters::UNCHARGED });
         if let Err(error) = returned { self.abort_cleanup(accounting)?; return Err(error); }
         let values = self.cleanup_scratch(accounting)?;
         let Owned { value: values, allocation, .. } = values;
         let work = accounting.spent();
-        Ok((Receipt { values, work }, allocation))
+        Ok((OperationReceipt { value: values, work }, allocation))
     }
 }
 

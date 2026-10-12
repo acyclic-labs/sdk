@@ -435,7 +435,7 @@ where
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     Ok(
-        StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
+        StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(reader)
             .with_fork_verifier(forks)
@@ -621,6 +621,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             project.clone(),
             stream_provider.clone(),
             parent_reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let parent_workspaces = (level == DEPTH)
             .then(|| {
@@ -812,6 +813,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 project.clone(),
                 stream_provider.clone(),
                 reader,
+                None, None, #[cfg(not(target_arch = "wasm32"))] None,
             )?;
             let report = aggregate
                 .prepare_fork(&sibling_preparer, sibling_request)
@@ -1409,6 +1411,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,

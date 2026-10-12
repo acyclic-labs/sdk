@@ -723,7 +723,7 @@ impl<A, O> Fs<A, O> {
 
         let named = crate::WorkspaceName::new_measured(name, budget, cancellation)?;
         let work = named.work;
-        let derived = crate::WorkspaceId::derive_measured(
+        let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &named.value,
             work.remaining(budget).map_err(|error| OperationFailure::new(WorkspaceError::Work(error), work))?,
             cancellation,
@@ -3590,7 +3590,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation.check().map_err(FsError::from)?;
         original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
         let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
-        let id = crate::WorkspaceId::derive_with_native_work(
+        let id = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &name, original, cancellation,
         )?;
         validate_volume_capabilities_direct(config, self.inner.capabilities)?;
@@ -3635,7 +3635,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
             let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
-            let id = crate::WorkspaceId::derive_with_native_work(
+            let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
             let (creation, operation) = match self.read_creation_record(
@@ -3668,7 +3668,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
             let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
-            let id = crate::WorkspaceId::derive_with_native_work(
+            let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
             let (creation, _) = self.read_creation_record(id.volume_id(), original, cancellation).await?;
@@ -3746,7 +3746,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), (WorkspaceError, Option<NativeAllocation>)> {
         let result = (|| {
             let name = crate::WorkspaceName::new_with_native_work(name.as_ref(), original, cancellation)?;
-            let id = crate::WorkspaceId::derive_with_native_work(
+            let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
             Ok((name, id))
@@ -4123,11 +4123,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::WorkspaceId, WorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return crate::WorkspaceId::derive_with_native_work(
+            return crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, destination, original, cancellation,
             );
         }
-        let derived = crate::WorkspaceId::derive_measured(
+        let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, destination, accounting.remaining()?, cancellation,
         );
         let work = match &derived { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
@@ -5004,7 +5004,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         expected: GenerationId,
         operation_id: OperationId,
         permit: PublicationPermit,
-    ) -> Result<crate::workspace::WorkspaceRestoreOutcome, WorkspaceError> {
+    ) -> Result<crate::WorkspaceRestore<GenerationId>, WorkspaceError> {
         let cancellation = CancellationToken::new();
         if let Some(recorded) = self
             .workspace_operation_generation(workspace, operation_id,
@@ -5012,9 +5012,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await?.0.map(|(generation, record)| { drop(record); generation })
         {
             return Ok(if recorded == generation {
-                crate::workspace::WorkspaceRestoreOutcome::AlreadyRestored(recorded)
+                crate::WorkspaceRestore::AlreadyRestored(recorded)
             } else {
-                crate::workspace::WorkspaceRestoreOutcome::IdempotencyConflict
+                crate::WorkspaceRestore::IdempotencyConflict
             });
         }
         let (current, authority_head, _) = workspace
@@ -5023,10 +5023,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(WorkspaceError::engine)?;
         let current = GenerationId::new(current.digest);
         if current != expected {
-            return Ok(crate::workspace::WorkspaceRestoreOutcome::Stale(current));
+            return Ok(crate::WorkspaceRestore::Stale(current));
         }
         if current == generation {
-            return Ok(crate::workspace::WorkspaceRestoreOutcome::Current(current));
+            return Ok(crate::WorkspaceRestore::Current(current));
         }
         let generation_root = ObjectId {
             kind: ObjectKind::GenerationRoot,
@@ -5064,10 +5064,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(WorkspaceError::engine)?;
         Ok(match publication.outcome {
             AppendOutcome::Committed(_) => {
-                crate::workspace::WorkspaceRestoreOutcome::Restored(publication.proof.generation_id)
+                crate::WorkspaceRestore::Restored(publication.proof.generation_id)
             }
             AppendOutcome::AlreadyCommitted(_) => {
-                crate::workspace::WorkspaceRestoreOutcome::AlreadyRestored(
+                crate::WorkspaceRestore::AlreadyRestored(
                     publication.proof.generation_id,
                 )
             }
@@ -5076,11 +5076,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
                     .await
                     .map_err(WorkspaceError::engine)?;
-                crate::workspace::WorkspaceRestoreOutcome::Stale(GenerationId::new(actual.digest))
+                crate::WorkspaceRestore::Stale(GenerationId::new(actual.digest))
             }
-            AppendOutcome::Fenced { .. } => crate::workspace::WorkspaceRestoreOutcome::Fenced,
+            AppendOutcome::Fenced { .. } => crate::WorkspaceRestore::Fenced,
             AppendOutcome::IdempotencyConflict { .. } => {
-                crate::workspace::WorkspaceRestoreOutcome::IdempotencyConflict
+                crate::WorkspaceRestore::IdempotencyConflict
             }
         })
     }

@@ -50,7 +50,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         implementation, schema.clone(), schema.clone(),
     )?;
     let mut host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, payloads.clone()).await?,
+        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
         stream.clone(),
         payloads.clone(),
         payloads,
@@ -273,7 +273,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
-            false,
+            false, &mut None,
         )
         .await?;
     assert!(token.verify_creation().await.is_err());

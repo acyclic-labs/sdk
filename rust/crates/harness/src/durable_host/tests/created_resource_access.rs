@@ -471,7 +471,7 @@ impl CreationFixture {
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
-            })?;
+            }, &mut None)?;
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
             root_scope.limits().file_bytes, None,
@@ -505,7 +505,7 @@ impl CreationFixture {
         #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
+            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {
@@ -804,8 +804,7 @@ impl CreationFixture {
         )?);
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
-            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-        ).await?;
+            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command {
             operation_id: OperationId::from_bytes([90; 16]),
             idempotency_key: IdempotencyKey::new("created-fork-bind")?,
@@ -863,7 +862,8 @@ impl CreationFixture {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
             stream_provider, resolver,
-        )?.with_history_context(history)?;
+            Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+        )?;
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         child.grants = Capabilities::new([
             "task:spawn:test.created@1".into(),

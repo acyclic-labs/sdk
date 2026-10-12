@@ -66,8 +66,8 @@ impl ResumableMachine for MailboxModelMachine {
             .map_err(|error| Error::Invalid(format!("invalid mailbox receive: {error}")))?;
         let model: WorkflowCommand = serde_json::from_value(input["model"].clone())
             .map_err(|error| Error::Invalid(format!("invalid mailbox model: {error}")))?;
-        receive.validate()?;
-        model.validate()?;
+        receive.validate(&mut None)?;
+        model.validate(&mut None)?;
         if receive.kind != MAIL_RECEIVE_TASK_COMMAND_KIND || model.kind != MODEL_TASK_COMMAND_KIND
             || receive.operation_id == model.operation_id
         {

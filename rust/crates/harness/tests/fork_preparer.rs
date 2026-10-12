@@ -133,8 +133,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
@@ -252,6 +251,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let request = ForkRequest {
         authorized_source: None,
@@ -428,6 +428,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     let another_agent = AgentId::from_bytes([12; 16]);
@@ -508,6 +509,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     assert_eq!(
@@ -581,6 +583,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project,
         stream_provider,
         resolver,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     assert_eq!(
         aggregate.reconcile_fork(&restarted, request).await?,

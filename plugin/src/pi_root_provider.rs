@@ -406,7 +406,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     let authority = observer.owner.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &observer.owner.policy().grants, work)?;
     let verifier = authority.0.1.verifier_with_native_work(work)?;
-    let source = filesystem.native_root_output_source_with_native_work(current_owner,
+    let source = filesystem.root_output_source(current_owner,
         &binding.scratch.volume, operation, &generation, &verifier.0, &authority.0.2, work).await?;
     context.bind_root_output_context_with_native_work(source, work).await?;
     Ok(context)

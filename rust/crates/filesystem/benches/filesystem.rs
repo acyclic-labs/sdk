@@ -57,7 +57,7 @@ fn transaction_publish_16(bencher: Bencher) {
                 .unwrap();
             for item in 0..16 {
                 let path = format!("/batch-{next}-{item}");
-                Box::pin(transaction.write(&path, Bytes::from_static(b"value")))
+                Box::pin(transaction.write(&path, Bytes::from_static(b"value"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                     .await
                     .unwrap();
             }

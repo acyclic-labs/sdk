@@ -28,7 +28,7 @@ mod measured_open_tests {
     async fn fixture() -> Result<(Arc<Provider>, std::sync::Arc<Provider>)> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
-        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?);
+        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?);
         for revision in 0..69 {
             writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
@@ -80,12 +80,12 @@ mod measured_open_tests {
         let provider = Arc::new(Provider::default());
         let client = provider.clone();
         let writer = with_content(StreamAggregate::open(
-            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?);
+            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?);
         let ApplyResult::Applied { event } = writer.reducer().plan(&command(1)?)? else {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
+            &authority(), &event, encode_event(&authority(), &event, &mut None)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -242,7 +242,7 @@ mod measured_open_tests {
         let (provider, client) = fixture().await?;
         let cancellation = CancellationToken::new();
         let expected = StreamAggregate::open(
-            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?.reducer().snapshot(usize::MAX, &mut None)?.0;
+            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.reducer().snapshot(usize::MAX, &mut None)?.0;
         let measured = StreamAggregate::open_measured(
             &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), budget(), &cancellation)
             .await.map_err(|failure| failure.error)?;
@@ -412,7 +412,7 @@ mod measured_open_tests {
             (request.path().to_owned(), EXTENSION_BYTES.to_vec()),
             (schema.path().to_owned(), schema_bytes.to_vec()),
         ])));
-        let mut writer = StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?.with_content_verifier(content_verifier);
+        let mut writer = StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content_verifier);
         let effect_id = EffectId::from_bytes([41; 16]);
         let attempt_id = EffectAttemptId::from_bytes([42; 16]);
         let scope = issuer().issue("effects", &Capabilities::new(["effect:run", "effect:plan", "effect:provider:test.effects"]), None, None, &mut None).expect("scope proof");
@@ -598,7 +598,7 @@ mod measured_open_tests {
         }
         let mut forged = snapshot.copy(&mut None)?;
         forged.attestation[0] ^= 1;
-        assert!(matches!(Reducer::restore(forged.clone_with_work(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas()), Err(Error::Unauthorized(_))));
+        assert!(matches!(Reducer::restore(forged.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas()), Err(Error::Unauthorized(_))));
         let mut work = history::HistoryWork::new(budget(), &cancellation);
         let result = Reducer::restore_with_work(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
         let failure = work.finish(result).err().expect("original snapshot MAC must reject even after its state digest verifies");
@@ -624,9 +624,9 @@ mod measured_open_tests {
     async fn exact_historical_open_keeps_admitted_origin_after_later_parent_appends() -> Result<()> {
         let (provider, client) = fixture().await?;
         let limits = default_projection_read_limits();
-        let original = StreamAggregate::open_at_revision_with_read_limits(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), 65, limits).await?.reducer().snapshot(usize::MAX, &mut None)?.0;
+        let original = StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(65), &mut None).await?.reducer().snapshot(usize::MAX, &mut None)?.0;
         provider.forbid_writes.store(false, Ordering::SeqCst);
-        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?);
+        let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?);
         for revision in 69..134 {
             writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
@@ -667,7 +667,7 @@ mod measured_open_tests {
             let failed = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), 65, limits, budget(), &cancellation).await.err().expect("unavailable/tampered original checkpoint cannot fall forward to latest checkpoint");
             assert_eq!(failed.work.output_bytes, 0);
             assert_eq!(failed.work.items_returned, 0);
-            assert_eq!(StreamAggregate::open_at_revision_with_read_limits(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), 65, limits).await?.reducer().snapshot(usize::MAX, &mut None)?.0, original);
+            assert_eq!(StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(65), &mut None).await?.reducer().snapshot(usize::MAX, &mut None)?.0, original);
         }
         let exact = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), 134, limits, budget(), &cancellation).await.map_err(|failure| failure.error)?;
         let latest = StreamAggregate::open_measured(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;

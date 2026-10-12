@@ -156,14 +156,6 @@ fn model_media_policy_in_quota(
 ) -> Result<NativeMediaPolicy> {
     if quota.work().is_none() { return Ok(policy.clone()); }
     model_copy_node(quota)?;
-    let intent = match &policy.intent {
-        NativeMediaIntent::Image { detail } => NativeMediaIntent::Image { detail: *detail },
-        NativeMediaIntent::Audio { maximum_duration_ms } => NativeMediaIntent::Audio { maximum_duration_ms: *maximum_duration_ms },
-        NativeMediaIntent::Video { maximum_duration_ms, maximum_frames } => NativeMediaIntent::Video {
-            maximum_duration_ms: *maximum_duration_ms, maximum_frames: *maximum_frames,
-        },
-        NativeMediaIntent::Document { maximum_pages } => NativeMediaIntent::Document { maximum_pages: *maximum_pages },
-    };
     let configuration = policy.configuration.as_ref().map(|binding| -> Result<NativeConfigurationBinding> {
         model_copy_node(quota)?;
         Ok(NativeConfigurationBinding {
@@ -172,7 +164,7 @@ fn model_media_policy_in_quota(
             implementation_digest: binding.implementation_digest,
         })
     }).transpose()?;
-    Ok(NativeMediaPolicy { intent, maximum_bytes: policy.maximum_bytes,
+    Ok(NativeMediaPolicy { intent: policy.intent.clone(), maximum_bytes: policy.maximum_bytes,
         maximum_work: policy.maximum_work, configuration })
 }
 
@@ -1160,7 +1152,7 @@ impl ModelRequest {
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
             model_step(io, 1)?;
-            tool.validate_with_io(io)?;
+            crate::executor::with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
@@ -1179,7 +1171,7 @@ impl ModelRequest {
                         arguments,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
                                 "model tool call role or identity is invalid".into(),
@@ -1199,7 +1191,7 @@ impl ModelRequest {
                         content,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
                             return Err(Error::Invalid(

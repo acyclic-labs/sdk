@@ -171,8 +171,7 @@ impl Fixture {
             request.binding.clone(), request.root.clone(), command.clone(), &work,
         ).await.unwrap();
         assert!(matches!(admission.0, acyclic_harness::Admission::Accepted(_)));
-        drop(admission.0);
-        drop(admission.1);
+        drop(admission);
         Self {
             runtime,
             filesystem,
@@ -191,7 +190,7 @@ impl Fixture {
         let observation = work();
         self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
             &observation, observation.cancellation()).await.unwrap()
-            .head_with_native_work(&observation, observation.cancellation()).await.unwrap().id()
+            .head(&observation, observation.cancellation()).await.unwrap().id()
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {

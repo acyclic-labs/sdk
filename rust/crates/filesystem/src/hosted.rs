@@ -8,7 +8,7 @@ use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::wire::filesystem::v2 as wire;
 use crate::wire::protocol::v1 as protocol;
 use crate::{
-    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, Fs, GenerationId,
+    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, GenerationId,
     HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
 };
 use bytes::Bytes;
@@ -33,7 +33,7 @@ pub const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
 /// object ID, contents, terminal flag, tags, and length varints.
 pub const MAX_BYTE_RESPONSE_ENVELOPE_BYTES: u64 = 10 + 35 + 11 + 2;
 
-/// Connection and client-side response bounds for [`Fs::hosted`].
+/// Connection and client-side response bounds for [`HostedFs::connect`].
 #[derive(Clone, Eq, PartialEq)]
 pub struct HostedFsOptions {
     /// HTTPS endpoint of the hosted Filesystem service.
@@ -178,25 +178,6 @@ impl Default for HostedS3AccessOptions {
     }
 }
 
-/// Marker selecting the transport-only `Fs::hosted` constructor.
-#[doc(hidden)]
-pub struct HostedAuthority;
-/// Marker selecting the transport-only `Fs::hosted` constructor.
-#[doc(hidden)]
-pub struct HostedObjects;
-
-impl Fs<HostedAuthority, HostedObjects> {
-    /// Connects the canonical high-level Filesystem handles to a hosted service.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid bounds, credentials, non-HTTP endpoints, and failed
-    /// transport setup before returning a usable handle.
-    pub async fn hosted(options: HostedFsOptions) -> Result<HostedFs, HostedFsError> {
-        HostedFs::connect(options).await
-    }
-}
-
 /// Cloneable hosted Filesystem owner. Handles produced by another owner cannot
 /// be substituted because each operation retains its exact wire reference.
 #[derive(Clone)]
@@ -246,7 +227,8 @@ fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsErro
 }
 
 impl HostedFs {
-    async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
+    /// Connects a bounded client and validates the canonical service handshake.
+    pub async fn connect(options: HostedFsOptions) -> Result<Self, HostedFsError> {
         validate_hosted_options(&options)?;
         let authorization: MetadataValue<Ascii> = format!("Bearer {}", options.bearer_token)
             .parse()
@@ -1628,7 +1610,7 @@ mod tests {
         let endpoint = format!("http://{address}");
         let mut minimum_options = HostedFsOptions::new(&endpoint, "test-account-token");
         minimum_options.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES;
-        let minimum_hosted = Fs::hosted(minimum_options).await?;
+        let minimum_hosted = HostedFs::connect(minimum_options).await?;
         assert_eq!(
             minimum_hosted.capabilities().maximum_response_bytes,
             u64::try_from(MINIMUM_HANDSHAKE_RESPONSE_BYTES)? - MAX_BYTE_RESPONSE_ENVELOPE_BYTES
@@ -1636,7 +1618,7 @@ mod tests {
 
         let mut options = HostedFsOptions::new(endpoint, "test-account-token");
         options.maximum_response_bytes = 1_024 + usize::try_from(MAX_BYTE_RESPONSE_ENVELOPE_BYTES)?;
-        let hosted = Fs::hosted(options).await?;
+        let hosted = HostedFs::connect(options).await?;
         assert_eq!(hosted.capabilities().maximum_response_bytes, 1_024);
         assert_eq!(hosted.capabilities().maximum_transaction_mutations, 2);
         assert_eq!(hosted.capabilities().maximum_page_items, 2);
@@ -1866,19 +1848,19 @@ mod tests {
         let endpoint = format!("https://localhost:{}", address.port());
 
         assert!(
-            Fs::hosted(HostedFsOptions::new(&endpoint, "exact-token"))
+            HostedFs::connect(HostedFsOptions::new(&endpoint, "exact-token"))
                 .await
                 .is_err()
         );
         assert!(matches!(
-            Fs::hosted(
+            HostedFs::connect(
                 HostedFsOptions::new(&endpoint, "wrong-token")
                     .with_ca_certificate(certificate_pem.clone())
             )
             .await,
             Err(HostedFsError::Status(status)) if status.code() == tonic::Code::Unauthenticated
         ));
-        let hosted = Fs::hosted(
+        let hosted = HostedFs::connect(
             HostedFsOptions::new(endpoint, "exact-token").with_ca_certificate(certificate_pem),
         )
         .await?;
@@ -1903,7 +1885,7 @@ mod tests {
         let oversized = HostedFsOptions::new("https://localhost", "token")
             .with_ca_certificate(vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]);
         assert!(matches!(
-            Fs::hosted(oversized).await,
+            HostedFs::connect(oversized).await,
             Err(HostedFsError::InvalidOptions(
                 "CA certificate must contain 1 to 65536 bytes"
             ))
@@ -1912,7 +1894,7 @@ mod tests {
         let mut undersized = HostedFsOptions::new("https://localhost", "token");
         undersized.maximum_response_bytes = MINIMUM_HANDSHAKE_RESPONSE_BYTES - 1;
         assert!(matches!(
-            Fs::hosted(undersized).await,
+            HostedFs::connect(undersized).await,
             Err(HostedFsError::InvalidOptions(
                 "request bound must be nonzero and response bound must admit the handshake"
             ))

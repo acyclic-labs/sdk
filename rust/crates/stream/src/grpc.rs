@@ -1952,7 +1952,7 @@ mod tests {
         let mut obsolete = tonic::client::Grpc::new(channel);
         obsolete.ready().await?;
         let result: Result<Response<wire::TailResponse>, Status> = obsolete
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            .unary(
                 Request::new(wire::TailRequest {
                     path: "events".into(),
                 }),
