@@ -473,11 +473,11 @@ impl CreationFixture {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
             })?;
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(), payload_volume, &issuer.verifier(), &signed,
+            filesystem.clone(), payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
             root_scope.limits().file_bytes,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), issuer.verifier(), signed.clone(), root_scope.limits().file_bytes,
+            filesystem.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), root_scope.limits().file_bytes,
         )?);
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
@@ -512,7 +512,7 @@ impl CreationFixture {
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?);
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
-            payloads, reader, authority, signed, issuer.verifier(), root_scope.clone(),
+            payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
@@ -806,11 +806,11 @@ impl CreationFixture {
             parent_private.capability(VolumeOperation::Read)?,
         ]));
         let resolver = Arc::new(FilesystemContentVerifier::new(
-            self.filesystem.clone(), fork_issuer.verifier(), fork_scope.clone(), 65_536,
+            self.filesystem.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), fork_scope.clone(), 65_536,
         )?);
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
-            &fork_stream, parent.clone(), fork_issuer.verifier(), SchemaRegistry::new(),
+            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
         ).await?;
         aggregate.execute(Command {
             operation_id: OperationId::from_bytes([90; 16]),
@@ -846,7 +846,7 @@ impl CreationFixture {
             },
             selections: vec![
                 ForkSelection { required: true, revision: ResourceRevision::History(StreamRef::new(
-                    stream_provider.clone(), parent.stream_path()?.into_bytes(),
+                    stream_provider.clone(), parent.stream_path(&mut None)?.into_bytes(),
                     Some(aggregate.reducer().revision().to_string()),
                 )?) },
                 ForkSelection { required: true, revision: ResourceRevision::Project {
@@ -858,13 +858,13 @@ impl CreationFixture {
             ], boundary: None,
         };
         let history = crate::store::HistoryReader::new(
-            &fork_stream, &parent, fork_issuer.verifier(),
+            &fork_stream, &parent, fork_issuer.verifier(&mut None).expect("verifier copy"),
         )?.fork_history(
             aggregate.reducer(), 0,
             crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
         ).await?;
         let preparer = FilesystemForkPreparer::new(
-            self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(),
+            self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(&mut None).expect("verifier copy"),
             fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
@@ -893,9 +893,9 @@ impl CreationFixture {
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
         let report = preparer.prepare_for_task(fork, &preparation).await?;
-        let seed = report.clone().into_seed()?;
+        let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild { request, private, project, seed, report,
-            parent: aggregate.reducer().clone(), parent_scope: fork_scope, parent_verifier: fork_issuer.verifier() })
+            parent: aggregate.reducer().clone(), parent_scope: fork_scope, parent_verifier: fork_issuer.verifier(&mut None).expect("verifier copy") })
     }
 }
 

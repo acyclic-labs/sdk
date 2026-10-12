@@ -127,7 +127,7 @@ impl Fixture {
             stream,
             self.host.clone(),
             private,
-            self.issuer.verifier(),
+            self.issuer.verifier(&mut None).expect("verifier copy"),
             scope,
             32_768,
         )?
@@ -162,10 +162,10 @@ impl Fixture {
         );
         host.create_volume(&volume).await?;
         let writer =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope,
             32_768,
         )?);
@@ -355,7 +355,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     );
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        fixture.issuer.verifier(),
+        fixture.issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         32_768,
     )?;

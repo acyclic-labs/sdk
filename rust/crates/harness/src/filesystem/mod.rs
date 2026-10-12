@@ -798,8 +798,8 @@ impl NativeFilesystemVerificationBinding {
         verifier.verify_with_native_work(scope, work)?;
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
-        let verifier = verifier.clone_with_work(&mut Some(&mut observer))?;
-        let scope = scope.clone_with_work(&mut Some(&mut observer))?;
+        let verifier = verifier.copy(&mut Some(&mut observer))?;
+        let scope = scope.copy(&mut Some(&mut observer))?;
         Ok(Self { verifier, scope, custody: observer.into_custody() })
     }
 
@@ -1165,7 +1165,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
     async fn verify_with_io(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
         let mut validation = io.history_io();
-        seed.validate_with_work(&mut Some(&mut validation))?;
+        seed.validate(&mut Some(&mut validation))?;
         drop(validation);
                 if seed.child_private_volume.provider() == &self.host.provider {
                     self.host.verify_fork_allocation_io(seed, &seed.child_private_volume, Some(&io)).await?;
@@ -2082,8 +2082,8 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         }
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        verifier.verify_audience_with_work(parent.authority(), &mut work)?;
-        verifier.verify_with_work(scope, &mut work)?;
+        verifier.verify_audience(parent.authority(), &mut work)?;
+        verifier.verify(scope, &mut work)?;
         if parent.conversation().and_then(|state| state.agent) != scope.agent()
             || scope.agent().is_none()
         {
@@ -2101,8 +2101,8 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
             Some(work) => work.clone_authority(parent.authority())?,
             None => parent.authority().clone(),
         };
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let project = project.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io.filter(|io| io.original_native_work().is_some()).map(|io| {
@@ -2132,7 +2132,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "parent project controller belongs to another original resource" });
         }
-        self.verifier.verify_audience_with_native_work(&self.parent, work)?;
+        self.verifier.verify_audience(&self.parent, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         self.verifier.verify_with_native_work(&self.scope, work)?;
         let io = PreparationIo::from_native_work(work)?;
         let prefix = match operation {
@@ -2195,7 +2195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         let grant =
             ContentGrant::verify(&self.verifier, &self.scope, private, VolumeOperation::Write)?;
-        let bytes = prefix.canonical_bytes(None)?;
+        let bytes = crate::contract::canonical_json_bytes(&prefix)?;
         let digest = blake3::hash(&bytes).to_hex();
         self.host
             .put_internal_content(
@@ -2595,7 +2595,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             maximum_references, resolver, io).await?;
         let bytes = match io {
             Some(io) => io.encode(&prefix, maximum_bytes, true)?,
-            None => prefix.canonical_bytes()?.into(),
+            None => crate::contract::canonical_json_bytes(&prefix)?.into(),
         };
         if bytes.len() as u64 > maximum_bytes {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "inherited context exceeds byte limit"));
@@ -2853,7 +2853,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let (parent_project, custody) = self.project.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
         let mut observer = io.history_io();
-        let parent_scope = self.scope.clone_with_work(&mut Some(&mut observer))?;
+        let parent_scope = self.scope.copy(&mut Some(&mut observer))?;
         drop(observer);
         drop(source_ref);
         drop(target_ref);
@@ -2961,7 +2961,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let encoded = io.encode(&_witness, maximum_witness_bytes, true)?;
         encoded_guard = io.guard_bytes(&encoded)?;
         let mut statement_guard = None;
-        let statement: serde_json::Value = crate::contract::json_from_slice_bounded_native_trusted(
+        let statement: serde_json::Value = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
             &encoded,
             crate::contract::JsonBounds {
                 maximum_bytes: maximum_witness_bytes,
@@ -2969,8 +2969,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 maximum_depth: 8,
             },
             0,
-            crate::wire::ErrorCode::Storage,
-            crate::contract::JsonValueSchema::Root,
+            Some(crate::wire::ErrorCode::Storage),
+            Some(crate::contract::JsonValueSchema::Root),
             &mut |charge| match charge {
                 crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
                     let bytes = maximum_owned_bytes.max(
@@ -4764,7 +4764,7 @@ mod tests {
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let verifier = FilesystemForkVerifier::new_with_native_work(
-            Arc::clone(&host), 4096, &issuer.verifier(), &scope, &work)?
+            Arc::clone(&host), 4096, &issuer.verifier(&mut None).expect("verifier copy"), &scope, &work)?
             .into_native_shared(&work)?;
         let other = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -4774,7 +4774,7 @@ mod tests {
         let forged_issuer = AuthorityIssuer::new("native-verifier-test", [5; 32],
             Authority { kind: AggregateKind::Conversation, id: "parent".into() });
         assert!(FilesystemProjectMergeVerifier::new_with_native_work(
-            host, &forged_issuer.verifier(), &scope, &work).is_err());
+            host, &forged_issuer.verifier(&mut None).expect("verifier copy"), &scope, &work).is_err());
         drop(verifier);
         Ok(())
     }
@@ -4867,7 +4867,7 @@ mod tests {
                 volume.capability(VolumeOperation::Write)?,
             ]),
         );
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
         let write = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
         let first = host
@@ -5184,9 +5184,9 @@ mod tests {
             ]),
         );
         let read =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
         let write =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
         let file = host
             .put_content(
                 &volume,
@@ -5212,10 +5212,10 @@ mod tests {
                 &IdempotencyKey::new("attachment-list")?,
             )
             .await?;
-        let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(), &scope, 4_096, None)?);
+        let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?);
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
-            StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new())
+            StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
                 .await?
                 .with_content_verifier(verifier);
         aggregate

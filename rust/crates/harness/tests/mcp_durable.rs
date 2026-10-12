@@ -244,7 +244,7 @@ async fn bind_conversation(
             kind: AggregateKind::Conversation,
             id: "mcp-fault".into(),
         },
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -314,7 +314,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         stream,
         host,
         private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         8192,
     )?);
@@ -460,7 +460,7 @@ async fn phase(
                 operation: OperationId::from_bytes([46; 16]),
                 interaction: InteractionId::from_bytes([47; 16]),
                 scope: &signed,
-                verifier: &issuer.verifier(),
+                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
                 approval: approval.as_ref(),
                 maximum_tools: 1,
                 maximum_bytes: 8192,

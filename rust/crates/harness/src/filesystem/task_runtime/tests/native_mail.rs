@@ -27,12 +27,12 @@ impl MailFixture {
         let sdk = Arc::new(LostSessionAck::default());
         let runtime = FilesystemTaskRuntime::open(
             Arc::clone(&sdk), fixture.filesystem.clone(), &fixture.volume,
-            &fixture.issuer.verifier(), &fixture.signed, &fixture.scope,
+            &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, &fixture.scope,
             &fixture.tasks, &fixture.machines, &fixture.tools,
             SessionLimits { active_tasks: 8, total_tasks: 8, depth: 4, model_steps: 8 },
             8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(), &fixture.signed, 65_536, None)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
         let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
         let mut tasks = Vec::new();
         for byte in 190..193 {

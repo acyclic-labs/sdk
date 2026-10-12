@@ -283,8 +283,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut work = work;
-        verifier.verify_audience_with_work(authority, &mut work)?;
-        let verifier = verifier.clone_with_work(&mut work)?;
+        verifier.verify_audience(authority, &mut work)?;
+        let verifier = verifier.copy(&mut work)?;
         Self::new_owned(client, authority, verifier, &mut work)
     }
 
@@ -314,8 +314,8 @@ impl<P: StreamProvider> HistoryReader<P> {
         verifier: AuthorityVerifier,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
-        verifier.verify_audience_with_work(authority, work)?;
-        let path = authority.stream_path_with_work(work)?;
+        verifier.verify_audience(authority, work)?;
+        let path = authority.stream_path(work)?;
         let temporary_bytes = path.capacity() as u64;
         let mut quota = crate::wire_codec::CodecQuota::from_retained(work, temporary_bytes);
         let path_bytes = path.len() as u64;
@@ -358,7 +358,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::fork::PreparedForkHistory> {
-        self.verifier.verify_audience_with_work(parent.authority(), work)?;
+        self.verifier.verify_audience(parent.authority(), work)?;
         let source = parent.conversation().ok_or_else(|| super::guarded_boundary(
             work, crate::wire::ErrorCode::Invalid, "fork archive parent is unbound"))?;
         if through_sequence > source.logical_revision() {
@@ -435,7 +435,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             ));
         }
         crate::contract::validate_json_byte_bound(seed, history_limits.maximum_bytes)?;
-        self.verifier.verify(scope)?;
+        self.verifier.verify(scope, &mut None)?;
         if parent.verifier.audience() != &seed.parent
             || self.verifier.audience() != &seed.child
             || scope.agent() != Some(seed.child_agent)
@@ -473,7 +473,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         if limits.maximum_events < 2 || limits.maximum_bytes == 0 {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid, "published child verification requires two bounded canonical events"));
         }
-        seed.validate_with_work(work)?;
+        seed.validate(work)?;
         if parent.verifier.audience() != &seed.parent || self.verifier.audience() != &seed.child {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published child differs from the original parent or child audience"));
         }
@@ -571,7 +571,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         after_sequence: u64,
         limits: HistoryReadLimits,
     ) -> Result<Vec<crate::conversation::ConversationMessage>> {
-        self.verifier.verify_audience(&seed.parent)?;
+        self.verifier.verify_audience(&seed.parent, &mut None)?;
         if child != seed.child_agent {
             return Err(Error::Unauthorized(
                 "inherited history belongs to another child".into(),
@@ -587,7 +587,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             ));
         }
         crate::contract::validate_json_byte_bound(seed, limits.maximum_bytes)?;
-        seed.validate()?;
+        seed.validate(&mut None)?;
         let publication_revision = crate::contract::next_revision(seed.parent_revision)?;
         let (publication, consumed) = self
             .operation_event_bounded(seed.operation_id, limits.maximum_bytes)
@@ -651,7 +651,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         message_id: uuid::Uuid,
         maximum_bytes: u64,
     ) -> Result<Option<crate::conversation::ConversationMessage>> {
-        self.verifier.verify_audience(&cursor.authority)?;
+        self.verifier.verify_audience(&cursor.authority, &mut None)?;
         if cursor.after_revision > cursor.through_revision
             || cursor.through_revision > self.committed_tail_with_work(&mut None).await?
         {
@@ -674,7 +674,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         selection: &crate::conversation::ModelContextSelection,
         limits: HistoryReadLimits,
     ) -> Result<crate::conversation::ConversationState> {
-        self.verifier.verify_audience(&cursor.authority)?;
+        self.verifier.verify_audience(&cursor.authority, &mut None)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
             || selection.message_ids.len() as u64 > u64::from(limits.maximum_events)
@@ -736,7 +736,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Vec<crate::conversation::ConversationMessage>> {
-        self.verifier.verify_audience(&cursor.authority)?;
+        self.verifier.verify_audience(&cursor.authority, &mut None)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
             || after_sequence > through_sequence
@@ -818,7 +818,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             Some(work) => work.clone_authority(&cursor.authority)?,
             None => cursor.authority.clone(),
         };
-        let verifier = self.verifier.clone_with_work(&mut work)?;
+        let verifier = self.verifier.copy(&mut work)?;
         let result = crate::core::Reducer::project_effect_with_retained_quota(
             authority, verifier, effect, &events, &mut work,
         );
@@ -874,7 +874,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         retain_records: bool,
         mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<(HistoryPage, Vec<super::operations::ObservedRecord>, u64, u64)> {
-        self.verifier.verify_audience_with_work(&cursor.authority, &mut work)?;
+        self.verifier.verify_audience(&cursor.authority, &mut work)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
             || cursor.after_revision > cursor.through_revision
@@ -1000,7 +1000,7 @@ pub(crate) fn verify_history_record_with_retained_quota(
         if &record_authority != authority || event.revision != revision {
             return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage, "history event binding is invalid"));
         }
-        verifier.verify_audience(authority)?;
+        verifier.verify_audience(authority, &mut None)?;
         verifier.verify_event(&event, work)
     })();
     let authority_bytes = record_authority.id.capacity() as u64;

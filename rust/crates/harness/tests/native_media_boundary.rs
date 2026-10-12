@@ -577,7 +577,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let writer = FilesystemContentPublisher::new(
         host.clone(),
         volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &owner,
         65_536,
     )?;
@@ -597,8 +597,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
     };
     let mut schemas = SchemaRegistry::new();
     schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
-    let mut agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
-    agent.validate_configuration_bytes(&extension, &options_file, options_bytes)?;
+    let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
+    agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
         (
             0,
@@ -702,7 +702,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             owner.clone(),
             65_536,
         )?),
@@ -1116,7 +1116,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         Arc::new(MemoryStream::default()),
         host.clone(),
         volume.clone(),
-        journal_issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        journal_issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         journal_scope,
         65_536,
     )?);
@@ -1149,7 +1149,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
         )
         .await?;
-    agent.validate_configuration_bytes(&extension, &next, next_bytes)?;
+    agent.validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
             2,
@@ -1286,7 +1286,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
         agent
-            .validate_configuration_bytes(&extension, &malformed, malformed_bytes)
+            .validate_configuration_bytes(&extension, &malformed, malformed_bytes, None)
             .is_err()
     );
     assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
@@ -1394,7 +1394,7 @@ where
         stream.clone(),
         host.clone(),
         volume.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         65_536,
     )?);
@@ -1419,7 +1419,7 @@ where
             stream.clone(),
             host.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             signed.clone(),
             scope.clone(),
             tasks.clone(),
@@ -1472,7 +1472,7 @@ where
                 writer: Some(Arc::new(FilesystemContentPublisher::new(
                     host.clone(),
                     volume.clone(),
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     &signed,
                     65_536,
                 )?)),
@@ -1858,15 +1858,13 @@ where
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
     let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
         ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
-    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(vec![
+    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(&[
         Arc::new(acyclic_harness::filesystem::FilesystemForkVerifier::new(
             host.clone(),
             65_536,
         )?),
-        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(
-            stream_provider.clone(),
-        )?),
-    ])?);
+        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),

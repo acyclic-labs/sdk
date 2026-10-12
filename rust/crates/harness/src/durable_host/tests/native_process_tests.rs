@@ -27,7 +27,7 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     authority.results = Arc::new(FilesystemContentPublisher::new(
         fixture.files.clone(),
         fixture.destination.clone(),
-        &fixture.issuer.verifier(),
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.scope,
         65_536,
     )?);
@@ -75,7 +75,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
         Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]),
     );
     let grant = ContentGrant::verify(
-        &fixture.issuer.verifier(),
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &setup,
         &fixture.source,
         VolumeOperation::Write,
@@ -639,7 +639,7 @@ where
     }
 
     fn authority(&self) -> NativeProcessAuthority {
-        NativeProcessAuthority { verifier: self.issuer.verifier(), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: self.content.clone(),
+        NativeProcessAuthority { verifier: self.issuer.verifier(&mut None).expect("verifier copy"), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: self.content.clone(),
         result_content: self.content.clone(),
         results: self.results.clone(),
         approvals: self.approvals.clone(), authority_custody: None, }
@@ -711,7 +711,7 @@ where
         registry.register(process)?;
         ConversationEffectHost::new(
             self.owner.stream(),
-            self.issuer.verifier().audience().clone(),
+            self.issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
             self.issuer.clone(),
             self.scope.clone(),
             SchemaRegistry::new(),
@@ -1135,8 +1135,8 @@ where
     } else {
         let mut aggregate = crate::store::StreamAggregate::open(
             &owner.stream(),
-            issuer.verifier().audience().clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         ).await?;
         aggregate.execute(crate::core::Command {
@@ -1166,7 +1166,7 @@ where
         ),
     );
     let setup_grant = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
         &source,
         VolumeOperation::Write,
@@ -1184,7 +1184,7 @@ where
         )
         .await?;
     let auxiliary_grant = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
         &auxiliary,
         VolumeOperation::Write,
@@ -1261,7 +1261,7 @@ where
             generation: source_generation,
             path: "src".into(),
             writable: false,
-            verifier: issuer.verifier(),
+            verifier: issuer.verifier(&mut None).expect("verifier copy"),
             scope: scope.clone(),
             publication: acyclic_fs::PublicationPermit::Unrestricted,
         },
@@ -1271,7 +1271,7 @@ where
             generation: destination_generation,
             path: "dst".into(),
             writable: true,
-            verifier: issuer.verifier(),
+            verifier: issuer.verifier(&mut None).expect("verifier copy"),
             scope: scope.clone(),
             publication: acyclic_fs::PublicationPermit::Unrestricted,
         },
@@ -1281,7 +1281,7 @@ where
             generation: auxiliary_generation,
             path: "aux".into(),
             writable: false,
-            verifier: issuer.verifier(),
+            verifier: issuer.verifier(&mut None).expect("verifier copy"),
             scope: scope.clone(),
             publication: acyclic_fs::PublicationPermit::Unrestricted,
         },
@@ -1292,13 +1292,13 @@ where
         generation: second_generation,
         path: "second-dst".into(),
         writable: true,
-        verifier: issuer.verifier(),
+        verifier: issuer.verifier(&mut None).expect("verifier copy"),
         scope: scope.clone(),
         publication: acyclic_fs::PublicationPermit::Unrestricted, });
     }
     for (index, volume) in extra_sources.into_iter().enumerate() {
         let grant = ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &setup_scope,
             &volume,
             VolumeOperation::Write,
@@ -1327,7 +1327,7 @@ where
         generation,
         path: format!("extra-{index}"),
         writable: false,
-        verifier: issuer.verifier(),
+        verifier: issuer.verifier(&mut None).expect("verifier copy"),
         scope: scope.clone(),
         publication: acyclic_fs::PublicationPermit::Unrestricted, });
     }
@@ -1479,14 +1479,14 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         1_000_000,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
         result_volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_000_000,
     )?);
@@ -1519,7 +1519,7 @@ where
         owner.stream(),
         files.clone(),
         result_volume,
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?);
@@ -1606,7 +1606,7 @@ where
         stream,
         files,
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         runtime_scope.clone(),
         tasks,
@@ -1868,12 +1868,12 @@ async fn preparation_fixture_on<P: StreamProvider + 'static>(
         let generation = seed.view.manifest().volumes.iter().find(|mapping| &mapping.volume == volume)
             .ok_or_else(|| Error::NotFound("original native preparation mapping".into()))?.generation.clone();
         bindings.push(PreparationSelection { host: seed.files.clone(), volume: volume.clone(), generation, path: path.into(), writable,
-        verifier: seed.issuer.verifier(), scope: seed.scope.clone(),
+        verifier: seed.issuer.verifier(&mut None).expect("verifier copy"), scope: seed.scope.clone(),
         publication: acyclic_fs::PublicationPermit::Unrestricted, });
     }
     bindings.push(PreparationSelection { host: seed.files.clone(), volume: seed.second_destination.clone(), generation: second_generation,
     path: "c-second-destination".into(), writable: true,
-    verifier: seed.issuer.verifier(), scope: seed.scope.clone(),
+    verifier: seed.issuer.verifier(&mut None).expect("verifier copy"), scope: seed.scope.clone(),
     publication: acyclic_fs::PublicationPermit::Unrestricted, });
     Ok(PreparationFixture { _directory: directory, task, owner, allocation, options, bindings })
 }
@@ -2444,14 +2444,14 @@ async fn reopen_native(
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         seed.scope.clone(),
         1_000_000,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
         seed.result_volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &seed.scope,
         1_000_000,
     )?);
@@ -2478,7 +2478,7 @@ async fn reopen_native(
         owner.stream(),
         files.clone(),
         seed.result_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
+        issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
         seed.scope.clone(),
         1_000_000,
     )?);
@@ -2488,7 +2488,7 @@ async fn reopen_native(
             seed.command,
             seed.plan.clone(),
             task_interaction_id(seed.task, seed.command),
-            NativeProcessAuthority { verifier: issuer.verifier(), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+            NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: crate::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
             result_content: content.clone(),
             results,
             approvals, authority_custody: None, },
@@ -2499,7 +2499,7 @@ async fn reopen_native(
     registry.register(process.clone())?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
-        issuer.verifier().audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer,
         seed.scope.clone(),
         SchemaRegistry::new(),
@@ -2941,7 +2941,7 @@ async fn native_view_rejects_physical_aliases_before_any_materialization() -> Re
             generation: volume.generation.clone(),
             path: path.into(),
             writable: volume.writable,
-            verifier: fixture.issuer.verifier(),
+            verifier: fixture.issuer.verifier(&mut None).expect("verifier copy"),
             scope: fixture.scope.clone(),
             publication: acyclic_fs::PublicationPermit::Unrestricted, })
             .collect::<Vec<_>>();
@@ -2987,7 +2987,7 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
             &fixture.second_destination
         };
         let grant = ContentGrant::verify(
-            &fixture.issuer.verifier(),
+            &fixture.issuer.verifier(&mut None).expect("verifier copy"),
             &fixture.scope,
             changed,
             VolumeOperation::Write,

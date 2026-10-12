@@ -239,7 +239,7 @@ async fn root_at<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Root> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     if revision == 0 {
         return Ok(Root {
             hash: None,
@@ -636,7 +636,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     }
     let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
     let proof = verifier.effect_history_root_proof_with_work(event.revision, canonical_digest, previous.hash, work)?;
-    let canonical_path = authority.stream_path_with_work(work)?;
+    let canonical_path = authority.stream_path(work)?;
     let path_owned = canonical_path.capacity() as u64;
     let cloned_authority = match work.as_deref_mut() {
         Some(observer) => observer.clone_authority(authority),

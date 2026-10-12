@@ -18,7 +18,7 @@ mod native {
     fn decode<F: FnMut(JsonCodecCharge) -> Result<()>>(
         bytes: &[u8], bounds: JsonBounds, charge: &mut F,
     ) -> Result<Value> {
-        json_from_slice_bounded_native_trusted(bytes, bounds, 0, crate::wire::ErrorCode::Storage, JsonValueSchema::Root, charge)
+        json_from_slice_bounded(std::marker::PhantomData, bytes, bounds, 0, Some(crate::wire::ErrorCode::Storage), Some(JsonValueSchema::Root), charge)
     }
 
     #[test]

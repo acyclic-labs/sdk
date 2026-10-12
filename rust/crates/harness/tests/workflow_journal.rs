@@ -89,7 +89,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let command_payload = host
         .put_content(
             &volume,
@@ -107,7 +107,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -146,7 +146,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "orphan",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?;
@@ -254,7 +254,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -283,7 +283,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -313,7 +313,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host,
         "counter",
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         65_536,
     )?;

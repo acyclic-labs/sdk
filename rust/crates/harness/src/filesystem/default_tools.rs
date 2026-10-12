@@ -515,7 +515,7 @@ impl RecursiveToolMachine {
                     }
                     (Plan::Fork(fork), "observe") => {
                         let observed: ForkReport = decode(&value, io)?;
-                        recursive_observe(io, |work| observed.validate_with_work(work))?;
+                        recursive_observe(io, |work| observed.validate(work))?;
                         if !recursive_encoded_equal(&observed.request, &fork.request.payload, io)? {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork report changed the original source request"));
                         }
@@ -526,8 +526,8 @@ impl RecursiveToolMachine {
                         let seed: ForkSeed = decode(&value, io)?;
                         let expected = match report.as_ref() {
                             Some(report) => {
-                                let copy = recursive_observe(io, |work| report.clone_with_work(work))?;
-                                Some(recursive_observe(io, |work| copy.into_seed_with_work(work))?)
+                                let copy = recursive_observe(io, |work| report.copy(work).map(|(report, _)| report))?;
+                                Some(recursive_observe(io, |work| copy.into_seed(work))?)
                             }
                             None => None,
                         };
@@ -547,7 +547,7 @@ impl RecursiveToolMachine {
                         }
                         let prepared = report.take().ok_or_else(|| recursive_reject(
                             io, crate::wire::ErrorCode::Invalid, "fork has no prepared report"))?;
-                        let seed = recursive_observe(io, |work| (*prepared).into_seed_with_work(work))?;
+                        let seed = recursive_observe(io, |work| (*prepared).into_seed(work))?;
                         #[derive(Serialize)]
                         struct Admitted<'a> {
                             status: &'static str, id: crate::AgentId, task: TaskId,
@@ -626,7 +626,7 @@ fn check_command(command: &WorkflowCommand, stage: &str, plan: &Plan, io: Option
     Ok(())
 }
 fn validate_source_intent(intent: &RecursiveForkSourceIntent, arguments: &Value, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| intent.request.validate_with_work(work))?;
+    recursive_observe(io, |work| intent.request.validate(work))?;
     for selection in &intent.request.selections {
         recursive_inspect(io, 1)?;
         if matches!(&selection.revision, crate::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
@@ -664,7 +664,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork plan changed its original source checkpoint"));
             }
             recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |fork| {
-                recursive_observe(io, |work| fork.validate_with_work(work))?;
+                recursive_observe(io, |work| fork.validate(work))?;
                 if !recursive_encoded_equal(&plan.arguments, arguments, io)? || fork.child_agent != plan.arguments.id
                     || plan.preparation.parent != Some(plan.caller) || plan.request.child.parent != Some(plan.caller)
                     || plan.preparation.operation_id == plan.request.child.operation_id
@@ -1556,7 +1556,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             crate::wire::ErrorCode::Invalid, "original preparation command missing"))?;
         let command = WorkflowCommand { operation_id: command.operation_id,
             kind: crate::filesystem::fork_preparer_io::clone_text(&command.kind, io)?,
-            payload: recursive_observe(io, |work| command.payload.clone_with_work(work))? };
+            payload: recursive_observe(io, |work| command.payload.copy(work))? };
         let restored = fork_preparation_request(
             binding.source.preparer.as_ref(), &binding.source.request,
             fork.preparation.task_id(), binding.child, command, binding.limits,
@@ -1568,8 +1568,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let report = report.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Invalid,
             "fork publication has no canonical report"))?;
-        let expected_seed = recursive_observe(io, |work| report.clone_with_work(work)?.into_seed_with_work(work))?;
-        let report_copy = recursive_observe(io, |work| report.clone_with_work(work))?;
+        let expected_seed = recursive_observe(io, |work| report.copy(work)?.0.into_seed(work))?;
+        let report_copy = recursive_observe(io, |work| report.copy(work).map(|(report, _)| report))?;
         let remaining = 'publication: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -1723,7 +1723,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 if let Some(Outcome::Succeeded(value)) = &outcome {
                     recursive_decoded::<ForkReport, _>(value, io, |report| {
-                        recursive_observe(io, |work| report.validate_with_work(work))?;
+                        recursive_observe(io, |work| report.validate(work))?;
                         if !recursive_encoded_equal(&report.request, &fork.request.payload, io)? {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                                 "preparation output changed original retained request"));
@@ -1904,7 +1904,7 @@ async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkT
 where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     let effective = recursive_effective_scope(context, io);
     recursive_observe(io, |work| {
-        binding.source.request.validate_with_work(work)?;
+        binding.source.request.validate(work)?;
         binding.child.validate_with_work(work)?;
         effective.limits().validate_file(&binding.source_checkpoint, work)
     })?;
