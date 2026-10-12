@@ -109,7 +109,19 @@ async fn open_recovers_remove_intent_from_authored_state() {
     else {
         panic!("expected authored file");
     };
-    let record = root.workspace().record_by_id(stat.file_id).await.unwrap();
+    let cancellation = CancellationToken::new();
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut checkout = root
+        .checkout(crate::model::GenerationSelector::Head, &mut ctx)
+        .await
+        .unwrap();
+    let record = root
+        .authored_record(&mut checkout.value, "/file.txt", &mut ctx)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    checkout.retire(&mut ctx).unwrap();
     let shadows = root
         .insert_shadow(
             original.shadows,
