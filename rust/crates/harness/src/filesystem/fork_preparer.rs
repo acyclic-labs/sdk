@@ -502,46 +502,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         ).await
     }
 
-    fn created_volumes<'a>(&self, request: &'a ForkRequest, io: Option<&PreparationIo>)
-        -> Result<impl Iterator<Item = (&'a VolumeRef, ForkAllocationRole)>> {
+    /// Builds the exact created identities and their allocation journal proofs.
+    pub(crate) fn creation_allocations(&self, request: &ForkRequest, preparation: crate::TaskId,
+        io: Option<&PreparationIo>) -> Result<(Vec<ResourceRef>, Vec<crate::resource_preparation::ResourceCreationProofRef>)> {
         if io.is_some_and(PreparationIo::uses_native_work) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         }
         let mut history = io.map(PreparationIo::history_io);
         request.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
         for (volume, _) in creation_volumes(request) {
-            if volume.provider() != &self.host.provider { return Err(bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "fork resource belongs to another provider")); }
+            if volume.provider() != &self.host.provider {
+                return Err(bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "fork resource belongs to another provider"));
+            }
         }
-        Ok(creation_volumes(request))
-    }
-
-    /// Projects the exact created volume identities.
-    pub(crate) fn creation_resources(&self, request: &ForkRequest, io: Option<&PreparationIo>) -> Result<Vec<ResourceRef>> {
-        let volumes = self.created_volumes(request, io)?;
-        let mut resources = bounded_io::vector(creation_volumes(request).count(), io)?;
-        for (volume, _) in volumes {
-            resources.push(bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource());
-        }
-        Ok(resources)
-    }
-
-    /// Builds the exact allocation journal references.
-    pub(crate) fn creation_proofs(&self, request: &ForkRequest, preparation: crate::TaskId,
-        io: Option<&PreparationIo>) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
-        let volumes = self.created_volumes(request, io)?;
-        let mut proofs = bounded_io::vector(creation_volumes(request).count(), io)?;
-        for (volume, _) in volumes {
+        let count = creation_volumes(request).count();
+        let mut resources = bounded_io::vector(count, io)?;
+        let mut proofs = bounded_io::vector(count, io)?;
+        for (volume, _) in creation_volumes(request) {
             let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
+            let copied = crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
+                let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
+                let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
+                let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
+                quota.transfer();
+                Ok(copied)
+            })?;
+            resources.push(copied);
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
-                provider: match io {
-                    Some(io) => self.host.provider.clone_with_io(io)?,
-                    None => self.host.provider.clone(),
-                },
-                preparation, resource,
-                evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
+                provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },
+                preparation, resource, evidence: allocation_ref(&self.host.provider, volume, io)?.into_resource(),
             });
         }
-        Ok(proofs)
+        Ok((resources, proofs))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -663,15 +657,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     "fork preparation differs from its genuine immutable owner admission"));
             }
             if let Some(original) = self.task_preparation.as_deref() {
-                let prior = original.origin();
-                let current = task.origin();
-                if original.request() != bound || prior.owner != current.owner
-                    || prior.parent_task != current.parent_task
-                    || prior.preparation_task != current.preparation_task
-                    || prior.intended_child != current.intended_child
-                    || prior.admission_digest != current.admission_digest
-                    || prior.request_digest != current.request_digest
-                    || prior.source_grants != current.source_grants
+                if original.request() != bound
+                    || !same_task_origin(Some(original.origin()), Some(task.origin()))
                 {
                     return Err(reject(crate::wire::ErrorCode::Unauthorized,
                         "fork preparer belongs to another genuine preparation task"));

@@ -609,8 +609,8 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         child.grants = Capabilities::new(grants);
     }
-    let resources = preparer.creation_resources(fork, io)?;
-    child.resource_proofs = preparer.creation_proofs(fork, preparation_task, io)?;
+    let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
+    child.resource_proofs = proofs;
     recursive_observe(io, |work| child.validate_with_work(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,

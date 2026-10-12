@@ -195,10 +195,11 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         "conversation:bind".into(),
     ]);
-    admission = admission.with_resource_proofs(preparer.creation_proofs(&fork, task, None)?)?;
+    let (resources, proofs) = preparer.creation_allocations(&fork, task, None)?;
+    admission = admission.with_resource_proofs(proofs)?;
     let mut request = created.request.clone();
     request.child = admission;
-    request.resources = preparer.creation_resources(&fork, None)?;
+    request.resources = resources;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
     let preparation = owner.resource_preparation(request).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
