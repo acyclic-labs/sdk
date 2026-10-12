@@ -505,7 +505,7 @@ impl CreationFixture {
         #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
+            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {

@@ -1342,7 +1342,7 @@ impl StockExecutor {
     ) -> Result<Self> {
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
         self.task_context = Some((context, execution_operation));
-        self.verify_task_context_binding(execution_operation)?;
+        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)
     }
 
@@ -1383,13 +1383,13 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
     ) -> Result<Option<crate::runtime::ToolContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(context) = self.native_context() {
+        if let Some(native) = self.native {
             let work = self.native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage,
                 "native tool context has no original work"))?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
-                Arc::clone(context), invocation.operation_id, &invocation.call_id, work,
+                Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
             )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
-            if let Some(interactions) = self.native.and_then(|native| native.interactions) {
+            if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
             return Ok(Some(tool_context));
@@ -5530,11 +5530,10 @@ mod tests {
         }
     }
 
-    struct PrefixJournalReader(Arc<Journal>);
-    impl crate::conversation::ContentResidencyVerifier for PrefixJournalReader {
+    impl crate::conversation::ContentResidencyVerifier for Journal {
 
         fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-            crate::conversation::BoundedContentFuture::new(io, || async move { self.0.load(file).await })
+            crate::conversation::BoundedContentFuture::new(io, || async move { self.load(file).await })
         }
     }
 
@@ -5666,7 +5665,6 @@ mod tests {
                 crate::model::ModelPrefix::MEDIA_TYPE,
             )
             .await?;
-        let reader = Arc::new(PrefixJournalReader(journal.clone()));
         let provider = Arc::new(PrefixBoundaryModel::default());
         let executor = uncompacted_executor(
             model,
@@ -5674,7 +5672,7 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::new(),
         )
-        .with_inherited_prefix(root_file, reader)?;
+        .with_inherited_prefix(root_file, journal.clone())?;
         let input = TurnInput {
             operation_id: OperationId::from_bytes([67; 16]),
             input: ModelContent::Text("child task; fresh scratch".into()),

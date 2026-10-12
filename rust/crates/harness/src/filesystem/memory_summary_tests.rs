@@ -148,7 +148,7 @@ async fn sealed_summary_preparation(
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
     let host = Arc::new(CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&storage.stream, payloads.clone()).await?,
+        DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?,
         storage.stream.clone(), payloads.clone(), reader, authority, signed,
         issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
