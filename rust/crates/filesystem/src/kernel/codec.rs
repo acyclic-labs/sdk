@@ -18,16 +18,28 @@ pub(crate) struct DecodedPageShape {
 }
 
 /// Admission, actual reserve failures, and completion points of canonical owned-buffer readers.
-pub(crate) enum ReadAllocationStep {
-    Allocate { bytes: u64, operations: u64 },
-    /// Emitted only after a failed reserve; no-op observers retain the canonical error.
+pub enum ReadAllocationStep {
+    /// Admit owned capacity before reservation.
+    Allocate { /// Requested bytes.
+        bytes: u64, /// Allocation operations.
+        operations: u64 },
+    /// Preserve the actual failed reserve cause.
     ReserveFailed(std::collections::TryReserveError),
-    Capacity { admitted_bytes: u64, actual_bytes: u64 },
+    /// Reconcile owned physical capacity.
+    Capacity { /// Requested bytes.
+        admitted_bytes: u64, /// Physical bytes.
+        actual_bytes: u64 },
+    /// Admit a byte copy.
     BeforeCopy(u64),
+    /// Record a completed byte copy.
     Copied(u64),
+    /// Admit hashing.
     BeforeHash(u64),
+    /// Record completed hashing.
     Hashed(u64),
+    /// Admit one decoded item.
     BeforeItem,
+    /// Record one completed decoded item.
     Item,
 }
 
@@ -62,7 +74,6 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
-    /// Bounds every page a volume with `config` may have written.
     pub(crate) fn for_volume(config: VolumeConfig) -> Self {
         Self {
             maximum_object_bytes: config.limits.maximum_object_bytes,
@@ -90,26 +101,34 @@ impl DecodeLimits {
 }
 
 /// Actual reservation and header-write boundaries of the one canonical writer.
-pub(crate) enum EncodeAllocationStep {
-    Reserve { capacity: usize },
-    Capacity { admitted_bytes: u64, actual_bytes: u64 },
-    BeforeHeader { bytes: u64 },
-    HeaderWritten { bytes: u64 },
+pub enum EncodeAllocationStep {
+    /// Admit output capacity before reservation.
+    Reserve { /// Requested byte capacity.
+        capacity: usize },
+    /// Reconcile physical capacity before writing.
+    Capacity { /// Requested byte capacity.
+        admitted_bytes: u64, /// Physical byte capacity.
+        actual_bytes: u64 },
+    /// Admit the canonical header copy.
+    BeforeHeader { /// Header bytes.
+        bytes: u64 },
+    /// Record the completed header copy.
+    HeaderWritten { /// Header bytes.
+        bytes: u64 },
 }
 
 /// Work boundaries of the canonical writer body, outside every original-root loan.
-pub(crate) enum EncodeWorkStep {
+pub enum EncodeWorkStep {
+    /// Check cancellation before effect.
     Check,
+    /// Admit the next effect.
     Admit(crate::WorkCounters),
+    /// Record completed physical work.
     Completed(crate::WorkCounters),
+    /// Observe the output buffer.
     Allocation(EncodeAllocationStep),
 }
 
-/// Funds a canonical writer through short scalar original-ledger operations.
-///
-/// Allocators, byte writes, validation, and callbacks run outside the root loan.
-/// `finish` transfers the buffer and its guard together, or destroys the buffer
-/// before retiring its failed-operation capacity.
 pub(crate) struct EncodeAccounting<'a, 'root> {
     accounting: &'a mut super::allocation::KernelAccounting<'root>,
     owned_bytes: u64,
@@ -220,20 +239,7 @@ impl Encoder {
         Self { bytes }
     }
 
-    pub(crate) fn with_exact_capacity(
-        domain: &[u8],
-        version: u16,
-        capacity: usize,
-    ) -> Result<Self, CanonicalDecodeError> {
-        Self::with_exact_capacity_with_steps(
-            domain, version, capacity, |_| Ok(()),
-            |_| CanonicalDecodeError::AllocationFailed,
-        )
-    }
-
-    /// The same exact-capacity producer with original-ledger admission before
-    /// reservation and actual-capacity reconciliation before any header write.
-    pub(crate) fn with_exact_capacity_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn with_exact_capacity<E: From<CanonicalDecodeError>>(
         domain: &[u8],
         version: u16,
         capacity: usize,
@@ -307,28 +313,19 @@ pub(crate) struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
-    pub(crate) fn new(
-        bytes: &'a [u8],
-        domain: &[u8],
-        expected_version: u16,
-        maximum_object_bytes: u64,
-    ) -> Result<Self, CanonicalDecodeError> {
-        Self::new_with_steps(bytes, domain, expected_version, maximum_object_bytes, &mut |_| Ok(()))
-    }
-
-    pub(crate) fn new_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn new<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
         domain: &[u8],
         expected_version: u16,
         maximum_object_bytes: u64,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
-        Self::new_recognized_versions_with_steps(
+        Self::new_recognized_versions(
             bytes, domain, &[expected_version], maximum_object_bytes, observe,
         ).map(|(decoder, _)| decoder)
     }
 
-    pub(crate) fn new_recognized_versions_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn new_recognized_versions<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
         domain: &[u8],
         supported_versions: &[u16],
@@ -369,11 +366,7 @@ impl<'a> Decoder<'a> {
         }, version))
     }
 
-    pub(crate) fn u8(&mut self) -> Result<u8, CanonicalDecodeError> {
-        self.u8_with_steps(&mut |_| Ok(()))
-    }
-
-    pub(crate) fn u8_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn u8<E: From<CanonicalDecodeError>>(
         &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<u8, E> {
         let source = self.bytes.get(self.cursor).ok_or(CanonicalDecodeError::Truncated)?;
@@ -385,41 +378,25 @@ impl<'a> Decoder<'a> {
         Ok(value)
     }
 
-    pub(crate) fn u32(&mut self) -> Result<u32, CanonicalDecodeError> {
-        self.u32_with_steps(&mut |_| Ok(()))
-    }
-
-    pub(crate) fn u32_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn u32<E: From<CanonicalDecodeError>>(
         &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<u32, E> {
-        Ok(u32::from_le_bytes(self.fixed_with_steps::<4, E>(observe)?))
+        Ok(u32::from_le_bytes(self.fixed::<4, E>(observe)?))
     }
 
-    pub(crate) fn u64(&mut self) -> Result<u64, CanonicalDecodeError> {
-        self.u64_with_steps(&mut |_| Ok(()))
-    }
-
-    pub(crate) fn u64_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn u64<E: From<CanonicalDecodeError>>(
         &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<u64, E> {
-        Ok(u64::from_le_bytes(self.fixed_with_steps::<8, E>(observe)?))
+        Ok(u64::from_le_bytes(self.fixed::<8, E>(observe)?))
     }
 
-    pub(crate) fn i64(&mut self) -> Result<i64, CanonicalDecodeError> {
-        self.i64_with_steps(&mut |_| Ok(()))
-    }
-
-    pub(crate) fn i64_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn i64<E: From<CanonicalDecodeError>>(
         &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<i64, E> {
-        Ok(i64::from_le_bytes(self.fixed_with_steps::<8, E>(observe)?))
+        Ok(i64::from_le_bytes(self.fixed::<8, E>(observe)?))
     }
 
-    pub(crate) fn fixed<const N: usize>(&mut self) -> Result<[u8; N], CanonicalDecodeError> {
-        self.fixed_with_steps::<N, CanonicalDecodeError>(&mut |_| Ok(()))
-    }
-
-    pub(crate) fn fixed_with_steps<const N: usize, E: From<CanonicalDecodeError>>(
+    pub(crate) fn fixed<const N: usize, E: From<CanonicalDecodeError>>(
         &mut self, observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<[u8; N], E> {
         let source = self.take(N)?;
@@ -430,19 +407,12 @@ impl<'a> Decoder<'a> {
         Ok(value)
     }
 
-    pub(crate) fn bounded_slice(
-        &mut self,
-        maximum: u32,
-    ) -> Result<&'a [u8], CanonicalDecodeError> {
-        self.bounded_slice_with_steps(maximum, &mut |_| Ok(()))
-    }
-
-    pub(crate) fn bounded_slice_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn bounded_slice<E: From<CanonicalDecodeError>>(
         &mut self,
         maximum: u32,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<&'a [u8], E> {
-        let length = self.u32_with_steps(observe)?;
+        let length = self.u32(observe)?;
         if length > maximum {
             return Err(CanonicalDecodeError::FieldTooLarge {
                 observed: length,
@@ -453,16 +423,12 @@ impl<'a> Decoder<'a> {
         self.take(length).map_err(Into::into)
     }
 
-    pub(crate) fn bounded_bytes(&mut self, maximum: u32) -> Result<Vec<u8>, CanonicalDecodeError> {
-        self.bounded_bytes_with_steps(maximum, &mut |_| Ok(()))
-    }
-
-    pub(crate) fn bounded_bytes_with_steps<E: From<CanonicalDecodeError>>(
+    pub(crate) fn bounded_bytes<E: From<CanonicalDecodeError>>(
         &mut self,
         maximum: u32,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Vec<u8>, E> {
-        let source = self.bounded_slice_with_steps(maximum, observe)?;
+        let source = self.bounded_slice(maximum, observe)?;
         let length = source.len();
         let mut value = Vec::new();
         let admitted_bytes = usize_to_u64(length);
@@ -486,7 +452,7 @@ impl<'a> Decoder<'a> {
         &mut self,
         maximum: u32,
     ) -> Result<usize, CanonicalDecodeError> {
-        let length = self.u32()?;
+        let length = self.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
         if length > maximum {
             return Err(CanonicalDecodeError::FieldTooLarge {
                 observed: length,
@@ -612,3 +578,131 @@ pub enum CanonicalDecodeError {
 #[cfg(test)]
 #[path = "tests/codec.rs"]
 mod tests;
+
+/// Canonical encoding admission or reservation failure.
+#[derive(Debug, Error)]
+pub enum EncodeError {
+    /// Invalid canonical object.
+    #[error(transparent)]
+    Canonical(#[from] CanonicalDecodeError),
+    /// Work admission failed.
+    #[error(transparent)]
+    Work(#[from] crate::WorkError),
+    /// Encoding was cancelled.
+    #[error(transparent)]
+    Cancelled(#[from] crate::CancellationError),
+    /// The actual output reservation failed.
+    #[error("canonical output allocation failed: {0}")]
+    AllocationFailed(#[source] std::collections::TryReserveError),
+}
+
+impl EncodeError {
+    pub(crate) fn into_fs_error(self, original: bool) -> crate::FsError {
+        #[cfg(target_arch = "wasm32")]
+        let _ = original;
+        match self {
+            Self::Canonical(error) => error.into(),
+            Self::Work(error) => error.into(),
+            Self::Cancelled(error) => error.into(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::AllocationFailed(error) if original => crate::FsError::NativeKernel(
+                crate::NativeTreeMaterializationError::AllocationFailed(error)),
+            Self::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
+        }
+    }
+}
+
+impl From<crate::WorkError> for CanonicalDecodeError {
+    fn from(error: crate::WorkError) -> Self { Self::Invariant(CanonicalInvariant::Work(error)) }
+}
+
+pub(crate) fn encode_owned(
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    operation: impl FnOnce(&mut dyn FnMut(EncodeWorkStep) -> Result<(), crate::FsError>,
+        &mut dyn FnMut(std::collections::TryReserveError) -> crate::FsError) -> Result<Vec<u8>, crate::FsError>,
+) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = accounting.native_work().is_some();
+    #[cfg(target_arch = "wasm32")]
+    let original = false;
+    let mut encoding = EncodeAccounting::new(accounting);
+    let result = operation(&mut |step| encoding.observe(step),
+        &mut |error| EncodeError::AllocationFailed(error).into_fs_error(original));
+    encoding.finish(result)
+}
+
+/// Runs a canonical producer with a finite standalone permit and completed work.
+pub fn encode<E>(
+    budget: crate::WorkBudget, cancellation: Option<&crate::CancellationToken>, live_owned_bytes: u64,
+    operation: impl FnOnce(&mut dyn FnMut(EncodeWorkStep) -> Result<(), E>) -> Result<Vec<u8>, E>,
+) -> crate::MeasuredResult<crate::OperationReceipt<Vec<u8>>, E>
+where E: From<CanonicalDecodeError> + From<crate::WorkError> + From<crate::CancellationError> {
+    use crate::WorkCounters;
+    let mut work = WorkCounters::UNCHARGED;
+    let mut allocations = super::allocation::AllocationLedger::default();
+    let result = (|| {
+        if let Some(token) = cancellation { token.check()?; }
+        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
+            .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
+        operation(&mut |step| {
+            match step {
+                EncodeWorkStep::Check => { if let Some(token) = cancellation { token.check()?; } }
+                EncodeWorkStep::Admit(delta) => work.admit(&delta, &budget)?,
+                EncodeWorkStep::Completed(delta) => {
+                    work.try_add_assign(&delta)?;
+                    work.verify(budget)?;
+                    if let Some(token) = cancellation { token.check()?; }
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
+                    allocations.claim_elements::<u8>(capacity, &mut work, budget)
+                        .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
+                    if actual_bytes >= admitted_bytes {
+                        allocations.record_owned_bytes(actual_bytes - admitted_bytes, &mut work)
+                            .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
+                    } else {
+                        allocations.release(admitted_bytes - actual_bytes)
+                            .map_err(|error| error.into_work_or(E::from(crate::WorkError::Overflow)))?;
+                    }
+                    work.verify(budget)?;
+                }
+                EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) =>
+                    work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED }, &budget)?,
+                EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
+                    work.try_add_assign(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED })?;
+                    work.verify(budget)?;
+                    if let Some(token) = cancellation { token.check()?; }
+                }
+            }
+            Ok(())
+        })
+    })();
+    result.map(|value| crate::OperationReceipt { value, work })
+        .map_err(|error| crate::OperationFailure::new(error, work))
+}
+
+pub(crate) fn observe_encoding<E: From<crate::WorkError>>(
+    observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    step: EncodeWorkStep,
+    data_custody: Option<&super::ProofDataCustody>,
+) -> Result<(), E> {
+    let completed = data_custody.and_then(|_| match &step {
+        EncodeWorkStep::Completed(delta) => Some(*delta),
+        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { actual_bytes, .. }) => Some(crate::WorkCounters {
+            allocation_operations: u64::from(*actual_bytes != 0),
+            peak_allocation_bytes: *actual_bytes, ..crate::WorkCounters::default()
+        }),
+        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => Some(crate::WorkCounters {
+            bytes_encoded: *bytes, ..crate::WorkCounters::default()
+        }),
+        _ => None,
+    });
+    let observed = observe(step);
+    let attributed = match (data_custody, completed) {
+        (Some(owner), Some(delta)) => owner.record_completed_leaf_work(delta),
+        _ => Ok(()),
+    };
+    observed?;
+    attributed.map_err(Into::into)
+}

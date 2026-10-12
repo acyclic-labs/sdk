@@ -379,8 +379,8 @@ mod heterogeneous_mount {
         let scratch = disk.create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         root.write_text("/file", "memory").await?;
         scratch.write_text("/file", "disk").await?;
-        let root_head = root.head().await?;
-        let scratch_head = scratch.head().await?;
+        let root_head = root.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
+        let scratch_head = scratch.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
         assert!(matches!(
             scratch
                 .fork(
@@ -413,8 +413,8 @@ mod heterogeneous_mount {
                 )
                 .await?;
             fork.write_text("/file", "child only").await?;
-            assert_eq!(workspace.head().await?.id(), head.id());
-            assert_ne!(fork.head().await?.id(), head.id());
+            assert_eq!(workspace.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
+            assert_ne!(fork.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
         }
         let mut view = crate::MountedView::builder()
             .mount(
@@ -8689,11 +8689,11 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
         fingerprint: Digest::from_bytes([225; 32]),
         previous_digest: Digest::ZERO,
         digest: Digest::from_bytes([226; 32]),
-        payload: bytes::Bytes::from(encode_volume_created(VolumeCreated {
+        payload: bytes::Bytes::from(crate::kernel::encode_volume_created(VolumeCreated {
             volume_id: wrong_volume,
             config: config(),
             initial_generation_root: generation_root,
-        })?),
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?),
     };
     assert!(matches!(
         generation_from_record(&creation, expected_volume, WorkCounters::default()),
@@ -8739,11 +8739,11 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     let head = match active.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let encoded = crate::kernel::encode_volume_created_measured(VolumeCreated {
+    let encoded = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| crate::kernel::encode_volume_created(VolumeCreated {
         volume_id: wrong_volume,
         config: config(),
         initial_generation_root: generation_root,
-    }, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0)?;
+    }, observe, |_| VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)))?;
     let (proposal, _) = creation_commit(
         OperationId::from_bytes([227; 16]), encoded,
         WorkBudget::UNBOUNDED, &CancellationToken::new(),
@@ -8758,12 +8758,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     )?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
-        poll_immediate(fs.read_creation(
-            expected_volume,
-            WorkCounters::default(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )),
+        poll_immediate(fs.read_creation_record(expected_volume, WorkBudget::UNBOUNDED, &cancellation)),
         Err(OperationFailure {
             error: FsError::VolumeMismatch,
             ..

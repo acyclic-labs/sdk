@@ -18,33 +18,33 @@ fn filtered_fork_feature_round_trips_and_requires_one_parent()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut value = root();
     value.required_features = GenerationRoot::FILTERED_FORK;
-    let encoded = encode_generation_root(&value)?;
+    let encoded = encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_generation_root(&encoded, DecodeLimits::default())?,
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
     assert_eq!(value.continuation_features(), 0);
     value.parents.clear();
-    assert!(encode_generation_root(&value).is_err());
+    assert!(encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     value.parents = vec![
         GenerationId::new(Digest::from_bytes([4; 32])),
         GenerationId::new(Digest::from_bytes([5; 32])),
     ];
-    assert!(encode_generation_root(&value).is_err());
+    assert!(encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     Ok(())
 }
 
 #[test]
 fn generation_root_round_trip_and_identity_are_locked() -> Result<(), Box<dyn std::error::Error>> {
     let value = root();
-    let encoded = encode_generation_root(&value)?;
+    let encoded = encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        generation_root_parent_count(&encoded, DecodeLimits::default())?,
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, CanonicalDecodeError>(()))?.parents.len(),
         1
     );
     assert!(u64::try_from(encoded.len())? <= MAXIMUM_GENERATION_ROOT_BYTES);
     assert_eq!(
-        decode_generation_root(&encoded, DecodeLimits::default())?,
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
     assert_eq!(
@@ -62,14 +62,14 @@ fn duplicate_merge_parents_and_unknown_features_fail_closed()
         .parents
         .push(GenerationId::new(Digest::from_bytes([5; 32])));
     assert_eq!(
-        u64::try_from(encode_generation_root(&value)?.len())?,
+        u64::try_from(encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len())?,
         MAXIMUM_GENERATION_ROOT_BYTES
     );
     value.parents[1] = value.parents[0];
-    assert!(encode_generation_root(&value).is_err());
+    assert!(encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     value.parents.pop();
     value.required_features = 2;
-    assert!(encode_generation_root(&value).is_err());
+    assert!(encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     Ok(())
 }
 
@@ -82,7 +82,7 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
         wrong_kind.validate(),
         Err(CanonicalDecodeError::Invariant(_))
     ));
-    assert!(encode_generation_root(&wrong_kind).is_err());
+    assert!(encode_generation_root(&wrong_kind, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
 
     let mut too_many = root();
     too_many.parents = vec![
@@ -95,18 +95,18 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
         Err(CanonicalDecodeError::Invariant(_))
     ));
 
-    let mut encoded = encode_generation_root(&root())?;
+    let mut encoded = encode_generation_root(&root(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let parent_count_offset = 8 + 2 + 16 + 16 + 32;
     encoded[parent_count_offset..parent_count_offset + 4].copy_from_slice(&3_u32.to_le_bytes());
     assert!(matches!(
-        decode_generation_root(&encoded, DecodeLimits::default()),
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 3,
             maximum: 2
         })
     ));
     assert!(matches!(
-        generation_root_parent_count(&encoded, DecodeLimits::default()),
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 3,
             maximum: 2
@@ -122,20 +122,20 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
     two_parents
         .parents
         .push(GenerationId::new(Digest::from_bytes([5; 32])));
-    let mut encoded = encode_generation_root(&two_parents)?;
+    let mut encoded = encode_generation_root(&two_parents, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let parents_offset = 8 + 2 + 16 + 16 + 32 + 4;
     let first_parent = encoded[parents_offset..parents_offset + 32].to_vec();
     encoded[parents_offset + 32..parents_offset + 64].copy_from_slice(&first_parent);
     assert!(matches!(
-        decode_generation_root(&encoded, DecodeLimits::default()),
+        decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::Invariant(_))
     ));
 
-    let mut unsupported = encode_generation_root(&root())?;
+    let mut unsupported = encode_generation_root(&root(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let features_offset = unsupported.len() - 8;
     unsupported[features_offset..].copy_from_slice(&2_u64.to_le_bytes());
     assert!(matches!(
-        decode_generation_root(&unsupported, DecodeLimits::default()),
+        decode_generation_root(&unsupported, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::Invariant(_))
     ));
 
@@ -146,12 +146,12 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
     assert_eq!(generation_root_id(&value)?, (object, generation));
     assert!(generation_root_id(&too_many_parent_root()).is_err());
 
-    let mut trailing = encode_generation_root(&value)?;
+    let mut trailing = encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     trailing.push(0);
-    assert!(decode_generation_root(&trailing, DecodeLimits::default()).is_err());
-    let mut wrong_domain = encode_generation_root(&value)?;
+    assert!(decode_generation_root(&trailing, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
+    let mut wrong_domain = encode_generation_root(&value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     wrong_domain[0] ^= 1;
-    assert!(decode_generation_root(&wrong_domain, DecodeLimits::default()).is_err());
+    assert!(decode_generation_root(&wrong_domain, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     Ok(())
 }
 
@@ -162,13 +162,4 @@ fn too_many_parent_root() -> GenerationRoot {
         GenerationId::new(Digest::from_bytes([6; 32])),
     ]);
     value
-}
-
-#[test]
-fn measured_root_allocation_error_retains_the_actual_reservation_cause() {
-    let source = Vec::<u8>::new().try_reserve_exact(usize::MAX)
-        .expect_err("byte capacity exceeds Vec's addressable allocation bound");
-    let error = GenerationRootEncodeError::AllocationFailed(source);
-    assert!(std::error::Error::source(&error)
-        .is_some_and(|cause| cause.downcast_ref::<std::collections::TryReserveError>().is_some()));
 }

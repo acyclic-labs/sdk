@@ -46,17 +46,6 @@ struct VerifiedSummary {
     terminal: bool,
 }
 
-impl VerifiedSummary {
-    fn advance(&mut self, record: &WorkflowRecord) {
-        for identity in record.operation_ids() {
-            self.reserved.insert(identity);
-        }
-        self.keys.insert(record.idempotency_key.clone());
-        self.checkpoint = record.next.clone();
-        self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
-    }
-}
-
 struct WorkflowIdentities<'a> {
     io: Option<&'a PreparationIo>,
     owned: u64,
@@ -750,7 +739,10 @@ where
             && summary.admission == *admission
             && summary.checkpoint.revision == record.prior.revision
         {
-            summary.advance(record);
+            summary.reserved.extend(record.operation_ids());
+            summary.keys.insert(record.idempotency_key.clone());
+            summary.checkpoint = record.next.clone();
+            summary.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         }
     }
 

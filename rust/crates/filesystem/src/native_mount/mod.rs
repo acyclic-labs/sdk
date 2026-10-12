@@ -1036,14 +1036,14 @@ impl<'a> NativeMountCallbackFuture<'a> {
         F: std::future::Future<Output = Result<(), E>> + Send + 'a,
         B: FnOnce() -> F + Send + 'a,
     {
-        let failure = NativeMountCallbackReservation::<E>::prepare(work)?;
+        let failure = callback_failure_slot::<E>(work)?;
         Self::new(work, move || async move {
             match build().await {
                 Ok(()) => {
                     drop(failure);
                     Ok(())
                 }
-                Err(error) => Err(failure.into_error(error)),
+                Err(error) => Err(callback_failure(failure, error)),
             }
         })
     }
@@ -1055,12 +1055,12 @@ impl<'a> NativeMountCallbackFuture<'a> {
         F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
         B: FnOnce() -> F + Send + 'a,
     {
-        let failure = NativeMountCallbackReservation::<NativeMountError>::prepare(work)?;
+        let failure = callback_failure_slot::<NativeMountError>(work)?;
         Self::new(work, move || async move {
             match build().await {
                 Ok(()) => Ok(()),
                 Err(error @ NativeMountError::CallbackDenied { .. }) => Err(error),
-                Err(error) => Err(failure.into_error(error)),
+                Err(error) => Err(callback_failure(failure, error)),
             }
         })
     }
@@ -1099,28 +1099,22 @@ impl<E: std::error::Error + 'static> std::error::Error for NativeMountCallbackCa
     }
 }
 
-/// Keeps the actual boxed slot before its guard, including before the verification future is built and while that future owns the reservation.
-struct NativeMountCallbackReservation<E> {
-    slot: Box<NativeMountCallbackCause<E>>,
-    custody: crate::NativeAllocation,
+fn callback_failure_slot<E>(
+    work: &NativeMaterializationWork,
+) -> Result<(Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), NativeMountError> {
+    let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+    let allocation = work.claim_allocation(
+        slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
+    )?;
+    // Tuple fields retire the boxed slot before its allocation.
+    Ok((Box::new(NativeMountCallbackCause { source: None }), allocation))
 }
 
-impl<E: std::error::Error + Send + Sync + 'static> NativeMountCallbackReservation<E> {
-    fn prepare(work: &NativeMaterializationWork) -> Result<Self, NativeMountError> {
-        let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
-        let allocation = work.claim_allocation(
-            slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED)?;
-        Ok(Self {
-            slot: Box::new(NativeMountCallbackCause { source: None }),
-            custody: allocation,
-        })
-    }
-
-    fn into_error(mut self, error: E) -> NativeMountError {
-        self.slot.source = Some(error);
-        let source: Box<dyn std::error::Error + Send + Sync> = self.slot;
-        NativeMountError::CallbackDenied { source, custody: self.custody }
-    }
+fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
+    (mut source, custody): (Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), error: E,
+) -> NativeMountError {
+    source.source = Some(error);
+    NativeMountError::CallbackDenied { source, custody }
 }
 
 /// One existing physical driver's accounting activation, not task authority.
@@ -1232,11 +1226,7 @@ pub(crate) fn run_native_mount_handler<T>(
 ) -> Result<crate::OperationReceipt<T>, NativeMountCallbackFailure> {
     let work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(cause, work)| NativeMountCallbackFailure { cause: cause.into(), work })?;
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        operation(&work)
-    })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
-        operation: "SDK callback", panic: std::sync::Mutex::new(panic),
-    }));
+    let result = run_native_mount_handler_on_meter(&work, operation);
     match result {
         Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
         Err(cause) => Err(NativeMountCallbackFailure { cause, work: work.receipt() }),
@@ -1269,14 +1259,6 @@ impl NativeMountAllocationCustody {
     ) -> Result<(), NativeMountStartupAdmissionError> {
         work.original_demand_work()
             .with_original_leaf(|original| self.claim(bytes, original))?
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn retain_admitted_with_meter(
-        &self, bytes: u64, work: &NativeMaterializationWork,
-    ) -> Result<(), NativeMountStartupAdmissionError> {
-        work.original_demand_work()
-            .with_original_leaf(|original| self.retain_admitted(bytes, original))?
             .map_err(Into::into)
     }
 
@@ -2130,8 +2112,6 @@ pub struct NativeMountRecoveryCleanupState<'a> {
     pub destination_removed: bool,
     /// Last actual measured action failed.
     pub measured_cleanup_failed: bool,
-    /// Native controls and the original destination fence were released.
-    pub cleanup_complete: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -2174,22 +2154,15 @@ struct NativeRecoverySnapshot {
     measured_cleanup_failed: bool,
 }
 
-type NativeRecoveryActionResult = Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)>;
-
 enum NativeRecoveryCommand {
     Acquire,
     Action { remove_destination: bool, work: crate::NativeMaterializationWork },
     LastDrop,
 }
 
-enum NativeRecoveryReply {
-    Acquire(Result<(), NativeMountError>),
-    Action(NativeRecoveryActionResult),
-}
-
 struct NativeRecoveryMailbox {
     command: Option<NativeRecoveryCommand>,
-    reply: Option<NativeRecoveryReply>,
+    reply: Option<Result<bool, NativeMountError>>,
     snapshot: Option<NativeRecoverySnapshot>,
     // Actual state DATA has dropped; this is not a std thread-join proof.
     state_retired: bool,
@@ -2283,10 +2256,7 @@ impl NativeMountRecoveryOwner {
             while mailbox.reply.is_none() {
                 mailbox = owner.shared.wake.wait(mailbox).unwrap_or_else(|error| error.into_inner());
             }
-            match mailbox.reply.take().expect("actual acquisition reply") {
-                NativeRecoveryReply::Acquire(result) => result,
-                NativeRecoveryReply::Action(_) => unreachable!("acquisition owns the original slot"),
-            }
+            mailbox.reply.take().expect("actual acquisition reply")
         };
         result?;
         Ok(owner)
@@ -2305,7 +2275,6 @@ impl NativeMountRecoveryOwner {
             namespace_detach_confirmed: state.namespace_detach_confirmed,
             destination_removed: state.destination_removed,
             measured_cleanup_failed: state.measured_cleanup_failed,
-            cleanup_complete: !state.destination_fence_retained && !state.controls_pending,
         }
     }
     /// Recovers through the same engine with an explicit unbounded allowance.
@@ -2346,17 +2315,17 @@ impl NativeMountRecoveryOwner {
         {
             let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
             debug_assert!(mailbox.command.is_none() && mailbox.reply.is_none());
-            mailbox.command = Some(NativeRecoveryCommand::Action { remove_destination, work });
+            mailbox.command = Some(NativeRecoveryCommand::Action { remove_destination, work: work.clone() });
             self.shared.wake.notify_one();
         }
         let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
         while mailbox.reply.is_none() {
             mailbox = self.shared.wake.wait(mailbox).unwrap_or_else(|error| error.into_inner());
         }
-        match mailbox.reply.take().expect("actual action reply") {
-            NativeRecoveryReply::Action(result) => result,
-            NativeRecoveryReply::Acquire(_) => unreachable!("action owns the original slot"),
-        }
+        let result = mailbox.reply.take().expect("actual action reply");
+        drop(mailbox);
+        let spent = work.receipt();
+        result.map(|value| crate::OperationReceipt { value, work: spent }).map_err(|error| (error, spent))
     }
 
     fn mark_failed(&mut self) {
@@ -2470,7 +2439,7 @@ impl NativeRecoveryWorker {
                 NativeRecoveryCommand::Acquire => {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire()));
                     let result = match result {
-                        Ok(Ok(actual)) => { identity = Some(actual); Ok(()) }
+                        Ok(Ok(actual)) => { identity = Some(actual); Ok(true) }
                         Ok(Err(error)) => Err(error),
                         Err(panic) => {
                             self.state.panic = Some(panic);
@@ -2482,12 +2451,12 @@ impl NativeRecoveryWorker {
                         drop(self.state);
                         drop(self._state_custody);
                         let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
-                        mailbox.reply = Some(NativeRecoveryReply::Acquire(result));
+                        mailbox.reply = Some(result);
                         mailbox.state_retired = true;
                         self.shared.wake.notify_all();
                         return;
                     }
-                    NativeRecoveryReply::Acquire(result)
+                    result
                 }
                 NativeRecoveryCommand::Action { remove_destination, work } => {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2501,10 +2470,7 @@ impl NativeRecoveryWorker {
                             Err(NativeMountError::Lifecycle("administrative action panicked"))
                         }
                     };
-                    NativeRecoveryReply::Action(match result {
-                        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
-                        Err(error) => Err((error, work.receipt())),
-                    })
+                    result
                 }
                 NativeRecoveryCommand::LastDrop => {
                     self.retire();
@@ -4094,7 +4060,7 @@ fn start_driver_into<F>(
 ) -> Result<(), DriverStartFailure>
 where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
     let mut driver = None;
-    let result = projfs::ProjFsSession::start_into(request, source, work, &mut driver, retirement, prepare);
+    let result = projfs::ProjFsSession::start(request, source, work, &mut driver, retirement, prepare);
     *out = driver.map(DriverSession::ProjFs);
     result
 }
@@ -4213,28 +4179,12 @@ mod tests {
             destination: root.path().to_path_buf(),
             writable: true,
         };
-        let fs = Fs::memory();
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let checkout = runtime.block_on(async {
             let cancellation = CancellationToken::new();
-            let volume = fs
-                .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-                .await?
-                .value;
-            volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode {
-                        access: AccessMode::ReadWrite,
-                        consistency: ConsistencyMode::Pinned,
-                        mutations: MutationMode::PrivateOverlay,
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map(|receipt| receipt.value)
+            let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
+            private_checkout(&volume, &cancellation).await
         })?;
         let source = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::new(checkout)),
@@ -4246,6 +4196,12 @@ mod tests {
         ));
         assert_eq!(std::fs::read(root.path().join("existing.txt"))?, b"real");
         Ok(())
+    }
+
+    pub(super) async fn memory_volume(
+        id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+        Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 
     pub(super) async fn private_checkout<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
@@ -4386,7 +4342,8 @@ mod tests {
         assert!(receipt.value);
         assert!(receipt.work.backend_read_operations > 0);
         assert_eq!(owner.cleanup_state().fence_identity, identity);
-        assert!(owner.cleanup_state().cleanup_complete);
+        let state = owner.cleanup_state();
+        assert!(!state.destination_fence_retained && !state.controls_pending);
         let thread = owner.worker.take().expect("same original worker");
         drop(owner);
         await_recovery_worker(thread)?;
@@ -4465,7 +4422,8 @@ mod tests {
 
         recovery.recover()?;
         assert_eq!(recovery.cleanup_state().fence_identity, original_fence);
-        assert!(recovery.cleanup_state().cleanup_complete);
+        let state = recovery.cleanup_state();
+        assert!(!state.destination_fence_retained && !state.controls_pending);
         assert!(!destination.exists());
         let residue = std::fs::read_dir(parent.path())?
             .filter_map(Result::ok)
@@ -4890,16 +4848,7 @@ mod tests {
         let limits = VolumeLimits::default();
         let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([92; 16]),
-                config,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([92; 16]), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let host = tempfile::tempdir()?;
         std::fs::write(host.path().join("a"), b"shared")?;
@@ -5092,16 +5041,7 @@ mod tests {
     async fn baseline_path_limit_stops_unbounded_traversal()
     -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([94; 16]),
-                VolumeConfig::portable(Lifecycle::Ephemeral),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([94; 16]), VolumeConfig::portable(Lifecycle::Ephemeral), &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let host = tempfile::tempdir()?;
         for index in 0..3 {
@@ -5152,16 +5092,7 @@ mod tests {
         let limits = VolumeLimits::default();
         let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume_with_id(
-                VolumeId::from_bytes([91; 16]),
-                config,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::from_bytes([91; 16]), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let file = NamespacePath::new(
             vec![LogicalName::new(
@@ -5703,11 +5634,7 @@ mod tests {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().join("capture");
@@ -5791,11 +5718,7 @@ mod tests {
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let nested = portable_path(limits, &[b"nested"])?;
         let child = portable_path(limits, &[b"nested", b"child.txt"])?;
@@ -5877,11 +5800,7 @@ mod tests {
         config.profile = FilesystemProfile::Windows;
         let limits = config.limits;
         let cancellation = CancellationToken::new();
-        let fs = Fs::memory();
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
+        let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
         let name = "watch.txt"
             .encode_utf16()

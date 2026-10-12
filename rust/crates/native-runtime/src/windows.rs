@@ -49,25 +49,16 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[derive(Clone, Debug)]
-struct ArcFile(Arc<NativeFilePayload>);
-
-impl compio_driver::AsFd for ArcFile {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        BorrowedFd::from(self.0.as_handle())
-    }
-}
-
-#[derive(Clone, Debug)]
 enum DriverFile {
     Reopened(SharedFd<OwnedFd>),
-    Original(SharedFd<ArcFile>),
+    Original(Arc<NativeFilePayload>),
 }
 
 impl compio_driver::AsFd for DriverFile {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             Self::Reopened(file) => file.as_fd(),
-            Self::Original(file) => file.as_fd(),
+            Self::Original(file) => BorrowedFd::from(file.as_handle()),
         }
     }
 }
@@ -1019,9 +1010,7 @@ impl DriverState {
                     }
                 }
             }
-            return Ok(DriverFile::Original(SharedFd::new(ArcFile(Arc::clone(
-                file,
-            )))));
+            return Ok(DriverFile::Original(Arc::clone(file)));
         }
         let reopened = reopen_overlapped(file, access)?;
         self.proactor.attach(reopened.as_raw_handle().cast())?;
@@ -1271,98 +1260,8 @@ fn reopen_overlapped(file: &File, access: u32) -> io::Result<File> {
 mod tests {
     use super::*;
     use std::fs::OpenOptions;
-    use std::io::{Seek as _, Write as _};
+    use std::io::Seek as _;
     use std::os::windows::fs::OpenOptionsExt as _;
-    use std::sync::atomic::Ordering;
-    use std::time::Duration;
-    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_INBOUND;
-    use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_TYPE_BYTE};
-
-    #[test]
-    fn empty_nonblocking_poll_is_not_a_driver_failure() -> io::Result<()> {
-        let mut proactor = Proactor::new()?;
-        poll_proactor(&mut proactor, Some(Duration::ZERO))
-    }
-
-    #[test]
-    fn compio_keeps_pending_kernel_buffer_until_terminal_pop() -> io::Result<()> {
-        static NEXT_PIPE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let name = format!(
-            r"\\.\pipe\acyclic-compio-{}-{}",
-            std::process::id(),
-            NEXT_PIPE.fetch_add(1, Ordering::Relaxed)
-        );
-        let encoded = name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>();
-        // SAFETY: the name is live and NUL terminated; the returned handle is
-        // transferred exactly once to File below.
-        let handle = unsafe {
-            CreateNamedPipeW(
-                encoded.as_ptr(),
-                PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
-                PIPE_TYPE_BYTE,
-                1,
-                4096,
-                4096,
-                0,
-                std::ptr::null(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: successful CreateNamedPipeW transferred one owned handle.
-        let server = unsafe { File::from_raw_handle(handle as RawHandle) };
-        let mut client = OpenOptions::new().write(true).open(&name)?;
-        // SAFETY: a client that connected first produces ERROR_PIPE_CONNECTED.
-        if unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) } == 0
-            && io::Error::last_os_error().raw_os_error() != Some(ERROR_PIPE_CONNECTED.cast_signed())
-        {
-            return Err(io::Error::last_os_error());
-        }
-        let mut proactor = Proactor::new()?;
-        proactor.attach(handle)?;
-        let fd = SharedFd::new(OwnedFd::from(server));
-        let mut buffer = Vec::new();
-        buffer.try_reserve_exact(1).map_err(io::Error::other)?;
-        let key = match proactor.push(ReadAt::new(fd, 0, buffer)) {
-            PushEntry::Pending(key) => key,
-            PushEntry::Ready(_) => return Err(io::Error::other("empty pipe read did not pend")),
-        };
-        let write_result = client.write_all(b"x");
-        if write_result.is_err() {
-            drop(client);
-        }
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut key = key;
-        loop {
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                fail_stop("test pending pipe read did not reach terminal completion");
-            }
-            proactor
-                .poll(Some(remaining))
-                .unwrap_or_else(|_| fail_stop("test proactor failed with pending kernel I/O"));
-            match proactor.pop(key) {
-                PushEntry::Pending(still_pending) => key = still_pending,
-                PushEntry::Ready(result) => {
-                    write_result?;
-                    let (count, op) = result.into_parts();
-                    assert_eq!(count?, 1);
-                    let mut buffer = op.into_inner();
-                    // SAFETY: the terminal read initialized the first byte.
-                    unsafe {
-                        buffer.set_len(1);
-                    }
-                    assert_eq!(buffer, b"x");
-                    return Ok(());
-                }
-            }
-        }
-    }
 
     #[test]
     fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()> {

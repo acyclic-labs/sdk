@@ -15,21 +15,6 @@ use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Default maximum bytes read when resolving a file for the provider-neutral projection helper.
-pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
-/// Default maximum bytes read for an attachment manifest in the projection helper.
-pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
-/// Default maximum number of attachments resolved from one selected message.
-pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = u32::MAX as usize;
-/// Default maximum number of selected messages in one provider request.
-pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = u32::MAX as usize;
-/// Default maximum bytes rendered into one provider request.
-pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = crate::conversation::MAX_LIMIT_RENDER_BYTES;
-/// Protocol ceiling for attachments materialized into one model projection.
-pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
-/// Largest JSON byte allowance representable by the JavaScript contract.
-pub const MAX_PROJECTION_JSON_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
-
 #[derive(Debug, Deserialize, Serialize)]
 struct ProjectedToolInvocation {
     call_id: String,
@@ -248,10 +233,10 @@ impl SelectedModelContext {
 
     /// Checks selection provenance and its final current user input.
     pub(crate) fn validate_for_input(
-        &self, input: &ModelContent, io: Option<&crate::context::ContextPreparationIo>,
+        &self, input: &ModelContent, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = io.and_then(crate::context::ContextPreparationIo::original_native_work);
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native {
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -312,8 +297,8 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     validate_model_context_selection_at_revision(conversation, &selection, conversation_revision, io)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
-        || maximum_render_bytes > MAX_PROJECTION_JSON_BYTES
-        || maximum_projected_attachments as u64 > MAX_PROJECTION_PROJECTED_ATTACHMENTS as u64
+        || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         || selection.message_ids.len() > maximum_messages
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
@@ -811,7 +796,7 @@ fn projection_native_image(
     projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
     Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
         intent: crate::model::NativeMediaIntent::Image { detail: crate::model::ImageDetail::Auto },
-        maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
+        maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
         maximum_work,
         configuration: None,
     })))

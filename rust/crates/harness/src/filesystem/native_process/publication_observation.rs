@@ -83,9 +83,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         if before.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_))) {
             return Err(Error::Indeterminate(self.command));
         }
-        let request = self.request(work).await?;
+        let (request, request_custody) = self.request(work).await?;
         let receipt = self.approved_receipt(
-            attempt, request.request(), work,
+            attempt, request.as_ref(), work,
         ).await?;
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if (receipt.task, &receipt.original_fence) != self.owner.task_binding()
@@ -98,14 +98,14 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         };
         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if result.volume() != self.authority.results.volume()
-            || result.descriptor().byte_length() > u64::from(request.request().maximum_result_bytes)
+            || result.descriptor().byte_length() > u64::from(request.as_ref().maximum_result_bytes)
             || result.descriptor().media_type() != "application/json" {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "published native metadata has no pinned original result"));
         }
         self.owner.require_volume_grant_with_native_work(result.volume(), VolumeOperation::Read, work)?;
         let bytes = self.authority.result_content.read_with_native_work(
-            result, u64::from(request.request().maximum_result_bytes), work,
+            result, u64::from(request.as_ref().maximum_result_bytes), work,
         )?.await?;
         let (result, result_custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
         if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
@@ -116,7 +116,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(bytes);
 
         let mut selected = None;
-        for (index, mapping) in request.request().view.volumes.iter().enumerate() {
+        for (index, mapping) in request.as_ref().view.volumes.iter().enumerate() {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
             if &mapping.volume != project { continue; }
             if selected.replace(index).is_some() {
@@ -126,7 +126,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         let index = selected.ok_or(boundary(crate::wire::ErrorCode::Unauthorized,
             "published native project is absent from the original approved request"))?;
-        let mapping = &request.request().view.volumes[index];
+        let mapping = &request.as_ref().view.volumes[index];
         let NativeVolumeNamespace::LazyMount { snapshot: baseline } = &mapping.namespace else {
             return Err(boundary(crate::wire::ErrorCode::Unsupported,
                 "published native project is not an original qualified lazy namespace"));
@@ -135,7 +135,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let mut previous = None;
         for published in &receipt.published {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
-            if published.index >= request.request().view.volumes.len()
+            if published.index >= request.as_ref().view.volumes.len()
                 || previous.is_some_and(|previous| previous >= published.index) {
                 return Err(boundary(crate::wire::ErrorCode::Conflict,
                     "published native metadata differs from the original ordered manifest"));
@@ -163,7 +163,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(after);
         drop(after_custody);
         drop(receipt);
-        drop(request);
+        drop((request, request_custody));
         drop(before);
         drop(before_custody);
         Ok((snapshot, custody))

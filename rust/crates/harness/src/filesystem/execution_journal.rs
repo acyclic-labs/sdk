@@ -671,7 +671,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
-        crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
+        crate::context::validate_projected_context(&projection.context, limits, io)?;
         let Some(reference) = &projection.checkpoint else {
             if projection.canonical.is_some() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,

@@ -81,12 +81,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy.validate_snapshot_with_native_work(snapshot, work).await.map_err(Error::from)
+                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
+                    work, work.cancellation(),
+                )?;
+                self.lazy.validate_snapshot(snapshot, &accounting).await.map_err(Error::from)
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(self.lazy.validate_snapshot_measured(snapshot, io.remaining()?, &io.cancellation).await
-                .map_err(|failure| failure.map_error(root_source_error)))
+            let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, &io.cancellation);
+            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
+            io.receive_content(accounting.measured(result, |error, work| error.with_prior_work(work)
+                .into_measured_failure().map_error(root_source_error)))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,

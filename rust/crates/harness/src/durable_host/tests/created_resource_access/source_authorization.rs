@@ -164,7 +164,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             &prepared, child, &native,
         ).await, Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
-        let baseline = native.remaining().expect("source quota").peak_allocation_bytes;
         let native_handle = owner.restore_project_source_authorization_with_native_work(
             &context, handle.authorization(), &native)?.await?;
         let selected = runtime.inspect_project_source_with_native_work(
