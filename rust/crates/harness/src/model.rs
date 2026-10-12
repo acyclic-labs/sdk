@@ -64,7 +64,7 @@ pub(crate) fn vec_with_capacity<T>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             if bytes == 0 { work.remaining()?; return Ok(values); }
-            let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::default())?;
             values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
             let completed = custody.reconcile_capacity(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?);
             io.absorb_native_custody(custody)?;
@@ -1597,7 +1597,7 @@ impl<'a> NativeModelStream<'a> {
     {
         work.remaining()?;
         let bytes = std::mem::size_of::<S>() as u64;
-        let custody = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
+        let custody = work.claim(bytes, u64::from(bytes != 0), acyclic_fs::WorkCounters::default())?;
         let stream = Box::pin(build());
         Ok(Self { stream, custody })
     }

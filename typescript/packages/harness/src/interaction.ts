@@ -12,12 +12,7 @@ export interface ApprovalBinding {
   readonly action_digest: readonly number[];
 }
 
-interface InteractionTicketBase {
-  readonly id: InteractionId;
-  readonly request: FileRef;
-  readonly deadline_unix_ms: bigint | null;
-}
-export type InteractionTicket = InteractionTicketBase & (
+export type InteractionTicket = Readonly<{ id: InteractionId; request: FileRef; deadline_unix_ms: bigint | null }> & (
   | Readonly<{ kind: "approval"; approval: ApprovalBinding }>
   | Readonly<{ kind: Exclude<InteractionKind, "approval">; approval: null }>
 );
