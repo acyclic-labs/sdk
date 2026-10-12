@@ -5,7 +5,7 @@ import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { installedNativeFixture } from "./pi-native-fixture.ts";
-import { PiOperatorDriver } from "./pi-operator-driver.ts";
+import { piOperatorDriver } from "./pi-operator-driver.ts";
 import { blake3 } from "@noble/hashes/blake3";
 import { openNativeFs, DEFAULT_OBJECT_CACHE_OPTIONS } from "../../../typescript/packages/filesystem/src/native.ts";
 import { loadPiContextHelpers } from "./pi-fixture.ts";
@@ -182,7 +182,7 @@ test("required pinned Pi recursively launches original native effects and reopen
     await fixture.start();
     ownedServicePids.push(fixture.servicePid()!);
     fixture.environment.ACYCLIC_NATIVE_ORIGINAL_PROJECT = fixture.project;
-    const operator = new PiOperatorDriver({
+    const operator = piOperatorDriver({
       session:fixture.manager.getSessionId(), cwd:fixture.project, command:fixture.command,
       operation:"root-writeback", selected:{
         "child-a.txt":{baseline:null,candidate:"child A edited\n",current:null},
@@ -190,7 +190,7 @@ test("required pinned Pi recursively launches original native effects and reopen
         "grandchild.txt":{baseline:null,candidate:"grandchild inherited edited source\n",current:null},
       }, preserved:{"concurrent.txt":"external root edit after original child admission\n"},
     });
-    const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", line => operator.consumeJsonLine(line));
+    const result = await fixture.runJson("ACYCLIC_NATIVE_ROOT", operator.consumeJsonLine);
     await operator.assertPublished();
     const finalMessages = result.stdout.split("\n").filter(line => line.trim()).map(line => JSON.parse(line))
       .filter(event => event.type === "message_end" && event.message?.role === "assistant")

@@ -25,10 +25,10 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, TaskChildrenPage } from "./runtime.js";
+import type { BatchAdmissionRequest, PrivateDirectoryPage, TaskChildrenPage } from "./runtime.js";
 import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId, TaskId } from "./index.js";
-import { assertHarnessWasmExports, ensureHarnessWasm, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
+import { assertHarnessWasmExports, ensureHarnessWasm } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
 /** Rust generated admission projection input and output shapes. */
@@ -126,23 +126,17 @@ interface ContractValues {
 
 type SimpleContract = Exclude<keyof ContractValues, "conversation_message" | "interaction_resolution">;
 type FixedSimpleContract = Exclude<SimpleContract, "provider_ref" | "volume_ref" | "file_ref" | "resource_ref">;
-type NativeExports = Pick<typeof wasm, typeof REQUIRED_HARNESS_WASM_EXPORTS[number]>;
-
 /** Rust performs admission validation; TypeScript preserves the exact public shape. */
 export class NativeContracts {
   static #instance: NativeContracts | undefined;
-  private constructor(private readonly native: NativeExports) {}
+  private constructor(private readonly native: typeof wasm) {}
 
-  /**
-   * Initialize once before using synchronous contract methods. Shares the one
-   * guarded package WASM instance shared by every Harness facade.
-   */
+  /** Initialize the shared WASM instance before synchronous contract calls. */
   static async create(): Promise<NativeContracts> {
     await ensureHarnessWasm();
     if (NativeContracts.#instance === undefined) {
-      const native: NativeExports = wasm;
-      assertHarnessWasmExports(native);
-      NativeContracts.#instance = new NativeContracts(native);
+      assertHarnessWasmExports(wasm);
+      NativeContracts.#instance = new NativeContracts(wasm);
     }
     return NativeContracts.#instance;
   }
@@ -459,49 +453,43 @@ export class NativeContracts {
   }
 
   taskAdmissionIdentities(value: WasmTaskIdentityInput): TaskAdmissionIdentities {
-    return freezeNative(normalizeTypedNativeValue(this.native.taskAdmissionIdentities({
+    return freezeNative(normalizeNativeValue(this.native.taskAdmissionIdentities({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
-    })));
+    }))) as TaskAdmissionIdentities;
   }
 
   /** Rust-owned durable task admission and canonical envelope projection. */
   admitTask(value: TaskAdmissionProjectionInput): TaskAdmissionWire {
-    return freezeNative(normalizeTypedNativeValue(this.native.admitTask({
+    return freezeNative(normalizeNativeValue(this.native.admitTask({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
       grants: [...value.grants],
-    })));
+    }))) as TaskAdmissionWire;
   }
 
   /** Rust-owned immutable batch request construction and validation. */
   admitBatch(value: BatchAdmissionProjectionInput): DurableBatchWire {
-    return freezeNative(normalizeTypedNativeValue(this.native.admitBatch({
+    return freezeNative(normalizeNativeValue(this.native.admitBatch({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
       inputs: [...value.inputs],
       grants: [...value.grants],
-    })));
+    }))) as DurableBatchWire;
   }
 
   /** Rust-owned complete batch envelope, members, and canonical digest. */
   admitBatchRequest(value: BatchAdmissionProjectionInput): BatchAdmissionRequest {
-    const projected = normalizeTypedNativeValue(this.native.admitBatchRequest({
+    return freezeNative(normalizeNativeValue(this.native.admitBatchRequest({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
       inputs: [...value.inputs],
       grants: [...value.grants],
-    }));
-    return freezeNative({
-      ...projected,
-      groupId: projected.groupId as GroupId,
-      batchId: projected.batchId as BatchId,
-      parentTaskId: projected.parentTaskId as TaskId | null,
-    });
+    }))) as BatchAdmissionRequest;
   }
 
   idFromDigest(digest: Uint8Array, kind: "operation"): OperationId;
@@ -631,9 +619,6 @@ function normalizeNativeValue(value: unknown, safeJsonNumbers = false, preserveL
       normalizeNativeValue(child, safeJsonNumbers, preserveLargeBigInts)] as const));
   }
   return value;
-}
-function normalizeTypedNativeValue<Value>(value: Value): Value {
-  return normalizeNativeValue(value) as Value;
 }
 function boundedJsonNumber(value: bigint): number {
   const exact = Number(value);
