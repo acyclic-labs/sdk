@@ -90,7 +90,7 @@ impl ToolExecutor for PendingTool {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.executed.load(Ordering::SeqCst), 1);
             if !self.receipt_ready.load(Ordering::SeqCst) { return futures::future::pending().await; }
-            let (value, custody) = crate::tool::value_with_native_work(&"original receipt", work)?;
+            let (value, custody) = crate::tool::value(&"original receipt", work.remaining()?.bytes_encoded, work)?;
             Ok((Some(ToolResult { value }), custody))
         })
     }
@@ -107,7 +107,7 @@ impl ToolProjection for PendingTool {
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
         #[derive(serde::Serialize)]
         struct Projection<'a> { kind: &'static str, value: &'a Value }
-        crate::tool::value_with_native_work(&Projection { kind: "json", value: &result.value }, work)
+        crate::tool::value(&Projection { kind: "json", value: &result.value }, work.remaining()?.bytes_encoded, work)
     }
 }
 
@@ -135,13 +135,13 @@ impl ResumableMachine for Machine {
     fn initialize_with_native_work(
         &self, input: &Value, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        crate::tool::clone_value_with_native_work(input, work)
+        crate::tool::clone_value(input, None, work)
     }
     fn transition_with_native_work(
         &self, state: &Value, _: Value, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
         let io = super::super::PreparationIo::from_native_work(work)?;
-        let (state, custody) = crate::tool::clone_value_with_native_work(state, work)?;
+        let (state, custody) = crate::tool::clone_value(state, None, work)?;
         io.absorb_native_custody(custody)?;
         let command = {
             let encoded_hold;

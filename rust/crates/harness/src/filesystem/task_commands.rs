@@ -1444,7 +1444,8 @@ fn tool_invocation(
         name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };
-    ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
+    crate::executor::with_history_io(io, |work|
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
     Ok(invocation)
 }
 

@@ -3462,7 +3462,7 @@ impl Reducer {
             Action::PublishProjectMerge { receipt } => {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
-                receipt.validate_shape_with_work(quota.work())?;
+                receipt.validate_shape(quota.work())?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 if self.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
@@ -3819,7 +3819,7 @@ impl Reducer {
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
-                receipt.validate_shape_with_work(work)?;
+                receipt.validate_shape(work)?;
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 quota.adopt(key_owned)?;
