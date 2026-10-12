@@ -340,10 +340,11 @@ impl DurableContextProvider {
             *destination = *byte;
         }
         let operation = crate::OperationId::from_bytes(identity);
+        let path = format!("context/projections/{operation}.json");
         let (content, _content_hold) = publisher
             .stage(
                 operation,
-                &format!("context/projections/{operation}.json"),
+                &path,
                 &bytes,
                 "application/json",
                 "context.json",
@@ -754,10 +755,12 @@ fn clone_summary_native(
 ) -> Result<(Option<ContextSummary>, acyclic_fs::NativeAllocation)> {
     match summary {
         Some(summary) => {
-            let output = summary.output.clone_with_native_work(work)?;
+            let mut io = crate::store::history::native_work_io(work)?;
+            let output = summary.output.copy(&mut Some(&mut io))?;
+            let custody = io.take_native_custody(output.logical_owned_bytes()?)?;
             Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
-                output: output.0 }), output.1))
+                output }), custody))
         }
         None => Ok((None, work.retain_owned(0).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?)),
     }
@@ -1422,7 +1425,7 @@ impl BorrowedContext<'_> {
                 message.content.validate_limits(limits, work)?;
             }
             if let Some(content) = self.messages.user { content.validate_limits(limits, work)?; }
-            Ok(())
+            Ok::<(), crate::Error>(())
         })?;
         validate_context_json(self, limits.render_bytes, io)
     }
@@ -1875,7 +1878,7 @@ impl ContextPipeline {
                 work.copy_bytes(copied as u64)?;
             }
             stages.extend(self.0.iter().cloned());
-            Ok(())
+            Ok::<(), crate::Error>(())
         })?;
         Ok(Self(stages))
     }
