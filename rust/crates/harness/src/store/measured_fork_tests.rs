@@ -279,8 +279,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     assert_eq!(reopened_child.reducer().revision(), 1);
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.child.stream_path(&mut None)?.as_str())?).await?.tail, 1);
-    setup.fixture.host.settle_task(crate::TaskId::from_bytes([84; 16]), (&setup.lease.reservation).into(),
-        crate::Outcome::Failed { message: "test closes original publication lease".into() }, &mut None).await?;
+    setup.fixture.host.settle_task(crate::TaskId::from_bytes([84; 16]), &(&setup.lease.reservation).into(), crate::Outcome::Failed { message: "test closes original publication lease".into() }, &mut None).await?;
     assert!(reopened.publish_fork_report_measured(setup.report, setup.parent_scope, &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path(&mut None)?.as_str())?).await?.tail, before + 1);
     Ok(())

@@ -382,7 +382,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let owner_condition = match (owner, fence) {
                 (Some(owner), _) => Some(owner.condition(crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, Some(fence)) => Some(self.coordinator.lock().await.journal_condition(
-                    &self.owner, &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
+                    self.verifier.audience(), &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
                     fence, crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, None) => None,
             };

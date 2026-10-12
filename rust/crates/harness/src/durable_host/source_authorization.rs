@@ -77,7 +77,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Invalid("project source snapshot verifier has no remaining work or bytes".into()));
         }
         provider.verify(RootProjectSourceContext {
-            owner: &self.host.owner, caller: &caller, source: &source, graph_root,
+            owner: self.host.verifier.audience(), caller: &caller, source: &source, graph_root,
             operation_id, maximum_work: budget.work, maximum_bytes: budget.bytes,
             created_project_authenticated,
             cancellation,
@@ -87,7 +87,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized("project source invocation cancelled during snapshot verification".into()));
         }
         let mut authorization = ProjectSourceAuthorization {
-            owner: self.host.owner.clone(), caller_task: self.task_id,
+            owner: self.host.verifier.audience().clone(), caller_task: self.task_id,
             caller_admission_digest: self.original_admission_digest, caller_fence: self.fence.clone(),
             operation_id, source_task, project: snapshot.project, generation: snapshot.generation,
             native_snapshot: snapshot.native_snapshot, graph_root, maximum_work, maximum_bytes,
@@ -192,7 +192,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     reason: "project source has no bounded authenticated creator" });
             }
             provider.verify_with_native_work(RootProjectSourceContext {
-                owner: &self.host.owner, caller: &caller.0, source: &source.0, graph_root,
+                owner: self.host.verifier.audience(), caller: &caller.0, source: &source.0, graph_root,
                 operation_id, maximum_work: budget.work, maximum_bytes: budget.bytes,
                 created_project_authenticated, cancellation,
             }, snapshot, work)?.await?;
@@ -213,7 +213,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             };
             let owner = {
                 let mut history = io.history_io();
-                history.clone_authority(&self.host.owner)?
+                history.clone_authority(self.host.verifier.audience())?
             };
             let caller_fence = {
                 let mut history = io.history_io();
@@ -395,7 +395,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             quota.adopt(retained)?;
             visited.push(operation);
             let state = coordinator.observe_operation(
-                &self.owner, &self.owner_scope, &self.verifier, operation, quota.work())?;
+                self.verifier.audience(), &self.owner_scope, &self.verifier, operation, quota.work())?;
             if state.cancellation_requested {
                 return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
                     "project source graph is cancelled"));
@@ -564,7 +564,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         record.verify_scope_with_work(&self.verifier, quota.work())?;
-        if record.owner != self.owner || record.caller_task != parent {
+        if &record.owner != self.verifier.audience() || record.caller_task != parent {
             return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
                 "project source differs from original caller or owning coordinator"));
         }

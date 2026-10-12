@@ -1717,7 +1717,7 @@ where
                                 return Ok(WorkerTurn::Suspended { task, revision });
                             }
                             CommandDispatch::Indeterminate => {
-                                self.settle_observed(task, fence, Outcome::Indeterminate { operation_id }, io).await?;
+                                self.task_host().settle_task(task, fence, Outcome::Indeterminate { operation_id }, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                                 return Ok(WorkerTurn::Reconciling);
                             }
                         }
@@ -1730,7 +1730,7 @@ where
                         MachineStatus::Suspended => None,
                     };
                     if let Some(outcome) = outcome {
-                        self.settle_observed(task, fence, outcome, io).await?;
+                        self.task_host().settle_task(task, fence, outcome, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                         return Ok(WorkerTurn::Completed { task });
                     }
                 }
@@ -1746,11 +1746,11 @@ where
                         { wake_input_used = true; }
                         std::mem::take(value)
                     } else {
-                        self.suspend_observed(task, fence, revision, io).await?;
+                        self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                         return Ok(WorkerTurn::Suspended { task, revision });
                     }
                 } else {
-                    self.suspend_observed(task, fence, revision, io).await?;
+                    self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 };
                 if advanced == maximum_transitions {
