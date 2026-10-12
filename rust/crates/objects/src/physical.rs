@@ -802,15 +802,11 @@ async fn read_body_at_inner_async(
     Ok(selected.into())
 }
 
-pub(crate) struct LocalPath {
-    pub(crate) path: PathBuf,
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-}
 pub(crate) fn local_path(
     root: &Path,
     suffix: &str,
     meter: Option<&Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
-) -> Result<LocalPath, NativeObjectsError> {
+) -> Result<crate::v1::Guarded<PathBuf>, NativeObjectsError> {
     let maximum = root.as_os_str().len().checked_add(suffix.len()).and_then(|length| length.checked_add(1))
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
     let mut allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, maximum)).transpose()?;
@@ -824,7 +820,7 @@ pub(crate) fn local_path(
     path.push(root);
     path.push(suffix);
     if let Some(meter) = meter { meter.record_codec(0, path.as_os_str().len() as u64, 0)?; }
-    Ok(LocalPath { path, _allocation: allocation })
+    Ok(crate::v1::Guarded { value: path, _allocation: allocation })
 }
 
 async fn read_body_at_native_inner(
@@ -864,7 +860,7 @@ async fn read_body_at_native_inner(
                 if journal.is_none() {
                     let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
                     open_meter.admit_read(0)?;
-                    *journal = Some(File::open(&path.path)?);
+                    *journal = Some(File::open(&path.value)?);
 
                     drop(path);
                 }
@@ -884,9 +880,9 @@ async fn read_body_at_native_inner(
                 let name = std::str::from_utf8(&name)
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
                 let path = local_path(&root.path, "segments", Some(&open_meter))?;
-                let file_path = local_path(&path.path, name, Some(&open_meter))?;
+                let file_path = local_path(&path.value, name, Some(&open_meter))?;
                 open_meter.admit_read(0)?;
-                let file = File::open(&file_path.path)?;
+                let file = File::open(&file_path.value)?;
                 drop(path);
                 file
             }
@@ -1053,7 +1049,6 @@ fn hex(bytes: &[u8]) -> String {
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
     acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
-
 
 pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {

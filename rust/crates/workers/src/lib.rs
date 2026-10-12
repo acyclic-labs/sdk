@@ -57,12 +57,13 @@ export interface WorkerModule {
 }
 "#;
 
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Largest accepted bearer credential, in bytes.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Bearer credentials must be nonblank, bounded and header-safe.
-fn valid_token(token: &str) -> bool {
+pub fn valid_token(token: &str) -> bool {
     !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
+        && !token.contains(['\r', '\n', '\0'])
 }
 
 /// Rust-owned route names used by the TypeScript transport generator.
