@@ -237,7 +237,7 @@ impl super::native::NativeSession {
         let (id, mut id_custody) = work.copy_bytes(binding.authority.id.as_bytes())?;
         let id = String::from_utf8(id).expect("authority ID is UTF-8");
         custody.absorb(&mut id_custody)?;
-        let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64)?;
+        let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64, u64::from((std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut host_custody)?;
         let effects = ConversationEffectHost::new_with_native_work(self.stream.clone(),
             acyclic_harness::core::Authority { kind: binding.authority.kind, id }, issuer, scope,

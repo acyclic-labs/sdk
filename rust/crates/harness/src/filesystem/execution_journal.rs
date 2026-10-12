@@ -351,7 +351,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             });
         }
         let io = PreparationIo::from_native_work(work)?;
-        let mut body = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let mut body = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         self._native_metadata.as_mut().expect("original funded metadata checked")
             .absorb(&mut body)

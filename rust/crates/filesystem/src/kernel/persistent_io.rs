@@ -231,7 +231,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             &mut frame,
             |frame, bytes| {
-                **frame = Some(original.claim(bytes)?);
+                **frame = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                 Ok::<_, crate::NativeTreeMaterializationError>(())
             },
             |_| store.read_with_native_work(page, maximum, original, cancellation),

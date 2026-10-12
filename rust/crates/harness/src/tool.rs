@@ -734,7 +734,7 @@ impl ToolRegistry {
     pub fn new_with_native_work(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         Ok((Self::new(), custody))
     }
 
@@ -1028,7 +1028,7 @@ impl ToolRegistry {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
             let mut definition_hold;
@@ -1100,8 +1100,8 @@ impl ToolRegistry {
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native tool definitions capacity overflow" })? as u64;
         let metadata = std::mem::size_of::<Vec<ToolDefinition>>() as u64;
-        let mut custody = work.retain_owned(metadata)?;
-        let mut backing = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut backing = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
         custody.absorb(&mut backing)?;
         let mut definitions = Vec::with_capacity(self.selected.len());
         let actual = (definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64;

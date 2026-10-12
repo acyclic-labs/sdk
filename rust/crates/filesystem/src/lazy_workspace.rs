@@ -1458,7 +1458,7 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
         let position = memory_lazy_search_with_visit(&state.workspaces, &workspace_id, || original.charge(
             WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
         ).map_err(Into::into))?;
-        let allocation = original.claim_allocation(0, 0, WorkCounters::UNCHARGED)?;
+        let allocation = original.claim(0, 0, WorkCounters::UNCHARGED)?;
         let value = if let Ok(index) = position {
             let copied = WorkCounters { bytes_copied: std::mem::size_of::<LazyWorkspaceState>() as u64,
                 ..WorkCounters::UNCHARGED };
@@ -1701,7 +1701,7 @@ impl<'a> LazyTreapWork<'a> {
     ) -> Result<Self, LazyWorkspaceError> {
         let original = original.clone();
         original.admit(WorkCounters::UNCHARGED)?;
-        let scratch = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let scratch = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(Self {
             meter: LazyTreapMeter::NativeOriginal {
                 original,
@@ -1877,7 +1877,7 @@ impl<'a> LazyTreapWork<'a> {
     fn adopt(&self, bytes: u64) -> Result<(), LazyWorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, scratch } = &self.meter {
-            let mut allocation = original.retain_owned(bytes)?;
+            let mut allocation = original.claim(bytes, 0, crate::WorkCounters::UNCHARGED)?;
             scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation)?;
             return Ok(());
         }
@@ -1910,7 +1910,7 @@ impl<'a> LazyTreapWork<'a> {
         })?;
         #[cfg(not(target_arch = "wasm32"))]
         if let LazyTreapMeter::NativeOriginal { original, scratch } = &self.meter {
-            let mut allocation = original.claim(bytes)?;
+            let mut allocation = original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             scratch.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation)?;
             return Ok(());
         }
@@ -2373,7 +2373,7 @@ impl<A, O, D, S> LazyWorkspace<A, O, D, S> {
         mut self, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Arc<Self>, LazyWorkspaceError> {
         drop(self.allocation.take());
-        self.allocation = Some(original.claim_allocation(
+        self.allocation = Some(original.claim(
             std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?);
         Ok(Arc::new(self))
     }
@@ -13270,7 +13270,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         original.admit(WorkCounters::UNCHARGED)?;
         cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
             crate::NativeTreeMaterializationError::Cancelled))?;
-        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(Self::Native { original, cancellation, allocation })
     }
 
@@ -13498,7 +13498,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 original.admit(WorkCounters::UNCHARGED)?;
                 cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
                     crate::NativeTreeMaterializationError::Cancelled))?;
-                let allocation = original.claim(bytes)?;
+                let allocation = original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
                 Ok(LazyDirectoryCleanupCause::new(Box::new(None), Some(allocation)))
             }
         }
@@ -16810,7 +16810,7 @@ mod tests {
         let bytes = root.read_at_snapshot_with_work(basis, "/input", 64, &original, &token).await
             .expect("SDK intrinsic input before writer allocation");
         let key = IdempotencyKey::new();
-        let calls = Arc::new((AtomicUsize::new(0), original.claim_allocation(
+        let calls = Arc::new((AtomicUsize::new(0), original.claim(
             std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1, crate::WorkCounters::UNCHARGED).expect("funded owner counter")));
         let owner_calls = Arc::clone(&calls);
         let owner_original = original.clone();
@@ -16869,7 +16869,7 @@ mod tests {
             let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token)
                 .expect("original admission");
             let root = root.into_arc_with_native_work(&original).expect("funded actual root Arc");
-            let calls = Arc::new((AtomicUsize::new(0), original.claim_allocation(
+            let calls = Arc::new((AtomicUsize::new(0), original.claim(
                 std::mem::size_of::<(AtomicUsize, crate::materializer::NativeAllocation)>() as u64, 1, crate::WorkCounters::UNCHARGED).expect("funded owner counter")));
             let owner_calls = Arc::clone(&calls);
             let bytes = root.read_at_snapshot_with_work(

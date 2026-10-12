@@ -134,7 +134,7 @@ impl<T> FuseOwned<T> {
         let materialization = work.clone();
         materialization.admit(crate::WorkCounters::UNCHARGED)?;
         if bytes == 0 { return Ok(()); }
-        let mut allocation = materialization.claim(bytes)?;
+        let mut allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         if let Some(owned) = &mut self.native_allocation {
             owned.absorb(&mut allocation)?;
         } else {
@@ -445,7 +445,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     let length = bytes.len() as u64;
     fuse_copy_admit(length, work)?;
     let original = work.clone();
-    let mut allocation = original.claim(length).map_err(NativeMountError::from)?;
+    let mut allocation = original.claim(length, u64::from((length) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
     allocation.reconcile_capacity(buffer.capacity() as u64).map_err(NativeMountError::from)?;
@@ -2169,7 +2169,7 @@ impl ProjectionCore {
         let mut core = Self::new(source, state, budget, &cancellation)?;
         core.allocation_custody = Some(custody.clone());
         let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native).map_err(NativeMountError::from)?;
-        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64)?);
+        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)?);
         core.state.get_mut().unwrap_or_else(PoisonError::into_inner).by_inode =
             HashMap::from([(ROOT_INODE, entry)]);
         let bytes = std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64;
@@ -3378,13 +3378,13 @@ impl FuseSession {
         let normal = materialization.allocation_work();
         let retirement_helper = FuseRetirementHelper::prepare(&normal)
             .map_err(super::DriverStartFailure::from)?;
-        let input_allocation = normal.claim(std::mem::size_of::<FuseSdkInput>() as u64)
+        let input_allocation = normal.claim(std::mem::size_of::<FuseSdkInput>() as u64, u64::from((std::mem::size_of::<FuseSdkInput>() as u64) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(NativeMountError::from)?;
         let input = Arc::new(FuseSdkInput {
             state: Mutex::new(FuseSdkInputState { session: None, submitted: false }),
             ready: Condvar::new(), _allocation: input_allocation,
         });
-        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
+        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64, u64::from((std::mem::size_of::<FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(NativeMountError::from)?;
         let control = Arc::new(FuseDriverControl {
             state: Mutex::new(FuseDriverControlState {
@@ -3401,7 +3401,9 @@ impl FuseSession {
         });
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<ProjectionCore>, Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<ProjectionCore>, Arc<FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let job = (Arc::clone(&core), Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3417,7 +3419,9 @@ impl FuseSession {
         let mut loan = FuseDriverLoan::take(&control)?;
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseSdkInput>, Arc<FuseDriverControl>, Arc<ProjectionCore>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<FuseSdkInput>, Arc<FuseDriverControl>, Arc<ProjectionCore>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let job = (Arc::clone(&input), Arc::clone(&control), Arc::clone(&core), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -6894,7 +6898,7 @@ mod tests {
         });
         let source = MemorySource::new_at_meter(
             shared, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim(0)?, &original, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original)?;
         let core = Arc::new(super::ProjectionCore::new(
@@ -7168,7 +7172,7 @@ mod tests {
         })?;
         let directory = tempfile::tempdir()?;
         let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
-        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64)?;
+        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64, u64::from((std::mem::size_of::<super::FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let control = Arc::new(super::FuseDriverControl {
             state: super::Mutex::new(super::FuseDriverControlState {
                 physical: Some(super::FusePhysicalSession {
@@ -7187,7 +7191,9 @@ mod tests {
         });
         let job_allocation = original.claim(std::mem::size_of::<(
             Arc<super::ProjectionCore>, Arc<super::FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<super::ProjectionCore>, Arc<super::FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let job = (Arc::clone(&core), Arc::clone(&control), job_allocation);
         let (done, terminal) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || { super::run_fuse_retirement(job); done.send(()).unwrap(); });

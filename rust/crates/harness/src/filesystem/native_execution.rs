@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .into_native_shared(work)?;
             owner.authenticated_root_binding_with_native_work(work).await?;
             owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
-            let custody = work.retain_owned(std::mem::size_of::<NativeRootOutputSource>() as u64)?;
+            let custody = work.claim(std::mem::size_of::<NativeRootOutputSource>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             Ok(NativeRootOutputSource { reader, writer,
                 owner: Arc::clone(owner) as Arc<dyn NativeRootOutputOwner>, bind_operation, bind_intent,
                 creation_operation, workspace, generation, custody })
@@ -392,7 +392,7 @@ where A: AsyncAuthorityStore + Send + Sync + 'static,
         work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, Arc<dyn NativeTaskWorkingView>>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let custody = work.retain_owned(std::mem::size_of::<HeldNativeTaskWorkingView<P, A, O>>() as u64)?;
+            let custody = work.claim(std::mem::size_of::<HeldNativeTaskWorkingView<P, A, O>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let held = HeldNativeTaskWorkingView { view: Arc::clone(self), owner: Arc::clone(owner), custody };
             held.authenticate(work).await?;
             work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
@@ -592,7 +592,7 @@ impl<A: 'static, O: 'static> std::error::Error for NativePublicationReservationF
 
 pub(super) fn reserve_box<T>(work: &NativeMaterializationWork)
     -> Result<(Box<std::mem::MaybeUninit<T>>, acyclic_fs::NativeAllocation)> {
-    let custody = work.claim(std::mem::size_of::<T>() as u64)?;
+    let custody = work.claim(std::mem::size_of::<T>() as u64, u64::from((std::mem::size_of::<T>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
     Ok((Box::new_uninit(), custody))
 }
 
@@ -765,8 +765,8 @@ impl NativeExistingLazyVolume {
                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
             }
             let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.publication;
-            let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let mut holder_custody = work.retain_owned(std::mem::size_of::<HeldLazyVolume<P, A, O, D, S>>() as u64)?;
+            let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut holder_custody = work.claim(std::mem::size_of::<HeldLazyVolume<P, A, O, D, S>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let (volume, mut volume_custody) = allocate(work, |io| binding.volume.clone_with_io(io))?;
             holder_custody.absorb(&mut volume_custody)?;
             let (generation, mut generation_custody) = allocate(work, |io| binding.generation.clone_with_io(io))?;
@@ -1229,7 +1229,7 @@ where
                 ..Default::default() })?;
             let count = self.volumes.iter().filter(|volume|
                 matches!(volume.view, NativePreparedVolumeBackend::HeldLazy(_))).count();
-            let mut custody = work.retain_owned(std::mem::size_of::<(Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>() as u64)?;
+            let mut custody = work.claim(std::mem::size_of::<(Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let (mut scopes, mut vector_custody) = allocate(work, |io| super::fork_preparer_io::vector(count, Some(io)))?;
             custody.absorb(&mut vector_custody)?;
             for volume in &self.volumes {
@@ -1246,7 +1246,7 @@ where
     fn publish<'a>(
         &'a self, owner: &'a TaskJournalOwner<P>, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>> {
-        let custody = work.retain_owned(0)?;
+        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         crate::NativeFutureBundle::new(work, || async move {
             Ok(self.publish_original(owner, work, custody).await)
         })
@@ -1312,7 +1312,7 @@ where
             }
             self.authenticate_mount_retirement(owner, work).await?;
             if partial.is_none() {
-                let mut custody = work.retain_owned(std::mem::size_of::<NativeTaskViewDrainReceipt>() as u64)?;
+                let mut custody = work.claim(std::mem::size_of::<NativeTaskViewDrainReceipt>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
                 let mut vector = allocate(work, |io| super::fork_preparer_io::vector(self.volumes.len(), Some(io)))?;
                 custody.absorb(&mut vector.1)?;
                 wait.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
@@ -1375,7 +1375,7 @@ where
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "native view Arc requires its actual original operation" });
         }
-        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         self._allocation.absorb(&mut custody)?;
         Ok(Arc::new(self))
     }
@@ -1491,8 +1491,8 @@ where
             };
             manifest.validate()?;
             let lazy_count = existing_lazy.iter().filter(|lazy| lazy.is_some()).count();
-            let mut preserved_custody = work.retain_owned(
-                std::mem::size_of::<Vec<&str>>() as u64)?;
+            let mut preserved_custody = work.claim(
+                std::mem::size_of::<Vec<&str>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let (mut preserved, mut preserved_slots) = allocate(work, |io| super::fork_preparer_io::vector(lazy_count, Some(io)))?;
             preserved_custody.absorb(&mut preserved_slots)?;
             for (index, binding) in bindings.iter().enumerate() {
@@ -1763,7 +1763,7 @@ where
             let operation = NativePreparationRoot::operation(owner.task_binding().0, work)?;
             let Some(journal) = store.load_record(operation, false).await
                 ?
-            else { return Ok((None, work.retain_owned(0)?)); };
+            else { return Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?)); };
             if journal.0.preparation_progress.is_some() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Indeterminate,
                     reason: "native original staging allocation is incomplete or indeterminate" });
@@ -2716,7 +2716,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let path = self.path(operation)?;
         let io = super::PreparationIo::from_native_work(&self.work)?;
         let mut value = io.value_json(&journal, self.work.remaining()?.bytes_encoded)?;
-        let mut custody = self.work.retain_owned(std::mem::size_of::<NativePreparationCompletionTemplate>() as u64)?;
+        let mut custody = self.work.claim(std::mem::size_of::<NativePreparationCompletionTemplate>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut intent_custody)?;
         let held = io.owned_bytes()?;
         custody.absorb(&mut io.into_native_custody(held)?)?;

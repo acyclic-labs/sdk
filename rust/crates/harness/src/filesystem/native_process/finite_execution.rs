@@ -11,7 +11,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
     supervisor: &Arc<NativeSupervisorControl>, original: &NativeMaterializationWork,
 ) -> Result<(NativeExecution, NativeAllocation)> {
     finite_binding::require_view_family(view, original)?;
-        let mut custody = Some(original.retain_owned(0)?);
+        let mut custody = Some(original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
         let mut publication_slot = None;
         let result: Result<NativeExecution> = async {
             owner.verify_with_native_work(false, original).await?;
@@ -164,7 +164,7 @@ async fn capture<P: StreamProvider + 'static>(
     scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
     owner.verify_with_native_work(false, original).await?;
-    let mut custody = original.retain_owned(0)?;
+    let mut custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let maximum = request.maximum_output_bytes as usize;
     let input = request.mcp_stdio.as_ref().map_or_else(
         || request.standard_input.as_ref().map_or(0, Vec::len),
@@ -173,14 +173,14 @@ async fn capture<P: StreamProvider + 'static>(
     let mut allocated = [Vec::new(), Vec::new(), Vec::new()];
     for (buffer, capacity) in allocated.iter_mut().zip([maximum, maximum, input]) {
         if capacity != 0 {
-            custody.absorb(&mut original.claim(capacity as u64)
+            custody.absorb(&mut original.claim(capacity as u64, u64::from((capacity as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
                 ?)?;
         }
         buffer.try_reserve_exact(capacity).map_err(|error| Error::from(
             acyclic_fs::NativeTreeMaterializationError::AllocationFailed(error)))?;
         if buffer.capacity() > capacity {
             custody.absorb(
-                &mut original.retain_owned((buffer.capacity() - capacity) as u64)?,
+                &mut original.claim((buffer.capacity() - capacity) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?,
             )?;
         }
     }
@@ -229,7 +229,7 @@ async fn capture<P: StreamProvider + 'static>(
                 original.charge(WorkCounters { bytes_copied: bytes as u64,
                     items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
                     .map_err(|error| root_failure(Error::from(error)))?;
-                original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error)))?
+                original.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(|error| root_failure(Error::from(error)))?
 
 };
             let mut command = Command::new(&invocation.executable);
@@ -238,7 +238,7 @@ async fn capture<P: StreamProvider + 'static>(
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
-            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error)))?;
+            let process_custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|error| root_failure(Error::from(error)))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
                     &mut command, original.runtime_meter(), &mut process,
@@ -307,7 +307,7 @@ async fn capture<P: StreamProvider + 'static>(
         }
         (output, failure.into_inner().expect("capture failure custody"), custody)
     };
-    let mut task = (capture, invocation_work.retain_owned(0)?);
+    let mut task = (capture, invocation_work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
     let bytes = std::mem::size_of_val(&task) as u64;
     task.1.grow(bytes)?;
     let (output, original_failure, custody) = tokio::task::spawn_blocking(move || {

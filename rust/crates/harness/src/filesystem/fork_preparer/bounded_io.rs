@@ -286,7 +286,7 @@ impl PreparationIo {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
-        let custody = work.retain_owned(0).map_err(Error::from)?;
+        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
         Ok(Self { ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody) } })
     }
 

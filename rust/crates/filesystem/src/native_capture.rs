@@ -51,7 +51,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: Some(allocation),
         }))
@@ -1006,7 +1006,7 @@ pub(crate) fn capture_runtime_meter_owner(
     if !capture.owns_native_work(native) {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
-    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64)?;
+    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64, u64::from((std::mem::size_of::<CapturedRuntimeReadMeter>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
     let base = native.runtime_meter_owner();
     Ok(std::sync::Arc::new(CapturedRuntimeReadMeter {
         base, _header: header, _capture: std::sync::Arc::clone(capture),

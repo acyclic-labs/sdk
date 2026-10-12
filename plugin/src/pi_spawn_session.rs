@@ -544,7 +544,7 @@ impl PiSession {
                 .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))?;
             let bytes = capacity.checked_mul(std::mem::size_of::<PendingSpawn>())
                 .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))? as u64;
-            let backing = work.claim(bytes).map_err(native_error)?;
+            let backing = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
             work.charge(acyclic_fs::WorkCounters { bytes_copied:
                 (original_length * std::mem::size_of::<PendingSpawn>()) as u64,
                 ..acyclic_fs::WorkCounters::UNCHARGED }).map_err(native_error)?;
@@ -673,7 +673,7 @@ impl PiSession {
         let (route_key, route) = (route_key, route);
         drop(bytes);
         drop(bytes_custody);
-        let mut slot_custody = work.claim(std::mem::size_of::<(String, Route)>() as u64).map_err(native_error)?;
+        let mut slot_custody = work.claim(std::mem::size_of::<(String, Route)>() as u64, u64::from((std::mem::size_of::<(String, Route)>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         if let Err(cause) = route_custody.absorb(&mut slot_custody) {
             drop(route);
             drop(route_key);
@@ -769,7 +769,7 @@ impl PiSession {
 fn spawn_pending_batch((pending, mut custody): (PendingSpawn, NativeAllocation),
     work: &NativeMaterializationWork) -> acyclic_harness::Result<(Vec<PendingSpawn>, NativeAllocation)> {
     let pending = pending;
-    let mut backing = work.claim(std::mem::size_of::<PendingSpawn>() as u64).map_err(native_error)?;
+    let mut backing = work.claim(std::mem::size_of::<PendingSpawn>() as u64, u64::from((std::mem::size_of::<PendingSpawn>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let mut records = Vec::with_capacity(1);
     records.push(pending);
     if let Err(cause) = custody.absorb(&mut backing) {

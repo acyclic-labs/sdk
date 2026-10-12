@@ -919,7 +919,7 @@ impl ProofDataAdmission<'_> {
                 if pending.as_ref().is_some_and(|guard| guard.bytes() != 0) {
                     return Err(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout));
                 }
-                let allocation = original.claim_allocation(bytes, operations, delta)?;
+                let allocation = original.claim(bytes, operations, delta)?;
                 *pending = Some(allocation);
             } else { original.charge(delta)?; }
             return Ok(());
@@ -6408,7 +6408,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let working = (root, working_control);
         let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
         cancellation.check()?;
-        let mut captured_guard = original.claim_allocation(captured_bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut captured_guard = original.claim(captured_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let mut captured_control = captured_guard.transfer_checkout_control(&custody, &witness)?;
         let mut captured = CheckoutDependencies::new(
             std::iter::empty(), std::iter::empty(), self.config.limits.maximum_checkout_dependencies,
@@ -6418,8 +6418,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
         let paths_bytes = usize_to_u64(size_of::<ObservedPathMap>());
         cancellation.check()?;
-        let mut proof_guard = original.claim_allocation(proof_bytes, 1, crate::WorkCounters::UNCHARGED)?;
-        let mut paths_guard = original.claim_allocation(paths_bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut proof_guard = original.claim(proof_bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut paths_guard = original.claim(paths_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let proof_control = proof_guard.transfer_checkout_control(&custody, &witness)?;
         let paths_control = paths_guard.transfer_checkout_control(&custody, &witness)?;
         let mut dependencies = DependencyLedger::new_with_native_custody(
@@ -6718,7 +6718,7 @@ impl<A, O> Checkout<A, O> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let roots = self.root.replicate_with_accounting(&mut accounting, Some(&self.dependencies.data_custody))?;
         cancellation.check()?;
-        let allocation = work.claim(size_of::<(crate::collection::CheckoutRoots, NativeAllocation)>() as u64)?;
+        let allocation = { let claim_bytes = size_of::<(crate::collection::CheckoutRoots, NativeAllocation)>() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let root = PinnedReaderRoot::NativeCheckout(Arc::new((roots, allocation)));
         Ok(PinnedReader { volume: self.volume.clone(), generation_root: self.generation_root, root, })
     }
@@ -6733,7 +6733,7 @@ impl<A, O> Checkout<A, O> {
             || !work.owns_native_checkout_token(&self.dependencies.data_custody)
             || !self.root.same_original_scope(work.native_read_meter())
         { return Err(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout)); }
-        let allocation = work.claim(size_of::<(crate::collection::CheckoutRoots, NativeAllocation)>() as u64)?;
+        let allocation = { let claim_bytes = size_of::<(crate::collection::CheckoutRoots, NativeAllocation)>() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let carrier = Arc::new((self.root, allocation));
         Ok(PinnedReader {
             volume: self.volume, generation_root: self.generation_root, root: PinnedReaderRoot::NativeCheckout(carrier),
@@ -10239,7 +10239,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         // Keep the paid guard outside all accounting leaves on failure.
         original.cancellation().check()?;
         let mut parents = guard.split_off(bytes)?;
-        let result = parents.transfer_checkout_control_original(producer).map_err(FsError::from);
+        let result = parents.work().checkout_control_sink(producer).and_then(|membership| parents.transfer_checkout_control(producer, &membership)).map_err(FsError::from);
         match result {
             Ok(control) => { prepared.working_control = Some(control); Ok(()) }
             Err(error) => { guard.absorb(&mut parents)?; Err(error) }
@@ -12293,7 +12293,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             std::mem::size_of::<Mutex<Option<VerifiedPublication<A, O>>>>() + 2 * size_of::<usize>(),
         );
         // This actual slot is admitted before Arc's allocator. Its guard is
-        let mut slot_allocation = original.claim(custody_bytes).map_err(FsError::from).map_err(E::from)?;
+        let mut slot_allocation = original.claim(custody_bytes, u64::from((custody_bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(FsError::from).map_err(E::from)?;
         let publication_slot = Arc::new(Mutex::new(None));
         let proven_at = self.volume.fs.inner.objects.collection_sweeps();
         let mut prepared_roots = None;
@@ -12327,7 +12327,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             (create, &mut frame_custody),
             |(_, custody), bytes| {
-                **custody = Some(original.claim(bytes).map_err(FsError::from).map_err(E::from)?);
+                **custody = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(FsError::from).map_err(E::from)?);
                 Ok::<(), E>(())
             },
             |(create, _)| create(),
@@ -14944,7 +14944,7 @@ fn creation_commit_with_accounting(
             return Err(FsError::HandleAllocationFailed);
         }
         let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<NativeCreationPayload>()?;
-        let mut control = allocation.work().claim(control_bytes)?;
+        let mut control = allocation.work().claim(control_bytes, u64::from((control_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let (bytes, allocation) = encoded;
         let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
             unreachable!("native encoded allocation was matched before moving");

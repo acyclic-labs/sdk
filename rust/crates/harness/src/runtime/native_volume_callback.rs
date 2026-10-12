@@ -58,7 +58,7 @@ impl NativeTaskContext {
         let bytes = (std::mem::size_of::<NativeVolumeCallbackGuard<P>>()
             + std::mem::size_of::<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>()
             - std::mem::size_of::<RuntimeScope>()) as u64;
-        let mut custody = work.retain_owned(bytes).map_err(native_error)?;
+        let mut custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let (scope, mut scope_custody) = context.scope().clone_with_native_work(work)?;
         if let Err(cause) = custody.absorb(&mut scope_custody) {
             drop(scope);
@@ -77,7 +77,7 @@ impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
         work: &NativeMaterializationWork,
     ) -> Result<NativeVolumeCallbackPorts> {
         self.require_volume_with_native_work(owner, volume, writable, work)?;
-        let mut custody = work.retain_owned(std::mem::size_of::<VolumeCallback<P>>() as u64)
+        let mut custody = work.claim(std::mem::size_of::<VolumeCallback<P>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_error)?;
         let (volume, mut volume_custody) = volume.clone_with_native_work(work)?;
         if let Err(cause) = custody.absorb(&mut volume_custody) {

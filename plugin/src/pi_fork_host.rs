@@ -108,7 +108,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             cause: acyclic_fs::WorkError::Overflow.into(), custody: None })? as u64;
         work.admit(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut custody = work.claim(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut replacement = Vec::new();
         if let Err(cause) = replacement.try_reserve_exact(capacity) {
             return Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),
@@ -301,7 +301,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let copied = length.checked_mul(std::mem::size_of::<PendingSpawn>())
             .ok_or_else(|| invalid("Pi pending copy overflows"))? as u64;
         work.admit(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
-        let mut replacement = (Vec::new(), work.claim(bytes as u64).map_err(native_error)?);
+        let mut replacement = (Vec::new(), work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?);
         replacement.0.try_reserve_exact(capacity).map_err(|cause| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause), custody: None })?;
         let actual = replacement.0.capacity().checked_mul(std::mem::size_of::<PendingSpawn>())

@@ -171,7 +171,7 @@ where
             builtin.0, builtin.1, executor, projection, &mut tools.1, work,
         )?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
-        let slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         let retained_journal = journal.clone_with_native_work(work)?;
         let grants = authority.0.scope.grants().clone_with_native_work(work)?;

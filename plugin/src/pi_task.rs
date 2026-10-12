@@ -186,7 +186,7 @@ impl PiTaskMachine {
         let alignment = std::mem::align_of::<Self>();
         let header = 2 * std::mem::size_of::<usize>();
         let bytes = (header.div_ceil(alignment) * alignment + std::mem::size_of::<Self>()) as u64;
-        let mut publication = work.retain_owned(bytes).map_err(native_work_error)?;
+        let mut publication = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         identity.1.absorb(&mut publication).map_err(native_work_error)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..acyclic_fs::WorkCounters::default()

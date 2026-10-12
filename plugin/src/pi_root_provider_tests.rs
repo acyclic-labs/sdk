@@ -277,7 +277,7 @@ async fn pi_root_original_span_exhaustion_denies_before_creation_and_releases_re
     let fixture = Fixture::new(false).await;
     let baseline = fixture.startup.live_allocation_bytes();
     let bytes = fixture.startup.budget().peak_allocation_bytes - baseline;
-    let payload_custody = fixture.startup.claim(bytes).unwrap();
+    let payload_custody = fixture.startup.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let mut payload = Vec::<u8>::new();
     payload.try_reserve_exact(usize::try_from(bytes).unwrap()).unwrap();
     payload.resize(usize::try_from(bytes).unwrap(), 0);

@@ -661,7 +661,7 @@ fn mount_path_text_with_carrier(
     )?;
     let mut copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_work(crate::WorkCounters { items_examined: fill_items, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
-    let allocation = original.claim(length as u64).map_err(MountSourceError::NativeWork)?;
+    let allocation = original.claim(length as u64, u64::from((length as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length).map_err(MountSourceError::Allocation)?;
     let text = mount_path_text_fill(root, path, bytes);
@@ -1179,7 +1179,7 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
         let bytes = (std::mem::size_of::<Option<MountSourceError>>()
             + std::mem::size_of::<Option<crate::demand::DemandError>>()) as u64;
         let allocation = if let Some(original) = self.carrier.original_native_work() {
-            Some(original.claim_allocation(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)
+            Some(original.claim(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)
         } else {
             self.carrier.with_work(|work| work.claim_allocation(bytes, 2)).map_err(mount_demand_error)?;
             self.track(bytes)?;
@@ -1482,9 +1482,9 @@ impl<T> CursorTable<T> {
         if let Some(original) = carrier.original_native_work() {
             use super::adapter::CaptureInputScratch;
             let native_cleanup = original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
-            let native_cleanup_allocation = original.retain_owned(
+            let native_cleanup_allocation = original.claim(
                 (std::mem::size_of::<Option<crate::materializer::NativeWorkReservation>>()
-                    + std::mem::size_of::<Option<crate::NativeAllocation>>()) as u64,
+                    + std::mem::size_of::<Option<crate::NativeAllocation>>()) as u64, 0, crate::WorkCounters::UNCHARGED,
             ).map_err(MountSourceError::NativeWork)?;
             let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
             let delta = crate::WorkCounters {
@@ -2108,7 +2108,7 @@ fn recorder_namespace(
             }
             NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
                 recorder_check(work, source)?;
-                let mut allocation = work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
+                let mut allocation = work.claim(bytes, operations, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
                 custody.absorb(&mut allocation).map_err(recorder_native_error)
             }
             NamespacePathStep::Allocation(ReadAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
@@ -2155,7 +2155,7 @@ fn recorder_vec<T>(
     recorder_check(work, source)?;
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .ok_or(DemandError::Work(crate::WorkError::Overflow))? as u64;
-    let mut allocation = work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
+    let mut allocation = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
         .map_err(recorder_native_error)?;
     let mut values = Vec::new();
     if let Err(error) = values.try_reserve_exact(count) {
@@ -2196,7 +2196,7 @@ where
             return Ok(());
         };
         authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
-        let mut custody = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
+        let mut custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
         // Declared after custody: every physical buffer dies before its guard.
         let mut effect = ViewEffect::default();
         let mut view = super::view_ledger::ViewLedgerAdmission::default();
@@ -2557,7 +2557,7 @@ where
                 ($value:expr) => {{
                     let value = $value;
                     if let Some(original) = &original {
-                        original.claim_allocation(0, 1, crate::WorkCounters::UNCHARGED).map_err(|error|
+                        original.claim(0, 1, crate::WorkCounters::UNCHARGED).map_err(|error|
                             super::NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(error))))?;
                     } else {
                         let bytes = std::mem::size_of_val(&value) as u64;
@@ -6344,7 +6344,7 @@ where
         self.with_view_with_meter(work, false, |file, _, _| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
             None => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
-                work.retain_owned(0).map_err(MountSourceError::NativeWork)?)),
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)),
         })
     }
 
@@ -6385,7 +6385,7 @@ where
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
             if data_length == 0 {
                 return Ok((super::MountSparseRange { logical_bytes, spans: Vec::new() },
-                    original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?));
+                    original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?));
             }
             let output = self.read_source_with_carrier(offset, data_length, carrier)?;
             if output.bytes.len() as u64 != data_length {
@@ -6402,7 +6402,7 @@ where
             let span_bytes = std::mem::size_of::<super::MountSparseSpan>() as u64;
             let mut packet = (
                 Vec::<super::MountSparseSpan>::new(),
-                original.claim_allocation(span_bytes, 1, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?,
+                original.claim(span_bytes, 1, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?,
             );
             packet.0.try_reserve_exact(1).map_err(MountSourceError::Allocation)?;
             packet.1.reconcile_capacity(
@@ -6981,7 +6981,7 @@ where
         self.native_attributes(path, work, |file, projected| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
             None if projected => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
-                work.retain_owned(0).map_err(MountSourceError::NativeWork)?)),
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)),
             None => self.authored.list_attributes_with_meter(path, cursor, maximum_entries, work),
         })
     }
@@ -9855,7 +9855,7 @@ mod tests {
             let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
             scratch.prepare_finalization()?;
             let mut text = mount_path_text_with_carrier("/", &mounted(&["removed"]), scratch.carrier)?;
-            let mut entry = original.claim_allocation(std::mem::size_of::<MountedRemoval>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
+            let mut entry = original.claim(std::mem::size_of::<MountedRemoval>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
             text.allocation.as_mut().ok_or("native path has no custody")?.absorb(&mut entry)?;
             let final_work = crate::WorkCounters {
                 items_examined: 2, bytes_copied: std::mem::size_of::<MountedRemoval>() as u64,

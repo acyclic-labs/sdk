@@ -1235,7 +1235,7 @@ impl DurableWorkflowHost {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native workflow index slot overflow",
             })?;
-        let mut incoming = work.retain_owned(bytes)?;
+        let mut incoming = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         if let Some(previous) = &mut self.index_custody {
             previous.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(incoming),

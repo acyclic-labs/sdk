@@ -98,7 +98,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 "cold process drain requires actual finite request and result readers"));
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let mut custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(Error::from)?;
+            let mut custody = work.claim(std::mem::size_of::<NativeProcessDrainProof>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
             cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
             let (request, request_custody) = self.request(work).await?;

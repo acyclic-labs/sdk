@@ -153,7 +153,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
             .ok_or_else(|| selected_unauthorized("writeback has no original created Root allocation"))?;
         let key = work.display(&format_args!("{key}")).map_err(native_error)?;
         let resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
-        let slot = work.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
         }).map_err(native_error)?;
@@ -225,7 +225,7 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     let retained = (paths.len() as u64).checked_mul(
         (std::mem::size_of::<String>() + std::mem::size_of::<&str>()) as u64,
     ).ok_or_else(|| selected_invalid("selected writeback container size overflow"))?;
-    let custody = native_work.claim(retained).map_err(native_error)?;
+    let custody = native_work.claim(retained, u64::from((retained) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters {
         allocation_operations: 2, ..acyclic_fs::WorkCounters::default()
     }).map_err(native_error)?;
@@ -300,7 +300,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         let volume = volume.clone_with_native_work(work)?;
         let capability = volume.0.capability_with_native_work(
             acyclic_harness::conversation::VolumeOperation::Write, work)?;
-        let slot = work.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
             ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
         Ok(std::sync::Arc::new(Self { caller, caller_owner, destination, destination_owner,
@@ -676,7 +676,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
             .checked_mul(std::mem::size_of::<PiNativeInspectionEntry>() as u64)
             .and_then(|bytes| bytes.checked_add(directory.len() as u64))
             .ok_or_else(|| selected_invalid("native inspection payload size overflow"))?;
-        let custody = native_work.claim(retained).map_err(native_error)?;
+        let custody = native_work.claim(retained, u64::from((retained) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         native_work.charge(acyclic_fs::WorkCounters {
             bytes_copied: directory.len() as u64,
             allocation_operations: u64::from(!page.0.entries.is_empty()) + u64::from(!directory.is_empty()),
@@ -797,7 +797,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let retained = (paths.len() as u64).checked_mul(
         (std::mem::size_of::<acyclic_fs::kernel::NamespacePath>() + std::mem::size_of::<&str>()) as u64,
     ).ok_or_else(|| selected_invalid("selected namespace container size overflow"))?;
-    let custody = native_work.claim(retained).map_err(native_error)?;
+    let custody = native_work.claim(retained, u64::from((retained) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters {
         allocation_operations: 2, ..acyclic_fs::WorkCounters::default()
     }).map_err(native_error)?;
@@ -942,7 +942,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let retained = (count as u64).checked_mul(std::mem::size_of::<PiDifference>() as u64)
         .and_then(|bytes| bytes.checked_add(directory.len() as u64))
         .ok_or_else(|| selected_invalid("native diff payload size overflow"))?;
-    let custody = native_work.claim(retained).map_err(native_error)?;
+    let custody = native_work.claim(retained, u64::from((retained) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     native_work.charge(acyclic_fs::WorkCounters { bytes_copied: directory.len() as u64,
         allocation_operations: u64::from(count != 0) + u64::from(!directory.is_empty()),
         ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;

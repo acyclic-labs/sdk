@@ -58,7 +58,7 @@ pub(crate) struct PiOwnerPolicy {
 impl PiOwnerPolicy {
     /// The original journal and grant producers fund their own field copies.
     fn clone_with_native_work(&self, work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
-        let slot = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_work_error)?;
+        let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         let journal = self.journal.clone_with_native_work(work)?;
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((Self {
@@ -103,7 +103,7 @@ impl PiOwnerConfig {
         policy: &PiOwnerPolicy, runtime: Option<&super::pi_native::PiNativeHostRuntime>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_work_error)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         let policy = policy.clone_with_native_work(work)?;
         let runtime = runtime.map(|runtime| runtime.clone_with_native_work(work)).transpose()?;
         let mut key = protection::new_key().map_err(native_owner_io)?;
@@ -471,7 +471,7 @@ impl PiOwnerConfig {
             json_typed_diagnostic_owned_bytes,
         };
         let remaining = work.remaining().map_err(native_work_error)?;
-        let mut custody = work.retain_owned(0).map_err(native_work_error)?;
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
         let mut retained = 0;
         let bounds = JsonBounds {
             maximum_bytes: MAXIMUM_OWNER_BYTES,

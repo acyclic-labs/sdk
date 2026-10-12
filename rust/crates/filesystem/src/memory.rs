@@ -611,7 +611,7 @@ impl MemoryAuthorityStore {
         let AuthorityAccounting::Native { output_custody, .. } = accounting else { unreachable!("native authority funding"); };
         let guard = match output_custody {
             KernelOwnedAllocation::NativeOriginal(guard) => guard,
-            KernelOwnedAllocation::Standalone => work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
+            KernelOwnedAllocation::Standalone => work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
         };
         Ok((value, guard))
     }
@@ -895,7 +895,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|(error, _)| E::from(error))?;
-        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)
             .map_err(|error| E::from(AuthorityStoreError::from(error)))?;
         Ok((value, allocation))
     }
@@ -1079,7 +1079,7 @@ impl<'a> AuthorityAccounting<'a> {
         self.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Self::Native { original, .. } = self {
-            return original.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
+            return original.claim(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(KernelOwnedAllocation::NativeOriginal).map_err(|error| (error.into(), original.receipt()));
         }
         let (allocations, work, budget) = self.ordinary_parts();
@@ -1359,7 +1359,7 @@ impl MemoryObjectStore {
             accounting.admit(allocation)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let MemoryObjectAccounting::Native { work, .. } = accounting {
-                replacement_custody = Some(work.claim(requested)?);
+                replacement_custody = Some(work.claim(requested, u64::from((requested) != 0), crate::WorkCounters::UNCHARGED)?);
             }
             if matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
                 accounting.record(allocation)?;
@@ -1459,7 +1459,7 @@ impl MemoryObjectStore {
         accounting.admit(allocation)?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut custody = if let MemoryObjectAccounting::Native { work, .. } = accounting {
-            Some(work.claim(requested)?)
+            Some(work.claim(requested, u64::from((requested) != 0), crate::WorkCounters::UNCHARGED)?)
         } else { None };
         if matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
             accounting.record(allocation)?;

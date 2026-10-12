@@ -42,7 +42,7 @@ fn staged_vector<T>(
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)?;
     let mut control = native.map(|work| {
-        if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes as u64) }
+        if bytes == 0 { work.claim(0, 0, crate::WorkCounters::UNCHARGED) } else { work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED) }
     }).transpose()?;
     let mut values = Vec::new();
     values.try_reserve_exact(capacity).map_err(|error|
@@ -722,7 +722,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let (mut future, _) = crate::heap_future::in_heap_admitted(
                 native,
                 |native, bytes| {
-                    allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                    allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                     Ok::<_, NativeTreeMaterializationError>(())
                 },
                 |native| async move {
@@ -754,7 +754,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             native,
             |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                 Ok::<_, NativeTreeMaterializationError>(())
             },
             |native| self.relieve_window(budget, cancellation, native),
@@ -939,7 +939,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
                     |native| self.read_durable(object_id, maximum_bytes, budget, cancellation, native),
@@ -954,7 +954,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
                     |native| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation, native),
@@ -1127,7 +1127,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             Some(work),
             |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                 Ok::<_, NativeTreeMaterializationError>(())
             },
             |native| self.flush_engine(scope, WorkBudget::default(), cancellation, native),
@@ -1907,8 +1907,8 @@ mod tests {
         assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
         assert_eq!(work.receipt().allocation_operations, initial);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64)?;
-        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64)?;
+        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64, u64::from((std::mem::size_of::<Page>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut control)?;
         let custody = Arc::new(allocation);
         let page = Arc::new(Page { _custody: Arc::clone(&custody) });

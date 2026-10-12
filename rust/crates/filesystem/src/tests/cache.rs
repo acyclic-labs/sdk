@@ -954,7 +954,7 @@ mod native_cache {
     fn copied_native_bytes(
         source: &[u8], work: &NativeMaterializationWork,
     ) -> Result<OwnedBytes, ObjectStoreError> {
-        let mut allocation = work.claim(source.len() as u64)?;
+        let mut allocation = { let claim_bytes = source.len() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(source.len())

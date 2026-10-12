@@ -466,7 +466,7 @@ fn pi_scoped_native_response_cannot_reset_an_exhausted_original_quota() {
         &json!({"operation":"already-owned-sdk-body"}),
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, &work,
     ).unwrap();
-    let mut blocker = work.retain_owned(0).unwrap();
+    let mut blocker = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let remaining = work.remaining().unwrap().peak_allocation_bytes;
     blocker.resize_retained(remaining).unwrap();
     let error = crate::service_session::guarded_scoped_reply(

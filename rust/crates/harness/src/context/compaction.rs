@@ -505,7 +505,7 @@ mod native {
 
     pub(crate) fn native_vector<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, NativeAllocation)> {
         let bytes = capacity.checked_mul(size_of::<T>()).ok_or_else(overflow)? as u64;
-        let mut guard = work.retain_owned(bytes).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut guard = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         if bytes != 0 {
             work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -523,7 +523,7 @@ mod native {
         work.admit(WorkCounters { bytes_copied: text.len() as u64,
             allocation_operations: u64::from(!text.is_empty()), ..WorkCounters::default() })
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut guard = work.retain_owned(text.len() as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut guard = work.claim(text.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         work.charge(WorkCounters { allocation_operations: u64::from(!text.is_empty()),
             ..WorkCounters::default() }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut copy = String::new();

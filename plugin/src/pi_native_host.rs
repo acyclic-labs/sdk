@@ -193,7 +193,7 @@ impl NativeEntry {
     fn new(work: &NativeMaterializationWork) -> Result<Self> {
         let known_payload = std::mem::size_of::<Self>() as u64
             + std::mem::size_of::<(TaskId, Arc<Self>)>() as u64;
-        let custody = work.claim(known_payload).map_err(native_error)?;
+        let custody = work.claim(known_payload, u64::from((known_payload) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         Ok(Self {
             prepared: RwLock::new(None), observed: RwLock::new(None),
             view: RwLock::new(None), cold: RwLock::new(None),
@@ -227,7 +227,7 @@ impl PiNativeCommandHost {
         protected.native_runtime()?.validate_with_native_work(work)?;
         let protected = protected.into_native_shared(work)?;
         let mut resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let mut host = Self { runtime, filesystem, stream, resources: resources.0, protected,
             entries: RwLock::new(BTreeMap::new()), _factory_custody: custody };
         host._factory_custody.absorb(&mut resources.1).map_err(native_error)?;
@@ -323,7 +323,7 @@ impl PiNativeCommandHost {
         }
         let mut sdk_operation = work.display(sdk_operation).map_err(native_error)?;
         let mut root_key = work.display(root_key).map_err(native_error)?;
-        let custody = work.claim(std::mem::size_of::<PiNativeColdLocator>() as u64).map_err(native_error)?;
+        let custody = work.claim(std::mem::size_of::<PiNativeColdLocator>() as u64, u64::from((std::mem::size_of::<PiNativeColdLocator>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let mut locator = (PiNativeColdLocator { parent, sdk_operation: sdk_operation.0,
             root_key: root_key.0, selected_source, _custody: None }, custody);
         locator.1.absorb(&mut sdk_operation.1).map_err(native_error)?;

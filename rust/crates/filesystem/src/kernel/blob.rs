@@ -1250,7 +1250,7 @@ pub(crate) struct PreparedBlobDemandFailure {
 #[cfg(not(target_arch = "wasm32"))]
 impl PreparedBlobDemandFailure {
     pub(crate) fn new(original: &crate::NativeMaterializationWork) -> Result<Self, FsError> {
-        let allocation = original.claim(usize_to_u64(size_of::<Option<crate::DemandError>>()))?;
+        let allocation = { let claim_bytes = usize_to_u64(size_of::<Option<crate::DemandError>>()); original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let prepared = Self { storage: BlobDemandFailure {
             error: Box::new(None), _allocation: allocation,
         } };

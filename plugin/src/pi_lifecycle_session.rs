@@ -35,7 +35,7 @@ where
     F: Future<Output = RootResult<T>> + Send + 'static,
     B: FnOnce() -> F,
 {
-    let custody = work.retain_owned(std::mem::size_of::<(TaskId, PiNativeJob<T>)>() as u64)
+    let custody = work.claim(std::mem::size_of::<(TaskId, PiNativeJob<T>)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let future = acyclic_harness::NativeFutureBundle::new(work, build)?;
     Ok(PiNativeJob { handle: tokio::spawn(future), custody: Some(custody) })

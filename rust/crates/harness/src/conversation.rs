@@ -936,7 +936,7 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             let bytes = std::mem::size_of::<F>() as u64;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
-                let native = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+                let native = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)? } else { work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)? };
                 return Ok(Self { future: Box::pin(build()), _hold: None, _native: Some(native) });
             }
             io.retain_owned(bytes)?;
@@ -1511,13 +1511,13 @@ pub(crate) fn clone_native_reference_text(
     source: &str, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
     if source.is_empty() {
-        return Ok((String::new(), work.retain_owned(0)
+        return Ok((String::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?));
     }
     work.admit(acyclic_fs::WorkCounters {
         bytes_copied: source.len() as u64, ..acyclic_fs::WorkCounters::default()
     }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let mut component = work.retain_owned(source.len() as u64)
+    let mut component = work.claim(source.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let mut text = String::new();
     work.charge(acyclic_fs::WorkCounters {

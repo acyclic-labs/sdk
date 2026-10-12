@@ -434,7 +434,7 @@ impl ViewGate {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);

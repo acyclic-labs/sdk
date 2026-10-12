@@ -41,7 +41,7 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
     let next = needed.max(old.checked_mul(2).ok_or_else(overflow)?).max(1);
     let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
+    let mut claim = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
     let copying = work.reserve_work(crate::WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..crate::WorkCounters::UNCHARGED })?;
     values.try_reserve_exact(next - values.len()).map_err(NativeError::AllocationFailed)?;
     held.absorb(&mut claim)?;
@@ -61,7 +61,7 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
 }
 
 fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<String, Error> {
-    let mut claim = work.claim_allocation(value.len() as u64, u64::from(!value.is_empty()), crate::WorkCounters::UNCHARGED)?;
+    let mut claim = work.claim(value.len() as u64, u64::from(!value.is_empty()), crate::WorkCounters::UNCHARGED)?;
     let copying = work.reserve_work(crate::WorkCounters { bytes_copied: value.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
     let mut result = String::new();
     let outcome = (|| {
@@ -159,7 +159,7 @@ fn canonical_ids(values: &mut Vec<WorkspaceContextId>, work: &Work) -> Result<()
 
 pub(super) fn clone_native_record_value(value: &RecordValue, work: &Work, cxl: &CancellationToken) -> Result<Owned<RecordValue>, Error> {
     check(work, cxl)?;
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = match value {
         RecordValue::Context(value) => RecordValue::FlatContext(flatten_context(value, work, &mut held)?),
         RecordValue::FlatContext(value) => RecordValue::FlatContext(clone_flat_context(value, work, &mut held)?),
@@ -218,7 +218,7 @@ pub(super) fn native_flat_context_owned_bytes(context: &FlatWorkspaceContext, wo
 
 fn read<T: DeserializeOwned>(path: &Path, work: &Work, map: impl FnOnce(T) -> RecordValue) -> Result<Option<Owned<RecordValue>>, Error> {
     // Declare the guard before the decoder's physical result.
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let Some((value, allocation)) = measured_read_file::<Option<T>>(path, work)? else { return Ok(None); };
     let value = transfer(Owned::from_parts(value, allocation), work, &mut held)?;
     let Some(value) = value else { return Ok(None); };
@@ -246,7 +246,7 @@ pub(super) fn read_native_record(key: RecordKey, path: &Path, work: &Work, cxl: 
 
 pub(super) fn load_native_lineage(root: &Namespace, log: &mut CoreLog, id: WorkspaceId, work: &Work, cxl: &CancellationToken) -> Result<Option<Owned<WorkspaceLineageRecord>>, Error> {
     let Some(owned) = log.get_native_value(root, RecordKey::Lineage(id), work, cxl)? else { return Ok(None); };
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = transfer(owned, work, &mut held)?;
     match value {
         RecordValue::Lineage(value) => Ok(Some(Owned::from_parts(value, held))),
@@ -257,7 +257,7 @@ pub(super) fn load_native_lineage(root: &Namespace, log: &mut CoreLog, id: Works
 pub(super) fn compare_native_lineage(root: &Namespace, log: &mut CoreLog, id: WorkspaceId, expected: u64, replacement: Owned<WorkspaceLineageRecord>, work: &Work, cxl: &CancellationToken) -> Result<bool, Error> {
     check(work, cxl)?;
     let replacement = checked_packet(replacement, work, |lineage| native_lineage_owned_bytes(lineage, work))?;
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let replacement = transfer(replacement, work, &mut held)?;
     if load_native_lineage(root, log, id, work, cxl)?.as_ref().map_or(0, |value| value.as_state().revision) != expected { return Ok(false); }
     let mut change = NativeChange::new(work)?;
@@ -268,7 +268,7 @@ pub(super) fn compare_native_lineage(root: &Namespace, log: &mut CoreLog, id: Wo
 
 pub(super) fn load_native_context(root: &Namespace, log: &mut CoreLog, id: WorkspaceContextId, work: &Work, cxl: &CancellationToken) -> Result<Option<Owned<WorkspaceContext>>, Error> {
     let Some(owned) = log.get_native_value(root, RecordKey::Context(id), work, cxl)? else { return Ok(None); };
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = transfer(owned, work, &mut held)?;
     let value = match value {
         RecordValue::Context(value) => value,
@@ -279,7 +279,7 @@ pub(super) fn load_native_context(root: &Namespace, log: &mut CoreLog, id: Works
                 check(work, cxl)?;
                 // Only compiled logical entries are known at the public ABI;
                 // opaque std tree backing is excluded, never its deep payload.
-                let mut entry = work.claim_allocation(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
+                let mut entry = work.claim(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
                 held.absorb(&mut entry)?;
                 roots.insert(*id, WorkspaceContextRoot {
                     root_id: root.root_id, source_path: path(Path::new(&root.source_path), work, &mut held)?,
@@ -346,9 +346,9 @@ fn decode_filename(name: &[u8], work: &Work) -> Result<Option<WorkspaceContextId
 
 fn live_ids(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &CancellationToken) -> Result<Owned<Vec<WorkspaceContextId>>, Error> {
     check(work, cxl)?;
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut ids = Vec::new();
-    let mut path_allocation = work.claim(0)?;
+    let mut path_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let directory_path = measured_record_path(&root.root, WORKSPACE_CONTEXT_FAMILY, work, &mut path_allocation)?;
     let directory = match crate::native_host::open_root_directory_with_work(&directory_path, &mut &*work) {
         Ok(directory) => Some(directory),
@@ -356,12 +356,12 @@ fn live_ids(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancellation
         Err(error) => return Err(error.into()),
     };
     if let Some(directory) = directory {
-        let mut reader_allocation = work.claim(0)?;
+        let mut reader_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let (mut reader, mut allocation) = crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
         reader_allocation.absorb(&mut allocation)?;
         loop {
             check(work, cxl)?;
-            let mut entry_allocation = work.claim(0)?;
+            let mut entry_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
             #[cfg(unix)]
             let next = reader.next_with_work(&mut &*work)?;
             #[cfg(windows)]
@@ -442,7 +442,7 @@ fn bucket_position(buckets: &[Bucket], parent: WorkspaceContextId, work: &Work) 
 
 fn empty_bucket(buckets: &mut Vec<Bucket>, parent: WorkspaceContextId, work: &Work, held: &mut NativeAllocation) -> Result<usize, Error> {
     if let Some(index) = bucket_position(buckets, parent, work)? { return Ok(index); }
-    let allocation = work.claim(0)?;
+    let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let needed = buckets.len() + 1;
     reserve(buckets, needed, work, held)?;
     buckets.push(Bucket { parent, children: Vec::new(), allocation });
@@ -488,7 +488,7 @@ fn context_link(value: &RecordValue) -> Result<(WorkspaceContextId, Option<Works
 }
 
 fn commit_index(root: &Namespace, log: &mut CoreLog, buckets: Owned<Vec<Bucket>>, work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let buckets = transfer(buckets, work, &mut held)?;
     let mut change = NativeChange::new(work)?;
     put_buckets(&mut change, buckets, work)?;
@@ -499,7 +499,7 @@ fn commit_index(root: &Namespace, log: &mut CoreLog, buckets: Owned<Vec<Bucket>>
 
 fn rebuild_index(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     let ids = live_ids(root, log, work, cxl)?;
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
     for id in ids.as_state() {
         let value = log.get_native_value(root, RecordKey::Context(*id), work, cxl)?.ok_or(Error::Integrity)?;
@@ -517,7 +517,7 @@ fn rebuild_index(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &Cancell
 pub(super) fn compare_native_context(root: &Namespace, log: &mut CoreLog, id: WorkspaceContextId, expected: u64, replacement: Owned<WorkspaceContext>, work: &Work, cxl: &CancellationToken) -> Result<bool, Error> {
     check(work, cxl)?;
     let replacement = checked_packet(replacement, work, |context| native_context_owned_bytes(context, work))?;
-    let mut held = work.claim(0)?;
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut replacements = Vec::new();
     reserve(&mut replacements, 1, work, &mut held)?;
     let replacement = transfer(replacement, work, &mut held)?;
@@ -534,10 +534,10 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
         }
         Ok(bytes)
     })?;
-    let mut after_allocation = work.claim(0)?;
+    let mut after_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut after = transfer(replacements, work, &mut after_allocation)?;
     if exact && live_ids(root, log, work, cxl)?.as_state().len() != expected.len() { return Ok(false); }
-    let mut before_allocation = work.claim(0)?;
+    let mut before_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut before = Vec::new();
     reserve(&mut before, expected.len(), work, &mut before_allocation)?;
     for (id, revision) in expected {
@@ -578,12 +578,12 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
     if !index_ready(root, log, work, cxl)? {
         rebuild_index(root, log, work, cxl)?;
     }
-    let mut bucket_allocation = work.claim(0)?;
+    let mut bucket_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut buckets = Vec::new();
     for parent in before.iter().filter_map(|(_, record)| record.as_ref()?.as_state().parent_context_id)
         .chain(after.iter().filter_map(|record| record.parent_context_id)) {
         if bucket_position(&buckets, parent, work)?.is_some() { continue; }
-        let mut held = work.claim(0)?;
+        let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut children = Vec::new();
         if let Some(owned) = log.get_native_value(root, RecordKey::Children(parent), work, cxl)? {
             let value = transfer(owned, work, &mut held)?;
@@ -667,7 +667,7 @@ mod tests {
             ..crate::WorkBudget::UNBOUNDED
         };
         let work = Work::new(budget, &cancellation).expect("exact original capacity limit");
-        let mut held = work.claim(0).expect("original guard");
+        let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("original guard");
         let mut values = Vec::new();
         reserve(&mut values, 2, &work, &mut held).expect("actual original backing");
         assert_eq!(values.capacity(), 2);

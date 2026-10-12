@@ -1699,7 +1699,7 @@ mod native_write_controls {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut custody = work.claim(4).expect("payload capacity");
+        let mut custody = work.claim(4, 1, crate::WorkCounters::UNCHARGED).expect("payload capacity");
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).expect("payload buffer");
         bytes.extend_from_slice(b"body");

@@ -786,7 +786,7 @@ impl ViewLedger {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, super::MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(super::MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);
@@ -1308,7 +1308,7 @@ impl ViewRecordWork<'_> {
                 work.claim_allocation(bytes, operations).map_err(super::lazy::mount_demand_error)?;
                 Ok(None)
             }
-            Self::Native(work) => work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
+            Self::Native(work) => work.claim(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(Some).map_err(super::MountSourceError::NativeWork),
         }
     }

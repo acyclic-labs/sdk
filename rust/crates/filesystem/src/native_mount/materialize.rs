@@ -89,7 +89,7 @@ impl GenerationReceipt {
     }
 
     fn from_work(work: &crate::NativeMaterializationWork) -> Result<Self, GenerationFailure> {
-        let custody = work.retain_owned(0).map_err(|error| {
+        let custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(|error| {
             GenerationFailure::new(materialize_native_error(error), work.receipt())
         })?;
         Ok(Self {
@@ -1213,7 +1213,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
             let result = async {
                 validate_bounds(options)?;
                 let allocation_work = native_work.clone();
-                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64)
+                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64, u64::from((std::mem::size_of::<MaterializeError>() as u64) != 0), crate::WorkCounters::UNCHARGED)
                     .map_err(materialize_native_error)?;
                 let cleanup_slot = (Box::new(MaterializeError::InvalidOptions), cleanup_allocation);
                 let (destination_root, relative) = {
@@ -1455,7 +1455,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
         let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
         work.admit(delta).map_err(restore_demand_error)?;
-        let allocation = allocation_work.claim(bytes as u64).map_err(materialize_native_error)?;
+        let allocation = allocation_work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
         work.record(delta).map_err(restore_demand_error)?;

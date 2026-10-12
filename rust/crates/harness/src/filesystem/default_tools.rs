@@ -980,7 +980,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, invocation: &ToolInvocation,
         original_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<ToolResult>, acyclic_fs::NativeAllocation)> {
-        let mut result_custody = original_work.retain_owned(0)?;
+        let mut result_custody = original_work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let (work, cancellation) = original_work.invocation_view()?;
         let _stop_on_drop = InvocationCancellation(cancellation.clone());
         let mut result = async {
@@ -1015,7 +1015,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     return Ok((Some(ToolResult { value }), state.1));
                 }
                 let Some(input) = self.input(context, invocation, &owner.0, state.0, cancellation, Some(&io)).await?
-                    else { return Ok((None, work.retain_owned(0)?)); };
+                    else { return Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?)); };
                 let identity = transition_identity(invocation.operation_id, session.checkpoint().revision, Some(&io))?;
                 let custody = io.take_native_custody(io.owned_bytes()?)?;
                 let transition = session.step_with_native_work(
@@ -1030,7 +1030,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     MachineStatus::Suspended => {}
                 }
             }
-            Ok((None, work.retain_owned(0)?))
+            Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
         }.await?;
         result_custody.absorb(&mut result.1)?;
         Ok((result.0, result_custody))

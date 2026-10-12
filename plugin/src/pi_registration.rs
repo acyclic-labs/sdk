@@ -62,7 +62,7 @@ pub(crate) async fn register(
     let owned = (std::mem::size_of::<PiRootRequest>() + std::mem::size_of::<AdapterState>()
         + std::mem::size_of::<PiTaskBinding>() + std::mem::size_of::<(String, VolumeRef)>()
         + std::mem::size_of::<(String, String)>() + std::mem::size_of::<(String, RootBinding)>()) as u64;
-    let mut startup_custody = work.retain_owned(owned)
+    let mut startup_custody = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let mut provider_metadata = ProviderRef::new_with_native_work("acyclic.pi", "filesystem", "1", work)?;
     startup_custody.absorb(&mut provider_metadata.1)

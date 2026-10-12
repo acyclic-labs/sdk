@@ -1203,7 +1203,7 @@ async fn native_prepared_packet(
     let (path, path_custody) = work.copy_bytes(b"file").expect("real paid path copy");
     let mut path_custody = path_custody;
     let path = path;
-    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64)
+    let mut custody = work.claim(std::mem::size_of::<MaterializationEdit>() as u64, u64::from((std::mem::size_of::<MaterializationEdit>() as u64) != 0), crate::WorkCounters::UNCHARGED)
         .expect("admit plan vector before allocation");
     let path = path; // Retire path data before either possible owning guard.
     let mut edits = Vec::with_capacity(1);

@@ -57,7 +57,7 @@ impl PiLazyCapture {
             (revision, custody)
         };
         source.validate_snapshot_with_native_work(frozen, work).await.map_err(native_lazy_error)?;
-        let mut slot = work.claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = { let claim_bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         metadata.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(Self { source, frozen, revision, _metadata_custody: metadata }))

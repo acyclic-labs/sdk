@@ -1379,7 +1379,7 @@ impl CaptureTransientCustody {
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
-        let header = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let header = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Arc::new(Self {
             retained: std::sync::atomic::AtomicU64::new(0),
             native_header: header,
@@ -3173,7 +3173,7 @@ impl<D> FilteredDemandSource<D> {
         if custody.bytes() < bytes {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let mut shared_owner = work.claim(std::mem::size_of::<FilteredExcludedPaths>() as u64)?;
+        let mut shared_owner = work.claim(std::mem::size_of::<FilteredExcludedPaths>() as u64, u64::from((std::mem::size_of::<FilteredExcludedPaths>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut shared_owner)?;
         Ok(Self { inner, excluded: std::sync::Arc::new(excluded) })
     }

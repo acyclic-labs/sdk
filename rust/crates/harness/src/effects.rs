@@ -230,7 +230,7 @@ impl EffectRegistry {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             return Ok(Self {
-                native_metadata: Some(work.retain_owned(std::mem::size_of::<Self>() as u64)
+                native_metadata: Some(work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?),
                 ..registry
             });

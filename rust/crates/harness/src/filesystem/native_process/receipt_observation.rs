@@ -134,7 +134,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
 pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
 ) -> std::result::Result<Option<(LaunchReceipt<'static>, Option<NativeObservation>, NativeAllocation)>, Error> {
-    let mut custody = work.retain_owned(0)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let client = owner.stream();
     check(work)?;
     let io = super::super::PreparationIo::from_native_work(work)?;

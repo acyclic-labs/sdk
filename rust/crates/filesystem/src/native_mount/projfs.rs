@@ -179,7 +179,7 @@ fn clone_host_path_with_work(
     let bytes = path.as_os_str().as_encoded_bytes().len() as u64;
     let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
     work.admit(copied)?;
-    let mut native_allocation = work.claim(bytes)?;
+    let mut native_allocation = work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut value = PathBuf::new();
     value.try_reserve_exact(bytes as usize).map_err(NativeMountError::Allocation)?;
     native_allocation.reconcile_capacity(value.capacity() as u64)?;
@@ -192,7 +192,7 @@ fn clone_host_path_with_work(
 fn retained_arc<T>(
     value: T, meter: &crate::NativeMaterializationWork,
 ) -> Result<Arc<RetainedArcValue<T>>, NativeMountError> {
-    let allocation = meter.claim(size_of::<RetainedArcValue<T>>() as u64)?;
+    let allocation = { let claim_bytes = size_of::<RetainedArcValue<T>>() as u64; meter.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
     Ok(Arc::new(RetainedArcValue { value, _allocation: allocation }))
 }
 
@@ -497,7 +497,7 @@ impl CallbackGate {
 
     fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
         const SHARDS: usize = 64;
-        let mut allocation = work.claim((SHARDS * size_of::<Mutex<()>>()) as u64)?;
+        let mut allocation = { let claim_bytes = (SHARDS * size_of::<Mutex<()>>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let mut shards = Vec::new();
         shards.try_reserve_exact(SHARDS).map_err(NativeMountError::Allocation)?;
         allocation.reconcile_capacity((shards.capacity() * size_of::<Mutex<()>>()) as u64)?;
@@ -568,7 +568,7 @@ fn flush_callback_gate_measured(
     if let Some(error) = lock_recover(failure).provider_control_failure {
         return Err(error.into_mount_error());
     }
-    let mut allocation = work.claim(0)?;
+    let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut pending: Vec<(MountPath, u64, bool)> = Vec::new();
     struct RestoreProbeSnapshot<'a> {
         probes: &'a std::sync::RwLock<Vec<(MountPath, u64, bool)>>,
@@ -587,7 +587,7 @@ fn flush_callback_gate_measured(
             let bytes = (failure.pending_captures.entries.items.len() as u64)
                 .checked_mul(size_of::<(MountPath, u64, bool)>() as u64)
                 .ok_or(crate::WorkError::Overflow)?;
-            allocation.absorb(&mut work.claim(bytes)?)?;
+            allocation.absorb(&mut work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?)?;
             pending.try_reserve_exact(failure.pending_captures.entries.items.len())
                 .map_err(NativeMountError::Allocation)?;
             debug_assert_eq!(pending.capacity() as u64 * size_of::<(MountPath, u64, bool)>() as u64, bytes,
@@ -655,7 +655,7 @@ fn clone_mount_components_native<'a>(
     count: usize, components: impl IntoIterator<Item = &'a Vec<u8>>, meter: &crate::NativeMaterializationWork,
 ) -> Result<(MountPath, crate::NativeAllocation), NativeMountError> {
     let outer = count.checked_mul(size_of::<Vec<u8>>()).ok_or(crate::WorkError::Overflow)? as u64;
-    let mut native_allocation = meter.claim(outer)?;
+    let mut native_allocation = meter.claim(outer, u64::from((outer) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut copied = Vec::new();
     let answer = (|| {
         copied.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
@@ -666,7 +666,7 @@ fn clone_mount_components_native<'a>(
                 ..crate::WorkCounters::UNCHARGED
             };
             meter.admit(delta)?;
-            let mut component_allocation = meter.claim(component.len() as u64)?;
+            let mut component_allocation = { let claim_bytes = component.len() as u64; meter.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             let mut value = Vec::new();
             value.try_reserve_exact(component.len()).map_err(NativeMountError::Allocation)?;
             component_allocation.reconcile_capacity(value.capacity() as u64)?;
@@ -893,7 +893,7 @@ impl SdkPhysicalEntry {
         })?;
         let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
         projection.work.admit(copied)?;
-        let mut allocation = projection.work.claim(bytes)?;
+        let mut allocation = projection.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut owned = Vec::new();
         owned.try_reserve_exact(name.len() + 1).map_err(NativeMountError::Allocation)?;
         allocation.reconcile_capacity(owned.capacity() as u64 * 2)?;
@@ -1186,7 +1186,7 @@ impl<T> MemoVec<T> {
             ..crate::WorkCounters::UNCHARGED
         };
         projection.work.admit(copied)?;
-        let mut native_allocation = projection.work.claim(bytes)?;
+        let mut native_allocation = projection.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut replacement = Vec::new();
         replacement.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
         native_allocation.reconcile_capacity((replacement.capacity() * size_of::<T>()) as u64)?;
@@ -1246,7 +1246,7 @@ impl MemoKey for Vec<u8> {
         let bytes = self.len() as u64;
         let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
         projection.work.admit(copied)?;
-        let mut native_allocation = projection.work.claim(bytes)?;
+        let mut native_allocation = projection.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let mut value = Vec::new();
         value.try_reserve_exact(self.len()).map_err(NativeMountError::Allocation)?;
         native_allocation.reconcile_capacity(value.capacity() as u64)?;
@@ -4321,7 +4321,7 @@ impl ProjFsSession {
                 self.verify_authored_capture_work(runtime, meter)?;
                 let envelope = (paths.len() as u64).checked_mul(size_of::<MountPath>() as u64)
                     .ok_or(crate::WorkError::Overflow)?;
-                let mut allocation = meter.claim(envelope)?;
+                let mut allocation = meter.claim(envelope, u64::from((envelope) != 0), crate::WorkCounters::UNCHARGED)?;
                 let mut exact = Vec::new();
                 let result = (|| {
                     exact.try_reserve_exact(paths.len()).map_err(NativeMountError::Allocation)?;
@@ -4420,7 +4420,7 @@ impl ProjFsSession {
             let bytes = (units as u64).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
             let encoded = crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED };
             projection.work.admit(encoded)?;
-            let mut native_allocation = projection.work.claim(bytes)?;
+            let mut native_allocation = projection.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             let mut name = Vec::new();
             if let Err(error) = name.try_reserve_exact(units) {
                 drop(name);
@@ -5592,7 +5592,7 @@ fn source_reserve<T>(
     }
     let old_ordinary_bytes = if native_allocation.is_none() { old_bytes } else { 0 };
     let next_live = live.checked_sub(old_ordinary_bytes).ok_or(crate::WorkError::Overflow)?;
-    let mut replacement_allocation = projection.work.claim(bytes)?;
+    let mut replacement_allocation = projection.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut replacement = Vec::new();
     replacement.try_reserve_exact(required).map_err(NativeMountError::Allocation)?;
     let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
@@ -6706,7 +6706,7 @@ mod tests {
         let source = if let Some(original) = original {
             crate::native_mount::initialize_native_mount_services()?;
             let root = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
-            let allocation = original.claim(root.retained_bytes())?;
+            let allocation = { let claim_bytes = root.retained_bytes(); original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             CheckoutMountSource::new_at_meter(
                 checkout, config, root, allocation, original,
                 Some(&original),
@@ -6756,7 +6756,7 @@ mod tests {
         config.profile = crate::model::FilesystemProfile::Windows;
         let root_path = crate::kernel::NamespacePath::new(Vec::new(), config.limits)?;
         let fresh = CheckoutMountSource::new_at_meter(
-            checkout, config, root_path, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
+            checkout, config, root_path, original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
             &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let cold = crate::native_mount::prepare_native_mount_start(&meter)?
@@ -6770,7 +6770,7 @@ mod tests {
             >>().map_err(|_| "original stock checkout alias differs")?;
         let fresh = CheckoutMountSource::new_at_meter(
             checkout, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &meter, Some(&original),
         )?.into_arc_meter(&meter)?;
         let mut restarted = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;

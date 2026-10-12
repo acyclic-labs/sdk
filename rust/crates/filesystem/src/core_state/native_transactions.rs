@@ -43,7 +43,7 @@ fn copy_path(root: &Path, leaf: Option<&Path>, work: &NativeMaterializationWork)
     let capacity = copied.checked_add(usize::from(leaf.is_some())).ok_or_else(overflow)?;
     let copy = crate::WorkCounters { bytes_copied: u64::try_from(copied).map_err(|_| overflow())?, ..crate::WorkCounters::UNCHARGED };
     work.admit(copy)?;
-    let allocation = work.claim_allocation(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0), crate::WorkCounters::UNCHARGED)?;
+    let allocation = work.claim(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0), crate::WorkCounters::UNCHARGED)?;
     let mut owned = NativeCorePath { path: PathBuf::new(), allocation };
     owned.path.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     // Keep custody of the real allocator capacity before any late refusal.
@@ -130,7 +130,7 @@ impl LocalCoreStateStore {
     where F: FnOnce(&Namespace, &mut CoreLog, &NativeMaterializationWork, &crate::CancellationToken) -> Result<T, LocalCoreStateStoreError> + Send + 'static {
         check(original, cancellation)?;
         let root = copy_path(&self.root, None, original)?;
-        let allocation = original.claim_allocation(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = original.claim(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1, crate::WorkCounters::UNCHARGED)?;
         let source = NativeCoreLogSource {
             frame: Box::new(NativeCoreLogFrame {
                 operation: Some(operation), root: Some(root), ownership: self.ownership.clone(),
@@ -240,7 +240,7 @@ mod tests {
         ).await.expect_err("resource substitution");
         assert!(matches!(error.0, crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::NativeLedgerMismatch)));
         assert_eq!(work.receipt(), before);
-        let forged = NativeOwnedCoreState::from_parts(lineage(id), work.claim(0).expect("zero-byte caller guard"));
+        let forged = NativeOwnedCoreState::from_parts(lineage(id), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("zero-byte caller guard"));
         let error = WorkspaceLineageStore::compare_and_swap_with_native_work(
             &store, id, 0, forged, &work, &cancellation,
         ).await.expect_err("unfunded caller payload");
@@ -367,7 +367,7 @@ mod tests {
                         selected.revision += 1;
                         selected.parent_context_id = parents.get(*destination as usize).copied();
                         if native {
-                            let packet = NativeOwnedCoreState::from_parts(selected.clone(), work.claim(0).expect("actual zero deep payload"));
+                            let packet = NativeOwnedCoreState::from_parts(selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
                             assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
                                 &store, child, previous, packet, &work, &cancellation,
                             ).await.expect("original parent transition"));

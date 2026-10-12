@@ -351,7 +351,7 @@ pub(super) struct NativeCaptureScratchAllocation<'a> {
 impl<'a> NativeCaptureScratchAllocation<'a> {
     pub(super) fn new(work: &'a crate::NativeMaterializationWork) -> Result<Self, MountSourceError> {
         Ok(Self {
-            work, allocation: work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?,
+            work, allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?,
             copy: None, items: None,
         })
     }
@@ -368,7 +368,7 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
         let requested = count.checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.absorb(self.work.claim_allocation(requested, u64::from(requested != 0), crate::WorkCounters::UNCHARGED)
+        self.absorb(self.work.claim(requested, u64::from(requested != 0), crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?);
         let mut vector = Vec::new();
         vector.try_reserve_exact(count).map_err(|error|
@@ -480,7 +480,7 @@ impl NativeDemandCarrier<'_> {
         let Some(original) = self.original_native_work() else {
             return Ok(crate::kernel::OwnedSourceChunk::claimed(OwnedBytes::new(), 0));
         };
-        let custody = original.claim(0).map_err(MountSourceError::NativeWork)?;
+        let custody = original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let bytes = OwnedBytes::from_vec_with_guard(
             Vec::new(), custody, original.runtime_meter_owner(),
         ).map_err(|failure| match failure.into_error() {
@@ -916,7 +916,7 @@ impl CaptureCallerWait {
             copied: work.reserve_work(crate::WorkCounters { bytes_copied: std::mem::size_of::<CaptureSourceSlot>() as u64, ..crate::WorkCounters::UNCHARGED })
                 .map_err(MountSourceError::NativeWork)?,
         };
-        let allocation = work.claim_allocation(std::mem::size_of::<StdMutex<Self>>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = work.claim(std::mem::size_of::<StdMutex<Self>>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let wait = Arc::new(StdMutex::new(Self {
             prepared: Some(prepared), error: None, _allocation: allocation,
@@ -1240,7 +1240,7 @@ impl CallbackRuntime {
         &self, guard: &dyn super::NativeMountCallbackGuard,
         work: &crate::NativeMaterializationWork, authored_write: bool,
     ) -> Result<(), NativeMountError> {
-        let allocation = work.claim_allocation(
+        let allocation = work.claim(
             std::mem::size_of::<ParkedCallback>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let prepared = PreparedCallbackWait {
             parked: Arc::new(ParkedCallback {
@@ -1660,7 +1660,7 @@ impl PendingCreate {
             allocation_operations: 1 + sharing, bytes_copied: metadata_bytes,
             ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork)?;
-        let mut metadata_allocation = original.claim(metadata_bytes).map_err(MountSourceError::NativeWork)?;
+        let mut metadata_allocation = original.claim(metadata_bytes, u64::from((metadata_bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         original.charge(crate::WorkCounters {
             bytes_copied: metadata_bytes, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork)?;
@@ -2006,7 +2006,7 @@ struct GroupedAdmission {
 impl GroupedAdmission {
     fn new(carrier: &mut NativeDemandCarrier<'_>) -> Result<Arc<Self>, MountSourceError> {
         let (allocation, native_allocation) = if let Some(original) = carrier.original_native_work() {
-            (None, Some(original.claim(std::mem::size_of::<Self>() as u64)
+            (None, Some(original.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)?))
         } else {
             carrier.with_work(|work| {
@@ -2134,7 +2134,7 @@ impl<A, O> SharedCheckout<A, O> {
         let work = original.clone();
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let mut value = Self::with_publication_engine(checkout, publication, Some(&work))?;
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         value._native_allocation = Some(allocation);
         Ok(Arc::new(value))
@@ -2146,7 +2146,7 @@ impl<A, O> SharedCheckout<A, O> {
         native: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, MountSourceError> {
         let native_revision_allocation = native.map(|work|
-            work.claim_allocation(std::mem::size_of::<AtomicU64>() as u64, 1, crate::WorkCounters::UNCHARGED)
+            work.claim(std::mem::size_of::<AtomicU64>() as u64, 1, crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)
         ).transpose()?;
         let revision = Arc::new(AtomicU64::new(1));
@@ -5616,7 +5616,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut path_allocation) =
                 path_allocation else { unreachable!("native creation path retains original custody"); };
             let bytes = (std::mem::size_of::<PendingCreate>() + std::mem::size_of::<FileMetadata>()) as u64;
-            let mut allocation = original.claim_allocation(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
+            let mut allocation = original.claim(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             allocation.absorb(&mut path_allocation).map_err(MountSourceError::NativeWork)?;
             original.charge(crate::WorkCounters {
                 bytes_copied: std::mem::size_of::<FileMetadata>() as u64,
@@ -6144,7 +6144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let bytes = std::mem::size_of::<CheckoutAttachedFile<A, O>>() as u64;
         if let Some(original) = carrier.original_native_work() {
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let allocation = original.claim_allocation(bytes, 1, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
+            let allocation = original.claim(bytes, 1, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
             let handle = Arc::new(CheckoutAttachedFile {
                 checkout: Arc::clone(&self.checkout), file_id, runtime: self.runtime.clone(),
                 cancellation: self.cancellation.clone(), profile: self.profile, limits: self.limits,
@@ -6275,7 +6275,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             }, work.runtime_meter()).map_err(capture_io_error)?;
         };
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        let allocation = work.claim_allocation(
+        let allocation = work.claim(
             std::mem::size_of::<PendingCreatedFile<A, O>>() as u64, 1, crate::WorkCounters::UNCHARGED,
         ).map_err(MountSourceError::NativeWork)?;
         let handle = Arc::new(PendingCreatedFile {
@@ -6587,7 +6587,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let bytes = if original.is_some() { 0 } else { file.logical_owned_bytes() };
         let mut owned = NativeCarrierOwned { value: Some(file), carrier, bytes };
         let native_allocation = if let Some(original) = &original {
-            Some(original.claim_allocation(std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64, 1, crate::WorkCounters::UNCHARGED)
+            Some(original.claim(std::mem::size_of::<CheckoutDetachedFile<A, O>>() as u64, 1, crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)?)
         } else {
             owned.carrier.with_work(|work| {
@@ -6771,7 +6771,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             ).into());
         }
         self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         self._source_allocation = Some(allocation);
         Ok(Arc::new(self))
@@ -6947,7 +6947,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             crate::NativeTreeMaterializationError::InvalidLayout,
         ))?;
         let mut poll_credit = self.reserve_capture_poll()?;
-        let allocation = original.claim_allocation(std::mem::size_of::<NativeSourceIoLeaseInner>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(std::mem::size_of::<NativeSourceIoLeaseInner>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let mut gate = self.capture_gate.lock().unwrap_or_else(PoisonError::into_inner);
         if gate.cancelled { return Err(MountSourceError::Stale); }
@@ -9646,7 +9646,7 @@ mod tests {
             let budget = WorkBudget { allocation_operations: 2, ..crate::performance::BOUNDARY_BUDGET };
             let work = crate::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(error, _)| error)?;
-            let resident_allocation = work.claim_allocation(std::mem::size_of::<[u8; 16]>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+            let resident_allocation = work.claim(std::mem::size_of::<[u8; 16]>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
             let resident = Box::new([0_u8; 16]);
             work.charge(crate::WorkCounters { items_examined: 9, ..crate::WorkCounters::UNCHARGED })?;
             let live = work.live_allocation_bytes();
@@ -9816,7 +9816,7 @@ mod tests {
         let budget = crate::performance::BOUNDARY_BUDGET;
         let work = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let resident_allocation = work.claim_allocation(16, 1, crate::WorkCounters::UNCHARGED)?;
+        let resident_allocation = work.claim(16, 1, crate::WorkCounters::UNCHARGED)?;
         let resident = Box::new([0_u8; 16]);
         work.charge(crate::WorkCounters {
             items_examined: 19, backend_read_operations: 2, ..crate::WorkCounters::UNCHARGED
@@ -9893,7 +9893,7 @@ mod tests {
         let budget = crate::performance::BOUNDARY_BUDGET;
         let work = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let resident_allocation = work.claim_allocation(16, 1, crate::WorkCounters::UNCHARGED)?;
+        let resident_allocation = work.claim(16, 1, crate::WorkCounters::UNCHARGED)?;
         let resident = Box::new([0_u8; 16]);
         work.charge(crate::WorkCounters { items_examined: 23, ..crate::WorkCounters::UNCHARGED })?;
         let retained_prefix = work.live_allocation_bytes();
@@ -10213,7 +10213,7 @@ mod tests {
         let original = root.native_volume_work(WorkBudget { items_examined: 2, ..crate::performance::BOUNDARY_BUDGET })?;
         let source = CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout), config, NamespacePath::root(),
-            original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?;
         assert_eq!(original.remaining()?.items_examined, 0);
         let before = root.receipt();
@@ -10241,7 +10241,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let source = CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout), VolumeConfig::portable(Lifecycle::Ephemeral),
-            NamespacePath::root(), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
+            NamespacePath::root(), original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?;
         let wait = CancellationToken::new();
         wait.cancel();
@@ -10261,7 +10261,7 @@ mod tests {
         let native = original.clone();
         Ok(CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout), VolumeConfig::portable(Lifecycle::Ephemeral),
-            NamespacePath::new(Vec::new(), borrowed.limits)?, original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?, &native, Some(original),
+            NamespacePath::new(Vec::new(), borrowed.limits)?, original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &native, Some(original),
         )?.into_arc_meter(&native)?)
     }
 
@@ -10623,7 +10623,7 @@ mod tests {
         let baseline = original.receipt().retained_allocation_bytes;
         let constructor_prefix = original.receipt().allocation_operations;
         let native = original.clone();
-        let namespace_guard = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let namespace_guard = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let source = CheckoutMountSource::new_at_meter(
             Arc::clone(&borrowed.checkout), config, NamespacePath::root(), namespace_guard, &native, Some(&original),
         )?;
@@ -10930,7 +10930,7 @@ mod tests {
             }
             _ => return Err("bounded overwrite applied the creation".into()),
         }
-        let mut preparation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut preparation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let change = pending.begin_applying_with_native_work(
             &original, &mut preparation, &cancellation,
         )?.ok_or("native creation did not prepare")?;
@@ -10978,7 +10978,7 @@ mod tests {
         file.write_range_with_meter(0, crate::kernel::OwnedSourceChunk::intrinsic(
             OwnedBytes::from_static(b"original"), 0,
         ), &invocation)?;
-        let mut preparation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut preparation = original.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let change = pending.begin_applying_with_native_work(
             &original, &mut preparation, &cancellation,
         )?.ok_or("native creation did not prepare")?;

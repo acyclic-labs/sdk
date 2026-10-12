@@ -2690,7 +2690,7 @@ mod tests {
             crate::WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.live_allocation_bytes();
         let data = b"canonical HTTP chunk".to_vec();
-        let allocation = work.claim(data.capacity() as u64)?;
+        let allocation = { let claim_bytes = data.capacity() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let carrier = acyclic_stream::OwnedBytes::from_vec_with_guard(
             data, allocation, work.runtime_meter_owner())
             .unwrap_or_else(|failure| panic!("ordinary test carrier: {:?}", failure.into_error()));

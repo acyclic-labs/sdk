@@ -4928,7 +4928,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 ).await?;
                 return Ok((JoinOutcome::StaleTarget(Generation {
                     workspace: self.target.clone(), id, publication_closure: None,
-                }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
+                }), original.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
             }
             let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
                 crate::facade::WorkspaceJoinRequest {
