@@ -522,37 +522,33 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.require_mail_scope(scope, &mut Some(&mut observer))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn require_task_context_binding_with_native_work(
+    pub(crate) fn require_task_context_binding(
         &self, context: &crate::runtime::TaskContext,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        context.require_original_native_work(work)?;
-        if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native read owner differs from its original admission ledger" });
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            context.require_original_native_work(work)?;
+            if !self._native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "read owner differs from its original admission ledger" });
+            }
         }
-        let mut observer = crate::store::history::native_work_io(work)?;
-        if context.durable_task_id() != Some(self.task_id)
+        let proofs = self.input_created.as_ref().map_or(&[][..], |access| access.proofs.as_slice());
+        crate::executor::with_history_io(io, |work| crate::core::source_metadata_inspection_with_work(
+            &(context.scope().grants(), &self.input_grants, context.scope().resource_proofs(), proofs,
+                context.scope().extensions(), self.extensions.as_ref()), work,
+        ))?;
+        if !context.original_task_binding_matches(self.task_id, &self.fence)
             || context.id() != self.operation_id()
             || !context.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
             || context.scope().limits() != self.input_limits
             || context.scope().run_limits().deadline_epoch_ms != self.deadline_epoch_ms
-            || {
-                let proofs = self.input_created.as_ref().map_or(&[][..], |access| access.proofs.as_slice());
-                crate::core::source_metadata_inspection_with_work(
-                    &(context.scope().grants(), &self.input_grants,
-                        context.scope().resource_proofs(), proofs,
-                        context.scope().extensions(), self.extensions.as_ref()),
-                    &mut Some(&mut observer),
-                )?;
-                context.scope().grants() != &self.input_grants
-                    || context.scope().resource_proofs() != proofs
-                    || context.scope().extensions() != self.extensions.as_ref()
-            }
+            || context.scope().grants() != &self.input_grants
+            || context.scope().resource_proofs() != proofs
+            || context.scope().extensions() != self.extensions.as_ref()
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native read context differs from its original SDK owner admission" });
+            return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unauthorized, "read context differs from its original SDK owner admission"));
         }
         Ok(())
     }
@@ -902,24 +898,69 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         self.invocation_cancellation = Some(cancellation.clone());
-        if context.task().durable_task_id() != Some(self.task_id)
-            || context.task().owned_task_fence()? != self.fence
+        if !context.task().original_task_binding_matches(self.task_id, &self.fence)
             || invocation.operation_id == self.operation_id()
         {
             return Err(Error::Unauthorized("tool workflow differs from original task owner".into()));
         }
-        self.require_mail_scope(context.task().scope(), &mut None)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = native {
+            context.task().require_original_native_dispatch(work)?;
+            self.require_mail_scope_with_native_work(context.task().scope(), work)?;
+        }
+        crate::executor::with_history_io(io, |work| self.require_mail_scope(context.task().scope(), work))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (admission, _admission_hold) = match native {
+            Some(work) => {
+                let (admission, custody) = self.host.observe_admission_with_native_work(self.task_id, work).await?;
+                (admission, Some(custody))
+            }
+            None => (self.host.observe_admission(self.task_id).await?, None),
+        };
+        #[cfg(target_arch = "wasm32")]
         let admission = self.host.observe_admission(self.task_id).await?;
         if context.task().scope().run_limits() != admission.run_limits
             || context.task().scope().extensions() != admission.extensions.as_ref()
         {
             return Err(Error::Unauthorized("tool workflow changed original admission policy".into()));
         }
-        self.verify(false, &mut None).await?;
-        self.workflow = tool.workflow_admission(context, invocation)?;
-        self.output_schema = tool.definition.output_schema.clone();
+        let mut history = io.map(crate::executor::PreparationIo::history_io);
+        let mut work = history.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo);
+        self.verify(false, &mut work).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(crate::executor::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let workflow = tool.workflow_admission(context, invocation, io)?;
+        let output_schema = crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let value = crate::core::copy_value(&tool.definition.output_schema, &mut quota)?;
+            quota.transfer();
+            Ok::<_, Error>(value)
+        })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = native {
+            let io = io.expect("original native funding");
+            let mut retained = io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                .ok_or(Error::Invalid("tool workflow custody underflow".into()))?)?;
+            self._native_custody.as_mut().expect("authenticated native owner").absorb(&mut retained)?;
+            self.workflow = workflow;
+            self.output_schema = output_schema;
+            let bytes = self.native_owned_bytes()?;
+            self._native_custody.as_mut().expect("authenticated native owner").substitute(bytes)?;
+            work.remaining()?;
+        } else {
+            self.workflow = workflow;
+            self.output_schema = output_schema;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.workflow = workflow;
+            self.output_schema = output_schema;
+        }
         Ok(self)
     }
 
@@ -3449,7 +3490,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "original Started admission differs from the protected fork claim" });
                     }
-                    owner.require_task_context_binding_with_native_work(query.context(), work)?;
+                    owner.require_task_context_binding(query.context(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
                     owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
                     witness.verify_query_with_native_work(query, work).await?;
                     owner.into_native_shared(work)

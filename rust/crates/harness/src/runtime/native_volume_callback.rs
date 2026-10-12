@@ -46,7 +46,7 @@ impl NativeTaskContext {
         if owner.task_binding() != (task, fence) {
             return Err(denied("native volume callback differs from the original task and full fence"));
         }
-        owner.require_task_context_binding_with_native_work(context, work)?;
+        owner.require_task_context_binding(context, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         owner.require_mail_scope_with_native_work(context.scope(), work)?;
         owner.verify_with_native_work(false, work).await?;
 

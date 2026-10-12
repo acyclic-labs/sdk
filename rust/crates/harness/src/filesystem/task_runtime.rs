@@ -1123,15 +1123,25 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let task = context.task().durable_task_id()
             .ok_or_else(|| Error::Unauthorized("tool has no admitted caller".into()))?;
-        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?
-            .for_tool_workflow(context, tool, invocation, cancellation).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => {
+                let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
+                self.host.journal_owner_with_native_work(task, fence, work).await?
+            }
+            None => self.host.journal_owner(task, context.task().owned_task_fence()?).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?;
+        let owner = owner.for_tool_workflow(context, tool, invocation, cancellation, io).await?;
         let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
             owner, self.filesystem.clone(), &self.volume,
-            &self.verifier, &self.signed, maximum_payload_bytes, None,
+            &self.verifier, &self.signed, maximum_payload_bytes, io,
         )
     }
 
@@ -1142,8 +1152,9 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
-        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
+        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation, io).await?;
         let journal_owner = workflow.owner.clone()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
         Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner })

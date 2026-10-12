@@ -69,7 +69,7 @@ impl<P: StreamProvider> NativeRootOutputOwner for TaskJournalOwner<P> {
     }
 
     fn check_context(&self, context: &crate::runtime::TaskContext, work: &NativeMaterializationWork) -> Result<()> {
-        self.require_task_context_binding_with_native_work(context, work)
+        self.require_task_context_binding(context, Some(&crate::executor::PreparationIo::from_native_work(work)?))
     }
 }
 
