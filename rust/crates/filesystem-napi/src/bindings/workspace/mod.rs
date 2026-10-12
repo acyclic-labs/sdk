@@ -1,16 +1,5 @@
 use super::*;
 
-/// Workspace-aware final-close outcome.
-#[napi(object)]
-pub struct NativeWorkspaceOperationFinish {
-    /// `still-active`, `already-closed`, or `reconciled`.
-    pub kind: String,
-    /// Live lease count for `still-active`.
-    pub remaining: Option<u32>,
-    /// Core rebase result for `reconciled`.
-    pub rebase: Option<NativeWorkspaceRebaseResult>,
-}
-
 /// One named customer workspace backed by the embedded local engine.
 #[napi]
 pub struct NativeWorkspace {
@@ -20,31 +9,21 @@ pub struct NativeWorkspace {
 /// Terminal result of advancing a fork onto its source workspace.
 #[napi(object)]
 pub struct NativeWorkspaceRebaseResult {
-    /// `rebased`, `already-rebased`, `current`, `stale`, `conflicted`, `fenced`,
     pub status: String,
-    /// Exact fork generation for generation-bearing outcomes.
     pub generation_id: Option<Buffer>,
-    /// Stable path-independent conflict regions.
     pub conflicts: Vec<NativeMergeConflict>,
-    /// Whether additional conflicts exceeded the retained result bound.
     pub truncated: bool,
 }
 
 /// Terminal workspace publication outcome.
 #[napi(object)]
 pub struct NativeWorkspaceCommit {
-    /// Stable terminal status.
     pub status: String,
-    /// Published or actual generation identity when applicable.
     pub generation_id: Option<Buffer>,
 }
 
 /// One exact customer-visible path stat without storage topology.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceStat {
     pub file_id: Buffer,
     pub kind: FileKind,
@@ -55,10 +34,6 @@ pub struct NativeWorkspaceStat {
 
 /// Scalar cross-profile metadata and opaque-payload presence.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceMetadata {
     pub posix_mode: Option<u32>,
     pub posix_uid: Option<u32>,
@@ -76,10 +51,6 @@ pub struct NativeWorkspaceMetadata {
 
 /// One exact encoded directory name.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceName {
     pub encoding: String,
     pub bytes: Buffer,
@@ -87,10 +58,6 @@ pub struct NativeWorkspaceName {
 
 /// One child in a bounded directory page.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceDirectoryEntry {
     pub name: NativeWorkspaceName,
     pub file_id: Buffer,
@@ -99,10 +66,6 @@ pub struct NativeWorkspaceDirectoryEntry {
 
 /// One bounded authenticated directory page.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceDirectoryPage {
     pub entries: Vec<NativeWorkspaceDirectoryEntry>,
     pub has_more: bool,
@@ -110,10 +73,6 @@ pub struct NativeWorkspaceDirectoryPage {
 
 /// One topology-free sparse extent span.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceExtentSpan {
     pub offset: BigInt,
     pub length: BigInt,
@@ -123,46 +82,34 @@ pub struct NativeWorkspaceExtentSpan {
 
 /// One bounded topology-free sparse extent plan.
 #[napi(object)]
-#[allow(
-    missing_docs,
-    reason = "plain N-API object whose fields the struct doc describes as a whole"
-)]
 pub struct NativeWorkspaceExtentPlan {
     pub spans: Vec<NativeWorkspaceExtentSpan>,
 }
 
 #[napi]
 #[allow(
-    missing_docs,
-    reason = "the read_range, stat, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
-)]
-#[allow(
     clippy::missing_errors_doc,
     reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
 )]
 impl NativeWorkspace {
-    /// Canonical customer workspace name.
     #[must_use]
     #[napi(getter)]
     pub fn name(&self) -> String {
         self.inner.name().as_str().to_owned()
     }
 
-    /// Stable opaque workspace identity.
     #[must_use]
     #[napi(getter)]
     pub fn id(&self) -> Buffer {
         Buffer::from(self.inner.id().into_bytes().to_vec())
     }
 
-    /// Current immutable generation identity.
     #[napi]
     pub async fn head(&self) -> Result<Buffer> {
         sdk_value!(unbounded_future!(self.inner, head()))
             .map(|value| Buffer::from(value.id().digest().into_bytes().to_vec()))
     }
 
-    /// Reopens an authenticated exact retained generation without moving the head.
     #[napi]
     pub async fn generation(&self, id: Buffer) -> Result<NativeGeneration> {
         let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
@@ -173,14 +120,12 @@ impl NativeWorkspace {
             .map(|inner| NativeGeneration { inner })
     }
 
-    /// Synchronizes prior workspace operations and returns the exact immutable head.
     #[napi]
     pub async fn sync(&self) -> Result<NativeGeneration> {
         sdk_value!(unbounded_future!(self.inner, head()))
             .map(|value| NativeGeneration { inner: value })
     }
 
-    /// Retains the current generation under one human-readable label.
     #[napi]
     pub async fn checkpoint(&self, label: String) -> Result<NativeGeneration> {
         self.inner
@@ -192,7 +137,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Retains the current generation under one opaque stable identity.
     #[napi]
     pub async fn pin(&self, identity: String) -> Result<NativeGeneration> {
         self.inner
@@ -202,7 +146,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Terminally removes this mutable workspace head without invalidating retained state.
     #[napi]
     pub async fn delete(&self, idempotency_key: Option<Buffer>) -> Result<String> {
         let idempotency_key = native_idempotency_key(idempotency_key)?;
@@ -221,7 +164,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Returns the durable semantic state of this workspace's attached source.
     #[napi(js_name = sourceState)]
     pub async fn source_state(&self) -> NativeSourceResult {
         match self.inner.source().cloned() {
@@ -234,7 +176,6 @@ impl NativeWorkspace {
         }
     }
 
-    /// Captures one contiguous native change interval and conditionally publishes it.
     #[napi(js_name = reconcileSource)]
     pub async fn reconcile_source(&self) -> Result<NativeSourceResult> {
         let source =
@@ -247,7 +188,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Rebuilds a complete authenticated source baseline.
     #[napi(js_name = rescanSource)]
     pub async fn rescan_source(&self) -> Result<NativeSourceResult> {
         let source =
@@ -260,7 +200,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Captures all remaining source state into an independent immutable generation.
     #[napi]
     pub async fn seal(&self) -> Result<NativeGeneration> {
         Box::pin(self.inner.seal())
@@ -269,7 +208,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Reads one complete regular file under a caller bound.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
         sdk_value!(Box::pin(unbounded_future!(
@@ -328,7 +266,6 @@ impl NativeWorkspace {
         .map_err(napi_error)
     }
 
-    /// Atomically creates or replaces one complete file.
     #[napi]
     pub async fn write(&self, path: String, bytes: Buffer) -> Result<NativeWorkspaceCommit> {
         self.inner
@@ -338,7 +275,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Removes one existing path atomically.
     #[napi]
     pub async fn remove(&self, path: String) -> Result<NativeWorkspaceCommit> {
         self.inner
@@ -348,7 +284,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Creates an independent named workspace at the current generation.
     #[napi]
     pub async fn fork(
         &self,
@@ -372,7 +307,6 @@ impl NativeWorkspace {
             .map_err(|failure| napi_error(failure.error))
     }
 
-    /// Creates an independent workspace at one caller-selected exact generation.
     #[napi(js_name = forkAt)]
     pub async fn fork_at(
         &self,
@@ -401,7 +335,6 @@ impl NativeWorkspace {
             .map_err(|failure| napi_error(failure.error))
     }
 
-    /// Begins one sparse atomic transaction at the current workspace head.
     #[napi(js_name = beginTransaction)]
     pub async fn begin_transaction(
         &self,
@@ -418,7 +351,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Advances this fork onto its source workspace's current generation.
     #[napi(js_name = liveRebase)]
     pub async fn live_rebase(
         &self,
@@ -443,7 +375,6 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
-    /// Computes one immutable bounded semantic delta between exact generations.
     #[napi]
     pub async fn diff(
         &self,
@@ -452,15 +383,13 @@ impl NativeWorkspace {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .diff(&from.inner, &to.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            diff(&from.inner, &to.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 
-    /// Builds one immutable side-effect-free plan for joining this workspace into a target.
     #[napi(js_name = joinInto)]
     pub async fn join_into(
         &self,
@@ -503,14 +432,16 @@ impl NativeWorkspace {
                     ))?,
                     None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
-                acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
     }
 
-    /// Mounts this workspace or one exact subtree through the host-native driver.
     #[napi]
     pub async fn mount(
         &self,
@@ -574,27 +505,6 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
         generation_id: generation.map(|value| native_generation_buffer(value.id())),
         conflicts: Vec::new(),
         truncated: false,
-    }
-}
-
-pub(in crate::bindings) fn native_workspace_operation_finish(
-    outcome: WorkspaceOperationFinish<LocalAuthorityBackend, LocalObjectBackend>,
-) -> NativeWorkspaceOperationFinish {
-    let (kind, remaining, rebase) = match outcome {
-        WorkspaceOperationFinish::StillActive { remaining } => {
-            ("still-active", Some(remaining), None)
-        }
-        WorkspaceOperationFinish::AlreadyClosed => ("already-closed", None, None),
-        WorkspaceOperationFinish::Reconciled(outcome) => (
-            "reconciled",
-            None,
-            Some(native_workspace_rebase_result(outcome)),
-        ),
-    };
-    NativeWorkspaceOperationFinish {
-        kind: kind.to_owned(),
-        remaining,
-        rebase,
     }
 }
 
