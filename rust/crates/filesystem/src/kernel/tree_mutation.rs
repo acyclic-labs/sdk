@@ -160,7 +160,7 @@ pub enum TreeMutation {
 }
 
 impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
-    type Error = TreeSemanticError;
+    type Error = TreeMutationError;
 
     fn key(&self) -> &LogicalName {
         match self {
@@ -175,19 +175,19 @@ impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
 
     fn replacement<'a>(&'a self, current: Option<&TreeEntry>) -> Result<Option<&'a TreeEntry>, Self::Error> {
         match self {
-            Self::Insert(_) if current.is_some() => Err(TreeSemanticError::AlreadyExists),
+            Self::Insert(_) if current.is_some() => Err(TreeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(TreeSemanticError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(TreeMutationError::Missing),
             Self::Remove { expected_file_id, .. } => {
-                let existing = current.ok_or(TreeSemanticError::Missing)?;
+                let existing = current.ok_or(TreeMutationError::Missing)?;
                 if expected_file_id.is_some_and(|expected| existing.file_id != expected) {
-                    return Err(TreeSemanticError::FileIdentityConflict);
+                    return Err(TreeMutationError::FileIdentityConflict);
                 }
                 Ok(None)
             }
             Self::Replace { entry, expected_file_id } => {
-                let existing = current.ok_or(TreeSemanticError::Missing)?;
-                if existing.file_id != *expected_file_id { return Err(TreeSemanticError::FileIdentityConflict); }
+                let existing = current.ok_or(TreeMutationError::Missing)?;
+                if existing.file_id != *expected_file_id { return Err(TreeMutationError::FileIdentityConflict); }
                 Ok(Some(entry))
             }
         }
@@ -208,23 +208,8 @@ pub struct TreeMutationReceipt {
 /// Sparse tree mutation failure preserving all work and orphan writes.
 pub type TreeMutationFailure = OperationFailure<TreeMutationError>;
 
-/// Applies one ordered mutation batch by path-copying only intersecting pages.
-pub fn apply_tree_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<TreeMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeMutationReceipt, TreeMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_tree_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies one ordered sparse directory mutation batch.
-pub async fn apply_tree_mutations_async<S: crate::AsyncObjectStore>(
+/// Applies one bounded directory mutation batch.
+pub async fn apply_tree_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<TreeMutation>,
@@ -246,7 +231,7 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
     let receipt = persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
-    Ok(TreeMutationReceipt { root: receipt.root, work: receipt.work })
+    Ok(TreeMutationReceipt { root: receipt.value, work: receipt.work })
 }
 
 pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
@@ -264,7 +249,7 @@ pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
     }
 }
 
-fn map_error(error: persistent_btree::Error<TreeSemanticError>) -> TreeMutationError {
+fn map_error(error: persistent_btree::Error<TreeMutationError>) -> TreeMutationError {
     match error {
         persistent_btree::Error::Empty => TreeMutationError::Empty,
         persistent_btree::Error::TooManyMutations => TreeMutationError::TooManyMutations,
@@ -281,21 +266,11 @@ fn map_error(error: persistent_btree::Error<TreeSemanticError>) -> TreeMutationE
         persistent_btree::Error::AllocationFailed | persistent_btree::Error::Allocation(_) => {
             TreeMutationError::AllocationFailed
         }
-        persistent_btree::Error::Semantic(error) => error.into(),
+        persistent_btree::Error::Semantic(error) => error,
         persistent_btree::Error::Storage(error) => TreeMutationError::Storage(error),
         persistent_btree::Error::Decode(error) => TreeMutationError::Decode(error),
         persistent_btree::Error::Work(error) => TreeMutationError::Work(error),
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub(crate) enum TreeSemanticError {
-    #[error("tree mutation name already exists")]
-    AlreadyExists,
-    #[error("tree mutation name is absent")]
-    Missing,
-    #[error("tree mutation file identity precondition failed")]
-    FileIdentityConflict,
 }
 
 /// Persistent directory mutation failures.
@@ -349,16 +324,6 @@ pub enum TreeMutationError {
     /// Exact work exceeded or overflowed its budget.
     #[error(transparent)]
     Work(#[from] WorkError),
-}
-
-impl From<TreeSemanticError> for TreeMutationError {
-    fn from(value: TreeSemanticError) -> Self {
-        match value {
-            TreeSemanticError::AlreadyExists => Self::AlreadyExists,
-            TreeSemanticError::Missing => Self::Missing,
-            TreeSemanticError::FileIdentityConflict => Self::FileIdentityConflict,
-        }
-    }
 }
 
 #[cfg(all(test, feature = "memory"))]

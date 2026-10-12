@@ -902,17 +902,17 @@ fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let decoded = if native {
-            crate::contract::json_from_slice_bounded_native_trusted::<T, _>(
-                bytes, bounds, bytes.len() as u64, crate::wire::ErrorCode::Invalid, schema, &mut charge,
+            crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
+                bytes, bounds, bytes.len() as u64, Some(crate::wire::ErrorCode::Invalid), Some(schema), &mut charge,
             )
         } else {
-            crate::contract::json_from_slice_bounded_trusted::<T, _>(
-                bytes, bounds, bytes.len() as u64, &mut charge,
+            crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
+                bytes, bounds, bytes.len() as u64, None, None, &mut charge,
             )
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let decoded = crate::contract::json_from_slice_bounded_trusted::<T, _>(
-            bytes, bounds, bytes.len() as u64, &mut charge,
+        let decoded = crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
+            bytes, bounds, bytes.len() as u64, None, None, &mut charge,
         );
         decoded
     };

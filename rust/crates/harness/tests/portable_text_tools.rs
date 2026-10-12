@@ -104,23 +104,19 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     );
     let read_cap = volume.capability(VolumeOperation::Read)?;
     let write_cap = volume.capability(VolumeOperation::Write)?;
-    let scope = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([read_cap.clone(), write_cap.clone()]),
-    );
+    let scope = issuer.issue("owner", &Capabilities::new([read_cap.clone(), write_cap.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
-        volume.clone(),
-        &issuer.verifier(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        4096,
+        4096, None,
     )?);
     let reader = Arc::new(FilesystemContentVerifier::new(
         host,
-        issuer.verifier(),
-        scope,
-        4096,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        4096, None,
     )?);
     let source = writer
         .stage(
@@ -172,7 +168,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     tool.definition.name = "example.exact_edit".into();
     tool.definition.description =
         "Consumer-defined edit contract using the portable executor".into();
-    tool.definition.validate()?;
+    tool.definition.validate(&mut None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: operation,
@@ -522,18 +518,14 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             id: "portable".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        owner,
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
             other.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let foreign = ContentGrant::verify(&issuer.verifier(), &scope, &other, VolumeOperation::Write)?;
+        ]), Some(owner), None, &mut None).expect("scope proof");
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let foreign = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &other, VolumeOperation::Write)?;
     let source = host
         .put_content(
             &volume,
@@ -677,16 +669,12 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
             id: "persistent-edit".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        owner,
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+        ]), Some(owner), None, &mut None).expect("scope proof");
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let replacement = ExactTextReplacement {
         old_text: "before".into(),
         new_text: "after".into(),
@@ -799,11 +787,11 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let issuer = AuthorityIssuer::new("bounded-content", [92; 32], Authority {
         kind: AggregateKind::Conversation, id: "bounded-content".into(),
     });
-    let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
         volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    ]), Some(owner), None, &mut None).expect("scope proof");
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let key = IdempotencyKey::new("original-content")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     {
@@ -863,4 +851,3 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     assert_eq!(host.read(&workspace, None, "/result.json", 64).await?.as_ref(), b"later");
     Ok(())
 }
-

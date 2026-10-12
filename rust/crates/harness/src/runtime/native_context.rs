@@ -26,7 +26,7 @@ fn validate_scope_attenuation(
 pub struct NativeTaskContext {
     context: TaskContext,
     #[cfg(feature = "native-execution")]
-    working_view: std::sync::OnceLock<Arc<crate::filesystem::NativeTaskWorkingView>>,
+    working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
     custody: NativeAllocation,
 }
 
@@ -169,12 +169,13 @@ impl NativeTaskContext {
             .filter(|binding| binding.writer.is_some())
             .ok_or_else(|| boundary(crate::wire::ErrorCode::Unauthorized,
                 "output volume has no authenticated created writer"))?;
-        let (permission, permission_custody) = volume.capability_with_native_work(
-            crate::conversation::VolumeOperation::Write, work,
+        let mut permission_io = crate::store::history::native_work_io(work)?;
+        let permission = volume.capability(
+            crate::conversation::VolumeOperation::Write, &mut Some(&mut permission_io),
         )?;
         let allowed = self.context.scope.grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if !allowed {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "original task scope cannot write the selected output volume"));
@@ -245,30 +246,27 @@ impl NativeTaskContext {
     /// Attaches one genuinely prepared working view to its original issued dispatch context.
     #[cfg(feature = "native-execution")]
     pub async fn bind_working_view_with_native_work(
-        &self, view: crate::filesystem::NativeTaskWorkingView,
+        &self, view: Arc<dyn crate::filesystem::NativeTaskWorkingView>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let (task, fence) = self.context.owned_task_binding_with_native_work(work)?;
-        if view.original_task() != task || view.original_fence() != fence
+        if view.task_binding() != (task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view differs from its original issued task"));
         }
-        if self.working_view.get().is_some_and(|installed| !installed.same_identity(&view)) {
+        if self.working_view.get().is_some_and(|installed| !installed.same_identity(view.as_ref())) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view cannot be rebound to a different preparation"));
         }
         view.verify_with_native_work(work)?.await?;
         if self.working_view.get().is_some() { return Ok(()); }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let view = Arc::new(view);
         match self.working_view.set(view) {
             Ok(()) => Ok(()),
             Err(loser) => {
-                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(&loser));
+                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(loser.as_ref()));
                 drop(loser);
                 if same { Ok(()) } else {
                     Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -387,13 +385,14 @@ impl ToolContext {
     #[cfg(feature = "native-execution")]
     fn accepted_native_working_view(
         &self, work: &NativeMaterializationWork,
-    ) -> Result<(&TaskContext, &crate::filesystem::NativeTaskWorkingView)> {
+    ) -> Result<(&TaskContext, &dyn crate::filesystem::NativeTaskWorkingView)> {
         let context = self.accepted_native_context(work)?;
         let shared = self.native_task().expect("validated original native tool context");
         let view = shared.working_view.get().ok_or_else(|| boundary(
             crate::wire::ErrorCode::NotFound, "issued task has no prepared working view",
         ))?;
-        if !context.original_task_binding_matches(view.original_task(), view.original_fence())
+        let (task, fence) = view.task_binding();
+        if !context.original_task_binding_matches(task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -412,7 +411,7 @@ impl ToolContext {
 
     #[cfg(feature = "native-execution")]
     fn check_native_working_permission(
-        &self, view: &crate::filesystem::NativeTaskWorkingView,
+        &self, view: &dyn crate::filesystem::NativeTaskWorkingView,
         relative: &std::path::Path, operation: crate::conversation::VolumeOperation,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
@@ -420,7 +419,7 @@ impl ToolContext {
         let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
-        drop(permission_custody);
+        drop(permission_io);
         if allowed { Ok(()) } else {
             Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "effective tool scope cannot access the selected mounted volume"))
@@ -433,7 +432,7 @@ impl ToolContext {
         &'a self, relative: &'a std::path::Path,
         operation: crate::conversation::VolumeOperation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<&'a crate::filesystem::NativeTaskWorkingView> {
+    ) -> Result<&'a dyn crate::filesystem::NativeTaskWorkingView> {
         let (context, view) = self.accepted_native_working_view(work)?;
         self.check_native_working_permission(view, relative, operation, work)?;
         context.verify_original_execution_owner_with_native_work(work)?.await?;
@@ -494,7 +493,9 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "tool context differs from its original native metadata ledger"));
         }
-        crate::tool::ToolInvocation::validate_call_id_with_native_work(call_id, work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        crate::executor::with_history_io(Some(&io), |work|
+            crate::tool::ToolInvocation::validate_identity(call_id, None, work))?;
         let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut output = work.display(call_id)
@@ -761,43 +762,35 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
 }
 
 impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for NativeContextVerifier<P> {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            drop(self.context.context.read_file(reference).await?);
-            self.authorize(reference).await
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            drop(self.read(reference, maximum_bytes, io)?.await?);
+            Ok(())
         })
     }
 
-    fn read<'a>(&'a self, reference: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(reference).await?;
-            let bytes = self.context.context.read_file(reference).await?;
-            self.authorize(reference).await?;
-            Ok(bytes)
-        })
-    }
-
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, ()>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            drop(self.context.context.read_file_with_native_work(reference, work).await?);
-            self.authorize_native(reference, maximum_bytes, work).await
-        })
-    }
-
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a NativeMaterializationWork,
-    ) -> Result<NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        NativeFutureBundle::new(work, || async move {
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            let output = self.context.context.read_file_with_native_work(reference, work).await?;
-            self.authorize_native(reference, maximum_bytes, work).await?;
-            Ok(output)
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or_else(|| boundary(
+                    crate::wire::ErrorCode::Unsupported, "content reader requires original native work"))?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                let bytes = self.context.context.read_file_with_native_work(reference, work).await?;
+                self.authorize_native(reference, maximum_bytes, work).await?;
+                Ok(bytes)
+            } else {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "content exceeds the callback byte bound"));
+                }
+                self.authorize(reference).await?;
+                let bytes = self.context.context.read_file(reference).await?;
+                self.authorize(reference).await?;
+                Ok(bytes)
+            }
         })
     }
 }

@@ -407,7 +407,7 @@ impl ModelProvider for HostModel {
         let callback = self.count_tokens.as_ref().ok_or_else(|| {
             Error::Unsupported("selected model token counting is unavailable".into())
         })?;
-        let digest = to_js(&request.manifest().request_digest)
+        let digest = to_js(&request.request_digest())
             .map_err(|_| Error::Invalid("model counting digest encoding failed".into()))?;
         let value = callback
             .call2(
@@ -591,7 +591,7 @@ impl WasmTaskRegistry {
         let identity = machine.identity();
         if !matches!(
             self.tasks
-                .get_version::<Value, Value>(&identity.name, &identity.version),
+                .get_version::<Value, Value>(&identity.name, &identity.version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None),
             Err(Error::NotFound(_))
         ) {
             return Err(js_error(Error::Conflict(
@@ -628,7 +628,7 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<WasmTaskRuntime, JsValue> {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
-        let verifier = owner.issuer.verifier();
+        let verifier = owner.issuer.verifier(&mut None).expect("verifier copy");
         ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
             .map_err(js_error)?;
         let root = RuntimeScope::new(
@@ -683,7 +683,7 @@ impl WasmTaskRuntime {
             if let Some(graph_root) = graph_root {
                 source.with_project_source_policy(owner.issuer.clone(), Arc::new(
                     crate::filesystem::FsRootProjectSourceProvider::new(
-                        filesystem.clone(), owner.issuer.audience().clone(), graph_root,
+                        filesystem.clone(), &owner.issuer.audience(), graph_root, None,
                     )?,
                 ))?;
             }
@@ -727,9 +727,7 @@ impl WasmTaskRuntime {
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             vec![Arc::new(
-                crate::filesystem::FilesystemResourceCreationProvider::new(
-                    filesystem.clone(), owner.issuer.clone(),
-                ).map_err(js_error)?,
+                crate::filesystem::FilesystemResourceCreationProvider::new(filesystem.clone(), &owner.issuer, #[cfg(not(target_arch = "wasm32"))] None).map_err(js_error)?,
             )],
             resumable_tools,
         )
@@ -819,10 +817,10 @@ impl WasmTaskRuntime {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let store = FilesystemSchedulerPayloadStore::new(
             self.filesystem.clone(),
-            self.volume.clone(),
+            &self.volume,
             &self.verifier,
             &self.scope,
-            self.maximum_payload_bytes,
+            self.maximum_payload_bytes, None,
         )
         .map_err(js_error)?;
         let file: FileRef = store
@@ -881,7 +879,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         match self
             .runtime
-            .run_operation(&worker, task, &self.commands(), maximum_transitions)
+            .run_operation(&worker, task, &self.commands(), maximum_transitions, None)
             .await
             .map_err(js_error)?
         {
@@ -978,7 +976,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime
-                .resume_task(lease, &self.commands(), maximum_transitions)
+                .resume_task(lease, &self.commands(), maximum_transitions, None)
                 .await,
         ))
     }

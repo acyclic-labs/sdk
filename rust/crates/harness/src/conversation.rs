@@ -41,23 +41,9 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
         |value| value.unsigned_abs() <= MAX_EXACT_JS_INTEGER,
     )
 }
-/// Maximum file byte length accepted by the limits validator.
-pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum rendered byte length representable by the numeric wire format.
-pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =
     usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
-/// Representable attachment count; admission selects the actual budget.
-pub const MAX_LIMIT_ATTACHMENTS: usize = MAX_PORTABLE_COUNT;
-/// Representable model step count; admission selects the actual budget.
-pub const MAX_LIMIT_MODEL_STEPS: usize = MAX_PORTABLE_COUNT;
-/// Representable event count; admission selects the actual budget.
-pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = MAX_PORTABLE_COUNT;
-/// Representable tool call count; admission selects the actual budget.
-pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = MAX_PORTABLE_COUNT;
-/// Representable message count; admission selects the actual budget.
-pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = MAX_PORTABLE_COUNT;
 /// Representable conversation page allowance; the caller chooses its budget.
 pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 /// Default conversation read batch, replaceable by the caller.
@@ -88,10 +74,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            file_bytes: MAX_LIMIT_FILE_BYTES,
+            file_bytes: MAX_EXACT_JS_INTEGER,
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
-            render_bytes: MAX_LIMIT_RENDER_BYTES,
+            render_bytes: MAX_EXACT_JS_INTEGER,
             model_steps: u32::MAX as usize,
             model_events_per_step: u32::MAX as usize,
             tool_calls_per_step: u32::MAX as usize,
@@ -106,22 +92,11 @@ impl Limits {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        if self.file_bytes == 0
-            || self.file_bytes > MAX_LIMIT_FILE_BYTES
-            || self.path_bytes == 0
-            || self.path_bytes as u64 > MAX_PATH_BYTES as u64
-            || self.attachments == 0
-            || self.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
-            || self.render_bytes == 0
-            || self.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || self.model_steps == 0
-            || self.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
-            || self.model_events_per_step == 0
-            || self.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
-            || self.tool_calls_per_step == 0
-            || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
-            || self.context_messages == 0
-            || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64 {
+        if [self.file_bytes, self.render_bytes].into_iter()
+            .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
+            || [self.path_bytes, self.attachments, self.model_steps, self.model_events_per_step,
+                self.tool_calls_per_step, self.context_messages].into_iter()
+                .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "harness limits are invalid"));
         }
         Ok(())
@@ -302,7 +277,7 @@ impl VolumeRef {
         &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         let provider = crate::core::copy_provider(&self.provider, quota)?;
-        let volume = Self {
+        Ok(Self {
             provider,
             id: crate::core::copy_text(&self.id, quota)?,
             class: self.class,
@@ -311,9 +286,7 @@ impl VolumeRef {
                 VolumeOwner::Session(text) => VolumeOwner::Session(crate::core::copy_text(text, quota)?),
                 VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
             },
-        };
-        volume.validate(quota.work())?;
-        Ok(volume)
+        })
     }
 
     /// Owner-issued read capability for a directory and its descendants.
@@ -396,7 +369,7 @@ impl ContentGrant {
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if scope.capabilities().contains(&file.volume().capability(VolumeOperation::Read, &mut None)?) {
             return Self::verify(verifier, scope, file.volume(), VolumeOperation::Read, u64::MAX, &mut None);
         }
@@ -441,7 +414,7 @@ impl ContentGrant {
     pub(crate) fn authorize_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
         operation: VolumeOperation, maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-        verifier.verify_with_work(scope, work)?;
+        verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
         let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
@@ -455,7 +428,7 @@ impl ContentGrant {
     /// Verifies a signed private-directory or whole-volume read grant.
     pub fn verify_directory_read(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
         prefix: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<Self> {
-        verifier.verify_with_work(scope, work)?;
+        verifier.verify(scope, work)?;
         volume.validate(work)?;
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
@@ -478,7 +451,7 @@ impl ContentGrant {
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope.capabilities().contains(&file.read_capability()?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
@@ -1242,7 +1215,7 @@ impl Attachment {
 
 /// Encodes a validated, ordered attachment list in its single durable wire form.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
-    if items.len() as u64 > MAX_LIMIT_ATTACHMENTS as u64 {
+    if items.len() as u64 > MAX_PORTABLE_COUNT as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
@@ -1256,7 +1229,7 @@ pub(crate) fn manifest_owned_bytes(items: &[Attachment], capacity: usize) -> Res
     let mut bytes = capacity.checked_mul(std::mem::size_of::<Attachment>())
         .ok_or_else(|| Error::Invalid("manifest vector ownership overflow".into()))? as u64;
     for item in items {
-        bytes = bytes.checked_add(crate::filesystem::UploadRecord::logical_owned_bytes(&item.file)?)
+        bytes = bytes.checked_add(item.file.logical_owned_bytes()?)
             .and_then(|bytes| bytes.checked_add(item.label.as_ref().map_or(0, |label| label.capacity() as u64)))
             .ok_or_else(|| Error::Invalid("manifest field ownership overflow".into()))?;
     }
@@ -1274,9 +1247,9 @@ pub fn decode_attachment_manifest(
     #[cfg(not(feature = "filesystem"))]
     let mut work = None;
     reference.validate(&mut work)?;
-    let maximum_members = item_count.map_or(MAX_LIMIT_ATTACHMENTS, |count| count as usize);
+    let maximum_members = item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize);
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
-        || maximum_members > MAX_LIMIT_ATTACHMENTS {
+        || maximum_members > MAX_PORTABLE_COUNT {
         return Err(content_error(io, crate::wire::ErrorCode::Invalid,
             "attachment manifest metadata or allowance is invalid"));
     }
@@ -1346,21 +1319,21 @@ pub fn decode_attachment_manifest(
             }
         };
         let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
-            .checked_add(manifest_owned_bytes(&decoded, decoded.capacity())?)
+            .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
             .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
-        decoded.substitute_owned(actual)?;
+        decoded.1.substitute(actual)?;
         let encoded_hold;
-        let encoded = io.encode_json(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+        let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         if encoded.as_ref() != bytes {
             return Err(io.invalid("attachment manifest is not canonical or complete"));
         }
         drop(encoded);
         drop(encoded_hold);
-        if item_count.is_some_and(|count| decoded.len() != count as usize) {
+        if item_count.is_some_and(|count| decoded.0.len() != count as usize) {
             return Err(io.invalid("attachment manifest count is incomplete"));
         }
-        return Ok(decoded.into_retained());
+        return Ok(crate::filesystem::retain_decoded(decoded));
     }
     let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
@@ -1492,12 +1465,6 @@ impl ReferencedAttachments {
             }
         }
         Ok(())
-    }
-}
-
-impl From<Vec<Attachment>> for ReferencedAttachments {
-    fn from(items: Vec<Attachment>) -> Self {
-        Self::Inline { items }
     }
 }
 
@@ -1665,17 +1632,14 @@ impl FileRef {
         let volume = self.volume.clone_in_quota(quota)?;
         let path = crate::core::copy_text(&self.path, quota)?;
         let version = crate::core::copy_text(&self.version, quota)?;
-        let descriptor = FileDescriptor {
-            sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
-            media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
-        };
-        descriptor.validate(quota.work())?;
-        let file = Self {
-            volume, path, version, descriptor,
+        Ok(Self {
+            volume, path, version,
+            descriptor: FileDescriptor {
+                sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
+                media_type: crate::core::copy_text(&self.descriptor.media_type, quota)?,
+            },
             display_name: crate::core::copy_text(&self.display_name, quota)?,
-        };
-        file.validate(quota.work())?;
-        Ok(file)
+        })
     }
 }
 
@@ -1683,7 +1647,8 @@ fn copy_preclaimed_conversation_vector<T: Copy>(
     source: &[T], target: &mut Vec<T>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
-    let bytes = conversation_buffer_bytes::<T>(source.len(), work)?;
+    let bytes = conversation_buffer_bytes::<T>(source.len())
+        .map_err(|reason| conversation_error(work, crate::wire::ErrorCode::Invalid, reason))?;
     if let Some(io) = work.as_deref_mut() {
         io.admit_copy(bytes)?;
         io.copy_bytes(bytes)?;
@@ -1761,7 +1726,7 @@ pub struct ConversationState {
 /// Only an issuer-authenticated reducer snapshot makes this a trusted prefix.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ArchivedConversationPrefix {
+pub(crate) struct ArchivedConversationPrefix {
     through_sequence: u64,
     history_digest: [u8; 32],
     checkpoint: FileRef,
@@ -1770,10 +1735,10 @@ struct ArchivedConversationPrefix {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConversationStateWire {
-    agent: Option<AgentId>,
-    messages: Vec<ConversationMessage>,
+    pub(crate) agent: Option<AgentId>,
+    pub(crate) messages: Vec<ConversationMessage>,
     #[serde(default)]
-    archived_prefix: Option<ArchivedConversationPrefix>,
+    pub(crate) archived_prefix: Option<ArchivedConversationPrefix>,
 }
 
 #[derive(Default)]
@@ -1793,11 +1758,9 @@ struct NativeConversationCustody {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn index_metadata_bytes() -> u64 {
-    (11 * (std::mem::size_of::<(bool, Uuid)>()
+const INDEX_METADATA_BYTES: u64 = (11 * (std::mem::size_of::<(bool, Uuid)>()
         + std::mem::size_of::<(acyclic_fs::NativeAllocation, acyclic_fs::NativeAllocation)>())
-        + 12 * std::mem::size_of::<usize>()) as u64
-}
+        + 12 * std::mem::size_of::<usize>()) as u64;
 
 impl std::fmt::Debug for NativeConversationCustody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1908,20 +1871,10 @@ fn native_owned_volume_class(
 
 
 
-fn conversation_buffer_bytes<T>(
-    capacity: usize, work: &Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<u64> {
+fn conversation_buffer_bytes<T>(capacity: usize) -> std::result::Result<u64, &'static str> {
     capacity.checked_mul(std::mem::size_of::<T>())
         .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or_else(|| conversation_error(work, crate::wire::ErrorCode::Invalid, "conversation buffer capacity overflows"))
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_conversation_buffer_bytes<T>(capacity: usize) -> Result<u64> {
-    capacity.checked_mul(std::mem::size_of::<T>())
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "conversation buffer capacity overflows" })
+        .ok_or("conversation buffer capacity overflows")
 }
 
 fn reserve_conversation_buffer<T>(
@@ -1933,7 +1886,8 @@ fn reserve_conversation_buffer<T>(
     if target <= values.capacity() { return Ok(0); }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-        let bytes = conversation_buffer_bytes::<T>(target, &Some(&mut *io))?;
+        let bytes = conversation_buffer_bytes::<T>(target)
+            .map_err(|reason| conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason))?;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
         let incoming = io.take_native_custody(bytes)?;
@@ -1943,7 +1897,8 @@ fn reserve_conversation_buffer<T>(
             drop(rejected);
             return Err(io.allocation_failure(cause));
         }
-        let actual = conversation_buffer_bytes::<T>(values.capacity(), &Some(&mut *io))?;
+        let actual = conversation_buffer_bytes::<T>(values.capacity())
+            .map_err(|reason| conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason))?;
         let result = owner.as_mut().expect("installed conversation buffer custody")
             .reconcile_capacity(actual)
             .map_err(|cause| Error::NativeWork { cause, custody: None });
@@ -1953,11 +1908,13 @@ fn reserve_conversation_buffer<T>(
     }
     let old = values.capacity();
     if let Some(io) = work.as_deref_mut() {
-        let requested = conversation_buffer_bytes::<T>(target - old, &Some(&mut *io))?;
+        let requested = conversation_buffer_bytes::<T>(target - old)
+            .map_err(|reason| conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason))?;
         io.admit_allocation(requested)?;
         values.try_reserve_exact(target - values.len())
             .map_err(|cause| io.allocation_failure(cause))?;
-        let actual = conversation_buffer_bytes::<T>(values.capacity() - old, &Some(&mut *io))?;
+        let actual = conversation_buffer_bytes::<T>(values.capacity() - old)
+            .map_err(|reason| conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason))?;
         io.retain_owned(actual)?;
         Ok(actual)
     } else {
@@ -1972,7 +1929,8 @@ fn adopt_existing_buffer<T>(
     io: &mut dyn crate::store::history::HistoryIo,
 ) -> Result<()> {
     if owner.is_none() && capacity != 0 {
-        let bytes = conversation_buffer_bytes::<T>(capacity, &Some(&mut *io))?;
+        let bytes = conversation_buffer_bytes::<T>(capacity)
+            .map_err(|reason| conversation_error(&Some(&mut *io), crate::wire::ErrorCode::Invalid, reason))?;
         io.admit_owned(bytes)?;
         io.retain_owned(bytes)?;
         *owner = Some(io.take_native_custody(bytes)?);
@@ -1981,12 +1939,6 @@ fn adopt_existing_buffer<T>(
 }
 
 impl NativeConversationCustody {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn has_native(&self) -> bool {
-        self.messages.is_some() || self.digests.is_some() || self.positions.is_some()
-            || self.archive.is_some() || self.cache_carrier.is_some() || !self.indexes.is_empty()
-    }
-
     fn retain_index(
         &mut self, outcome: bool, id: Uuid,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1994,8 +1946,7 @@ impl NativeConversationCustody {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
             if self.indexes.contains_key(&(outcome, id)) { return Ok(0); }
-            let metadata = index_metadata_bytes();
-            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64 + metadata;
+            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64 + INDEX_METADATA_BYTES;
             io.admit_allocation(bytes)?;
             io.retain_owned(bytes)?;
             let mut allocation = io.take_native_custody(bytes)?;
@@ -2137,7 +2088,9 @@ impl ConversationState {
         &self, work: &Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.has_native()
+        if (self.native_custody.messages.is_some() || self.native_custody.digests.is_some()
+            || self.native_custody.positions.is_some() || self.native_custody.archive.is_some()
+            || self.native_custody.cache_carrier.is_some() || !self.native_custody.indexes.is_empty())
             && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
         {
             return Err(Error::NativeBoundary {
@@ -2152,7 +2105,8 @@ impl ConversationState {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn native_unclaimed_message_buffer_bytes(&self) -> Result<u64> {
         if self.native_custody.messages.is_some() { return Ok(0); }
-        native_conversation_buffer_bytes::<ConversationMessage>(self.messages.capacity())
+        conversation_buffer_bytes::<ConversationMessage>(self.messages.capacity())
+            .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2178,11 +2132,12 @@ impl ConversationState {
         if self.native_custody.cache_carrier.is_some() { return Ok(0); }
         let mut bytes = 0_u64;
         if self.native_custody.digests.is_none() {
-            bytes += native_conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())?;
+            bytes += conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
+                .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })?;
         }
         if self.native_custody.positions.is_none() {
-            bytes = bytes.checked_add(native_conversation_buffer_bytes::<usize>(
-                self.model_positions.capacity())?).ok_or(Error::NativeBoundary {
+            bytes = bytes.checked_add(conversation_buffer_bytes::<usize>(self.model_positions.capacity())
+                .map_err(|reason| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason })?).ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid, reason: "conversation cache transfer overflows",
                 })?;
         }
@@ -2210,12 +2165,14 @@ impl ConversationState {
         }
         let carrier = self.native_custody.cache_carrier.as_mut().expect("installed cache source custody");
         if self.native_custody.digests.is_none() {
-            let bytes = conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity(), work)?;
+            let bytes = conversation_buffer_bytes::<[u8; 32]>(self.prefix_digests.capacity())
+                .map_err(|reason| conversation_error(work, crate::wire::ErrorCode::Invalid, reason))?;
             self.native_custody.digests = Some(carrier.split_off(bytes)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?);
         }
         if self.native_custody.positions.is_none() {
-            let bytes = conversation_buffer_bytes::<usize>(self.model_positions.capacity(), work)?;
+            let bytes = conversation_buffer_bytes::<usize>(self.model_positions.capacity())
+                .map_err(|reason| conversation_error(work, crate::wire::ErrorCode::Invalid, reason))?;
             self.native_custody.positions = Some(carrier.split_off(bytes)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?);
         }
@@ -2225,7 +2182,7 @@ impl ConversationState {
                 let io = work.as_deref_mut().filter(|io| io.original_native_work().is_some())
                     .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                         reason: "cache metadata requires original native work" })?;
-                let bytes = index_metadata_bytes();
+                let bytes = INDEX_METADATA_BYTES;
                 io.admit_allocation(bytes)?;
                 io.retain_owned(bytes)?;
                 let metadata = io.take_native_custody(bytes)?;
@@ -2498,15 +2455,6 @@ impl ConversationState {
         Ok((state, retained))
     }
 
-    pub(crate) fn selected_view(
-        messages: Vec<ConversationMessage>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        Self::from_wire(ConversationStateWire {
-            agent: None, messages, archived_prefix: None,
-        }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
-    }
-
     fn prepare_turn_index(
         &mut self, visible: bool, outcome_parent: Option<Uuid>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -2542,8 +2490,7 @@ impl ConversationState {
         if model_visible(&message.kind) {
             self.model_positions.push(position);
         }
-        let outcome = message.kind == MessageKind::System
-            && message.extensions.contains_key("acyclic.turn.outcome");
+        let outcome = turn_outcome_parent(message).is_some();
         if let Some(parent) = message.reply_to {
             if (message.kind == MessageKind::Assistant || outcome)
                 && self.pending_user == Some(parent)
@@ -3272,13 +3219,13 @@ mod tests {
         let before = reopened.history_prefix_digest(10_001, &mut None)?;
         assert!(reopened.append(next, &mut None).is_err());
         assert_eq!(reopened.history_prefix_digest(10_001, &mut None)?, before);
-        let sparse = ConversationState::selected_view(vec![
+        let sparse = ConversationState::from_wire(ConversationStateWire { agent: None, archived_prefix: None, messages: vec![
             reopened
                 .messages()
                 .last()
                 .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
                 .clone(),
-        ], &mut None).map(|(state, _)| state)?;
+        ] }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
         assert!(sparse.history_prefix_digest(1, &mut None).is_err());
         assert!(state.history_prefix_digest(10_001, &mut None).is_err());
         Ok(())
@@ -3448,19 +3395,12 @@ mod tests {
             },
         );
         let read = private.capability(VolumeOperation::Read, &mut None)?;
-        let scope = issuer.root_for_agent(
-            owner,
-            "write",
-            crate::Capabilities::new([write.clone(), read.clone()]),
-        );
-        ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Write, u64::MAX, &mut None)?;
-        let unsigned = issuer.root(
-            "copied-capability",
-            crate::Capabilities::new([write.clone()]),
-        );
+        let scope = issuer.issue("write", &crate::Capabilities::new([write.clone(), read.clone()]), Some(owner), None, &mut None).expect("scope proof");
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Write, u64::MAX, &mut None)?;
+        let unsigned = issuer.issue("copied-capability", &crate::Capabilities::new([write.clone()]), None, None, &mut None).expect("scope proof");
         assert!(
             ContentGrant::verify(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &unsigned,
                 &private,
                 VolumeOperation::Write
@@ -3471,7 +3411,7 @@ mod tests {
             issuer.attenuate(&scope, "child", crate::Capabilities::new([write.clone()]))?;
         assert_eq!(inherited.agent(), Some(owner));
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &inherited,
             &private,
             VolumeOperation::Write,
@@ -3486,10 +3426,10 @@ mod tests {
             },
         );
         let copied =
-            foreign_issuer.root_for_agent(attached, "copied", crate::Capabilities::new([write]));
+            foreign_issuer.issue("copied", &crate::Capabilities::new([write]), Some(attached), None, &mut None).expect("scope proof");
         assert!(
             ContentGrant::verify(
-                &foreign_issuer.verifier(),
+                &foreign_issuer.verifier(&mut None).expect("verifier copy"),
                 &copied,
                 &private,
                 VolumeOperation::Write
@@ -3500,19 +3440,15 @@ mod tests {
         let delegated =
             issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
         assert_eq!(delegated.agent(), Some(attached));
-        ContentGrant::verify_file_read(&issuer.verifier(), &delegated, &exact_file)?;
+        ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &exact_file)?;
         let internal = file(owner, ".system/execution/state.json")?;
         assert!(matches!(
-            ContentGrant::verify_read(&issuer.verifier(), &scope, &internal),
+            ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &internal),
             Err(Error::Unauthorized(_))
         ));
-        let internal_exact = issuer.root_for_agent(
-            owner,
-            "internal-exact",
-            crate::Capabilities::new([internal.read_capability()?]),
-        );
+        let internal_exact = issuer.issue("internal-exact", &crate::Capabilities::new([internal.read_capability()?]), Some(owner), None, &mut None).expect("scope proof");
         assert!(matches!(
-            ContentGrant::verify_file_read(&issuer.verifier(), &internal_exact, &internal),
+            ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &internal_exact, &internal),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
@@ -3520,7 +3456,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         let inherited_context = file(owner, ".system/inherited-conversation/prefix.json")?;
-        ContentGrant::verify_read(&issuer.verifier(), &scope, &inherited_context)?;
+        ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &inherited_context)?;
         let directory = issuer.delegate_private_directory_read(
             &scope,
             attached,
@@ -3529,7 +3465,7 @@ mod tests {
             "scratch",
         )?;
         let directory_grant = ContentGrant::verify_directory_read(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &directory,
             &private,
             "scratch",
@@ -3552,11 +3488,7 @@ mod tests {
                 .require(&private, VolumeOperation::Write, None)
                 .is_err()
         );
-        let foreign_owner_scope = foreign_issuer.root_for_agent(
-            attached,
-            "copied-read",
-            crate::Capabilities::new([read]),
-        );
+        let foreign_owner_scope = foreign_issuer.issue("copied-read", &crate::Capabilities::new([read]), Some(attached), None, &mut None).expect("scope proof");
         assert!(
             foreign_issuer
                 .delegate_private_file_read(&foreign_owner_scope, attached, "invalid", &exact_file)
@@ -3647,7 +3579,7 @@ mod tests {
             sequence: 1,
             kind: MessageKind::ToolCall,
             content: file(agent, "call.txt")?,
-            attachments: Vec::new().into(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: Some("call-1".into()),
             extensions: BTreeMap::new(),
@@ -3659,7 +3591,7 @@ mod tests {
             sequence: 2,
             kind: MessageKind::ToolResult,
             content: file(agent, "result.txt")?,
-            attachments: Vec::new().into(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: Some(call.id),
             tool_call_id: Some("call-1".into()),
             extensions: BTreeMap::new(),
@@ -3670,42 +3602,24 @@ mod tests {
     }
 
     #[test]
-    fn v2_conversation_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/conversation-message.json").trim();
-        let message: ConversationMessage =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        message.validate(&mut None)?;
-        let encoded =
-            serde_json::to_string(&message).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn every_v2_conversation_kind_round_trips_and_replays() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/conversation-kinds.json").trim();
-        let messages: Vec<ConversationMessage> =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+    fn v2_fixtures_round_trip_canonically_and_replay() -> Result<()> {
+        fn round_trip<T: serde::de::DeserializeOwned + Serialize>(fixture: &str) -> Result<T> {
+            let fixture = fixture.trim();
+            let value: T = serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(serde_json::to_string(&value).map_err(|error| Error::Invalid(error.to_string()))?, fixture);
+            Ok(value)
+        }
+        round_trip::<ConversationMessage>(include_str!("../fixtures/v2/conversation-message.json"))?.validate(&mut None)?;
+        round_trip::<FileRef>(include_str!("../fixtures/v2/file-ref.json"))?;
+        round_trip::<PrivateDirectoryPage>(include_str!("../fixtures/v2/private-directory-page.json"))?.validate()?;
+        round_trip::<TaskOutcomeRecord>(include_str!("../fixtures/v2/task-outcome.json"))?.validate()?;
+        let messages: Vec<ConversationMessage> = round_trip(include_str!("../fixtures/v2/conversation-kinds.json"))?;
         let mut state = ConversationState::default();
         state.bind(AgentId::from_bytes([1; 16]))?;
         for message in &messages {
             state.append(message.clone(), &mut None)?;
         }
         assert_eq!(state.messages.len(), 9);
-        let encoded =
-            serde_json::to_string(&messages).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_file_reference_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/file-ref.json").trim();
-        let reference: FileRef =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        let encoded =
-            serde_json::to_string(&reference).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
         Ok(())
     }
 
@@ -3750,30 +3664,6 @@ mod tests {
                 assert!(reference.descriptor().verify(b"hello", &mut None).is_err(), "{name}");
             }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn v2_private_directory_page_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/private-directory-page.json").trim();
-        let page: PrivateDirectoryPage =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        page.validate()?;
-        let encoded =
-            serde_json::to_string(&page).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_task_outcome_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/task-outcome.json").trim();
-        let outcome: TaskOutcomeRecord =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        outcome.validate()?;
-        let encoded =
-            serde_json::to_string(&outcome).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
         Ok(())
     }
 
@@ -3887,12 +3777,8 @@ mod tests {
                 id: AgentId::from_bytes([1; 16]).to_string(),
             },
         );
-        let scope = issuer.root_for_agent(
-            AgentId::from_bytes([1; 16]),
-            "exact-member",
-            crate::Capabilities::new([member.read_capability()?]),
-        );
-        let grant = ContentGrant::verify_file_read(&issuer.verifier(), &scope, &member)?;
+        let scope = issuer.issue("exact-member", &crate::Capabilities::new([member.read_capability()?]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
+        let grant = ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &member)?;
         let lazy = CompositeContentVerifier::new(vec![(manifest.volume().clone(), first)])?
             .with_mount_resolver(Arc::new(StaticMount {
                 volume: member.volume().clone(),

@@ -104,7 +104,7 @@ where
         stream,
         files,
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         runtime_scope.clone(),
         tasks,
@@ -283,17 +283,13 @@ where
             "tool:call:mcp.example.echo".into(),
         ]);
     }
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new(grants));
+    let scope = issuer.issue("owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     for volume in [&source, &destination, &results_volume] {
         files.create_volume(volume).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new([source.capability(VolumeOperation::Write)?]),
-    );
+    let setup_scope = issuer.issue("setup", &Capabilities::new([source.capability(VolumeOperation::Write)?]), Some(agent), None, &mut None).expect("scope proof");
     let setup = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,
         &source,
         VolumeOperation::Write,
@@ -329,7 +325,7 @@ where
     else {
         return Err("missing task lease".into());
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let owner = Arc::new(
         runtime
             .task_host()
@@ -338,8 +334,8 @@ where
     );
     let mut conversation = StreamAggregate::open(
         &stream.clone(),
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -388,7 +384,7 @@ where
             .generation;
         selections.push((volume, generation, path, writable));
     }
-    let verifier = issuer.verifier();
+    let verifier = issuer.verifier(&mut None).expect("verifier copy");
     let bindings = selections.iter().map(|(volume, generation, path, writable)| BorrowedNativeVolumeBinding {
         host: &files, volume, generation, path, writable: *writable,
         namespace: &NativeVolumeNamespace::MaterializedDirectory,
@@ -416,16 +412,16 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        1_000_000,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        results_volume.clone(),
-        &issuer.verifier(),
+        &results_volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let request_ref = results
         .stage(
@@ -479,7 +475,7 @@ where
             &scope,
         )
         .await?;
-    let authority = || NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
+    let authority = || NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 }, content: content.clone(),
     result_content: content.clone(),
     results: results.clone(),
     approvals: approvals.clone(), authority_custody: None, };
@@ -498,7 +494,7 @@ where
     registry.register(process.clone())?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
-        issuer.verifier().audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.clone(),
         scope.clone(),
         SchemaRegistry::new(),
@@ -719,7 +715,7 @@ where
     registry.register(recovered)?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream,
-        issuer.verifier().audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.clone(),
         seed.scope.clone(),
         SchemaRegistry::new(),
@@ -748,10 +744,10 @@ where
     Ok(Arc::new(FilesystemExecutionJournal::new(
         stream,
         files,
-        volume.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope.clone(),
-        1_000_000,
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        1_000_000, None,
     )?))
 }
 
@@ -768,16 +764,16 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let content: Arc<dyn ContentResidencyVerifier> = Arc::new(FilesystemContentVerifier::new(
-        files.clone(), issuer.verifier(), scope.clone(), 1_000_000,
+        files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None,
     )?);
-    Ok(NativeProcessAuthority { verifier: issuer.verifier(), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
+    Ok(NativeProcessAuthority { verifier: issuer.verifier(&mut None).expect("verifier copy"), history_limits: acyclic_harness::store::HistoryReadLimits { maximum_events: 128, maximum_bytes: 32 * 1024 * 1024 },
     content: content.clone(), result_content: content,
     results: Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        volume.clone(),
-        &issuer.verifier(),
-        scope,
-        1_000_000,
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_000_000, None,
     )?),
     approvals: execution_journal(stream, files, volume, issuer, scope)?, authority_custody: None, })
 }

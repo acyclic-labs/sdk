@@ -118,7 +118,7 @@ impl ServiceGuard {
 
     fn terminate_clients(&mut self) -> Result<(), String> {
         for tree in self.process_trees.get_mut().iter_mut() {
-            tree.terminate().map_err(|error| error.to_string())?;
+            tree.terminate(None).map_err(|error| error.to_string())?;
         }
         self.process_trees.get_mut().clear();
         Ok(())
@@ -437,7 +437,7 @@ pub fn output_after_provider_admission(
             break true;
         }
         if process_tree
-            .try_wait()
+            .try_wait(None)
             .expect("poll provider-admission process tree")
             .is_some()
             || Instant::now() >= admission_deadline
@@ -451,12 +451,12 @@ pub fn output_after_provider_admission(
         if captured_output_exceeds_limit(&stdout, &stderr).expect("inspect provider output capture")
         {
             process_tree
-                .terminate()
+                .terminate(None)
                 .expect("terminate output-flooding provider descendants");
             panic!("provider output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes");
         }
         match process_tree
-            .try_wait()
+            .try_wait(None)
             .expect("poll admitted provider process tree")
         {
             Some(status) => {
@@ -513,13 +513,13 @@ fn try_output_with_timeout_and_stdin(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_output_exceeds_limit(&stdout, &stderr)? {
-            process_tree.terminate()?;
+            process_tree.terminate(None)?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::FileTooLarge,
                 format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),
             ));
         }
-        match process_tree.try_wait()? {
+        match process_tree.try_wait(None)? {
             Some(status) => {
                 let output = captured_output(status, &mut stdout, &mut stderr)?;
                 return Ok(BoundedOutput {

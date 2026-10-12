@@ -226,7 +226,7 @@ impl ResourcePreparationRequest {
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
-            let (request, custody) = decoded.into_native_parts()?;
+            let (request, custody) = crate::filesystem::native_decoded(decoded)?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
                 if let Err(error) = observer.absorb_native_custody(custody) {
@@ -243,8 +243,8 @@ impl ResourcePreparationRequest {
         };
         let mut items = 0_u64;
         let mut retained = 0_u64;
-        let result = crate::contract::json_from_slice_bounded_trusted(
-            bytes, bounds, 0, &mut |next| {
+        let result = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            bytes, bounds, 0, None, None, &mut |next| {
                 match next {
                     crate::contract::JsonCodecCharge::Work { items: count, .. } => {
                         items = items.checked_add(count)
@@ -685,8 +685,6 @@ pub(crate) struct CreatedResourceAccess {
     pub(crate) references: Vec<CreatedReferenceBinding>,
     pub(crate) proofs: Vec<ResourceCreationProofRef>,
     pub(crate) publication_lease: Option<std::sync::Arc<dyn CreatedTaskLease>>,
-    // Exact authenticated origin used by the kernel's current-writer selection.
-    current_default_origin: Option<OperationId>,
     // SDK-owned logical payload custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -696,9 +694,6 @@ impl CreatedResourceAccess {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn has_native_custody(&self) -> bool { self.native_custody.is_some() }
 
-    pub(crate) const fn current_default_origin(&self) -> Option<OperationId> {
-        self.current_default_origin
-    }
     pub(crate) fn current_content(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -864,7 +859,6 @@ impl CreatedResourceAccess {
             content,
             references,
             publication_lease: None,
-            current_default_origin,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         };

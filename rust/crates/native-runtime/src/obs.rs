@@ -61,7 +61,7 @@ impl OperationSpan {
     }
     /// Polls and drops a producer under the originating context.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
-        Scoped { inner: Some(inner), context: Some(self.clone()) }
+        Scoped::with_context(inner, Some(self.clone()))
     }
     /// Records a native I/O result on the operation span.
     pub fn record_error(&self, error: Option<&io::Error>) {
@@ -111,10 +111,10 @@ pin_project_lite::pin_project! {
     /// Polls and destroys the pinned inner value under the owned context.
     pub struct Scoped<T> {
         #[pin]
-        /// The original producer retained by this owner.
-        pub inner: Option<T>,
-        /// Originating poll/drop context, absent for consumer-owned streams.
-        pub context: Option<OperationSpan>,
+        // The original producer retained by this owner.
+        inner: Option<T>,
+        // Originating poll/drop context, absent for consumer-owned streams.
+        context: Option<OperationSpan>,
     }
     impl<T> PinnedDrop for Scoped<T> {
         fn drop(this: Pin<&mut Self>) {
@@ -127,6 +127,16 @@ pin_project_lite::pin_project! {
     }
 }
 impl<T> Scoped<T> {
+    /// Retains a producer under an optional originating operation context.
+    pub fn with_context(inner: T, context: Option<OperationSpan>) -> Self {
+        Self { inner: Some(inner), context }
+    }
+
+    /// Borrows the retained producer before it is pinned.
+    pub fn inner_mut(&mut self) -> Option<&mut T> {
+        self.inner.as_mut()
+    }
+
     /// Retains a producer under its originating dispatcher.
     pub fn new(inner: T, dispatch: tracing::Dispatch) -> Self {
         Self {

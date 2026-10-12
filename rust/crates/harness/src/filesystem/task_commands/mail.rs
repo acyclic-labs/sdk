@@ -4,14 +4,8 @@ use super::*;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use acyclic_fs::WorkCounters;
 
-impl PreparationRecord for MailSendTaskCommand {
-    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
-    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
-}
-impl PreparationRecord for MailReceiveTaskCommand {
-    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
-    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
-}
+impl PreparationRecord for MailSendTaskCommand {}
+impl PreparationRecord for MailReceiveTaskCommand {}
 
 fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
     let Some(io) = io else { return Ok(()); };
@@ -42,7 +36,7 @@ pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io:
     let encoded_hold;
     let encoded = io.encode(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
-    let decoded = io.decode_preparation::<T>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
+    let decoded = crate::filesystem::retain_decoded(io.decode_preparation::<T>(&encoded, crate::wire::ErrorCode::Storage)?);
     drop(encoded);
     drop(encoded_hold);
     Ok(decoded)
@@ -65,7 +59,7 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
         let encoded_hold;
         let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
         encoded_hold = output.guard_bytes(&encoded)?;
-        let value = output.decode_preparation::<Value>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
+        let value = crate::filesystem::retain_decoded(output.decode_preparation::<Value>(&encoded, crate::wire::ErrorCode::Storage)?);
         drop(encoded);
         drop(encoded_hold);
         let retained = output.owned_bytes()?;

@@ -126,11 +126,11 @@ pub(crate) fn stock_key(arguments: Arguments<'_>, io: Option<&PreparationIo>) ->
         }
         let mut size = Size(0);
         size.write_fmt(arguments).map_err(|_| Error::Invalid("stock key size overflow".into()))?;
-        io.claim(size.0 as u64)?;
+        io.retain_owned(size.0 as u64)?;
         io.allocation_attempt(size.0 as u64)?;
         let mut key = String::new();
         key.try_reserve_exact(size.0).map_err(Error::Allocation)?;
-        io.claim(key.capacity().saturating_sub(size.0) as u64)?;
+        io.retain_owned(key.capacity().saturating_sub(size.0) as u64)?;
         io.preflight(acyclic_fs::WorkCounters { bytes_copied: size.0 as u64, ..Default::default() })?;
         key.write_fmt(arguments).map_err(|_| Error::Invalid("stock key formatting failed".into()))?;
         io.spent(acyclic_fs::WorkCounters { bytes_copied: key.len() as u64, ..Default::default() })?;
@@ -157,27 +157,22 @@ pub(crate) fn stock_vec_push<T>(values: &mut Vec<T>, value: T, io: Option<&Prepa
                 let completed = custody.reconcile_capacity(actual as u64);
                 io.absorb_native_custody(custody)?;
                 completed?;
-            } else {
-                io.claim(bytes)?;
-                io.allocation_attempt(bytes)?;
-                values.try_reserve_exact(1).map_err(Error::Allocation)?;
-                io.claim(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                io.claim(bytes)?;
+            if values.len() == values.capacity() {
+                io.retain_owned(bytes)?;
                 io.allocation_attempt(bytes)?;
                 values.try_reserve_exact(1).map_err(Error::Allocation)?;
-                io.claim(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
+                io.retain_owned(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
             }
         }
-        values.push(value);
-        io.spent(acyclic_fs::WorkCounters { items_returned: 1, ..Default::default() })?;
-        return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     values.push(value);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.spent(acyclic_fs::WorkCounters { items_returned: 1, ..Default::default() })?;
+    }
     Ok(())
 }
 
@@ -197,27 +192,22 @@ pub(crate) fn stock_string_push(text: &mut String, suffix: &str, io: Option<&Pre
                 let completed = custody.reconcile_capacity((text.capacity() - before) as u64);
                 io.absorb_native_custody(custody)?;
                 completed?;
-            } else {
-                io.claim(extra as u64)?;
-                io.allocation_attempt(extra as u64)?;
-                text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
-                io.claim((text.capacity() - target) as u64)?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                io.claim(extra as u64)?;
+            if target > text.capacity() {
+                io.retain_owned(extra as u64)?;
                 io.allocation_attempt(extra as u64)?;
                 text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
-                io.claim((text.capacity() - target) as u64)?;
+                io.retain_owned((text.capacity() - target) as u64)?;
             }
         }
-        text.push_str(suffix);
-        io.spent(copied)?;
-        return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     text.push_str(suffix);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.spent(acyclic_fs::WorkCounters { bytes_copied: suffix.len() as u64, ..Default::default() })?;
+    }
     Ok(())
 }
 
@@ -249,7 +239,7 @@ pub(super) async fn stage_media_bytes(journal: &dyn ExecutionJournal, operation:
     }
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.claim(bytes.len() as u64)?;
+        io.retain_owned(bytes.len() as u64)?;
         io.allocation_attempt(bytes.len() as u64)?;
         io.charge(acyclic_fs::WorkCounters { bytes_copied: bytes.len() as u64, ..Default::default() })?;
     }
@@ -740,19 +730,19 @@ pub(super) fn stock_model_call(parent: OperationId, step: u32, call: String, nam
     arguments: Value, io: Option<&PreparationIo>) -> Result<ToolInvocation> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return ToolInvocation::for_model_call_with_native_work(parent, step, call, name, arguments, work);
+        return ToolInvocation::for_model_call(parent, step, call, name, arguments, Some(work));
     }
-    Ok(ToolInvocation::for_model_call(parent, step, call, name, arguments))
+    ToolInvocation::for_model_call(parent, step, call, name, arguments, None)
 }
 
 pub(super) fn stock_tool_lookup<'a>(registry: &'a ToolRegistry, name: &str,
     io: Option<&PreparationIo>) -> Result<&'a crate::tool::Tool> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return registry.get_with_native_work(name, work)?.ok_or_else(|| native_boundary(
+    if io.and_then(PreparationIo::original_native_work).is_some() {
+        return registry.get(name, io)?.ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::NotFound, "tool is not bound to this stock composition"));
     }
-    registry.get(name).ok_or_else(|| Error::NotFound(format!("tool {name}")))
+    registry.get(name, io)?.ok_or_else(|| Error::NotFound(format!("tool {name}")))
 }
 
 pub(super) fn stock_tool_support(tool: &crate::tool::Tool, io: Option<&PreparationIo>) -> Result<()> {
@@ -819,15 +809,7 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
 
 pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition, value: &Value,
     limits: Limits, io: Option<&PreparationIo>) -> Result<crate::model::ToolResultContent> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (content, custody) = definition.validate_projection_with_native_work(value, limits, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(content);
-    }
-    let content = definition.validate_projection(value)?;
-    content.validate_limits(limits, &mut None)?;
-    Ok(content)
+    definition.validate_projection(value, limits, io)
 }
 
 pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
@@ -907,10 +889,10 @@ impl StockExecution<'_> {
 }
 
 pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<&PreparationIo>) -> Result<()> {
+    crate::executor::with_history_io(io, |work|
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        invocation.validate_with_native_work(work)?;
-        let io = io.expect("original work belongs to this IO");
+    if let Some(io) = io && io.original_native_work().is_some() {
         crate::contract::json_owned_value_shape_bounded(
             &invocation.arguments, crate::contract::JsonBounds {
                 maximum_bytes: u64::MAX, maximum_items: io.remaining()?.items_examined, maximum_depth: 256,
@@ -918,7 +900,7 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
         )?;
         return Ok(());
     }
-    invocation.validate()
+    Ok(())
 }
 
 pub(super) async fn stock_tool_rejection(

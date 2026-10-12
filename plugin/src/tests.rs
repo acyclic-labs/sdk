@@ -2972,8 +2972,8 @@ async fn publication_history_recovery_case() {
         .await
         .expect("ignored child file");
     transaction
-        .create_dir_all("/sub")
-        .await
+        .create_dir_all("/sub", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("nested ignore directory");
     transaction
         .write_text("/sub/.gitignore", "*.tmp\n")

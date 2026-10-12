@@ -1336,7 +1336,7 @@ pub fn validate_authority_path_segment(
         kind: AggregateKind::Agent,
         id: value.clone(),
     };
-    authority.stream_path().map(|_| value).map_err(js_error)
+    authority.stream_path(&mut None).map(|_| value).map_err(js_error)
 }
 
 /// Validates one component name with the canonical Rust byte and character policy.
@@ -1585,7 +1585,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "project_merge_receipt" => {
             let value: ProjectMergeReceipt = from_js(value)?;
-            value.validate_shape().map_err(js_error)?;
+            value.validate_shape(&mut None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "limits" => {
@@ -1907,7 +1907,7 @@ pub fn validate_model_context_selection_wasm(
 #[wasm_bindgen(js_name = forkSeedFromReport)]
 pub fn fork_seed_from_report(report: JsValue) -> Result<JsValue, JsValue> {
     let report: ForkReport = from_js(report)?;
-    to_js_admitted(&report.into_seed().map_err(js_error)?)
+    to_js_admitted(&report.into_seed(&mut None).map_err(js_error)?)
 }
 
 #[wasm_bindgen]
@@ -1924,7 +1924,7 @@ impl WasmReducer {
         let key = key_bytes(issuer_key)?;
         let issuer = AuthorityIssuer::new(issuer_id, key, authority.clone());
         Ok(Self {
-            reducer: Reducer::new(authority, issuer.verifier(), schema_registry(schemas)?),
+            reducer: Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schema_registry(schemas)?),
             issuer,
         })
     }
@@ -1933,7 +1933,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = issueScope)]
     pub fn issue_scope(&self, id: String, capabilities: JsValue) -> Result<JsValue, JsValue> {
         let capabilities: Vec<String> = from_js(capabilities)?;
-        to_js(&self.issuer.root(id, Capabilities::new(capabilities)))
+        to_js(&self.issuer.issue(&id, &Capabilities::new(capabilities), None, None, &mut None).expect("scope proof"))
     }
 
     /// Issues a root scope signed for one acting agent.
@@ -1948,8 +1948,7 @@ impl WasmReducer {
         let capabilities: Vec<String> = from_js(capabilities)?;
         to_js(
             &self
-                .issuer
-                .root_for_agent(agent, id, Capabilities::new(capabilities)),
+                .issuer.issue(&id, &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof"),
         )
     }
 
@@ -1963,8 +1962,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies(id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, None, None, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -1981,8 +1979,7 @@ impl WasmReducer {
         let layers: Vec<PolicyLayer> = from_js(layers)?;
         to_js(
             &self
-                .issuer
-                .root_with_policies_for_agent(agent, id, &layers)
+                .issuer.issue(&id, &crate::resolve_policy_layers(&layers).map_err(js_error)?, Some(agent), None, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -2083,7 +2080,7 @@ impl WasmReducer {
     pub fn verify_content_read(&self, scope: JsValue, file: JsValue) -> Result<(), JsValue> {
         let scope: Scope = from_js(scope)?;
         let file: FileRef = from_js(file)?;
-        ContentGrant::verify_read(&self.issuer.verifier(), &scope, &file).map_err(js_error)?;
+        ContentGrant::verify_read(&self.issuer.verifier(&mut None).expect("verifier copy"), &scope, &file).map_err(js_error)?;
         Ok(())
     }
 
@@ -2114,7 +2111,7 @@ impl WasmReducer {
         }
         let reader = WasmPrefixReader {
             files,
-            verifier: self.issuer.verifier(),
+            verifier: self.issuer.verifier(&mut None).expect("verifier copy"),
             scope: from_js(scope)?,
         };
         reader.verifier.verify(&reader.scope).map_err(js_error)?;
@@ -2139,7 +2136,7 @@ impl WasmReducer {
         let scope: Scope = from_js(scope)?;
         let volume: VolumeRef = from_js(volume)?;
         let grant = ContentGrant::verify_directory_read(
-            &self.issuer.verifier(),
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &volume,
             &granted_prefix,
@@ -2154,7 +2151,7 @@ impl WasmReducer {
     #[wasm_bindgen(js_name = verifyScope)]
     pub fn verify_scope(&self, scope: JsValue) -> Result<(), JsValue> {
         let scope: Scope = from_js(scope)?;
-        self.issuer.verifier().verify(&scope).map_err(js_error)
+        self.issuer.verifier(&mut None).expect("verifier copy").verify(&scope).map_err(js_error)
     }
 
     /// Authenticates a writer against the original private-volume owner.
@@ -2163,7 +2160,7 @@ impl WasmReducer {
         let scope: Scope = from_js(scope)?;
         let volume: VolumeRef = from_js(volume)?;
         ContentGrant::verify(
-            &self.issuer.verifier(),
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &volume,
             VolumeOperation::Write,
@@ -2254,7 +2251,7 @@ impl WasmReducer {
         };
         to_js_admitted(
             &request
-                .with_history_policy(&self.reducer, policy)
+                .with_history_policy(&self.reducer, policy, &mut None)
                 .map_err(js_error)?,
         )
     }
@@ -2333,7 +2330,7 @@ impl WasmReducer {
 
     /// Returns a versioned issuer-authenticated restoration snapshot.
     pub fn snapshot(&self) -> Result<JsValue, JsValue> {
-        to_js(&self.reducer.snapshot().map_err(js_error)?)
+        to_js(&self.reducer.snapshot(usize::MAX, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?)
     }
 
     /// Restores a snapshot under explicit host-managed authority.
@@ -2349,7 +2346,7 @@ impl WasmReducer {
             key_bytes(issuer_key)?,
             snapshot.authority.clone(),
         );
-        let reducer = Reducer::restore(snapshot, issuer.verifier(), schema_registry(schemas)?)
+        let reducer = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), schema_registry(schemas)?)
             .map_err(js_error)?;
         Ok(Self { reducer, issuer })
     }
@@ -2567,14 +2564,14 @@ struct WasmToolResultInput {
 #[wasm_bindgen(js_name = validateToolDefinition)]
 pub fn validate_tool_definition(definition: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)
+    definition.validate(&mut None).map_err(js_error)
 }
 
 /// Validates one tool invocation against its registered definition.
 #[wasm_bindgen(js_name = validateToolInvocation)]
 pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let invocation: WasmToolInvocationInput = from_js(invocation)?;
     if invocation.call_id.is_empty() || invocation.name != definition.name {
         return Err(JsValue::from_str(
@@ -2593,7 +2590,7 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
 #[wasm_bindgen(js_name = validateToolResult)]
 pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
 }
@@ -2606,12 +2603,12 @@ pub fn validate_tool_projection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
-    definition.validate().map_err(js_error)?;
+    definition.validate(&mut None).map_err(js_error)?;
     let projection: serde_json::Value = from_js(projection)?;
     let limits: Limits = from_js(limits)?;
     definition
-        .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(limits, &mut None))
+        .validate_projection(&projection, limits, None)
+        .map(drop)
         .map_err(js_error)
 }
 
@@ -2776,12 +2773,13 @@ pub fn project_discovered_context(
     let snapshot: crate::context::DiscoveredContext = from_js(snapshot)?;
     let context: crate::context::Context = from_js(context)?;
     let placement: crate::context::ContextPlacement = from_js(placement)?;
+    let limits = from_js(limits)?;
     let context = crate::context::apply_context_projection(
         context,
-        snapshot.messages().map_err(js_error)?,
+        snapshot.messages(limits, None).map_err(js_error)?,
         crate::context::ContextRenderMode::Prompt,
         placement,
-        from_js(limits)?,
+        limits,
     )
     .map_err(js_error)?;
     context_to_js(&context)

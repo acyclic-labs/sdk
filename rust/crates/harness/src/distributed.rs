@@ -81,17 +81,6 @@ pub struct ChildOperationPage {
     pub next_after: Option<String>,
 }
 
-/// Cursor and bound for one direct-child observation page.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ChildOperationPageRequest<'a> {
-    /// Require the coordinator to remain at this revision while paging.
-    pub expected_revision: Option<u64>,
-    /// Resume strictly after this parent-local child slot.
-    pub after_slot: Option<&'a str>,
-    /// Maximum direct children to return.
-    pub maximum: usize,
-}
-
 /// Pull worker capacity and placement identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -180,37 +169,26 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
 
 /// Code-first registry for exact durable reducer implementations.
 #[derive(Default)]
-pub struct ReducerRegistry(BTreeMap<(String, String, [u8; 32]), Arc<dyn DurableReducer>>);
+pub struct ReducerRegistry(Vec<Arc<dyn DurableReducer>>);
 
 impl ReducerRegistry {
-    /// Creates an empty registry.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self(BTreeMap::new())
-    }
-
     /// Registers one exact reducer without ambiguous replacement.
     pub fn register(&mut self, reducer: Arc<dyn DurableReducer>) -> Result<()> {
         let entrypoint = reducer.entrypoint();
         crate::contract::compile_json_schema(&entrypoint.result_schema, "reducer result", None)?;
-        let key = (
-            entrypoint.name.clone(),
-            entrypoint.version.clone(),
-            entrypoint.digest,
-        );
-        if self.0.contains_key(&key) {
+        if self.get(entrypoint).is_some() {
             return Err(Error::Conflict("reducer is already registered".into()));
         }
-        self.0.insert(key, reducer);
+        self.0.push(reducer);
         Ok(())
     }
 
     fn get(&self, entrypoint: &EntrypointRef) -> Option<&Arc<dyn DurableReducer>> {
-        self.0.get(&(
-            entrypoint.name.clone(),
-            entrypoint.version.clone(),
-            entrypoint.digest,
-        ))
+        self.0.iter().find(|reducer| {
+            let registered = reducer.entrypoint();
+            registered.name == entrypoint.name && registered.version == entrypoint.version
+                && registered.digest == entrypoint.digest
+        })
     }
 }
 
@@ -583,8 +561,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn journal_condition(
-        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-        operation_id: OperationId, fence: &LeaseFence, write: JournalWrite,
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        fence: &LeaseFence,
+        write: JournalWrite,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
         self.refresh_with_work(work).await?;
@@ -630,7 +613,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<Self> {
         let stream = coordinator_stream(client, work)?;
         let mut value = Self {
-            client: client.clone(), stream, scheduler: Scheduler::new(), revision: 0,
+            client: client.clone(),
+            stream,
+            scheduler: Scheduler::new(),
+            revision: 0,
             last_committed_at_ms: 0, content_verifier, payload_store: None,
         };
         value.refresh_with_work(work).await?;
@@ -718,7 +704,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         match work.as_deref_mut() {
             Some(work) => crate::store::history::verify_content_with_work(
                 work, self.content_verifier.as_ref(), reference).await,
-            None => self.content_verifier.verify(reference).await,
+            None => self.content_verifier.verify(reference, reference.descriptor().byte_length(), None)?.await,
         }
     }
 
@@ -808,12 +794,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Returns the page with the exact deep custody produced by its field copies.
     pub(crate) async fn observe_children(
-        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-        parent: OperationId, request: ChildOperationPageRequest<'_>,
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        parent: OperationId,
+        expected_revision: Option<u64>, after_slot: Option<&str>, maximum: usize,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ChildOperationPage, u64)> {
         runtime::validate_child_page_request(
-            "child hierarchy", parent.into_bytes(), request.after_slot, request.maximum,
+            "child hierarchy", parent.into_bytes(), after_slot, maximum,
         )?;
         Self::authorize_operation_scope_with_work(
             owner, scope, verifier, capability::OPERATION_OBSERVE, work,
@@ -825,16 +815,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         self.refresh_with_work(work).await?;
         self.observe_operation(owner, scope, verifier, parent, work)?;
-        if request
-            .expected_revision
-            .is_some_and(|revision| revision != self.revision)
+        if expected_revision.is_some_and(|revision| revision != self.revision)
         {
             return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
                 "child hierarchy revision changed"));
         }
         let mut custody = CodecQuota::new(work, 0)?;
         let mut entries = crate::core::reserve_copy_vector::<ChildOperationLink>(
-            request.maximum, &mut custody,
+            maximum, &mut custody,
         )?;
         let mut has_more = false;
         let mut children = self.scheduler.children(parent);
@@ -844,12 +832,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if let Some(work) = custody.work().as_deref_mut() {
                 work.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
             }
-            if request.after_slot.is_some_and(|after| slot <= after)
+            if after_slot.is_some_and(|after| slot <= after)
                 || child.spec.owner.authority() != owner
             {
                 continue;
             }
-            if entries.len() == request.maximum {
+            if entries.len() == maximum {
                 has_more = true;
                 break;
             }
@@ -978,7 +966,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn authorize_operation_with_work<'a>(
-        &'a self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+        &'a self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
         operation_id: OperationId, capability: &str, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&'a OperationState> {
         Self::authorize_operation_scope_with_work(owner, scope, verifier, capability, work)?;
@@ -989,7 +980,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, capability: &str,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains(capability) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -1085,7 +1076,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey, waiting_command: Option<OperationId>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains("operation:wake") {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
@@ -1134,7 +1125,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
                 "owned child declaration has no parent"));
         }
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains(capability::OPERATION_DECLARE) {
             return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized, "scope lacks operation:declare"));
@@ -1165,13 +1156,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     #[allow(clippy::too_many_lines,         clippy::too_many_arguments)]
     pub(crate) async fn declare_session(
-        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-        spec: OperationSpec, limits: crate::scheduler::SessionLimits,
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        spec: OperationSpec,
+        limits: crate::scheduler::SessionLimits,
         idempotency_key: IdempotencyKey, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         let mut custody = CodecQuota::new(work, 0)?;
-        verifier.verify_audience_with_work(owner, custody.work())?;
-        verifier.verify_with_work(scope, custody.work())?;
+        verifier.verify_audience(owner, custody.work())?;
+        verifier.verify(scope, custody.work())?;
         if !scope.capabilities().contains("operation:declare") || spec.owner.authority() != owner {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Unauthorized,
                 "session declaration owner is invalid"));
@@ -1257,7 +1252,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     "coordinator commit time exhausted")
             })?;
         }
-        let (stream_key, key_held) = stream_key_with_work(idempotency_key.as_str(), request.work())?;
+        let (stream_key, key_held) = stream_key(idempotency_key.as_str().len(), format_args!("{}", idempotency_key.as_str()), request.work())?;
         let retained_request = request.retained();
         request.transfer();
         let mut key_custody = CodecQuota::from_retained(request.work(), key_held);
@@ -1278,9 +1273,29 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             Err(error) => return Err(error),
         };
-        self.finish_session_append_with_work(
-            outcome, &keys, &events, revision - 2, request.work(),
-        ).await
+        let (result, receipt) = match outcome {
+            AppendOutcome::Committed(receipt) => {
+                if receipt.end.checked_sub(receipt.start) != Some(2) || receipt.tail < receipt.end {
+                    return Err(coordinator_boundary(request.work(), wire::ErrorCode::Storage,
+                        "invalid session append receipt"));
+                }
+                let result = receipt.start == revision - 2;
+                (result, Some((receipt.commit_id, receipt.start)))
+            }
+            AppendOutcome::TailConflict { .. } => (false, None),
+        };
+        self.refresh_with_work(request.work()).await?;
+        let Some((revision, commit_id)) = self.session_intent_with_work(&keys, &events, request.work()).await? else {
+            return Err(coordinator_boundary(request.work(), wire::ErrorCode::Conflict,
+                "session append conflicted without its complete intent"));
+        };
+        if let Some((envelope, start)) = receipt
+            && (commit_id != envelope || revision.checked_sub(2) != Some(start))
+        {
+            return Err(coordinator_boundary(request.work(), wire::ErrorCode::Storage,
+                "session append receipt differs from its committed envelope"));
+        }
+        Ok(result)
     }
 
     async fn session_intent_with_work(
@@ -1325,35 +1340,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             _ => Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
                 "session declaration is not atomic")),
         }
-    }
-
-    async fn finish_session_append_with_work(
-        &mut self, outcome: AppendOutcome, keys: &[String; 2], events: &[SchedulerEvent; 2],
-        expected_start: u64, work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<bool> {
-        let (result, receipt) = match outcome {
-            AppendOutcome::Committed(receipt) => {
-                if receipt.end.checked_sub(receipt.start) != Some(2) || receipt.tail < receipt.end {
-                    return Err(coordinator_boundary(work, wire::ErrorCode::Storage,
-                        "invalid session append receipt"));
-                }
-                let result = receipt.start == expected_start;
-                (result, Some((receipt.commit_id, receipt.start)))
-            }
-            AppendOutcome::TailConflict { .. } => (false, None),
-        };
-        self.refresh_with_work(work).await?;
-        let Some((revision, commit_id)) = self.session_intent_with_work(keys, events, work).await? else {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
-                "session append conflicted without its complete intent"));
-        };
-        if let Some((envelope, start)) = receipt
-            && (commit_id != envelope || revision.checked_sub(2) != Some(start))
-        {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Storage,
-                "session append receipt differs from its committed envelope"));
-        }
-        Ok(result)
     }
 
     fn validate_replay(
@@ -1423,9 +1409,18 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         )?;
         let (record, retained) = operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
         custody.adopt(retained)?;
-        let (stream_key, retained) = physical_key_with_work(
-            key, self.revision, parent_fence.is_some(), waiting_command.is_some(), idle_execution, custody.work(),
-        )?;
+        let current_revision = self.revision;
+        let digits = |value: u64| value.checked_ilog10().map_or(1, |digits| digits as usize + 1);
+        let (stream_key, retained) = if parent_fence.is_some() {
+            stream_key(key.len() + ":owned-parent:".len() + digits(current_revision),
+                format_args!("{key}:owned-parent:{current_revision}"), custody.work())
+        } else if waiting_command.is_some() {
+            stream_key(key.len() + ":owned-wait:".len() + digits(current_revision),
+                format_args!("{key}:owned-wait:{current_revision}"), custody.work())
+        } else if let Some((execution, tail)) = idle_execution {
+            stream_key(key.len() + ":idle-execution:".len() + 36 + 2 + digits(tail) + digits(current_revision),
+                format_args!("{key}:idle-execution:{execution}:{tail}:{current_revision}"), custody.work())
+        } else { stream_key(key.len(), format_args!("{key}"), custody.work()) }?;
         custody.adopt(retained)?;
         let appended = if let Some((execution, expected_tail)) = idle_execution {
             append_if_execution_idle_with_work(
@@ -1520,7 +1515,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn finish_append_with_work(
-        &mut self, outcome: AppendOutcome, event: &SchedulerEvent, key: &str, digest: &[u8; 32],
+        &mut self,
+        outcome: AppendOutcome,
+        event: &SchedulerEvent,
+        key: &str,
+        digest: &[u8; 32],
         revision: u64, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         let appended = match outcome {
@@ -1548,7 +1547,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .last_committed_at_ms
             .checked_add(1)
             .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::Invalid, "coordinator commit time exhausted"))?;
-        Ok(current_time_millis_with_work(work)?.max(after_previous))
+        use acyclic_stream::UnixMillisClock as _;
+        let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
+        if now == 0 || now == u64::MAX {
+            return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
+                "coordinator clock exceeds supported range"));
+        }
+        Ok(now.max(after_previous))
     }
 
     /// Pulls and atomically admits one dependency- and resource-ready operation.
@@ -1561,10 +1566,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     pub(crate) async fn pull_owned(
-        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, worker: &Worker,
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        worker: &Worker,
         operation_id: Option<OperationId>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
-        verifier.verify_audience_with_work(owner, work)?;
+        verifier.verify_audience(owner, work)?;
         verifier.verify_scope_for_with_work(owner, scope, work)?;
         if !scope.capabilities().contains("operation:observe")
             || !scope.capabilities().contains("operation:declare")
@@ -1591,7 +1600,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn pull_for_with_work(
-        &mut self, worker: &Worker, authorization: Option<(&Authority, &AuthorityVerifier)>,
+        &mut self,
+        worker: &Worker,
+        authorization: Option<(&Authority, &AuthorityVerifier)>,
         target: Option<OperationId>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<WorkPull> {
         let owner = authorization.map(|(owner, _)| owner);
@@ -1720,138 +1731,62 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         lease: &WorkLease,
         idempotency_key: IdempotencyKey,
     ) -> Result<bool> {
-        self.release_lease_with_work(lease, idempotency_key, &mut None).await
+        self.apply(lease.operation.operation_id, idempotency_key, SchedulerEvent::LeaseReleased {
+            operation_id: lease.operation.operation_id,
+            fence: LeaseFence::from(&lease.reservation),
+        }).await
     }
 
-    pub(crate) async fn release_lease_with_work(
-        &mut self, lease: &WorkLease, idempotency_key: IdempotencyKey,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<bool> {
-        let mut custody = CodecQuota::new(work, 0)?;
-        let reservation_id = crate::core::copy_text(&lease.reservation.id, &mut custody)?;
-        let placement = crate::core::copy_text(&lease.reservation.placement, &mut custody)?;
-        self.apply_internal(
-            lease.operation.operation_id, idempotency_key,
-            SchedulerEvent::LeaseReleased {
-                operation_id: lease.operation.operation_id,
-                fence: LeaseFence { reservation_id, placement },
-            }, None, None, None, None, None, custody.work(),
-        ).await
-    }
-
-    /// Atomically commits a ready structured-concurrency decision and loser cancellation.
+    /// Advances a ready parent and returns whether a transition was appended.
     pub async fn orchestrate(
-        &mut self,
-        parent: OperationId,
-        idempotency_key: IdempotencyKey,
+        &mut self, parent: OperationId, idempotency_key: IdempotencyKey,
+        reducers: Option<&ReducerRegistry>,
     ) -> Result<bool> {
         self.refresh().await?;
-        if self
-            .replay_orchestration(parent, idempotency_key.as_str(), false)
-            .await?
-        {
-            return Ok(true);
+        if let Some((_, event, ..)) = read_intent(
+            &self.client, idempotency_key.as_str(), Some(self.revision), &mut None,
+        ).await? {
+            return if matches!(event, SchedulerEvent::Orchestrated { operation_id, .. } if operation_id == parent) {
+                Ok(false)
+            } else { Err(Error::Conflict("coordinator retry identity reused".into())) };
         }
         let expected_revision = self
             .scheduler
             .operation(parent)
             .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?
             .revision;
-        let (outcome, cancel, reduction_digest) = match self.scheduler.orchestration(parent, &mut None)? {
-            OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None),
-            OrchestrationDecision::Assemble {
-                assembly,
-                values,
-                cancel,
-            } => {
+        let (outcome, cancel, reducer, reduction_digest) = match self.scheduler.orchestration(parent, &mut None)? {
+            OrchestrationDecision::Complete { outcome, cancel } => (outcome, cancel, None, None),
+            OrchestrationDecision::Assemble { assembly, values, cancel } => {
                 let digest = assembly_invocation_digest(assembly, &values)?;
-                let result = self
-                    .stage_json(
-                        parent,
-                        idempotency_key.as_str(),
-                        &self.assemble_values_with_work(assembly, &values, &mut None).await.map(|(value, _)| value)?,
-                    )
-                    .await?;
-                (crate::Outcome::Succeeded(result), cancel, Some(digest))
+                let value = self.assemble_values_with_work(assembly, &values, &mut None).await?.0;
+                let result = self.stage_json(parent, idempotency_key.as_str(), &value).await?;
+                (crate::Outcome::Succeeded(result), cancel, None, Some(digest))
             }
-            OrchestrationDecision::Wait | OrchestrationDecision::Reduce { .. } => return Ok(false),
+            OrchestrationDecision::Reduce { reducer, values } => {
+                let Some(reducers) = reducers else { return Ok(false); };
+                let implementation = reducers.get(&reducer).ok_or_else(||
+                    Error::Unsupported("exact reducer implementation is not registered".into()))?;
+                let mut decoded = Vec::with_capacity(values.len());
+                for (slot, reference) in &values {
+                    decoded.push((slot.clone(), self.load_json_with_work(reference, &mut None).await?.0));
+                }
+                let outcome = match implementation.reduce(&decoded)? {
+                    crate::Outcome::Succeeded(value) => crate::Outcome::Succeeded(
+                        self.stage_json(parent, idempotency_key.as_str(), &value).await?),
+                    crate::Outcome::Failed { message } => crate::Outcome::Failed { message },
+                    crate::Outcome::Cancelled => crate::Outcome::Cancelled,
+                    crate::Outcome::Indeterminate { .. } => return Err(Error::Invalid(
+                        "a synchronous reducer cannot return an indeterminate outcome".into())),
+                };
+                let digest = reduction_invocation_digest(&reducer, &values)?;
+                (outcome, Vec::new(), Some(reducer), Some(digest))
+            }
+            OrchestrationDecision::Wait => return Ok(false),
         };
-        self.apply_internal(
-            parent,
-            idempotency_key,
-            SchedulerEvent::Orchestrated {
-                operation_id: parent,
-                expected_revision,
-                outcome,
-                cancel,
-                reducer: None,
-                reduction_digest,
-            }, None, None, None, None, None, &mut None
-        )
-        .await?;
-        Ok(true)
-    }
-
-    /// Commits the result of the exact versioned reducer invocation currently planned.
-    pub async fn complete_reduction(
-        &mut self,
-        reducers: &ReducerRegistry,
-        parent: OperationId,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<bool> {
-        self.refresh().await?;
-        if self
-            .replay_orchestration(parent, idempotency_key.as_str(), true)
-            .await?
-        {
-            return Ok(false);
-        }
-        let state = self
-            .scheduler
-            .operation(parent)
-            .ok_or_else(|| Error::NotFound(format!("operation {parent}")))?;
-        let expected_revision = state.revision;
-        let OrchestrationDecision::Reduce { reducer, values } =
-            self.scheduler.orchestration(parent, &mut None)?
-        else {
-            return Err(Error::Conflict("no reducer invocation is ready".into()));
-        };
-        let implementation = reducers.get(&reducer).ok_or_else(|| {
-            Error::Unsupported("exact reducer implementation is not registered".into())
-        })?;
-        let mut decoded = Vec::with_capacity(values.len());
-        for (slot, reference) in &values {
-            decoded.push((slot.clone(), self.load_json_with_work(reference, &mut None).await.map(|(value, _)| value)?));
-        }
-        let outcome = implementation.reduce(&decoded)?;
-        if matches!(outcome, crate::Outcome::Indeterminate { .. }) {
-            return Err(Error::Invalid(
-                "a synchronous reducer cannot return an indeterminate outcome".into(),
-            ));
-        }
-        let outcome = match outcome {
-            crate::Outcome::Succeeded(value) => crate::Outcome::Succeeded(
-                self.stage_json(parent, idempotency_key.as_str(), &value)
-                    .await?,
-            ),
-            crate::Outcome::Failed { message } => crate::Outcome::Failed { message },
-            crate::Outcome::Cancelled => crate::Outcome::Cancelled,
-            crate::Outcome::Indeterminate { .. } => unreachable!("indeterminate was rejected"),
-        };
-        let reduction_digest = reduction_invocation_digest(&reducer, &values)?;
-        self.apply_internal(
-            parent,
-            idempotency_key,
-            SchedulerEvent::Orchestrated {
-                operation_id: parent,
-                expected_revision,
-                outcome,
-                cancel: Vec::new(),
-                reducer: Some(reducer),
-                reduction_digest: Some(reduction_digest),
-            }, None, None, None, None, None, &mut None
-        )
-        .await
+        self.apply_internal(parent, idempotency_key, SchedulerEvent::Orchestrated {
+            operation_id: parent, expected_revision, outcome, cancel, reducer, reduction_digest,
+        }, None, None, None, None, None, &mut None).await
     }
 
     async fn load_json_with_work(
@@ -1866,7 +1801,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let (bytes, raw_bytes) = match custody.work().as_deref_mut() {
             Some(work) => crate::store::history::read_content_with_work(
                 work, self.content_verifier.as_ref(), reference).await?,
-            None => (self.content_verifier.read(reference).await?, 0),
+            None => (self.content_verifier.read(reference, reference.descriptor().byte_length(), None)?.await?, 0),
         };
         custody.adopt(raw_bytes)?;
         reference.descriptor().verify(bytes.as_ref(), custody.work())?;
@@ -1924,29 +1859,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok((serde_json::Value::Array(assembled), retained))
     }
 
-    async fn replay_orchestration(
-        &mut self,
-        parent: OperationId,
-        key: &str,
-        reduced: bool,
-    ) -> Result<bool> {
-        let Some((_, event, ..)) = read_intent(&self.client, key, Some(self.revision), &mut None).await? else {
-            return Ok(false);
-        };
-        if let SchedulerEvent::Orchestrated {
-            operation_id,
-            reducer,
-            ..
-        } = event
-            && operation_id == parent
-            && reducer.is_some() == reduced
-        {
-            Ok(true)
-        } else {
-            Err(Error::Conflict("coordinator retry identity reused".into()))
-        }
-    }
-
     async fn stage_json(
         &self,
         operation_id: OperationId,
@@ -1996,7 +1908,11 @@ fn formatted_text_with_work(
 }
 
 fn encode(
-    revision: u64, operation_id: OperationId, key: &str, digest: [u8; 32], canonical: Vec<u8>,
+    revision: u64,
+    operation_id: OperationId,
+    key: &str,
+    digest: [u8; 32],
+    canonical: Vec<u8>,
     committed_at_ms: u64, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<u8>> {
     let incoming_held = if work.is_some() { canonical.capacity() as u64 } else { 0 };
@@ -2281,16 +2197,6 @@ fn coordinator_retry_conflict(error: &Error) -> bool {
     false
 }
 
-fn current_time_millis_with_work(work: &mut Option<&mut dyn HistoryIo>) -> Result<u64> {
-    use acyclic_stream::UnixMillisClock as _;
-    let now = acyclic_stream::SystemUnixMillisClock.now_unix_millis();
-    if now == 0 || now == u64::MAX {
-        return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
-            "coordinator clock exceeds supported range"));
-    }
-    Ok(now)
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn append<P: StreamProvider, const N: usize>(
     (stream, client): (&Stream<P>, &std::sync::Arc<P>), input: [OwnedBytes; N],
@@ -2317,7 +2223,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         if let Some(original) = custody.work().as_deref()
             .and_then(|observer| observer.original_native_work()).cloned()
         {
-            let result = native_call_result(&original, client.provider.native_append(
+            let result = native_call_result(&original, client.native_append(
                 acyclic_stream::AppendRequest {
                     path: stream.path().clone(), records, if_tail, idempotency_key: Some(key.clone()),
                 }, original.runtime_meter_owner(),
@@ -2391,11 +2297,9 @@ pub(crate) fn execution_path(
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommitPhase {
-    NotCalled,
+    Uncommitted,
     Unknown,
     Committed,
-    Conflict,
-    Failed,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2555,7 +2459,7 @@ impl PreparedMaterializationCommit {
         self, client: &std::sync::Arc<P>, counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
-        if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
+        if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::Uncommitted; }
         let Self { mut template, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
         let operation = OperationId::from_bytes(template.task_binding().0.into_bytes());
         let finished = async {
@@ -2734,7 +2638,7 @@ async fn inspect_idempotency<P: StreamProvider>(
                 drop(key);
                 recovery.await
             }
-            None => client.provider.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
+            None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
         })?;
         let output = match inspected {
             Ok(output) => output,
@@ -2745,7 +2649,7 @@ async fn inspect_idempotency<P: StreamProvider>(
         {
             *phase = match outcome {
                 acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
-                acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
+                acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Uncommitted,
             };
         }
         if let Some(observation) = output.value() {
@@ -2762,7 +2666,7 @@ async fn inspect_idempotency<P: StreamProvider>(
         return Ok(Ok(Some((observation, retained))));
     }
     if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-    let inspected = client.provider.inspect_idempotency(key).await;
+    let inspected = client.inspect_idempotency(key).await;
     match inspected {
         Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
         Ok(None) => Ok(Ok(None)),
@@ -2770,7 +2674,7 @@ async fn inspect_idempotency<P: StreamProvider>(
             if let (Some(phase), IdempotencyOutcome::Commit(outcome)) = (phase, &observation.outcome) {
                 *phase = match outcome {
                     acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
-                    acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
+                    acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Uncommitted,
                 };
             }
             observe_recovery_with_work(&observation, &mut custody)?;
@@ -2806,16 +2710,6 @@ fn reserve_prepared_vector<T>(
         custody.adopt(actual)?;
     }
     Ok(())
-}
-
-fn commit_vector_bytes(request: &acyclic_stream::CommitRequest) -> u64 {
-    (request.conditions.capacity() * std::mem::size_of::<acyclic_stream::CommitCondition>()
-        + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()
-        + request.mutations.iter().map(|mutation| {
-            let (acyclic_stream::CommitMutation::Append { records, .. }
-                | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
-            records.capacity() * std::mem::size_of::<OwnedBytes>()
-        }).sum::<usize>()) as u64
 }
 
 pub(crate) fn commit_request<'a, 'b>(
@@ -2856,7 +2750,7 @@ pub(crate) async fn commit<P: StreamProvider>(
     mut phase: Option<&mut CommitPhase>, dispatch: Option<PreparedNativeDispatch>,
     recovery: Option<PreparedNativeRecovery>,
 ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
-    if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
+    if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::Uncommitted; }
     let key = request.idempotency_key.clone();
     let committed = async {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2890,7 +2784,13 @@ pub(crate) async fn commit<P: StreamProvider>(
                 if !operations::original_native_decode_mode(work) { work.begin_write()?; }
             }
         }
-        let vectors = commit_vector_bytes(&request);
+        let vectors = (request.conditions.capacity() * std::mem::size_of::<acyclic_stream::CommitCondition>()
+            + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()
+            + request.mutations.iter().map(|mutation| {
+                let (acyclic_stream::CommitMutation::Append { records, .. }
+                    | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
+                records.capacity() * std::mem::size_of::<OwnedBytes>()
+            }).sum::<usize>()) as u64;
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::Unknown; }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = custody.work().as_deref()
@@ -2901,15 +2801,15 @@ pub(crate) async fn commit<P: StreamProvider>(
                     drop(request);
                     prepared.finish(record).await
                 }
-                None => client.provider.native_commit(request, original.runtime_meter_owner()).await,
+                None => client.native_commit(request, original.runtime_meter_owner()).await,
             };
             if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
                 Ok(Ok(output)) => match output.value() {
                     acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
-                    acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
+                    acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Uncommitted,
                 },
-                Ok(Err(error)) if *error.source() == StreamError::Unavailable => CommitPhase::Unknown,
-                Ok(Err(_)) => CommitPhase::Failed,
+                Ok(Err(error)) if *error == StreamError::Unavailable => CommitPhase::Unknown,
+                Ok(Err(_)) => CommitPhase::Uncommitted,
                 Err(_) => CommitPhase::Unknown,
             }; }
             let released = custody.relinquish(vectors);
@@ -2929,12 +2829,12 @@ pub(crate) async fn commit<P: StreamProvider>(
             received.transfer();
             return Ok(Ok((outcome, retained)));
         }
-        let committed = client.provider.commit(request).await;
+        let committed = client.commit(request).await;
         if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
-            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Conflict,
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Uncommitted,
             Err(StreamError::Unavailable) => CommitPhase::Unknown,
-            Err(_) => CommitPhase::Failed,
+            Err(_) => CommitPhase::Uncommitted,
         }; }
         if custody.work().is_some() { custody.relinquish(vectors)?; }
         let mut received = CodecQuota::from_retained(custody.work(), 0);
@@ -3063,9 +2963,12 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
                 "invalid guarded suspension receipt"));
         };
-        if append.path != *stream.path() || append.start != tail
-            || append.end != next_revision(tail)? || append.tail != append.end
-            || append.records.len() != 1 || append.records.first().is_none_or(|entry| {
+        if append.path != *stream.path()
+            || append.start != tail
+            || append.end != next_revision(tail)?
+            || append.tail != append.end
+            || append.records.len() != 1
+            || append.records.first().is_none_or(|entry| {
                 entry.sequence != tail || entry.value != record || entry.commit_id != envelope.commit_id
             })
         {
@@ -3073,47 +2976,26 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
                 "guarded suspension differs from its commit"));
         }
         Ok(AppendOutcome::Committed(acyclic_stream::AppendReceipt {
-            start: append.start, end: append.end, tail: append.tail, commit_id: envelope.commit_id,
+            start: append.start,
+            end: append.end,
+            tail: append.tail,
+            commit_id: envelope.commit_id,
         }))
     })();
     drop(outcome);
     custody.relinquish(outcome_bytes)?;
     receipt
 }
-fn physical_key_with_work(
-    key: &str, revision: u64, parent: bool, waiting: bool,
-    idle_execution: Option<(OperationId, u64)>, work: &mut Option<&mut dyn HistoryIo>,
+fn stream_key(
+    length: usize, key: std::fmt::Arguments<'_>, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamIdempotencyKey, u64)> {
-    let digits = |value: u64| value.checked_ilog10().map_or(1, |digits| digits as usize + 1);
-    let physical = if parent {
-        Some(formatted_text_with_work(key.len() + ":owned-parent:".len() + digits(revision),
-            format_args!("{key}:owned-parent:{revision}"), work)?)
-    } else if waiting {
-        Some(formatted_text_with_work(key.len() + ":owned-wait:".len() + digits(revision),
-            format_args!("{key}:owned-wait:{revision}"), work)?)
-    } else if let Some((execution, tail)) = idle_execution {
-        Some(formatted_text_with_work(
-            key.len() + ":idle-execution:".len() + 36 + 2 + digits(tail) + digits(revision),
-            format_args!("{key}:idle-execution:{execution}:{tail}:{revision}"), work)?)
-    } else { None };
-    let result = stream_key_with_work(physical.as_deref().unwrap_or(key), work);
-    if let Some(physical) = physical {
-        let capacity = physical.capacity() as u64;
-        drop(physical);
-        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
-    }
-    result
-}
-
-fn stream_key_with_work(
-    key: &str, work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(StreamIdempotencyKey, u64)> {
+    use std::io::Write as _;
     if let Some(work) = work.as_deref_mut() {
-        work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + key.len()) as u64)?;
+        work.hashed_bytes((b"acyclic-harness-coordinator-v3".len() + length) as u64)?;
     }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v3");
-    hasher.update(key.as_bytes());
+    hasher.write_fmt(key).expect("primitive formatting into an infallible hash writer");
     digest_key(hasher.finalize().as_bytes(), work)
 }
 
@@ -3248,7 +3130,7 @@ mod tests {
                 .expect("original operation ledger");
             let mut io = crate::store::history::native_work_io(&native).expect("original observer");
             let mut work = Some(&mut io as &mut dyn HistoryIo);
-            let (key, retained) = stream_key_with_work("native-phase-key", &mut work).expect("original key");
+            let (key, retained) = stream_key("native-phase-key".len(), format_args!("native-phase-key"), &mut work).expect("original key");
             let mut prepared = commit_request(key, retained, &mut work);
             add_condition(&mut prepared, acyclic_stream::CommitCondition::Tail {
                 path: path.clone(), expected: 0,
@@ -3257,7 +3139,7 @@ mod tests {
                 .expect("original publication payload");
             provider.native_only.store(true, Ordering::SeqCst);
             provider.lose_ack.store(lost_ack, Ordering::SeqCst);
-            let mut phase = CommitPhase::Failed; // The engine must initialize its real pre-call state.
+            let mut phase = CommitPhase::Uncommitted;
             let result = commit(prepared, &client, Some(OperationId::from_bytes([21; 16])), Some(&mut phase), None, None).await;
             assert_eq!(phase, expected_phase);
             if denied == "none" {
@@ -3340,6 +3222,7 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
     struct PausedChildVerifier {
         armed: std::sync::atomic::AtomicBool,
         entered: tokio::sync::Notify,
@@ -3356,8 +3239,8 @@ mod tests {
         let declaration = spec(operation, 0)?;
         let owner = declaration.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
-        let verifier = issuer.verifier();
+        let scope = issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let key = IdempotencyKey::new("point-declaration")?;
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -3387,7 +3270,7 @@ mod tests {
             Some(declaration)
         );
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
-        let denied = issuer.root("denied", Capabilities::default());
+        let denied = issuer.issue("denied", &Capabilities::default(), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(&client, &owner, &denied, &verifier, operation, &key, &mut None).await,
             Err(Error::Unauthorized(_))
@@ -3410,13 +3293,13 @@ mod tests {
         };
         let foreign_issuer = AuthorityIssuer::new("foreign-observer", [7; 32], foreign.clone());
         let foreign_scope =
-            foreign_issuer.root("observe", Capabilities::new(["operation:observe"]));
+            foreign_issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(
                 &client,
                 &foreign,
                 &foreign_scope,
-                &foreign_issuer.verifier(),
+                &foreign_issuer.verifier(&mut None).expect("verifier copy"),
                 operation,
                 &key
             , &mut None)
@@ -3459,11 +3342,7 @@ mod tests {
     async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() -> Result<()> {
         for cancel in [false, true] {
             let client = Arc::new(MemoryStream::default());
-            let gate = Arc::new(PausedChildVerifier {
-                armed: std::sync::atomic::AtomicBool::new(false),
-                entered: tokio::sync::Notify::new(),
-                release: tokio::sync::Notify::new(),
-            });
+            let gate = Arc::new(PausedChildVerifier::default());
             let mut first = DistributedCoordinator::open(&client, gate.clone()).await?;
             let parent = OperationId::from_bytes([41; 16]);
             declare(&mut first, spec(parent, 0)?, "fenced-parent").await?;
@@ -3493,11 +3372,8 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root(
-                "declare",
-                Capabilities::new(["operation:declare", "operation:observe"]),
-            );
-            let verifier = issuer.verifier();
+            let signed = issuer.issue("declare", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let child_id = OperationId::from_bytes([42; 16]);
             let mut child = spec(child_id, 0)?;
             child.parent = Some(ParentLink {
@@ -3637,8 +3513,8 @@ mod tests {
                 SchedulerEvent::Started { operation_id: child, fence: LeaseFence::from(&lease.reservation) }).await?;
             let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
-            let verifier = issuer.verifier();
+            let scope = issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let before = coordinator.revision();
             let mut stale = fence.clone();
             stale.placement.push_str("-stale");
@@ -3652,9 +3528,9 @@ mod tests {
              &mut None,).await, Err(Error::Unauthorized(_))));
             let foreign = Authority { kind: AggregateKind::Task, id: "foreign".into() };
             let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
-            let foreign_scope = foreign_issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+            let foreign_scope = foreign_issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
             assert!(matches!(coordinator.cancel_child_operation(
-                &foreign, &foreign_scope, &foreign_issuer.verifier(), child,
+                &foreign, &foreign_scope, &foreign_issuer.verifier(&mut None).expect("verifier copy"), child,
                 IdempotencyKey::new("foreign-child-cancel")?, parent, &fence,
              &mut None,).await, Err(Error::NotFound(_))));
             assert_eq!(coordinator.revision(), before);
@@ -3695,11 +3571,7 @@ mod tests {
         ] {
             let provider = Arc::new(LostSessionAck::default());
             let client = provider.clone();
-            let gate = Arc::new(PausedChildVerifier {
-                armed: std::sync::atomic::AtomicBool::new(false),
-                entered: tokio::sync::Notify::new(),
-                release: tokio::sync::Notify::new(),
-            });
+            let gate = Arc::new(PausedChildVerifier::default());
             let mut first = DistributedCoordinator::open(&client, gate.clone()).await?;
             let task = OperationId::from_bytes([51; 16]);
             let selected = OperationId::from_bytes([52; 16]);
@@ -3743,11 +3615,8 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root(
-                "wake",
-                Capabilities::new(["operation:wake", "operation:observe"]),
-            );
-            let verifier = issuer.verifier();
+            let signed = issuer.issue("wake", &Capabilities::new(["operation:wake", "operation:observe"]), None, None, &mut None).expect("scope proof");
+            let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let input = state_ref()?;
             assert!(
                 first
@@ -3906,8 +3775,7 @@ mod tests {
     }
 
     fn declaration_scope(owner: &Authority) -> Scope {
-        AuthorityIssuer::new("test-runtime", [9; 32], owner.clone())
-            .root("original-declare", Capabilities::new(["operation:declare"]))
+        AuthorityIssuer::new("test-runtime", [9; 32], owner.clone()).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof")
     }
 
     pub(super) fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec> {
@@ -3927,8 +3795,7 @@ mod tests {
                     kind: AggregateKind::Task,
                     id: "owner".into(),
                 },
-            )
-            .root("original-declare", Capabilities::new(["operation:declare"])),
+            ).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),
@@ -3950,12 +3817,12 @@ mod tests {
     ) -> Result<bool> {
         let owner = spec.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("declare", Capabilities::new(["operation:declare"]));
+        let scope = issuer.issue("declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         coordinator
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec,
                 IdempotencyKey::new(key)?,
                 None,
@@ -3970,10 +3837,7 @@ mod tests {
         let original = spec(operation_id, 0)?;
         let owner = original.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let renewed = issuer.root(
-            "renewed-current-grant",
-            Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
-        );
+        let renewed = issuer.issue("renewed-current-grant", &Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
         let key = IdempotencyKey::new("original-owner-proof")?;
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -3981,13 +3845,13 @@ mod tests {
         let mut reopened =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let replaced = AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
-        let replacement = replaced.root("renewed-current-grant", renewed.capabilities().clone());
+        let replacement = replaced.issue("renewed-current-grant", renewed.capabilities(), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(
                 &client,
                 &owner,
                 &replacement,
-                &replaced.verifier(),
+                &replaced.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 &key
             , &mut None)
@@ -3995,7 +3859,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            reopened.observe_operation(&owner, &replacement, &replaced.verifier(), operation_id, &mut None).cloned(),
+            reopened.observe_operation(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), operation_id, &mut None).cloned(),
             Err(Error::Unauthorized(_))
         ));
         let worker = Worker {
@@ -4006,13 +3870,13 @@ mod tests {
         let revision = reopened.revision();
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, Some(operation_id), &mut None)
+                .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id), &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(), &worker, None, &mut None)
+                .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -4028,7 +3892,7 @@ mod tests {
                 &client,
                 &owner,
                 &renewed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 &key
             , &mut None)
@@ -4037,13 +3901,13 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .declare_operation(&owner, &renewed, &issuer.verifier(), original, key, None)
+                .declare_operation(&owner, &renewed, &issuer.verifier(&mut None).expect("verifier copy"), original, key, None)
                 .await?,
             false
         );
         assert!(matches!(
             reopened
-                .pull_owned(&owner, &renewed, &issuer.verifier(), &worker, Some(operation_id), &mut None)
+                .pull_owned(&owner, &renewed, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id), &mut None)
                 .await?,
             WorkPull::Claimed(_)
         ));
@@ -4055,18 +3919,18 @@ mod tests {
         let original = spec(OperationId::from_bytes([92; 16]), 0)?;
         let owner = original.owner.authority();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        original.verify_owner(owner, &issuer.verifier(), &mut None)?;
+        original.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None)?;
         let foreign = Authority {
             kind: AggregateKind::Task,
             id: "foreign".into(),
         };
         let wrong_audience = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
         assert!(matches!(
-            original.verify_owner(owner, &wrong_audience.verifier(), &mut None),
+            original.verify_owner(owner, &wrong_audience.verifier(&mut None).expect("verifier copy"), &mut None),
             Err(Error::Unauthorized(_))
         ));
         assert!(matches!(
-            original.verify_owner(&foreign, &issuer.verifier(), &mut None),
+            original.verify_owner(&foreign, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
             Err(Error::Unauthorized(_))
         ));
         let mut json =
@@ -4081,14 +3945,14 @@ mod tests {
         let tampered: OperationSpec =
             serde_json::from_value(json).map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(matches!(
-            tampered.verify_owner(owner, &issuer.verifier(), &mut None),
+            tampered.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
             Err(Error::Unauthorized(_))
         ));
         let mut insufficient = original.clone();
         insufficient.owner_scope =
-            issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+            issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
-            insufficient.verify_owner(owner, &issuer.verifier(), &mut None),
+            insufficient.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
             Err(Error::Unauthorized(_))
         ));
         Ok(())
@@ -4166,14 +4030,14 @@ mod tests {
             id: "other".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let granted = issuer.root("declare", Capabilities::new(["operation:declare"]));
-        let empty = issuer.root("empty", Capabilities::new([] as [&str; 0]));
+        let granted = issuer.issue("declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
+        let empty = issuer.issue("empty", &Capabilities::new([] as [&str; 0]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
                 .declare_operation(
                     &owner,
                     &empty,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration.clone(),
                     IdempotencyKey::new("missing-capability")?,
                     None,
@@ -4186,7 +4050,7 @@ mod tests {
                 .declare_operation(
                     &other,
                     &granted,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration.clone(),
                     IdempotencyKey::new("wrong-audience")?,
                     None,
@@ -4201,7 +4065,7 @@ mod tests {
                 .declare_operation(
                     &owner,
                     &granted,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     declaration,
                     IdempotencyKey::new("wrong-owner")?,
                     None,
@@ -4252,7 +4116,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
+        let scope = issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         let parent = OperationId::from_bytes([56; 16]);
         declare(&mut coordinator, spec(parent, 0)?, "hierarchy-parent").await?;
         for (id, slot) in [(57_u8, "a"), (58_u8, "b")] {
@@ -4267,13 +4131,9 @@ mod tests {
             .observe_children(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
-                ChildOperationPageRequest {
-                    expected_revision: None,
-                    after_slot: None,
-                    maximum: 1,
-                },
+                None, None, 1,
              &mut None,)
             .await.map(|(page, _)| page)?;
         assert_eq!(first.entries.len(), 1);
@@ -4283,13 +4143,9 @@ mod tests {
             .observe_children(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
-                ChildOperationPageRequest {
-                    expected_revision: Some(first.revision),
-                    after_slot: first.next_after.as_deref(),
-                    maximum: 1,
-                },
+                Some(first.revision), first.next_after.as_deref(), 1,
              &mut None,)
             .await.map(|(page, _)| page)?;
         assert_eq!(second.entries.len(), 1);
@@ -4307,13 +4163,9 @@ mod tests {
                 .observe_children(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     parent,
-                    ChildOperationPageRequest {
-                        expected_revision: Some(first.revision),
-                        after_slot: first.next_after.as_deref(),
-                        maximum: 1,
-                    }
+                    Some(first.revision), first.next_after.as_deref(), 1
                 , &mut None)
                 .await.map(|(page, _)| page),
             Err(Error::Conflict(_))
@@ -4402,10 +4254,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "operation-control",
-            Capabilities::new(["operation:observe", "operation:cancel"]),
-        );
+        let scope = issuer.issue("operation-control", &Capabilities::new(["operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
         let parent = OperationId::from_bytes([31; 16]);
         let child = OperationId::from_bytes([32; 16]);
         let mut coordinator =
@@ -4420,7 +4269,7 @@ mod tests {
 
         assert_eq!(
             coordinator
-                .observe_operation(&owner, &scope, &issuer.verifier(), parent, &mut None).cloned()?
+                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent, &mut None).cloned()?
                 .phase,
             OperationPhase::WaitingForDependencies
         );
@@ -4428,7 +4277,7 @@ mod tests {
             .cancel_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 IdempotencyKey::new("cancel-control-tree")?,
                 true,
@@ -4448,7 +4297,7 @@ mod tests {
             .cancel_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 parent,
                 IdempotencyKey::new("cancel-control-tree")?,
                 true,
@@ -4460,7 +4309,7 @@ mod tests {
                 .cancel_operation(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     parent,
                     IdempotencyKey::new("cancel-control-tree")?,
                     false,
@@ -4471,19 +4320,19 @@ mod tests {
         let reopened = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         assert_eq!(
             reopened
-                .observe_operation(&owner, &scope, &issuer.verifier(), child, &mut None).cloned()?
+                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), child, &mut None).cloned()?
                 .outcome,
             Some(crate::Outcome::Cancelled)
         );
 
-        let observe_only = issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+        let observe_only = issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         let mut reopened = reopened;
         assert!(matches!(
             reopened
                 .cancel_operation(
                     &owner,
                     &observe_only,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     child,
                     IdempotencyKey::new("unauthorized-cancel")?,
                     false,
@@ -4684,7 +4533,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+        let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 1,
             total_tasks: 1,
@@ -4696,7 +4545,7 @@ mod tests {
             .declare_operation(
                 &owner,
                 &signed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(root, 0)?,
                 IdempotencyKey::new(key)?,
                 None,
@@ -4706,7 +4555,7 @@ mod tests {
             .configure_session(
                 &owner,
                 &signed,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 root,
                 limits,
                 IdempotencyKey::new(format!(
@@ -4722,7 +4571,7 @@ mod tests {
                 .declare_session(
                     &owner,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     spec(root, 0)?,
                     limits,
                     IdempotencyKey::new(key)?
@@ -4756,17 +4605,14 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "admit",
-            Capabilities::new(["operation:observe", "operation:declare"]),
-        );
+        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "shared-worker".into(),
             available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
             labels: BTreeMap::new(),
         };
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None, &mut None)
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
             .await?
         else {
             return Err(Error::NotFound("owned pull".into()));
@@ -4780,7 +4626,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None, &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
                 .await?,
             WorkPull::Idle
         ));
@@ -4823,7 +4669,7 @@ mod tests {
         declare(&mut coordinator, other, "foreign-blocked").await?;
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, None, &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
                 .await?,
             WorkPull::Idle
         ));
@@ -4834,10 +4680,10 @@ mod tests {
                 .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
         );
         let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
-        let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
+        let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, None, &mut None)
+                .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -4860,10 +4706,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "admit",
-            Capabilities::new(["operation:observe", "operation:declare"]),
-        );
+        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "target-worker".into(),
             available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -4871,7 +4714,7 @@ mod tests {
         };
         let first_before = coordinator.scheduler().operation(first).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target), &mut None)
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target), &mut None)
             .await?
         else {
             return Err(Error::NotFound("target admission".into()));
@@ -4884,26 +4727,26 @@ mod tests {
         let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target), &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target), &mut None)
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(first), &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first), &mut None)
                 .await?,
             WorkPull::Idle
         ));
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(OperationId::from_bytes([63; 16])), &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(OperationId::from_bytes([63; 16])), &mut None)
                 .await,
             Err(Error::NotFound(_))
         ));
-        let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
+        let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &denied, &issuer.verifier(), &worker, Some(first), &mut None)
+                .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first), &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -4941,7 +4784,7 @@ mod tests {
         declare(&mut coordinator, spec(ready, 1)?, "target-ready").await?;
         let blocked_before = coordinator.scheduler().operation(blocked).cloned();
         let WorkPull::Claimed(lease) = coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(ready), &mut None)
+            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(ready), &mut None)
             .await?
         else {
             return Err(Error::NotFound("ready target behind blocked task".into()));
@@ -4957,7 +4800,7 @@ mod tests {
         );
         assert!(matches!(
             coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(blocked), &mut None)
+                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(blocked), &mut None)
                 .await?,
             WorkPull::Idle
         ));
@@ -5018,10 +4861,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root(
-                "admit",
-                Capabilities::new(["operation:observe", "operation:declare"]),
-            );
+            let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
             let worker = Worker {
                 id: "partial-worker".into(),
                 available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])),
@@ -5029,7 +4869,7 @@ mod tests {
             };
             assert!(matches!(
                 coordinator
-                    .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(operation), &mut None)
+                    .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation), &mut None)
                     .await?,
                 WorkPull::Idle
             ));
@@ -5053,16 +4893,9 @@ mod tests {
 
     #[tokio::test]
     async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result<()> {
-        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        use std::sync::atomic::Ordering;
         for (fault, targeted) in [(1, false), (2, false), (1, true), (2, true)] {
-            let provider = Arc::new(LostSessionAck {
-                inner: MemoryStream::default(),
-                lose_ack: AtomicBool::new(false),
-                hide_receipt: AtomicBool::new(false),
-                location_fault: AtomicU8::new(0),
-                hide_location_read: AtomicBool::new(false),
-                ..Default::default()
-            });
+            let provider = Arc::new(LostSessionAck::default());
             let client = provider.clone();
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -5073,10 +4906,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root(
-                "admit",
-                Capabilities::new(["operation:observe", "operation:declare"]),
-            );
+            let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
             let worker = Worker {
                 id: "fault-worker".into(),
                 available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -5094,7 +4924,7 @@ mod tests {
                 .pull_owned(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     &worker,
                     targeted.then_some(operation), &mut None)
                 .await?
@@ -5120,7 +4950,7 @@ mod tests {
                     .pull_owned(
                         &owner,
                         &scope,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         &worker,
                         targeted.then_some(operation), &mut None)
                     .await?
@@ -5139,7 +4969,7 @@ mod tests {
                     .pull_owned(
                         &owner,
                         &scope,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         &worker,
                         targeted.then_some(operation), &mut None)
                     .await?,
@@ -5289,7 +5119,7 @@ mod tests {
                                 path: execution_path(execution, &mut None)?,
                                 records: vec![OwnedBytes::from_static(b"stale dispatch")],
                             }],
-                            idempotency_key: stream_key_with_work("stale-idle-dispatch", &mut None).map(|(key, _)| key)?,
+                            idempotency_key: stream_key("stale-idle-dispatch".len(), format_args!("stale-idle-dispatch"), &mut None).map(|(key, _)| key)?,
                         })
                         .await?;
                     assert!(matches!(
@@ -5306,11 +5136,8 @@ mod tests {
     async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<()> {
         for hide_receipt in [false, true] {
             let client = Arc::new(LostSessionAck {
-                inner: MemoryStream::default(),
                 lose_ack: std::sync::atomic::AtomicBool::new(true),
                 hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
-                location_fault: std::sync::atomic::AtomicU8::new(0),
-                hide_location_read: std::sync::atomic::AtomicBool::new(false),
                 ..Default::default()
             });
             let mut coordinator =
@@ -5321,7 +5148,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+            let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
             let limits = crate::scheduler::SessionLimits {
                 active_tasks: 1,
                 total_tasks: 1,
@@ -5332,7 +5159,7 @@ mod tests {
                 .declare_session(
                     &owner,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     spec(root, 0)?,
                     limits,
                     IdempotencyKey::new("lost-root")?,
@@ -5352,7 +5179,7 @@ mod tests {
                     .declare_session(
                         &owner,
                         &signed,
-                        &issuer.verifier(),
+                        &issuer.verifier(&mut None).expect("verifier copy"),
                         spec(root, 0)?,
                         limits,
                         IdempotencyKey::new("lost-root")?
@@ -5405,8 +5232,8 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
-        let verifier = issuer.verifier();
+        let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let one = crate::scheduler::SessionLimits {
             active_tasks: 1,
             total_tasks: 2,
@@ -5417,7 +5244,7 @@ mod tests {
             model_steps: 2,
             ..one
         };
-        let unsigned = issuer.root("reader", Capabilities::default());
+        let unsigned = issuer.issue("reader", &Capabilities::default(), None, None, &mut None).expect("scope proof");
         assert!(
             left.declare_session(
                 &owner,
@@ -5581,7 +5408,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("budget", Capabilities::new(["operation:declare"]));
+        let scope = issuer.issue("budget", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 2,
             total_tasks: 3,
@@ -5605,7 +5432,7 @@ mod tests {
             .configure_session(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 root,
                 limits,
                 IdempotencyKey::new("configure-budget")?,
@@ -5713,7 +5540,7 @@ mod tests {
                 .configure_session(
                     &owner,
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     root,
                     crate::scheduler::SessionLimits {
                         model_steps: 2,
@@ -5727,7 +5554,7 @@ mod tests {
         let winner_id = winner.operation_id();
         let digest = *blake3::hash(&crate::contract::canonical_json_bytes(winner)?).as_bytes();
         let receipt = client
-            .inspect_idempotency(stream_key_with_work(key, &mut None).map(|(key, _)| key)?)
+            .inspect_idempotency(stream_key(key.len(), format_args!("{key}"), &mut None).map(|(key, _)| key)?)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?
             .ok_or_else(|| Error::NotFound("winning budget receipt".into()))?;
@@ -5943,7 +5770,7 @@ mod tests {
             entrypoint: entrypoint.clone(),
             value: serde_json::json!(2),
         });
-        let mut registry = ReducerRegistry::new();
+        let mut registry = ReducerRegistry::default();
         registry.register(Arc::clone(&original))?;
         assert!(matches!(
             registry.register(replacement),

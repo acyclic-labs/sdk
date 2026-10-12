@@ -5,7 +5,7 @@ use crate::{
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
-    core::{OriginalExtensionBinding, Reducer},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry},
     durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
     extension::ExtensionRuntime,
@@ -51,7 +51,7 @@ pub struct HarnessBuilder {
     capabilities: Vec<String>,
     limits: Limits,
     bound_scope: Option<RuntimeScope>,
-    original_extensions: Option<OriginalExtensionBinding>,
+    original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
@@ -1043,7 +1043,7 @@ mod tests {
             [],
             None,
         )?;
-        let agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+        let agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
         let inspect = TaskDefinition::live("example.registry", "1", move |context, (): ()| {
             let expected = schemas.clone();
             async move {
@@ -1217,7 +1217,7 @@ mod tests {
         crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result", None)?;
         assert_eq!(result.value, json!("original"));
         let projection = tool.projection.project(&invocation, &result)?;
-        tool.definition.validate_projection(&projection)?;
+        tool.definition.validate_projection(&projection, crate::conversation::Limits::default(), None)?;
         assert_eq!(
             projection,
             json!({"kind":"json","value":{"echo":"original"}})

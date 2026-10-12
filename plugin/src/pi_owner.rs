@@ -178,11 +178,7 @@ impl PiOwnerConfig {
         );
         let authority = PiRuntimeAuthority {
             verifier: issuer.verifier(),
-            signed: issuer.root_for_agent(
-                self.policy.agent,
-                self.policy.root_task.to_string(),
-                storage_grants,
-            ),
+            signed: issuer.issue(&self.policy.root_task.to_string(), &storage_grants, Some(self.policy.agent), None, &mut None).expect("scope proof"),
             scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
                 .with_run_limits(self.policy.run_limits)?,
             session_limits: self.policy.session_limits,
@@ -565,7 +561,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
             reason: "Pi root allocation provider identity differs",
         });
     }
-    let mut providers = EffectRegistry::new_with_native_work(work)?
+    let mut providers = EffectRegistry::new(Some(work))?
         .with_result_resolver_with_native_work(content.clone(), work)?;
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;

@@ -50,27 +50,6 @@ const OPERATION_WINDOWS: &str = "operation_windows";
 const MAXIMUM_WINDOW_BYTES: u64 = 64 * 1024;
 const OBJECT_KEY_BYTES: u64 = 66;
 
-struct WindowEncoder {
-    bytes: Vec<u8>,
-    maximum: usize,
-}
-
-impl std::io::Write for WindowEncoder {
-    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
-        if input.len() > self.maximum.saturating_sub(self.bytes.len()) {
-            return Err(std::io::Error::other(
-                "operation window exceeds its storage bound",
-            ));
-        }
-        self.bytes.extend_from_slice(input);
-        Ok(input.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 struct ObjectBatchState {
     work: WorkCounters,
     retained: u64,
@@ -503,11 +482,6 @@ struct PreparedAppend {
     work: WorkCounters,
 }
 
-struct ReplayBlob {
-    sequence: Sequence,
-    blob: Blob,
-}
-
 impl IndexedDbAuthorityStore {
     async fn read_window(
         &self,
@@ -551,9 +525,7 @@ impl IndexedDbAuthorityStore {
         }
         let copy_work = WorkCounters {
             bytes_copied: length,
-            // Conservatively admit JSON containers, strings and map nodes
-            // before parsing. An input byte can introduce at most one value;
-            // the retained control state and temporary copy fit this envelope.
+            // Admit a conservative envelope for JSON values, map nodes and the input copy.
             allocation_operations: length.saturating_add(1),
             peak_allocation_bytes: length.saturating_mul(128),
             items_examined: length,
@@ -1074,7 +1046,7 @@ impl IndexedDbAuthorityStore {
         authority_id: AuthorityId, after: Sequence, requested: u64, maximum_payload_bytes: u64,
         budget: WorkBudget, mut work: WorkCounters,
         cancellation: &CancellationToken,
-    ) -> Result<(Vec<ReplayBlob>, WorkCounters), AuthorityFailure> {
+    ) -> Result<(Vec<(Sequence, Blob)>, WorkCounters), AuthorityFailure> {
         let start = after.checked_next().map_err(|error| {
             AuthorityFailure::new(
                 AuthorityStoreError::Rejected(format!("replay cursor cannot advance: {error}")),
@@ -1085,7 +1057,7 @@ impl IndexedDbAuthorityStore {
             .checked_add(u64::from(after != Sequence::GENESIS))
             .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
         let handle_bytes = count
-            .checked_mul((size_of::<ReplayBlob>() as u64))
+            .checked_mul((size_of::<(Sequence, Blob)>() as u64))
             .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
         let allocation_work = work
             .checked_add(WorkCounters {
@@ -1157,10 +1129,7 @@ impl IndexedDbAuthorityStore {
                 }
                 returned_payload_bytes = next_payload;
             }
-            blobs.push(ReplayBlob {
-                sequence,
-                blob,
-            });
+            blobs.push((sequence, blob));
         }
         drop(transaction);
         Ok((blobs, work))
@@ -1170,7 +1139,7 @@ impl IndexedDbAuthorityStore {
         &self,
         authority_id: AuthorityId,
         after: Sequence,
-        blobs: Vec<ReplayBlob>,
+        blobs: Vec<(Sequence, Blob)>,
         head: Head,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -1182,7 +1151,7 @@ impl IndexedDbAuthorityStore {
             .checked_mul((size_of::<DurableCommit>() as u64))
             .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
         let blob_vector_bytes = (blobs.capacity() as u64)
-            .checked_mul((size_of::<ReplayBlob>() as u64))
+            .checked_mul((size_of::<(Sequence, Blob)>() as u64))
             .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
         let mut retained = vector_bytes
             .checked_add(blob_vector_bytes)
@@ -1200,8 +1169,8 @@ impl IndexedDbAuthorityStore {
             .try_reserve_exact(blobs.len())
             .map_err(|error| Self::backend(error, work))?;
         work = prospective;
-        for replay in blobs {
-            let encoded_length = Self::blob_length(&replay.blob, work)?;
+        for (sequence, blob) in blobs {
+            let encoded_length = Self::blob_length(&blob, work)?;
             let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
             let mut read_work =
                 authority_commit_read_work(encoded_length, payload_length)
@@ -1214,7 +1183,7 @@ impl IndexedDbAuthorityStore {
                 .map_err(|error| AuthorityFailure::new(error.into(), work))?;
             Self::admit(prospective, budget)?;
             let encoded = Self::materialize_blob(
-                &replay.blob,
+                &blob,
                 encoded_length,
                 cancellation,
                 prospective,
@@ -1222,13 +1191,13 @@ impl IndexedDbAuthorityStore {
             .await?;
             let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
                 .map_err(|error| Self::corrupt(error, prospective))?;
-            if commit.sequence != replay.sequence {
+            if commit.sequence != sequence {
                 return Err(Self::corrupt(
                     "authority commit key does not match its sequence",
                     prospective,
                 ));
             }
-            if replay.sequence == after {
+            if sequence == after {
                 previous_digest = commit.digest;
             } else {
                 if commit.previous_digest != previous_digest {
@@ -1349,13 +1318,12 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
         }
         let maximum = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
-        let mut encoder = WindowEncoder {
-            bytes: Vec::with_capacity(maximum),
-            maximum,
-        };
+        let mut encoded = vec![0; maximum];
+        let mut encoder = std::io::Cursor::new(encoded.as_mut_slice());
         serde_json::to_writer(&mut encoder, &replacement)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
-        let encoded = encoder.bytes;
+        let length = encoder.position() as usize;
+        encoded.truncate(length);
         let transaction = transaction(&self.database, &[OPERATION_WINDOWS], TransactionMode::Readwrite)
             .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
         if self
@@ -2437,10 +2405,7 @@ mod tests {
         const SENTINELS: &str = "legacy-sentinel-records";
         const KEY: &str = "original-record";
         const VALUE: &[u8] = b"obsolete-version-4-persisted-record";
-        Database::delete_by_name(NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(NAME).await?;
         let obsolete_version = DATABASE_VERSION + 3;
         let old = Database::open(NAME)
             .with_version(obsolete_version)
@@ -2499,20 +2464,14 @@ mod tests {
         assert_eq!(Uint8Array::new(&unchanged).to_vec().as_slice(), VALUE);
         drop(read);
         retained.close();
-        Database::delete_by_name(NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(NAME).await?;
         Ok(())
     }
 
     #[wasm_bindgen_test]
     async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-object-conformance-v2";
-        Database::delete_by_name(DATABASE_NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(DATABASE_NAME).await?;
         let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
             .await
             .map_err(js_error)?;
@@ -2632,10 +2591,7 @@ mod tests {
     #[wasm_bindgen_test]
     async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue> {
         const DATABASE_NAME: &str = "acyclic-fs-object-batch-v1";
-        Database::delete_by_name(DATABASE_NAME)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(DATABASE_NAME).await?;
         let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
             .await
             .map_err(js_error)?;
@@ -3208,11 +3164,13 @@ mod tests {
         Ok(())
     }
 
+    async fn delete_database(name: &str) -> Result<(), JsValue> {
+        Database::delete_by_name(name).map_err(js_error)?.await.map_err(js_error)?;
+        Ok(())
+    }
+
     async fn open_clean_authority(database_name: &str) -> Result<IndexedDbAuthorityStore, JsValue> {
-        Database::delete_by_name(database_name)
-            .map_err(js_error)?
-            .await
-            .map_err(js_error)?;
+        delete_database(database_name).await?;
         IndexedDbAuthorityStore::open(database_name, 1_024)
             .await
             .map_err(js_error)

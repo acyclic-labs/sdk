@@ -34,11 +34,11 @@ where
 {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if native {
-        return crate::contract::json_from_slice_bounded_native_trusted(
-            bytes, bounds, maximum_owned_bytes, code, value_schema, charge);
+        return crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            bytes, bounds, maximum_owned_bytes, Some(code), Some(value_schema), charge);
     }
     let _ = (native, code, value_schema);
-    crate::contract::json_from_slice_bounded_trusted(bytes, bounds, maximum_owned_bytes, charge)
+    crate::contract::json_from_slice_bounded(std::marker::PhantomData, bytes, bounds, maximum_owned_bytes, None, None, charge)
 }
 
 pub(crate) fn retain_original_decode_error<T>(
@@ -316,7 +316,7 @@ fn message_path(authority: &Authority, message: uuid::Uuid) -> Result<StreamPath
             "message index requires a conversation".into(),
         ));
     }
-    let path = authority.stream_path()?;
+    let path = authority.stream_path(&mut None)?;
     let suffix = path
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("message index authority path is invalid".into()))?;
@@ -331,7 +331,7 @@ fn message_head_path(authority: &Authority) -> Result<StreamPath> {
             "message head requires a conversation".into(),
         ));
     }
-    let path = authority.stream_path()?;
+    let path = authority.stream_path(&mut None)?;
     let suffix = path
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("message head authority path is invalid".into()))?;
@@ -346,7 +346,7 @@ fn message_sequence_path(authority: &Authority, sequence: u64) -> Result<StreamP
             "message sequence index requires a positive conversation sequence".into(),
         ));
     }
-    let path = authority.stream_path()?;
+    let path = authority.stream_path(&mut None)?;
     let suffix = path
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("message sequence authority path is invalid".into()))?;
@@ -356,7 +356,7 @@ fn message_sequence_path(authority: &Authority, sequence: u64) -> Result<StreamP
 }
 
 pub(crate) fn operation_path(authority: &Authority, operation: OperationId) -> Result<StreamPath> {
-    let path = authority.stream_path()?;
+    let path = authority.stream_path(&mut None)?;
     let suffix = path
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("aggregate operation path is invalid".into()))?;
@@ -387,7 +387,7 @@ pub(super) fn publication_path_with_work(
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     use std::fmt::Write as _;
-    let canonical = authority.stream_path_with_work(work)?;
+    let canonical = authority.stream_path(work)?;
     let canonical_capacity = canonical.capacity() as u64;
     let result = (|| {
         let suffix = canonical.strip_prefix("harness/v2/")
@@ -448,7 +448,7 @@ pub(super) fn canonical_publication_path_with_work(
     authority: &Authority,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
-    let text = authority.stream_path_with_work(work)?;
+    let text = authority.stream_path(work)?;
     let capacity = text.capacity() as u64;
     let result = (|| {
         if let Some(observer) = work.as_deref_mut() {
@@ -1250,7 +1250,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     return_event: bool,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<(Event, u64)>, u64)> {
-    verifier.verify_audience_with_work(authority, work)?;
+    verifier.verify_audience(authority, work)?;
     if maximum_bytes == 0 {
         return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "operation lookup byte bound must be positive"));
@@ -1341,7 +1341,7 @@ pub(super) async fn verify_operation_locator<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<((Event, u64), u64)> {
-    verifier.verify_audience_with_work(authority, work)?;
+    verifier.verify_audience(authority, work)?;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
         return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
@@ -1352,7 +1352,7 @@ pub(super) async fn verify_operation_locator<P: StreamProvider>(
             "operation location identity is invalid"));
     }
     let (canonical, path_owned) = if work.is_none() {
-        (StreamPath::new(authority.stream_path()?)?, 0)
+        (StreamPath::new(authority.stream_path(&mut None)?)?, 0)
     } else {
         canonical_publication_path_with_work(authority, work)?
     };
@@ -1436,7 +1436,7 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     let (path, owned) = if work.is_none() {
         (message_path(authority, message_id)?, 0)
     } else {
@@ -1462,7 +1462,7 @@ pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     let (path, owned) = if work.is_none() {
         (message_sequence_path(authority, sequence)?, 0)
     } else {
@@ -1491,7 +1491,7 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     if maximum_bytes == 0 {
         return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "message lookup byte bound must be positive"));
@@ -1610,7 +1610,7 @@ pub(crate) async fn latest_message<P: StreamProvider>(
     verifier: &AuthorityVerifier,
     maximum_bytes: u64,
 ) -> Result<Option<crate::conversation::ConversationMessage>> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     if maximum_bytes == 0 {
         return Err(Error::Invalid(
             "message lookup byte bound must be positive".into(),
@@ -1621,7 +1621,7 @@ pub(crate) async fn latest_message<P: StreamProvider>(
         Ok(0) => return Err(Error::Storage("message head is empty".into())),
         Ok(through) => through,
         Err(acyclic_stream::StreamError::NotFound) => {
-            return match acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority.stream_path()?)?.tail().await {
+            return match acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority.stream_path(&mut None)?)?.tail().await {
                 Ok(0) | Err(acyclic_stream::StreamError::NotFound) => Ok(None),
                 Ok(_) => Err(Error::Storage(
                     "message head is absent for a nonempty aggregate".into(),
@@ -1708,7 +1708,7 @@ mod native_publication_custody_tests {
                 .expect("original message query ledger");
             let mut io = native_work_io(&native).expect("original query custody");
             if mode == 2 { cancellation.cancel(); }
-            let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+            let error = find_message_with_work(&client, &authority, &issuer.verifier(&mut None).expect("verifier copy"),
                 message_id, 1, if mode == 1 { 1 } else { 1_048_576 },
                 &mut Some(&mut io)).await.expect_err("original provider record is corrupt or denied");
             match mode {
@@ -1727,7 +1727,7 @@ mod native_publication_custody_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original missing query ledger");
         let mut io = native_work_io(&native).expect("original query custody");
-        let absent = find_message_with_work(&client, &authority, &issuer.verifier(),
+        let absent = find_message_with_work(&client, &authority, &issuer.verifier(&mut None).expect("verifier copy"),
             missing_id, 1, 1_048_576, &mut Some(&mut io)).await?;
         assert_eq!(absent, (None, 0));
         assert_eq!(io.into_custody().bytes(), 0);
@@ -1755,7 +1755,7 @@ mod native_publication_custody_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original missing canonical ledger");
         let mut io = native_work_io(&native).expect("original query custody");
-        let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+        let error = find_message_with_work(&client, &authority, &issuer.verifier(&mut None).expect("verifier copy"),
             missing_id, 1, 1_048_576, &mut Some(&mut io)).await
             .expect_err("original canonical stream is absent");
         assert!(matches!(&error, Error::NativeBoundary {
@@ -1882,12 +1882,12 @@ mod native_publication_custody_tests {
             LifecycleState, Reducer, SchemaRegistry};
         let authority = Authority { kind: AggregateKind::Agent, id: "publication-custody".into() };
         let issuer = AuthorityIssuer::new("publication-test", [7; 32], authority.clone());
-        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let command = Command {
             operation_id: OperationId::from_bytes([91; 16]),
             idempotency_key: crate::IdempotencyKey("publication-custody".into()),
             expected_revision: 0,
-            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            scope: issuer.issue("root", &crate::Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
         };
@@ -1942,7 +1942,7 @@ mod native_publication_custody_tests {
         publication.verify_with_work(&envelope, &mut work)?;
         let mut replay_io = native_work_io(&native).expect("same original replay decoder");
         let (replayed, consumed) = bounded_operation_with_retained_quota(
-            &client, &authority, &issuer.verifier(), event.operation_id,
+            &client, &authority, &issuer.verifier(&mut None).expect("verifier copy"), event.operation_id,
             2 * acyclic_stream::MAX_RECORD_BYTES as u64, false, &mut Some(&mut replay_io),
         ).await?;
         let (replayed, replay_paid) = replayed.expect("actual immutable locator resolves original event");
@@ -2096,19 +2096,19 @@ mod native_only_provider_tests {
         let ordinary = provider.clone();
         let authority = Authority { kind: AggregateKind::Agent, id: "native-only-reader".into() };
         let issuer = AuthorityIssuer::new("native-only", [29; 32], authority.clone());
-        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let command = Command {
             operation_id: OperationId::from_bytes([31; 16]),
             idempotency_key: crate::IdempotencyKey("native-only-reader".into()),
             expected_revision: 0,
-            scope: issuer.root("root", crate::Capabilities::new(["lifecycle:manage"])),
+            scope: issuer.issue("root", &crate::Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::TransitionLifecycle { to: LifecycleState::Active, reason: None },
         };
         let ApplyResult::Applied { event } = reducer.plan(&command)? else {
             panic!("fresh lifecycle event")
         };
-        let encoded = crate::wire_codec::encode_event(&authority, &event)?;
+        let encoded = crate::wire_codec::encode_event(&authority, &event, &mut None)?;
         let event_bytes = encoded.len() as u64;
         let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
         let request = publication.request(&ordinary,
@@ -2124,12 +2124,12 @@ mod native_only_provider_tests {
             idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-only-corrupt"))?,
         }).await?, CommitOutcome::Committed(_)));
         let client = Arc::new(NativeOnly(provider));
-        let reader = HistoryReader::new(&client, &authority, issuer.verifier())?;
+        let reader = HistoryReader::new(&client, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("finite original reader work");
         let mut io = native_work_io(&native).expect("original reader observer");
-        let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+        let cursor = reader.pin(0, Some(&mut io)).await?;
         assert_eq!(cursor.through_revision, 1);
         let page = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: event_bytes }, true,
@@ -2150,7 +2150,7 @@ mod native_only_provider_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original malformed locator work");
         let mut io = native_work_io(&native).expect("original malformed locator observer");
-        let error = find_message_with_work(&client, &authority, &issuer.verifier(),
+        let error = find_message_with_work(&client, &authority, &issuer.verifier(&mut None).expect("verifier copy"),
             corrupt_message, 1, 1_048_576, &mut Some(&mut io)).await
             .expect_err("real raw locator reaches the original guarded wire decoder");
         assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
@@ -2172,7 +2172,7 @@ mod native_only_provider_tests {
             let native = NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("separate finite denial work");
             let mut io = native_work_io(&native).expect("original denial observer");
-            let cursor = reader.pin_with_work(0, Some(&mut io)).await?;
+            let cursor = reader.pin(0, Some(&mut io)).await?;
             if maximum_bytes == 1 {
                 assert!(reader.read_page_with_work(&cursor,
                     HistoryReadLimits { maximum_events: 1, maximum_bytes }, false, Some(&mut io))

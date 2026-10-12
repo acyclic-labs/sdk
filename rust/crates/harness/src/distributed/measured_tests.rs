@@ -143,7 +143,7 @@ async fn historical_source(
     let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
     let declaration_scope = declaration.owner_scope.clone();
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(), declaration,
+    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(&mut None).expect("verifier copy"), declaration,
         IdempotencyKey::new(format!("task-admission:{operation}"))?,
     None,).await?;
     let time = coordinator.last_committed_at_ms;
@@ -156,7 +156,7 @@ async fn historical_source(
     append_source(client, 3, "original-started", SchedulerEvent::Started {
         operation_id: operation, fence: fence.clone(),
     }, time + 2).await?;
-    let scope = issuer.root("original-readonly-proof", crate::Capabilities::new(["operation:observe"]));
+    let scope = issuer.issue("original-readonly-proof", &crate::Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
     Ok((owner, issuer, scope, fence, time))
 }
 
@@ -185,7 +185,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
         .expect("original native ledger control");
     let mut observer = crate::store::history::native_work_io(&native)?;
     let proof = original_reservation_proof_with_work(
-        &client, &owner, &scope, &issuer.verifier(), operation, &original, &mut Some(&mut observer),
+        &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
     assert_eq!((&proof.1), &original);
@@ -214,7 +214,7 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         let cancellation = CancellationToken::new();
         let mut work = HistoryWork::new(BUDGET, &cancellation);
         let result = original_reservation_proof_with_work(
-            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+            &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
         ).await;
         assert!(if duplicate { matches!(result, Err(Error::Conflict(_))) }
             else { matches!(result, Err(Error::NotFound(_))) });
@@ -223,4 +223,3 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
     }
     Ok(())
 }
-
