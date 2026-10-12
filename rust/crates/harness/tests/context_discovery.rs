@@ -119,7 +119,7 @@ impl Fixture {
 
     fn journal(
         &self,
-        stream: acyclic_stream::StreamClient<acyclic_stream::MemoryStream>,
+        stream: std::sync::Arc<acyclic_stream::MemoryStream>,
         private: VolumeRef,
         scope: acyclic_harness::core::Scope,
     ) -> Result<TestJournal> {
@@ -127,7 +127,7 @@ impl Fixture {
             stream,
             self.host.clone(),
             &private,
-            &self.issuer.verifier(),
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
             &acyclic_harness::core::SchemaRegistry::new(),
             &scope,
             32_768, None,
@@ -163,10 +163,10 @@ impl Fixture {
         );
         host.create_volume(&volume).await?;
         let writer =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             32_768, None,
         )?);
@@ -356,7 +356,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     );
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        &fixture.issuer.verifier(),
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         32_768, None,
     )?;
@@ -536,7 +536,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
 #[tokio::test]
 async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     use acyclic_harness::{OperationId, executor::TurnInput};
-    use acyclic_stream::{MemoryStream, StreamClient};
+    use acyclic_stream::{MemoryStream};
     let fixture = Fixture::new().await?;
     fixture
         .put("AGENTS.md", b"original instructions", "root")
@@ -554,7 +554,7 @@ async fn durable_request_replay_retains_discovery_revision() -> Result<()> {
     let declaration = fixture.declaration();
     let snapshot = declaration.capture(fixture.reader.as_ref()).await?;
     let (private, scope) = fixture.journal_volume().await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = fixture.journal(stream.clone(), private.clone(), scope.clone())?;
     let provider = Arc::new(CapturingModel::default());
     let original_executor = executor(snapshot.clone(), provider.clone())?;

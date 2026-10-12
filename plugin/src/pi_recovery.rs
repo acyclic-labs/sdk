@@ -180,7 +180,7 @@ where
             let mut request = decode_recovery_value::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(
                 std::mem::take(&mut admission.0.input),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest, work)?;
-            request.0.validate()?;
+            request.0.validate(&mut None)?;
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()

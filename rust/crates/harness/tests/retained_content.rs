@@ -43,8 +43,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
 
     let host = FilesystemHost::new(
         Fs::local(options.clone())
@@ -87,7 +87,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         ]),
     );
     let attached_read =
-        ContentGrant::verify_file_read(&issuer.verifier(), &attached_scope, &admitted)?;
+        ContentGrant::verify_file_read(&issuer.verifier(&mut None).expect("verifier copy"), &attached_scope, &admitted)?;
     assert_eq!(
         host.read_content(&admitted, &attached_read, 64)
             .await?
@@ -100,7 +100,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             .is_err()
     );
     let attached_directory = ContentGrant::verify_directory_read(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &attached_scope,
         &volume,
         "messages",
@@ -124,7 +124,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
     );
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &attached_scope,
             &volume,
             VolumeOperation::Write,

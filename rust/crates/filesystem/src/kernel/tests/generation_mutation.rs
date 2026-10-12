@@ -352,7 +352,7 @@ fn collect_file_table_records(
     records: &mut BTreeMap<FileId, FileRecord>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)? {
+    match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
         FileTablePage::Leaf(values) => {
             for record in values {
                 if records.insert(record.file_id, record).is_some() {
@@ -2342,11 +2342,11 @@ impl AsyncObjectStore for NoGenerationCalls {
         panic!("denied generation entered ordinary probe");
     }
     async fn read_with_native_work(&self, _: ObjectId, _: u64, _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<crate::async_storage::NativeObjectRead, crate::storage::ObjectStoreError> {
+    -> Result<crate::storage::ObjectRead, crate::storage::ObjectStoreError> {
         panic!("denied generation entered original read");
     }
     async fn read_many_with_native_work(&self, _: &[crate::storage::ObjectReadRequest], _: &crate::NativeMaterializationWork, _: &CancellationToken)
-    -> Result<crate::async_storage::NativeObjectReadBatch, crate::storage::ObjectStoreError> {
+    -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
         panic!("denied generation entered original batch");
     }
     async fn put_hashed_with_native_work(&self, _: crate::storage::HashedObject, _: &crate::NativeMaterializationWork, _: &CancellationToken)

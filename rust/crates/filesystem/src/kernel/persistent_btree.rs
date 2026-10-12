@@ -63,10 +63,13 @@ pub(crate) trait Format: Send + Sync + 'static {
     where Self: Sized;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Child<K> {
-    pub(crate) first: K,
-    pub(crate) page: ObjectId,
+/// One authenticated child page and its exact lower-bound key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Child<K> {
+    /// Exact first key represented by the child subtree.
+    pub first: K,
+    /// Authenticated child page.
+    pub page: ObjectId,
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -24,38 +24,21 @@ use std::sync::Arc;
 mod mail;
 
 macro_rules! command_record {
-    ($($record:ty => $schema:ident),+ $(,)?) => {
+    ($($record:ty $(=> $schema:ident)?),+ $(,)?) => {
         $(impl super::PreparationRecord for $record {
-            fn maximum_slot_bytes() -> u64 {
-                super::fork_preparer::bounded_io::preparation_slot_bytes::<Self>()
-            }
-            fn diagnostic_label_bytes() -> u64 {
-                crate::contract::preparation_serde_diagnostic_label_bytes()
-            }
-            fn json_value_schema() -> crate::contract::JsonValueSchema {
+            $(fn json_value_schema() -> crate::contract::JsonValueSchema {
                 crate::contract::JsonValueSchema::$schema
-            }
+            })?
         })+
     };
 }
 
-impl super::PreparationRecord for PreparedTaskAdmitCommand {
-    fn maximum_slot_bytes() -> u64 {
-        super::fork_preparer::bounded_io::preparation_slot_bytes::<Self>()
-    }
-    fn diagnostic_label_bytes() -> u64 {
-        crate::contract::preparation_serde_diagnostic_label_bytes()
-    }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::PreparedTaskAdmitCommand
-    }
-}
-
 command_record!(
-    TimerTaskCommand => None, TaskObserveCommand => None,
-    TaskAdmitCommand => TaskAdmitCommand, ModelTaskCommand => ModelTaskCommand,
+    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand,
+    TaskAdmitCommand => TaskAdmitCommand,
+    PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
+    ModelTaskCommand => ModelTaskCommand,
     ToolTaskCommand => ToolTaskCommand,
-    TaskCancelCommand => None,
 );
 
 #[derive(Serialize, Deserialize)]

@@ -109,4 +109,4 @@ export type {
 } from "./contracts.js";
 
 export type * from "./compat.js";
-export type { AcyclicObserver, OperationEvent } from "./observe.js";
+export type { AcyclicObserver, OperationEvent } from "@acyclic-labs/actors/observe";

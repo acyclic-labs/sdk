@@ -135,9 +135,9 @@ impl WasmTaskRuntime {
         }
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let parent = StreamAggregate::open(&self.stream, caller_owner.reducer.authority().clone(),
-            caller_owner.issuer.verifier(), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
+            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
-        let snapshot = parent.reducer().snapshot_with_event_limit(1).map_err(js_error)?;
+        let snapshot = parent.reducer().snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let arguments: ForkToolArguments = from_js(arguments)?;
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
@@ -156,7 +156,7 @@ impl WasmTaskRuntime {
             None
         };
         let binding = recursive_fork_source(&self.runtime, self.filesystem.clone(), &self.stream,
-            &parent, caller_owner.issuer.verifier(), signed, &context, source, from_js(stream_provider)?,
+            &parent, caller_owner.issuer.verifier(&mut None).expect("verifier copy"), signed, &context, source, from_js(stream_provider)?,
             operation, &arguments,
             RecursiveForkConfig { child: config.child, child_project: config.child_project,
                 child_private: config.child_private, child_result_volume: config.child_result_volume,
@@ -183,9 +183,9 @@ impl WasmTaskRuntime {
         let signed: Scope = from_js(signed_scope)?;
         let context = self.recursive_caller(caller, from_js(fence)?, original_owner, &signed, &source).await?;
         let history_limits: HistoryReadLimits = from_js(history_limits)?;
-        let snapshot = original_owner.reducer.snapshot_with_event_limit(1).map_err(js_error)?;
+        let snapshot = original_owner.reducer.snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let head = snapshot.events.last().ok_or_else(|| js_error(Error::Unauthorized("fork source has no committed caller event".into())))?;
-        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier()).map_err(js_error)?;
+        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier(&mut None).expect("verifier copy")).map_err(js_error)?;
         let revision = original_owner.reducer.revision();
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),
@@ -202,7 +202,7 @@ impl WasmTaskRuntime {
             Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
         } else { None };
         let binding = restore_recursive_fork_source(self.filesystem.clone(), &self.stream,
-            &original_owner.reducer, original_owner.issuer.verifier(), signed, source.project,
+            &original_owner.reducer, original_owner.issuer.verifier(&mut None).expect("verifier copy"), signed, source.project,
             from_js(stream_provider)?, request, history_limits, source_read, resolver, &cancellation).await.map_err(js_error)?;
         Ok(WasmRecursiveForkSource { binding, filesystem: self.filesystem.clone(), caller, snapshot })
     }
@@ -239,7 +239,7 @@ impl WasmTaskRuntime {
         let admission = self.runtime.task_host().observe_admission(caller).await.map_err(js_error)?;
         let agent = owner.reducer.conversation().and_then(|conversation| conversation.agent)
             .ok_or_else(|| js_error(Error::Unauthorized("caller owner has no conversation agent".into())))?;
-        owner.issuer.verifier().verify(signed).map_err(js_error)?;
+        owner.issuer.verifier(&mut None).expect("verifier copy").verify(signed).map_err(js_error)?;
         if source.task != caller || signed.agent() != Some(agent)
             || source.private_volume.owner() != &crate::conversation::VolumeOwner::Agent(agent)
             || signed.capabilities().iter().any(|grant| !context.scope().grants().contains(grant)) {

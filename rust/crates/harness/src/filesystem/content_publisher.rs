@@ -37,7 +37,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "content publisher custody underflows"))?)?)
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "content publisher custody underflows"))?)?)
             }
             None => None,
         };
@@ -71,9 +71,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 }
 
 impl<A, O> ContentPublisher for FilesystemContentPublisher<A, O>
-where
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
+where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
     fn volume(&self) -> &VolumeRef { &self.volume }
 
@@ -96,10 +94,11 @@ where
 
     fn observe_staged_once<'a>(&'a self, operation_id: OperationId, maximum_bytes: u64,
         io: Option<&'a PreparationIo>)
-        -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        BoundedContentFuture::new(io, || async move {
+        -> Result<crate::conversation::BoundedContentFuture<'a, (Option<FileRef>, Option<crate::conversation::ContentHold<'a>>)>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let file = self.observe_publication(operation_id, maximum_bytes, io).await?;
-            let hold = io.map(|io| io.guard_owned(file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0))).transpose()?;
+            let bytes = file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0);
+            let hold = io.map(|io| io.guard_owned(bytes)).transpose()?;
             Ok((file, hold))
         })
     }
@@ -116,16 +115,18 @@ where
 
     fn stage<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>)
-        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
-        BoundedContentFuture::new(io, || async move {
-            let digest = super::fork_preparer_io::digest(path.as_bytes(), io)?;
+        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let hashing = acyclic_fs::WorkCounters { bytes_hashed: path.len() as u64, ..Default::default() };
+            if let Some(io) = io { io.preflight(hashing)?; }
+            let digest = blake3::hash(path.as_bytes());
+            if let Some(io) = io { io.charge(hashing)?; }
             let retry = IdempotencyKey::new(crate::contract::preparation_format(
                 format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), io)?)?;
             let retry_hold = io.map(|io| io.guard_owned(retry.as_str().len() as u64)).transpose()?;
-            let file = self.host.put_content_impl(&self.volume, &self.grant, path, bytes, media_type,
-                display_name, self.maximum_bytes, &retry, None, None, io, None, None).await?;
-            drop(retry);
-            drop(retry_hold);
+            let file = self.host.put_content_impl(&self.volume, &self.grant, path, bytes,
+                media_type, display_name, self.maximum_bytes, &retry, None, None, io, None, None).await?;
+            drop(retry); drop(retry_hold);
             let hold = io.map(|io| io.guard_owned(file.logical_owned_bytes()?)).transpose()?;
             Ok((file, hold))
         })

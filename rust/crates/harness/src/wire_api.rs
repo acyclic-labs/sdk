@@ -81,8 +81,8 @@ pub struct OperationControlRequest {
 impl OperationControlRequest {
     /// Verifies the signed scope against the host-selected owner trust root.
     pub fn authenticate(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
-        verifier.verify_audience(&self.owner)?;
-        verifier.verify(&self.scope)
+        verifier.verify_audience(&self.owner, &mut None)?;
+        verifier.verify(&self.scope, &mut None)
     }
 }
 
@@ -181,7 +181,7 @@ fn decode_control(
         owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?,
         Error::Invalid,
     )?;
-    owner.stream_path()?;
+    owner.stream_path(&mut None)?;
     let operation_id = OperationId::parse(operation_id)?;
     let scope = decode_scope(
         scope.ok_or_else(|| Error::Invalid("operation control scope is missing".into()))?,

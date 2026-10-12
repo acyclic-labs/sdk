@@ -47,7 +47,7 @@ use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
 };
 use acyclic_stream::{
-    LocalStream, LocalStreamLimits, StreamClient, StreamProvider, SystemUnixMillisClock,
+    LocalStream, LocalStreamLimits, StreamProvider, SystemUnixMillisClock,
     UnixMillisClock,
 };
 use futures::{future::BoxFuture, stream::BoxStream};
@@ -216,7 +216,7 @@ impl ModelProvider for InterruptedModel {
             .map_err(|error| Error::Invalid(error.to_string()))?
             .len();
         Ok(acyclic_harness::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(fixed)
                 .map_err(|_| Error::Invalid("synthetic framing exceeds u32".into()))?,
             message_tokens,
@@ -447,7 +447,7 @@ async fn worker_pinned_policy_model_binding_survives_reopen() -> Result<()> {
 }
 
 async fn resolve_worker_approval<P, A, O>(
-    stream: &StreamClient<P>,
+    stream: &std::sync::Arc<P>,
     filesystem: Arc<FilesystemHost<A, O>>,
     issuer: &AuthorityIssuer,
     owner_scope: acyclic_harness::core::Scope,
@@ -462,8 +462,8 @@ where
 {
     let aggregate = acyclic_harness::store::StreamAggregate::open(
         stream,
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
     )
     .await?;
@@ -479,8 +479,8 @@ where
     let interactions = FilesystemInteractionHost::new(
         stream.clone(),
         filesystem.clone(),
-        issuer.verifier().audience().clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         owner_scope.clone(),
         volume.clone(),
@@ -943,21 +943,21 @@ async fn worker_restart_with_options(
             if !reopened {
                 filesystem.create_volume(&volume).await?;
             }
-            let stream = StreamClient::new(Arc::new(
+            let stream = Arc::new(
                 LocalStream::open(&stream_root, LocalStreamLimits::default())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-            ));
+            );
             let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
                 filesystem.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536, None,
             )?);
             let reader = Arc::new(FilesystemContentVerifier::new(
                 filesystem.clone(),
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536, None,
             )?);
@@ -965,8 +965,8 @@ async fn worker_restart_with_options(
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
                         &stream,
-                        conversation_issuer.verifier().audience().clone(),
-                        conversation_issuer.verifier(),
+                        conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
+                        conversation_issuer.verifier(&mut None).expect("verifier copy"),
                         SchemaRegistry::new(),
                     )
                     .await?;
@@ -988,7 +988,7 @@ async fn worker_restart_with_options(
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 signed.clone(),
                 scope.clone(),
                 tasks.clone(),
@@ -1008,7 +1008,7 @@ async fn worker_restart_with_options(
             .await?;
             let runtime = if with_policy {
                 runtime.with_interaction_owner(
-                    conversation_issuer.verifier(),
+                    conversation_issuer.verifier(&mut None).expect("verifier copy"),
                     SchemaRegistry::new(),
                     conversation_scope.clone(),
                     volume.clone(),
@@ -1021,7 +1021,7 @@ async fn worker_restart_with_options(
                     stream.clone(),
                     filesystem.clone(),
                     volume.clone(),
-                    issuer.verifier(),
+                    issuer.verifier(&mut None).expect("verifier copy"),
                     signed.clone(),
                     scope.clone(),
                     tasks.clone(),
@@ -1354,8 +1354,7 @@ async fn worker_restart_with_options(
         }
         let lease = boxed_restart_phase(|| async {
             let lease = if !reopened && with_command {
-                let before = stream
-                    .stream("harness/v3/coordinator/events")?
+                let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v3/coordinator/events")?
                     .tail()
                     .await?;
                 assert!(matches!(
@@ -1363,8 +1362,7 @@ async fn worker_restart_with_options(
                     Err(Error::Invalid(_))
                 ));
                 assert_eq!(
-                    stream
-                        .stream("harness/v3/coordinator/events")?
+                    acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v3/coordinator/events")?
                         .tail()
                         .await?,
                     before
@@ -1545,8 +1543,7 @@ async fn worker_restart_with_options(
                         Err(Error::Conflict(_))
                     ));
                     assert_eq!(
-                        stream
-                            .stream(format!("harness/v3/mail/by-recipient/{task}"))?
+                        acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v3/mail/by-recipient/{task}"))?
                             .bounds()
                             .await?
                             .tail,
@@ -1775,8 +1772,7 @@ async fn worker_restart_with_options(
                 Err(Error::Unauthorized(_))
             ));
             assert!(
-                stream
-                    .stream(format!("harness/v3/mail/by-recipient/{task}"))?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v3/mail/by-recipient/{task}"))?
                     .bounds()
                     .await
                     .is_err()
@@ -1882,7 +1878,7 @@ async fn worker_restart_with_options(
             }
         }
         if with_timer {
-            let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
+            let timers = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/timers/{task}"))?;
             assert_eq!(timers.bounds().await?.tail, 72);
             if let Some(old) = &old_lease {
                 assert!(
@@ -2012,7 +2008,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
         private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
     ]));
-    let mut parent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    let mut parent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
     let driver = Arc::new(Driver(AtomicUsize::new(0)));
@@ -2025,10 +2021,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
-        let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+        let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
         host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
             &IdempotencyKey::new("base")?).await?;
-        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, &project, None)?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
         let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
         source_head = host.apply(&fork.workspace, Some(&fork.generation), &[WorkspaceMutation::PutFile {
@@ -2048,8 +2044,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
-        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
         assert_eq!(journal.admit(admission.clone()).await?, admission);
         let mut registry = MergeDriverRegistry::new();
         registry.register("review", driver.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -2069,8 +2065,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     assert!(calls > 0);
     for retry in 0..2 {
         let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
-        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
         assert_eq!(retained, admission);
         let records = journal.replay(0, 1).await?;
@@ -2078,10 +2074,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
         let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
-        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, &project, None)?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
         let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
-        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(), &denied, &project, None)?;
+        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
         let mut changed = candidate.clone();
         changed.plan.ours = candidate.plan.base;
@@ -2089,7 +2085,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let outcome = controller.apply_project_merge_candidate(&plan, operation, &candidate).await?;
         assert!(if retry == 0 { matches!(outcome, JoinOutcome::Applied(_)) } else { matches!(outcome, JoinOutcome::AlreadyApplied(_)) });
         if retry == 0 {
-            let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+            let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
             host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
                 &IdempotencyKey::new("concurrent")?).await?;
         }
@@ -2230,17 +2226,17 @@ async fn stock_restart_with_publication_fault(
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
-        let stream = StreamClient::new(stream_provider.clone());
+        let stream = stream_provider.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             &volume,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536, None,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
             filesystem.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536, None,
         )?);
@@ -2253,7 +2249,7 @@ async fn stock_restart_with_publication_fault(
             reader.clone(),
             authority.clone(),
             signed.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             tasks.clone(),
             machines.clone(),
@@ -2275,7 +2271,7 @@ async fn stock_restart_with_publication_fault(
             stream.clone(),
             filesystem.clone(),
             volume.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             signed.clone(),
             scope.clone(),
             tasks.clone(),
@@ -2517,7 +2513,7 @@ async fn stock_restart_with_publication_fault(
                     OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
                     &volume,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     &signed,
                     65_536, None,
                 )?;
@@ -2593,7 +2589,7 @@ async fn stock_restart_with_publication_fault(
                 .cancel_operation(
                     &authority,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
                     false,
@@ -2681,7 +2677,7 @@ async fn stock_restart_with_publication_fault(
                 .cancel_operation(
                     &authority,
                     &signed,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
                     false,
@@ -2760,11 +2756,11 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
             .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
         if phase == 0 { filesystem.create_volume(&volume).await?; }
-        let stream = StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?));
-        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(), signed.clone(),
+        let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
+        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
             scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(), &signed, 65536, None)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
             acyclic_harness::context::CompactionPolicy::Disabled);
         if phase == 0 {

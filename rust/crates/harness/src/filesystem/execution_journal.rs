@@ -240,7 +240,6 @@ struct Observation {
 }
 
 impl PreparationRecord for Observation {
-    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 {
         const PRIVATE_LABEL_BYTES: u64 = {
             let labels = [
@@ -667,7 +666,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(projection, &mut history.as_mut().map(
+        limits.validate_file(projection, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
@@ -680,7 +679,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(reference, &mut history.as_mut().map(
+        limits.validate_file(reference, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
@@ -734,7 +733,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_with_work(&mut history.as_mut().map(
+            limits.validate(&mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
@@ -896,7 +895,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 crate::wire::ErrorCode::Conflict, "canonical summary has no admitted request"))?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_file_with_work(&summary.output, &mut history.as_mut().map(
+            limits.validate_file(&summary.output, &mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             let bytes = match io {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1538,7 +1537,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "prepared model request custody underflow"))?)?),
                     _ => None,
                 };
-                if &prepared.manifest().request_digest != request_digest {
+                if &prepared.request_digest() != request_digest {
                     return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                         "model start digest differs from its retained request"));
                 }
@@ -1595,7 +1594,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "internal storage file is not public content"));
                 }
                 let mut work = io.history_io();
-                self.verifier.verify_with_work(&self.scope, &mut Some(&mut work))?;
+                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
                 if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
                     return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "exact file read is not granted"));
@@ -1626,12 +1625,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_model_content_with_io(&self, content: &ModelContent, io: Option<&PreparationIo>) -> Result<()>
     {
         let mut count = 0_usize;
-        content.visit_file_bindings(|_, _| {
+        for _ in content.file_refs() {
             super::fork_preparer_io::item(io, 0)?;
             count = count.checked_add(1).ok_or_else(||
                 super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference count overflow"))?;
-            Ok(())
-        })?;
+        }
         let references_hold;
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
@@ -1643,7 +1641,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             references_hold = None;
         }
         let mut references = Vec::with_capacity(count);
-        content.visit_file_bindings(|file, binding| {
+        for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
                 owner.validate_input_file(file, io)?;
             }
@@ -1651,8 +1649,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model content exceeds journal limit"));
             }
             references.push((file, binding));
-            Ok(())
-        })?;
+        }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
@@ -2524,7 +2521,7 @@ mod tests {
                 stream.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &crate::core::SchemaRegistry::new(),
                 &scope,
                 4096,
@@ -2666,21 +2663,21 @@ mod tests {
         );
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             4096, None,
         )?);
         let publisher = super::super::FilesystemContentPublisher::new(
             host.clone(),
             &volume,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             4096, None,
         )?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?
@@ -2852,7 +2849,7 @@ mod tests {
                 client.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &SchemaRegistry::new(),
                 &scope,
                 4096,

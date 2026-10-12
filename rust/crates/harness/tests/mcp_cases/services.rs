@@ -22,7 +22,7 @@ impl ModelProvider for ByteModel {
         Ok(ModelContextCapacity { context_tokens: 65_536, output_tokens: 1024 })
     }
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Ok(ModelTokenCount { request_digest: request.manifest().request_digest,
+        Ok(ModelTokenCount { request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(request.bytes().len()).map_err(|_| Error::Invalid("byte-model request overflow".into()))?,
             message_tokens: vec![0; request.request().messages.len()] })
     }
@@ -259,8 +259,8 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(), &signed, 8192, None)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(), &signed, 8192, None)?)),
+            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
+            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);

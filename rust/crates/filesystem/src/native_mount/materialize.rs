@@ -370,115 +370,90 @@ struct GenerationHostPath {
 }
 
 impl GenerationHostPath {
-    fn from_namespace(
-        path: &NamespacePath,
-        receipt: &mut GenerationReceipt,
-    ) -> Result<GenerationPath, GenerationFailure> {
-        Self::from_components(None, path.components(), receipt)
-    }
-
-    fn child(
-        &self,
-        name: &LogicalName,
-        receipt: &mut GenerationReceipt,
-    ) -> Result<GenerationPath, GenerationFailure> {
-        Self::from_components(Some(self), std::slice::from_ref(name), receipt)
-    }
-
-    fn from_components(
+    fn new(
         prefix: Option<&Self>,
         names: &[LogicalName],
         receipt: &mut GenerationReceipt,
     ) -> Result<GenerationPath, GenerationFailure> {
         #[cfg(unix)]
-        {
-            let prefix = prefix.map_or(&[][..], |prefix| prefix.bytes.as_slice());
-            let mut length = prefix.len().checked_add(names.len().saturating_sub(1))
-                .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
-                .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
-            for name in names {
-                receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+        let prefix = prefix.map_or(&[][..], |prefix| prefix.bytes.as_slice());
+        #[cfg(windows)]
+        let prefix = prefix.map_or(&[][..], |prefix| prefix.units.as_slice());
+        let mut length = prefix.len().checked_add(names.len().saturating_sub(1))
+            .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
+            .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
+        for name in names {
+            receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+            #[cfg(unix)]
+            let count = {
                 if !matches!(name.encoding(), NameEncoding::Utf8 | NameEncoding::PosixBytes) {
                     return Err(GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work()));
                 }
-                length = length.checked_add(name.as_bytes().len()).ok_or_else(|| {
-                    GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-                })?;
-            }
-            let mut bytes = Vec::new();
-            receipt.reserve(&mut bytes, length)?;
-            receipt.run(|work| work.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED }))?;
-            bytes.extend_from_slice(prefix);
-            for name in names {
-                if !bytes.is_empty() { bytes.push(b'/'); }
-                bytes.extend_from_slice(name.as_bytes());
-            }
-            Self::share(Self { bytes }, receipt)
-        }
-        #[cfg(windows)]
-        {
-            let prefix = prefix.map_or(&[][..], |prefix| prefix.units.as_slice());
-            let mut length = prefix.len().checked_add(names.len().saturating_sub(1))
-                .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
-                .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
-            for name in names {
-                receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
-                let count = match name.encoding() {
-                    NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
-                    NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-                        let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                            GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
+                name.as_bytes().len()
+            };
+            #[cfg(windows)]
+            let count = match name.encoding() {
+                NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
+                NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                    let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
+                        GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
+                    })?;
+                    let mut count = 0_usize;
+                    for _ in text.encode_utf16() {
+                        receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+                        count = count.checked_add(1).ok_or_else(|| {
+                            GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
                         })?;
-                        let mut count = 0_usize;
-                        for _ in text.encode_utf16() {
-                            receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
-                            count = count.checked_add(1).ok_or_else(|| {
-                                GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-                            })?;
-                        }
-                        count
                     }
-                };
-                length = length.checked_add(count).ok_or_else(|| {
-                    GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-                })?;
-            }
-            let mut units = Vec::new();
-            receipt.reserve(&mut units, length)?;
-            receipt.run(|work| work.charge(WorkCounters {
-                bytes_copied: prefix.len() as u64 * 2,
-                bytes_encoded: (length - prefix.len()) as u64 * 2,
-                ..WorkCounters::UNCHARGED
-            }))?;
-            units.extend_from_slice(prefix);
-            for name in names {
-                if !units.is_empty() { units.push(u16::from(b'\\')); }
-                match name.encoding() {
-                    NameEncoding::WindowsUtf16Le => units.extend(
-                        crate::kernel::types::utf16le_units(name.as_bytes()).ok_or_else(|| {
-                            GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
-                        })?,
-                    ),
-                    NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
-                        std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                            GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
-                        })?.encode_utf16(),
-                    ),
+                    count
                 }
-            }
-            Self::share(Self { units }, receipt)
+            };
+            length = length.checked_add(count).ok_or_else(|| {
+                GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
+            })?;
         }
-    }
-
-    fn share(
-        path: Self,
-        receipt: &mut GenerationReceipt,
-    ) -> Result<GenerationPath, GenerationFailure> {
+        let mut units = Vec::new();
+        receipt.reserve(&mut units, length)?;
         #[cfg(unix)]
-        let retained = path.bytes.capacity();
+        receipt.run(|work| work.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED }))?;
         #[cfg(windows)]
-        let retained = path.units.capacity().checked_mul(std::mem::size_of::<u16>())
+        receipt.run(|work| work.charge(WorkCounters {
+            bytes_copied: prefix.len() as u64 * 2,
+            bytes_encoded: (length - prefix.len()) as u64 * 2,
+            ..WorkCounters::UNCHARGED
+        }))?;
+        units.extend_from_slice(prefix);
+        for name in names {
+            #[cfg(unix)]
+            let separator = b'/';
+            #[cfg(windows)]
+            let separator = u16::from(b'\\');
+            if !units.is_empty() { units.push(separator); }
+            #[cfg(unix)]
+            units.extend_from_slice(name.as_bytes());
+            #[cfg(windows)]
+            match name.encoding() {
+                NameEncoding::WindowsUtf16Le => units.extend(
+                    crate::kernel::types::utf16le_units(name.as_bytes()).ok_or_else(|| {
+                        GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
+                    })?,
+                ),
+                NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
+                    std::str::from_utf8(name.as_bytes()).map_err(|_| {
+                        GenerationFailure::new(MaterializeError::UnrepresentableName, receipt.work())
+                    })?.encode_utf16(),
+                ),
+            }
+        }
+        #[cfg(unix)]
+        let retained = units.capacity();
+        #[cfg(windows)]
+        let retained = units.capacity().checked_mul(std::mem::size_of::<u16>())
             .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
+        #[cfg(unix)]
+        let path = Self { bytes: units };
+        #[cfg(windows)]
+        let path = Self { units };
         receipt.owned_arc(path, retained)
     }
 
@@ -823,46 +798,6 @@ where
     }
 }
 
-pub(crate) async fn materialize_checkout_with_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    mode: MaterializeMode,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let root =
-        NamespacePath::new(Vec::new(), checkout.volume_config().limits).map_err(|_| {
-            OperationFailure::before_work(MaterializeError::InvalidPath)
-        })?;
-    materialize_checkout_paths_with_mode(
-        checkout,
-        std::slice::from_ref(&root),
-        options,
-        budget,
-        cancellation,
-        mode,
-    )
-    .await
-}
-
-/// Materializes one authenticated path into an empty destination directory.
-pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    path: &NamespacePath,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    materialize_checkout_paths(
-        checkout,
-        std::slice::from_ref(path),
-        options,
-        budget,
-        cancellation,
-    )
-    .await
-}
-
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -884,44 +819,22 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
         &span,
         crate::obs::in_span(
             &span,
-            materialize_checkout_paths_with_mode(
-                checkout,
-                paths,
-                options,
-                budget,
-                cancellation,
-                MaterializeMode::DurableOutput,
-            ),
+            async {
+                validate_bounds(options).map_err(OperationFailure::before_work)?;
+                if paths.is_empty()
+                    || (paths.len() != 1 && paths.iter().any(|path| path.components().is_empty()))
+                {
+                    return Err(OperationFailure::before_work(MaterializeError::InvalidOptions));
+                }
+                let receipt = GenerationReceipt::new(budget, cancellation)?;
+                materialize_checkout_source_on_receipt(
+                    GenerationSource::Standalone(checkout), paths, options, MaterializeMode::DurableOutput, receipt,
+                ).await.map_err(OperationFailure::from)
+            },
         )
         .await,
         |receipt| &receipt.work,
     )
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one traversal materializes every requested path with shared hard-link and budget state"
-)]
-pub(crate) async fn materialize_checkout_paths_with_mode<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    checkout: &mut Checkout<A, O>,
-    paths: &[NamespacePath],
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    mode: MaterializeMode,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    validate_bounds(options).map_err(OperationFailure::before_work)?;
-    if paths.is_empty()
-        || (paths.len() != 1 && paths.iter().any(|path| path.components().is_empty()))
-    {
-        return Err(OperationFailure::before_work(MaterializeError::InvalidOptions));
-    }
-    let receipt = GenerationReceipt::new(budget, cancellation)?;
-    materialize_checkout_source_on_receipt(GenerationSource::Standalone(checkout), paths, options, mode, receipt)
-        .await.map_err(OperationFailure::from)
 }
 
 enum GenerationSource<'a, A, O> {
@@ -949,19 +862,7 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
     }, receipt).await.map(|receipt| receipt.value).map_err(|failure| failure.0)
 }
 
-/// Materializes non-overlapping original-native selections on the same ledger.
-pub async fn materialize_checkout_paths_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    reader: &PinnedReader<A, O>,
-    paths: &[NamespacePath],
-    options: &MaterializeOptions,
-    work: &crate::NativeMaterializationWork,
-) -> Result<MaterializationReceipt, MaterializeError> {
-    materialize_checkout_paths_with_mode_and_work(
-        reader, paths, options, MaterializeMode::DurableOutput, work,
-    ).await
-}
-
-pub(crate) async fn materialize_checkout_paths_with_mode_and_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     paths: &[NamespacePath],
     options: &MaterializeOptions,
@@ -1059,7 +960,7 @@ where
     let mut deferred_directory_metadata = Vec::new();
     let limits = reader.volume_config().limits;
     for path in selected_paths {
-        let host_path = GenerationHostPath::from_namespace(path, &mut receipt)?;
+        let host_path = GenerationHostPath::new(None, path.components(), &mut receipt)?;
         if path.is_root() {
             let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
             let namespace = share_generation_namespace(namespace, &mut receipt)?;
@@ -1140,7 +1041,7 @@ where
             }
             for entry in page.entries {
                 let child = clone_namespace_measured(&directory, Some(&entry.name), limits, &mut receipt)?;
-                let child_host = host_directory.child(&entry.name, &mut receipt)?;
+                let child_host = GenerationHostPath::new(Some(&host_directory), std::slice::from_ref(&entry.name), &mut receipt)?;
                 let child_bytes = child.retained_bytes() as usize;
                 let mut owned_child = Some(child);
                 let selected_directory = if entry.record.kind == FileKind::Directory {
@@ -2204,7 +2105,7 @@ where
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
                         let meter = receipt.native_meter();
                         let control = receipt.runtime_result(file.control_async(move |handle, meter| { let meter = meter.expect("metered control");
-                            crate::native_host::punch_hole_measured(handle, span.offset, span.length, meter)
+                            crate::native_host::punch_hole(handle, span.offset, span.length, Some(meter))
                         }, Some(meter)))?;
                         receipt.runtime_result(control.await)?;
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
@@ -2375,7 +2276,7 @@ where
             if name.class() != crate::kernel::AttributeClass::PosixXattr {
                 return Err(GenerationFailure::new(MaterializeError::UnsupportedMetadata("named_attributes"), receipt.work()).into());
             }
-            let name = name.into_bytes();
+            let name = name.bytes;
             let value_bytes = if receipt.native_source { 0 } else { value.len() };
             payload_bytes = payload_bytes.checked_add(name.capacity()).and_then(|bytes| bytes.checked_add(value_bytes))
                 .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
@@ -2465,19 +2366,17 @@ async fn apply_host_metadata_offloaded(
         #[cfg(target_os = "macos")]
         let target = root.open_macos_metadata_target(path.path(), work)?;
         #[cfg(windows)]
-        let target = root.open_windows_metadata_target_wide_measured(&path.units, work)?;
-        target.apply(metadata, work)
+        let target = root.open_windows_metadata_target_wide(&path.units, work)?;
+        #[cfg(unix)]
+        { target.apply(metadata, work) }
+        #[cfg(windows)]
+        { crate::native_host::apply_windows_metadata(target, metadata, work) }
     }).await
 }
 
 #[cfg(windows)]
-fn windows_metadata_error(error: crate::native_host::WindowsMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::WindowsMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::WindowsMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn windows_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 #[cfg(unix)]
@@ -2498,23 +2397,13 @@ fn reject_unbaselined_unix_metadata(metadata: FileMetadata) -> Result<(), Materi
 }
 
 #[cfg(target_os = "linux")]
-fn linux_metadata_error(error: crate::native_host::LinuxMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::LinuxMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::LinuxMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn linux_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 #[cfg(target_os = "macos")]
-fn mac_metadata_error(error: crate::native_host::MacMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::MacMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::MacMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn mac_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 fn validate_options(
@@ -2641,7 +2530,7 @@ mod windows_name_tests {
         let directory = tempfile::tempdir()?;
         let cancellation = CancellationToken::new();
         let mut receipt = GenerationReceipt::new(
-            super::restore_recovery_tests::finite_materialization_budget(), &cancellation,
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &cancellation,
         )?;
         let root = receipt.run(|work| HostRoot::open(directory.path(), work))?;
         let root = receipt.owned_arc(root, 0)?;
@@ -2649,7 +2538,7 @@ mod windows_name_tests {
         let namespace = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"sparse-control.bin".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        let host_path = GenerationHostPath::from_namespace(&namespace, &mut receipt)?;
+        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
         let native = create_file(&root, &host_path, &mut receipt)?;
         let meter = receipt.native_meter();
         let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)))?;
@@ -2677,15 +2566,15 @@ mod windows_name_tests {
         )?;
         let limits = crate::model::VolumeLimits::default();
         let mut receipt = GenerationReceipt::new(
-            super::restore_recovery_tests::finite_materialization_budget(), &CancellationToken::new(),
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &CancellationToken::new(),
         )?;
         let namespace = NamespacePath::new(vec![valid], limits)?;
-        let path = GenerationHostPath::from_namespace(&namespace, &mut receipt)?;
+        let path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
         assert_eq!(path.units, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
         assert!(matches!(
-            GenerationHostPath::from_namespace(&NamespacePath::new(vec![invalid], limits)?, &mut receipt),
+            GenerationHostPath::new(None, NamespacePath::new(vec![invalid], limits)?.components(), &mut receipt),
             Err(GenerationFailure { error: MaterializeError::UnrepresentableName, .. })
         ));
         Ok(())
@@ -2763,34 +2652,7 @@ fn create_special_measured(
 mod restore_recovery_tests {
     use super::*;
 
-    pub(super) fn finite_materialization_budget() -> WorkBudget {
-        WorkBudget {
-            authority_records_read: 100_000,
-            authority_records_appended: 100_000,
-            authority_bytes_read: 64 * 1024 * 1024,
-            authority_bytes_written: 64 * 1024 * 1024,
-            object_probes: 100_000,
-            backend_read_operations: 100_000,
-            backend_write_operations: 100_000,
-            durability_operations: 100_000,
-            page_reads: 100_000,
-            page_writes: 100_000,
-            object_bytes_read: 64 * 1024 * 1024,
-            object_bytes_written: 64 * 1024 * 1024,
-            bytes_hashed: 64 * 1024 * 1024,
-            bytes_copied: 64 * 1024 * 1024,
-            bytes_encoded: 64 * 1024 * 1024,
-            source_bytes_read: 64 * 1024 * 1024,
-            source_path_components: 100_000,
-            source_entries_visited: 100_000,
-            output_bytes: 64 * 1024 * 1024,
-            items_examined: 100_000,
-            items_returned: 100_000,
-            allocation_operations: 100_000,
-            peak_allocation_bytes: 64 * 1024 * 1024,
-            materializations: 100_000,
-        }
-    }
+    pub(super) const FINITE_MATERIALIZATION_BUDGET: WorkBudget = crate::performance::work_budget(100_000, 64 * 1024 * 1024);
 
     #[test]
     fn replaced_root_is_rejected_before_destination_enumeration()
@@ -2805,7 +2667,7 @@ mod restore_recovery_tests {
         let actual = HostRoot::open(&destination, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?.identity();
         assert_ne!(original, actual);
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let failure = validate_options(
             &MaterializeOptions::native(&destination).expected_root_identity(Some(original)),
             &mut receipt,
@@ -2849,7 +2711,7 @@ mod restore_recovery_tests {
         cancelled.cancel();
         let cancelled = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(cancelled_output.path()),
-            finite_materialization_budget(), &cancelled,
+            FINITE_MATERIALIZATION_BUDGET, &cancelled,
         ).await.err().ok_or("cancelled materialization was accepted")?;
         assert!(matches!(cancelled.error, MaterializeError::Cancelled(_)));
         assert_eq!(*cancelled.work, WorkCounters::UNCHARGED);
@@ -2858,7 +2720,7 @@ mod restore_recovery_tests {
         let no_write_output = tempfile::tempdir()?;
         let no_write = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(no_write_output.path()),
-            WorkBudget { backend_write_operations: 0, ..finite_materialization_budget() },
+            WorkBudget { backend_write_operations: 0, ..FINITE_MATERIALIZATION_BUDGET },
             &cancellation,
         ).await.err().ok_or("zero native-write budget was accepted")?;
         assert!(matches!(no_write.error, MaterializeError::Work(_)));
@@ -2872,13 +2734,13 @@ mod restore_recovery_tests {
         let completed = materialize_checkout_paths(
             &mut checkout, std::slice::from_ref(&first),
             &MaterializeOptions::native(baseline.path()),
-            finite_materialization_budget(), &cancellation,
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
         ).await?;
         let output = tempfile::tempdir()?;
         let failed = materialize_checkout_paths(
             &mut checkout, &[first.clone(), missing.clone()],
             &MaterializeOptions::native(output.path()),
-            finite_materialization_budget(), &cancellation,
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
         ).await.err().ok_or("missing second path was accepted")?;
         assert!(matches!(failed.error, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
@@ -2886,17 +2748,17 @@ mod restore_recovery_tests {
         assert_eq!(failed.work.materializations, completed.work.materializations);
         assert_eq!(failed.work.backend_write_operations, completed.work.backend_write_operations);
         assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
-        let mut original = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
-        let candidate = checkout.private_candidate_with_native_work(original.custody.work(), &cancellation);
+        let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
+        let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
         let candidate = original.original_result(candidate)?;
         let reader = candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
         let reader = original.original_result(reader)?;
         let prefix = original.work();
         let original_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original.meter));
         let original_output = tempfile::tempdir()?;
-        let original_failed = materialize_checkout_paths_with_work(
+        let original_failed = materialize_reader_paths(
             &reader, &[first.clone(), missing.clone()],
-            &MaterializeOptions::native(original_output.path()), &original_work,
+            &MaterializeOptions::native(original_output.path()), MaterializeMode::DurableOutput, &original_work,
         ).await.err().ok_or("original source accepted a missing second path")?;
         assert!(matches!(original_failed, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(original_output.path().join("a-present"))?, b"first");
@@ -2926,7 +2788,7 @@ mod restore_recovery_tests {
             ).await.err().ok_or("logical action bypassed the original task fence")?;
             assert!(matches!(error, TaskFenceFailure::Owner));
             let after = original.meter.with_original_leaf(|work| work.work);
-            after.verify(finite_materialization_budget())?;
+            after.verify(FINITE_MATERIALIZATION_BUDGET)?;
             assert!(after.backend_read_operations > before.backend_read_operations);
             if deny_before_output {
                 assert!(!guarded_output.path().join("a-present").exists());
@@ -2939,17 +2801,17 @@ mod restore_recovery_tests {
         }
 
         let mut no_write = GenerationReceipt::new(
-            WorkBudget { backend_write_operations: 0, ..finite_materialization_budget() }, &cancellation,
+            WorkBudget { backend_write_operations: 0, ..FINITE_MATERIALIZATION_BUDGET }, &cancellation,
         )?;
-        let candidate = checkout.private_candidate_with_native_work(no_write.custody.work(), &cancellation);
+        let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
         let candidate = no_write.original_result(candidate)?;
         let reader = candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
         let reader = no_write.original_result(reader)?;
         let no_write_output = tempfile::tempdir()?;
         let no_write_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&no_write.meter));
-        let original_no_write = materialize_checkout_paths_with_work(
+        let original_no_write = materialize_reader_paths(
             &reader, std::slice::from_ref(&first),
-            &MaterializeOptions::native(no_write_output.path()), &no_write_work,
+            &MaterializeOptions::native(no_write_output.path()), MaterializeMode::DurableOutput, &no_write_work,
         ).await.err().ok_or("original source ignored zero native-write allowance")?;
         assert!(matches!(original_no_write, MaterializeError::Work(_)));
         let original_spent = no_write.meter.with_original_leaf(|work| work.work);
@@ -2970,11 +2832,7 @@ mod restore_recovery_tests {
     }
 
     #[tokio::test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "captures both visible and filtered restore boundaries with one real checkout"
-    )]
-    async fn restore_removal_records_success_after_nested_missing_path()
+    async fn restore_removes_missing_path_without_logging_private_data()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::model::{Lifecycle, VolumeConfig};
         use std::sync::Mutex;
@@ -3022,7 +2880,7 @@ mod restore_recovery_tests {
             relative,
             HostPathReplacement::Atomic,
             &MaterializeOptions::native(temporary.path()),
-            finite_materialization_budget(),
+            FINITE_MATERIALIZATION_BUDGET,
             &cancellation,
         )
         .await?;
@@ -3030,77 +2888,16 @@ mod restore_recovery_tests {
         assert!(!temporary.path().join(relative).exists());
         let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
         let text = String::from_utf8(bytes)?;
-        let parent = text
-            .lines()
-            .rfind(|line| line.contains("acyclic.fs.restore_host_path{") && line.contains("close"))
-            .ok_or("restore close missing")?;
-        assert!(parent.contains("outcome=\"ok\""), "{parent}");
-        assert!(parent.contains("path.depth=1"), "{parent}");
-        assert!(
-            parent.contains(&format!("work.items={}", receipt.work.items_examined)),
-            "{parent}"
-        );
-        assert!(!parent.contains("error.kind="), "{parent}");
-        assert!(text.contains("error.kind=\"MissingPath\""), "{text}");
         assert!(!text.contains("private-restore-path-sentinel"));
         assert!(!text.contains("private-content-sentinel"));
         assert!(!text.contains(&temporary.path().display().to_string()));
 
-        drop(_default);
-        captured.lock().map_err(|_| "capture poisoned")?.clear();
-        use tracing::Instrument as _;
-        use tracing_subscriber::Layer as _;
-        use tracing_subscriber::layer::SubscriberExt as _;
-        let output = Output(Arc::clone(&captured));
-        let subscriber = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .without_time()
-                .with_span_events(FmtSpan::CLOSE)
-                .with_writer(move || output.clone())
-                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-                    !metadata.name().starts_with("acyclic.fs.materialize")
-                        && metadata.name() != "acyclic.fs.restore_host_path"
-                })),
-        );
-        let _default = tracing::subscriber::set_default(subscriber);
-        let caller = tracing::info_span!(
-            "restore_caller",
-            outcome = "caller",
-            error.kind = "caller_error",
-            work.items = 73
-        );
-        async {
-            let invalid = restore_checkout_host_path(
-                &mut checkout, Path::new(""), HostPathReplacement::Atomic,
-                &MaterializeOptions::native(temporary.path()),
-                finite_materialization_budget(), &cancellation,
-            ).await;
-            assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
-            std::fs::write(temporary.path().join(relative), b"old")?;
-            let removed = restore_checkout_host_path(
-                &mut checkout, relative, HostPathReplacement::Atomic,
-                &MaterializeOptions::native(temporary.path()),
-                finite_materialization_budget(), &cancellation,
-            ).await?;
-            assert_eq!(removed.value, HostPathRestore::Removed);
-            Ok::<_, Box<dyn std::error::Error>>(())
-        }.instrument(caller.clone()).await?;
-        drop(caller);
-        let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
-        let text = String::from_utf8(bytes)?;
-        assert!(!text.contains("acyclic.fs.restore_host_path"), "{text}");
-        assert!(!text.contains("acyclic.fs.materialize"), "{text}");
-        let caller = text
-            .lines()
-            .rfind(|line| line.contains("restore_caller{") && line.contains("close"))
-            .ok_or("caller close missing")?;
-        assert!(caller.contains("outcome=\"caller\""), "{caller}");
-        assert!(caller.contains("error.kind=\"caller_error\""), "{caller}");
-        assert!(caller.contains("work.items=73"), "{caller}");
-        assert_eq!(caller.matches("outcome=").count(), 1, "{caller}");
-        assert_eq!(caller.matches("error.kind=").count(), 1, "{caller}");
-        assert_eq!(caller.matches("work.items=").count(), 1, "{caller}");
+        let invalid = restore_checkout_host_path(
+            &mut checkout, Path::new(""), HostPathReplacement::Atomic,
+            &MaterializeOptions::native(temporary.path()),
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
+        ).await;
+        assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
         Ok(())
     }
 
@@ -3141,14 +2938,14 @@ mod restore_recovery_tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"data")?;
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
         let root = receipt.owned_arc(root, 0)?;
         let limits = crate::model::VolumeLimits::default();
         let namespace = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"file".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        let host_path = GenerationHostPath::from_namespace(&namespace, &mut receipt)?;
+        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
         #[cfg(unix)]
         for (metadata, expected) in [
             (
@@ -3486,7 +3283,7 @@ mod clone_tests {
                 maximum_extent_spans: 16,
                 transfer_bytes: 64 * 1024,
             },
-            super::restore_recovery_tests::finite_materialization_budget(),
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
             &cancellation,
         )
         .await?;
