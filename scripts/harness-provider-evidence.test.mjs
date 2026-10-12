@@ -35,7 +35,7 @@ test("the provider pass must also occur in the complete Rust package transcript"
 });
 
 // Registration is checked before Map construction so neither side can hide duplicates.
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { harnessCaseMarkers, registerCases, requireExecutedCase } from "./harness-conformance-cases.mjs";
 const suite = { cases: [{ name: "a", family: "harness" }, { name: "b", family: "harness" }] };
 const registrations = [["harness", "a", [["rust", "test_a"]]], ["harness", "b", [["e2e", "test_b"]]]];
@@ -63,18 +63,67 @@ test("locked Harness inventory owns exactly the executed requirements for every 
   }
 });
 
-test("Rust evidence requirements refer to current Harness test functions", () => {
+function rustTestNames(source, module) {
+  const tokens = source.match(/\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?:br|r)(#*)"[\s\S]*?"\1|b?"(?:\\[\s\S]|[^"\\])*"|'(?:\\.|[^'\\])'|[A-Za-z_]\w*|[^\s]/g) ?? [];
+  const scopes = [];
+  const names = new Set();
+  let testAttribute = false;
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.startsWith("//") || token.startsWith("/*")) continue;
+    if (token === "#" && tokens[index + 1] === "[") {
+      const start = index++;
+      let depth = 1;
+      while (depth && ++index < tokens.length) {
+        if (tokens[index] === "[") depth++;
+        if (tokens[index] === "]") depth--;
+      }
+      const attribute = tokens.slice(start, index + 1).join(" ");
+      testAttribute ||= /^#\s*\[\s*(?:tokio\s*:\s*:\s*)?test\s*(?:\([\s\S]*\))?\s*\]$/.test(attribute);
+      continue;
+    }
+    if (token === "{") scopes.push(tokens[index - 2] === "mod" ? tokens[index - 1] : null);
+    if (token === "}") scopes.pop();
+    if (token === "fn" && testAttribute && scopes.every(scope => scope !== null)) {
+      names.add([module, ...scopes, tokens[index + 1]].join("::"));
+    }
+    if (token !== "async" && token !== "pub") testAttribute = false;
+  }
+  return names;
+}
+
+test("Rust test inventory requires the attribute and every module segment", () => {
+  const source = `mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    #[allow(dead_code, reason = "nested [brackets] in an attribute")]
+    async fn required() {}
+    #[test]
+    fn synchronous() {}
+    fn helper() {}
+    mod nested { #[test] fn required() {} }
+  }
+  mod other { #[test] fn required() {} }
+  // #[test] fn comment() {}
+  const TEXT: &str = r#"mod tests { #[test] fn string() {} }"#;`;
+  assert.deepEqual([...rustTestNames(source, "executor")], [
+    "executor::tests::required", "executor::tests::synchronous",
+    "executor::tests::nested::required", "executor::other::required",
+  ]);
+  assert.equal(rustTestNames(source.replace('#[tokio::test(flavor = "current_thread")]', ""), "executor").has("executor::tests::required"), false);
+  assert.equal(rustTestNames(source.replace("mod tests", "mod renamed"), "executor").has("executor::tests::required"), false);
+});
+
+test("Rust evidence requirements refer to current Harness runnable tests", () => {
   const root = new URL("../rust/crates/harness/src/", import.meta.url);
-  const files = readdirSync(root, { recursive: true }).filter(path => path.endsWith(".rs"));
+  const modules = new Map();
   for (const [, , requirements] of harnessCaseMarkers) {
     for (const [runtime, name] of requirements) {
       if (runtime !== "rust") continue;
-      const parts = name.split("::");
-      const source = files.filter(path => {
-        const normalized = path.replaceAll("\\", "/");
-        return normalized === `${parts[0]}.rs` || normalized.startsWith(`${parts[0]}/`);
-      }).map(path => readFileSync(new URL(path.replaceAll("\\", "/"), root), "utf8")).join("\n");
-      assert.ok(new RegExp(`\\bfn\\s+${parts.at(-1)}\\s*(?:\\(|<)`).test(source), name);
+      const module = name.split("::")[0];
+      if (!modules.has(module)) {
+        modules.set(module, rustTestNames(readFileSync(new URL(`${module}.rs`, root), "utf8"), module));
+      }
+      assert.ok(modules.get(module).has(name), name);
     }
   }
 });
