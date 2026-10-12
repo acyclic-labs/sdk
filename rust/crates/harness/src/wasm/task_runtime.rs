@@ -4,6 +4,7 @@ use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
     wasm_limits, wasm_run_limits,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},

@@ -10,7 +10,7 @@ use crate::{
     registry::ComponentIdentity,
     runtime::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
-        DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord,
+        DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord, TaskStateProvider,
         TaskChildrenPage, TaskRegistry, ToolPolicy, read_granted,
         require_descendant_grant, validate_policy_identity, validate_task_schemas,
     },
@@ -5306,7 +5306,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 }
-
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     fn admit_owned<'a>(
         &'a self,
@@ -5372,34 +5371,12 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         Box::pin(async move { self.verify_owner(task_id, &fence, false, &mut None).await })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_dispatch_owner_with_native_work<'a>(
-        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
-            self.verify_owner(task, fence, false, &mut Some(&mut io)).await
-        })
-    }
-
     fn verify_execution_owner<'a>(
         &'a self,
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.verify_owner(task_id, &fence, true, &mut None).await })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_execution_owner_with_native_work<'a>(
-        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
-            self.verify_owner(task, fence, true, &mut Some(&mut io)).await
-        })
     }
 
     fn claim_model_dispatch<'a>(
@@ -5444,88 +5421,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         })
     }
 
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        self.policy.as_ref().map(|policy| policy.identity())
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn policy_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        work.charge(acyclic_fs::WorkCounters::default())?;
-        if let Some(policy) = &self.policy {
-            policy.supports_native_policy(work)?;
-            let identity = policy.identity_with_native_work(work)?;
-            let needed = (std::mem::size_of::<ComponentIdentity>() as u64)
-                .checked_add(identity.0.name.capacity() as u64)
-                .and_then(|bytes| bytes.checked_add(identity.0.version.capacity() as u64))
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "native policy identity custody overflows" })?;
-            if !identity.1.matches_work(work) || identity.1.bytes() < needed {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "policy identity differs from its original native metadata custody" });
-            }
-            if self.policy_binding.as_ref() != Some(&identity.0) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "durable policy implementation changed after native binding" });
-            }
-            drop(identity);
-        } else if self.policy_binding.is_some() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "native durable policy binding has no configured producer" });
-        }
-        Ok(self.policy_binding.as_ref())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execution_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        work.charge(acyclic_fs::WorkCounters::default())?;
-        Ok(None)
-    }
-
     fn supports_batch_cancellation(&self) -> bool {
         true
-    }
-
-    fn observe_admission<'a>(
-        &'a self,
-        task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
-            self.admission_with_work(operation_id, &mut None).await
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_admission_with_native_work<'a>(
-        &'a self, task: TaskId, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            CoordinatorTaskHost::observe_admission_with_native_work(self, task, work).await
-        })
-    }
-
-    fn children<'a>(
-        &'a self,
-        parent: TaskId,
-        expected_revision: Option<u64>,
-        after_slot: Option<String>,
-        maximum: usize,
-    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        Box::pin(async move {
-            let mut coordinator = self.coordinator.lock().await;
-            coordinator
-                .observe_children(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    OperationId::from_bytes(parent.into_bytes()),
-                    expected_revision, after_slot.as_deref(), maximum,
-                 &mut None,)
-                .await.map(|(page, _)| page)
-        })
     }
 
     fn reconcile_admission<'a>(
@@ -5749,6 +5646,118 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         })
     }
 
+    fn admit<'a>(
+        &'a self,
+        admission: TaskAdmissionRecord,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        Box::pin(async move { self.admit_record_with_work(admission, None, &mut None).await })
+    }
+}
+
+impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHost<P> {
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_dispatch_owner_with_native_work<'a>(
+        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let mut io = crate::store::history::native_work_io(work)?;
+            self.verify_owner(task, fence, false, &mut Some(&mut io)).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn verify_execution_owner_with_native_work<'a>(
+        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            let mut io = crate::store::history::native_work_io(work)?;
+            self.verify_owner(task, fence, true, &mut Some(&mut io)).await
+        })
+    }
+
+    fn policy_identity(&self) -> Option<ComponentIdentity> {
+        self.policy.as_ref().map(|policy| policy.identity())
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.charge(acyclic_fs::WorkCounters::default())?;
+        if let Some(policy) = &self.policy {
+            policy.supports_native_policy(work)?;
+            let identity = policy.identity_with_native_work(work)?;
+            let needed = (std::mem::size_of::<ComponentIdentity>() as u64)
+                .checked_add(identity.0.name.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(identity.0.version.capacity() as u64))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "native policy identity custody overflows" })?;
+            if !identity.1.matches_work(work) || identity.1.bytes() < needed {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "policy identity differs from its original native metadata custody" });
+            }
+            if self.policy_binding.as_ref() != Some(&identity.0) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "durable policy implementation changed after native binding" });
+            }
+            drop(identity);
+        } else if self.policy_binding.is_some() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                reason: "native durable policy binding has no configured producer" });
+        }
+        Ok(self.policy_binding.as_ref())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn execution_identity_with_native_work(
+        &self, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<&ComponentIdentity>> {
+        work.charge(acyclic_fs::WorkCounters::default())?;
+        Ok(None)
+    }
+
+    fn observe_admission<'a>(
+        &'a self,
+        task_id: TaskId,
+    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+        Box::pin(async move {
+            let operation_id = OperationId::from_bytes(task_id.into_bytes());
+            self.admission_with_work(operation_id, &mut None).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn observe_admission_with_native_work<'a>(
+        &'a self, task: TaskId, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
+        crate::NativeFutureBundle::new(work, || async move {
+            CoordinatorTaskHost::observe_admission_with_native_work(self, task, work).await
+        })
+    }
+
+    fn children<'a>(
+        &'a self,
+        parent: TaskId,
+        expected_revision: Option<u64>,
+        after_slot: Option<String>,
+        maximum: usize,
+    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
+        Box::pin(async move {
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator
+                .observe_children(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    OperationId::from_bytes(parent.into_bytes()),
+                    expected_revision, after_slot.as_deref(), maximum,
+                 &mut None,)
+                .await.map(|(page, _)| page)
+        })
+    }
+
     fn resume_scope<'a>(
         &'a self,
         task_id: TaskId,
@@ -5770,13 +5779,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
             Ok((scope, custody))
         })
-    }
-
-    fn admit<'a>(
-        &'a self,
-        admission: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async move { self.admit_record_with_work(admission, None, &mut None).await })
     }
 
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
