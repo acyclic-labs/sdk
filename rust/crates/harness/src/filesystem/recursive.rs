@@ -225,7 +225,8 @@ where
         return Err(Error::Invalid("current-source fork must not substitute a foreign-source token".into()));
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
+    let client = acyclic_stream::StreamClient::new(stream.clone());
+    let history = crate::store::HistoryReader::new(&client, parent.reducer().authority(), verifier.clone())?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
@@ -508,7 +509,8 @@ where
                 reason: "restored source differs from immutable operation approval" });
         }
     }
-    let reader = crate::store::HistoryReader::new_with_native_work(stream, parent.authority(), verifier, work)?;
+    let client = acyclic_stream::StreamClient::new(stream.clone());
+    let reader = crate::store::HistoryReader::new_with_native_work(&client, parent.authority(), verifier, work)?;
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);

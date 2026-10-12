@@ -702,7 +702,7 @@ impl MemoryHarnessStorage {
         );
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
-            &stream,
+            &acyclic_stream::StreamClient::new(stream.clone()),
             conversation.clone(),
             issuer.verifier(),
             SchemaRegistry::new(),

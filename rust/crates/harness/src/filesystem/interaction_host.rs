@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: Arc<P>,
+    stream: acyclic_stream::StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -214,7 +214,7 @@ where
             }
             None => None,
         };
-        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
+        Ok(Self { stream: acyclic_stream::StreamClient::new(stream), host, authority, verifier, schemas, owner_scope, private_volume,
             maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
