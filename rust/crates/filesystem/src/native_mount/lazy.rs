@@ -340,26 +340,28 @@ impl<'w> MountSyncWork<'w> {
         Ok(())
     }
 
-    async fn sync_authored_recovery_guarded<A, O, F, Fut, E>(
-        &mut self, source: &CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
-        cancellation: &crate::CancellationToken, before_publication: &mut F,
-    ) -> Result<(), E>
+    fn sync_authored_recovery_guarded<'a, A, O, F, Fut, E>(
+        &'a mut self, source: &'a CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
+        cancellation: &'a crate::CancellationToken, before_publication: &'a mut F,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + Send + 'static,
     {
-        if self.observation == MountPublicationObservation::Qualified
-            && let Some(context) = source.retained_publication_context_with_carrier(
-                &mut self.meter, cancellation,
-            ).await?
-        {
-            self.sync_authored_context_guarded(
-                source, permit, true, cancellation, before_publication, context,
-            ).await
-        } else {
-            self.sync_authored_guarded(source, permit, true, cancellation, before_publication).await
-        }
+        Box::pin(async move {
+            if self.observation == MountPublicationObservation::Qualified
+                && let Some(context) = source.retained_publication_context_with_carrier(
+                    &mut self.meter, cancellation,
+                ).await?
+            {
+                self.sync_authored_context_guarded(
+                    source, permit, true, cancellation, before_publication, context,
+                ).await
+            } else {
+                self.sync_authored_guarded(source, permit, true, cancellation, before_publication).await
+            }
+        })
     }
 }
 
@@ -3772,38 +3774,40 @@ where
         ).await
     }
 
-    async fn finish_acknowledged_mount_custody_with_sync_work(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        work: &mut MountSyncWork<'_>, original: &super::NativeMountMeterWork,
+    fn finish_acknowledged_mount_custody_with_sync_work<'a, 'work>(
+        &'a self, operation: crate::OperationId, generation: crate::GenerationId,
+        work: &'a mut MountSyncWork<'work>, original: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<crate::LazySnapshotRef>, MountSourceError>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         let original = original.clone();
         let cancellation = cancellation.clone();
-        work.items(1)?;
-        let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
-        let Some(custody) = custody else {
-            return self.lazy.selected_import_snapshot_for_generation_with_work(
-                operation, generation, &original, &cancellation,
-            ).await.map(Some).map_err(native_lazy_error);
-        };
-        if custody.operation != operation { return Ok(None); }
-        let Some(proof) = custody.selected else { return Ok(None); };
-        if !custody.published {
-            if !self.authored.shared_checkout().resolve_acknowledged_original_with_native_work(
-                operation, generation, &original, &cancellation, Some(self.authored.cancellation()),
-                self.authored.publication_guard(),
-            ).await? {
-                return Ok(None);
+        Box::pin(async move {
+            work.items(1)?;
+            let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
+            let Some(custody) = custody else {
+                return self.lazy.selected_import_snapshot_for_generation_with_work(
+                    operation, generation, &original, &cancellation,
+                ).await.map(Some).map_err(native_lazy_error);
+            };
+            if custody.operation != operation { return Ok(None); }
+            let Some(proof) = custody.selected else { return Ok(None); };
+            if !custody.published {
+                if !self.authored.shared_checkout().resolve_acknowledged_original_with_native_work(
+                    operation, generation, &original, &cancellation, Some(self.authored.cancellation()),
+                    self.authored.publication_guard(),
+                ).await? {
+                    return Ok(None);
+                }
+                self.mark_mount_published(operation)?;
             }
-            self.mark_mount_published(operation)?;
-        }
-        let snapshot = self.lazy.selected_committed_snapshot_with_work(
-            operation, generation, proof.checkpoint, proof.source,
-            proof.source_config, proof.input, &original, &cancellation,
-        ).await.map_err(native_lazy_error)?;
-        self.finish_mount_custody(operation, work)?;
-        Ok(Some(snapshot))
+            let snapshot = self.lazy.selected_committed_snapshot_with_work(
+                operation, generation, proof.checkpoint, proof.source,
+                proof.source_config, proof.input, &original, &cancellation,
+            ).await.map_err(native_lazy_error)?;
+            self.finish_mount_custody(operation, work)?;
+            Ok(Some(snapshot))
+        })
     }
 
     /// Reads the actual mounted lazy identity, never an unpublished candidate.

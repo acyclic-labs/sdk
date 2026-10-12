@@ -209,9 +209,25 @@ impl MemoryStore {
         }
         #[cfg(feature = "filesystem")]
         let file_key = match io {
-            Some(io) => String::from_utf8(io.encode_json(
-                &(reference.volume(), reference.path(), reference.version()), io.remaining()?.bytes_encoded, true,
-            )?).map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))?,
+            Some(io) => {
+                let encoded = io.encode_json(
+                    &(reference.volume(), reference.path(), reference.version()), io.remaining()?.bytes_encoded, true,
+                )?;
+                let encoded_hold = io.guard_bytes(&encoded)?;
+                let text = std::str::from_utf8(encoded.as_ref())
+                    .map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))?;
+                let copy = acyclic_fs::WorkCounters { bytes_copied: text.len() as u64, ..Default::default() };
+                io.preflight(copy)?;
+                io.claim(text.len() as u64)?;
+                io.allocation_attempt(text.len() as u64)?;
+                let mut key = String::new();
+                key.try_reserve_exact(text.len()).map_err(Error::Allocation)?;
+                io.claim((key.capacity() - text.len()) as u64)?;
+                key.push_str(text);
+                io.charge(copy)?;
+                drop(encoded); drop(encoded_hold);
+                key
+            },
             None => Self::file_key(reference)?,
         };
         #[cfg(not(feature = "filesystem"))]

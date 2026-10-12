@@ -383,8 +383,8 @@ where
             let mut work = borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo);
             if let Some(owner) = owner {
-                owner.require_interaction_grant_with_work(&mut work)?;
-                owner.verify_with_work(false, &mut work).await?;
+                owner.require_interaction_grant(&mut work)?;
+                owner.verify(false, &mut work).await?;
             }
             let mut aggregate = self.aggregate(io).await?;
             let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
@@ -600,8 +600,13 @@ where
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
-            .map(|value| crate::core::native_interaction_state_clone_with_custody(value, &mut work)
-                .map(|(value, _)| value)).transpose()?;
+            .map(|(ticket, resolution)| -> Result<_> {
+                let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
+                let resolution = resolution.as_ref().map(|value|
+                    crate::core::native_interaction_resolution_clone_with_custody(value, &mut work)
+                        .map(|(value, _)| value)).transpose()?;
+                Ok((ticket, resolution))
+            }).transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(value)

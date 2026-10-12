@@ -772,7 +772,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             if event.revision == 1 && event.operation_id == bind_operation
                 && event.causal_parent.as_ref() == Some(&causal_parent)
                 && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent) {
-                owner.verify_dispatch_with_work(custody.work()).await?;
+                owner.verify(false, custody.work()).await?;
                 drop(event);
                 custody.release(event_owned)?;
                 drop(fork_event);

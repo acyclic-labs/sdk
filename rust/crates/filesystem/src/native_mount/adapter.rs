@@ -2824,7 +2824,8 @@ impl<A, O> SharedCheckout<A, O> {
 
     /// Claims queued changes under a short checkout hold, then applies each
     /// group without shared locks. Abandoned changes are discarded unapplied.
-    async fn drain_grouped(&self, cancellation: &CancellationToken)
+    fn drain_grouped<'a>(&'a self, cancellation: &CancellationToken)
+        -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -2856,7 +2857,6 @@ impl<A, O> SharedCheckout<A, O> {
                 self.apply_grouped_requests(requests, &cancellation).await;
             }
         })
-        .await;
     }
 
     /// Serializes external checkout access and excludes native callbacks,
@@ -4692,15 +4692,18 @@ impl<A, O> SharedCheckout<A, O> {
     /// Applies queued changes as one group, records exactly what each
     /// successful one changed, publishes once when the policy publishes
     /// every mutation, and answers every caller.
-    async fn apply_grouped_requests(
-        &self,
+    fn apply_grouped_requests<'a>(
+        &'a self,
         requests: Vec<GroupedRequest>,
-        cancellation: &CancellationToken,
-    ) where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let _ = self.apply_grouped_requests_measured(
-            requests, &mut work, cancellation, None,
-        ).await;
+        cancellation: &'a CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+    where A: AsyncAuthorityStore, O: AsyncObjectStore {
+        Box::pin(async move {
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
+            let _ = self.apply_grouped_requests_measured(
+                requests, &mut work, cancellation, None,
+            ).await;
+        })
     }
 
     async fn apply_grouped_requests_measured(
@@ -10381,51 +10384,54 @@ impl<A, O> CheckoutMountSource<A, O> {
         ).await.map(|(ack, _)| ack)
     }
 
-    async fn sync_async_with_permit_carrier_guarded_publication<F, Fut, E>(
-        &self, permit: crate::PublicationPermit, force: bool,
-        carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
-        cancellation: &CancellationToken, before_publication: &mut F,
+    fn sync_async_with_permit_carrier_guarded_publication<'a, 'work, F, Fut, E>(
+        &'a self, permit: crate::PublicationPermit, force: bool,
+        carrier: &'a mut NativeDemandCarrier<'work>,
+        view: &'a mut super::view_ledger::ViewLedgerAdmission,
+        cancellation: &'a CancellationToken, before_publication: &'a mut F,
         operation_context: Option<crate::Digest>,
         operation_evidence: Option<acyclic_stream::OwnedBytes>,
         snapshot_context: Option<crate::lazy_workspace::NativeSnapshotContext>,
-        acknowledged: &mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
-        accounting_failure: &mut Option<MountSourceError>,
-    ) -> Result<(NativeSourcePublicationAck, Option<crate::lazy_workspace::NativePublicationSnapshot>), E>
+        acknowledged: &'a mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
+        accounting_failure: &'a mut Option<MountSourceError>,
+    ) -> Pin<Box<dyn Future<Output = Result<(NativeSourcePublicationAck,
+        Option<crate::lazy_workspace::NativePublicationSnapshot>), E>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + Send + 'static,
     {
-        use super::lazy::mount_demand_error;
-        carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
-        self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-        match carrier {
-            NativeDemandCarrier::Borrowed(work) => self.checkout.settle_pending_measured(
-                work, view, cancellation, Some(&self.cancellation),
-            ).await?,
-            NativeDemandCarrier::Shared(meter) => self.checkout.settle_pending_with_meter(
-                meter, cancellation, Some(&self.cancellation),
-            ).await?,
-            NativeDemandCarrier::Native(original) => self.checkout.settle_pending_with_native_work(
-                original, cancellation, Some(&self.cancellation),
-            ).await?,
-        }
-        let source_guard = self.publication_guard();
-        let caller_guard = before_publication.clone();
-        let mut guarded = move |original: &crate::NativeMaterializationWork| {
-            let mut source_guard = source_guard.clone();
-            let mut caller_guard = caller_guard.clone();
-            let original = original.clone();
-            async move {
-                source_guard(&original).await.map_err(E::from)?;
-                caller_guard(&original).await
+        Box::pin(async move {
+            use super::lazy::mount_demand_error;
+            carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
+            self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
+            match carrier {
+                NativeDemandCarrier::Borrowed(work) => self.checkout.settle_pending_measured(
+                    work, view, cancellation, Some(&self.cancellation),
+                ).await?,
+                NativeDemandCarrier::Shared(meter) => self.checkout.settle_pending_with_meter(
+                    meter, cancellation, Some(&self.cancellation),
+                ).await?,
+                NativeDemandCarrier::Native(original) => self.checkout.settle_pending_with_native_work(
+                    original, cancellation, Some(&self.cancellation),
+                ).await?,
             }
-        };
-        self.checkout.seal_original_with_carrier_guarded_context(
-            permit, force, carrier, cancellation, Some(&self.cancellation), &mut guarded,
-            operation_context, operation_evidence, snapshot_context, acknowledged, accounting_failure,
-        ).await
+            let source_guard = self.publication_guard();
+            let caller_guard = before_publication.clone();
+            let mut guarded = move |original: &crate::NativeMaterializationWork| {
+                let mut source_guard = source_guard.clone();
+                let mut caller_guard = caller_guard.clone();
+                let original = original.clone();
+                async move {
+                    source_guard(&original).await.map_err(E::from)?;
+                    caller_guard(&original).await
+                }
+            };
+            self.checkout.seal_original_with_carrier_guarded_context(
+                permit, force, carrier, cancellation, Some(&self.cancellation), &mut guarded,
+                operation_context, operation_evidence, snapshot_context, acknowledged, accounting_failure,
+            ).await
+        })
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.
