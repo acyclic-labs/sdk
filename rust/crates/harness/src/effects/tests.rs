@@ -109,7 +109,7 @@ impl EffectProvider for Provider {
 #[tokio::test]
 async fn only_an_exact_provider_dispatch_can_be_attested() -> Result<()> {
     let provider = Arc::new(Provider(AtomicUsize::new(0)));
-    let mut registry = EffectRegistry::default().with_result_resolver(Arc::new(ResultResolver));
+    let mut registry = EffectRegistry::new(None, Some(Arc::new(ResultResolver)))?;
     registry.register(provider.clone(), None)?;
     let effect_id = EffectId::from_bytes([1; 16]);
     let attempt_id = EffectAttemptId::from_bytes([2; 16]);

@@ -212,7 +212,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("companion failure lost the real committed creation")?;
         assert_eq!(initial.id(), prior.value.id());
         assert_eq!(initial.workspace_id(), prior.value.workspace_id());
-        assert_eq!(store.inner.load_lazy_workspace(workspace.id()).await?.is_some(), stage == 4);
+        assert_eq!(store.inner.load_lazy_workspace(workspace.id(), &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?.is_some(), stage == 4);
         workspace.write_text("/later.txt", "later authored head").await?;
         let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial.id());
@@ -222,12 +222,10 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         assert_eq!(original.id(), initial.id());
         assert_eq!(original.workspace_id(), initial.workspace_id());
         assert_eq!(lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-        let state = store.inner.load_lazy_workspace(workspace.id()).await?
+        let state = store.inner.load_lazy_workspace(workspace.id(), &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?
             .ok_or("retry did not publish the companion binding")?;
         assert_eq!(state.source, reference);
-        let snapshot = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-            WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        )).await?;
+        let snapshot = lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new())).await?;
         assert_eq!(snapshot.workspace_id, original.workspace_id());
         assert_eq!(snapshot.authored_generation, head);
         assert_eq!(snapshot.source, reference);
@@ -257,9 +255,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let created = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await?;
     created.work.verify(budget)?;
     let (lazy, original) = created.value;
-    let initial = lazy.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
-        WorkBudget::UNBOUNDED, &cancellation,
-    )).await?;
+    let initial = lazy.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?;
     assert_eq!(initial.authored_generation, original.id());
     assert_eq!(initial.workspace_id, original.workspace_id());
     assert_eq!(initial.source, reference);
@@ -269,15 +265,15 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
     let advanced = source.invalidate(&mut acyclic_fs::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))?;
-    let rebind_work = acyclic_fs::lazy_workspace::LazyTreapWork::new(budget, &cancellation);
-    let result = lazy.rebind_source(&rebind_work).await;
-    let rebound = rebind_work.measured(result, |error, work| error.with_prior_work(work))?;
+    let mut accounting = budget.accounting(&cancellation);
+    let result = lazy.state(&mut accounting).await;
+    let rebound = budget.finish(result, &accounting)?;
     rebound.work.verify(budget)?;
-    assert_eq!(rebound.value.as_state().source, advanced);
+    assert_eq!(rebound.value.source, advanced);
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert_eq!(rebound.value.as_state().overlay, initial.overlay);
-    assert_eq!(rebound.value.as_state().shadows, initial.shadows);
+    assert_eq!(rebound.value.overlay, initial.overlay);
+    assert_eq!(rebound.value.shadows, initial.shadows);
     drop(original);
     drop(lazy);
     drop(source);
@@ -290,8 +286,8 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
     assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-    assert_eq!(recovered.value.0.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await?.source, advanced);
-    assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
+    assert_eq!(recovered.value.0.snapshot(&mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.source, advanced);
+    assert_eq!(store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.ok_or("lost binding")?.source, advanced);
 
     let foreign_source = Arc::new(NativeDemandSource::open(
         std::borrow::Cow::Owned(directory.path().to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(),
@@ -300,7 +296,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let rejected = async { let cancellation = &cancellation; let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "epoch-attachment", foreign_source, store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("foreign source adopted an original binding")?;
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
-    assert_eq!(store.load_lazy_workspace(workspace_id).await?.as_ref(), Some(rebound.value.as_state()));
+    assert_eq!(store.load_lazy_workspace(workspace_id, &mut WorkBudget::UNBOUNDED.accounting(&cancellation)).await?.as_ref(), Some(&rebound.value));
     assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())

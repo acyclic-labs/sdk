@@ -199,12 +199,9 @@ where
                 let file = self
                     .authored
                     .detached_file_from_record(
-                        *record,
-                        *metadata,
-                        ViewGate::callback_owner(),
+                        *record, *metadata, ViewGate::callback_owner(),
                         &mut adapter::NativeDemandCarrier::Native(work),
-                    )
-                    .await?;
+                    ).await?;
                 self.detached
                     .lock()
                     .map_err(|_| MountSourceError::Stale)?

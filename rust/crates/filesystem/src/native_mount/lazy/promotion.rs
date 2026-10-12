@@ -85,20 +85,36 @@ where
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
-        if installed.is_some() {
-            return authored
-                .shared_checkout()
-                .publish_mutation_with_carrier(
-                    carrier,
+        if installed == Some(super::super::MountPublication::PerMutation) {
+            let original = carrier.original_native_work();
+            let shared = match carrier {
+                adapter::NativeDemandCarrier::Shared(meter) =>
+                    Some(crate::NativeMaterializationWork::from_meter(Arc::clone(meter))),
+                _ => None,
+            };
+            let borrowed = original.is_none() && shared.is_none();
+            let prior_live = carrier.with_work(|work| work.live_allocation_bytes());
+            let work = match original.or(shared) {
+                Some(work) => work,
+                None => crate::NativeMaterializationWork::new(
+                    carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?,
                     &cancellation,
-                    Some(authored.cancellation()),
-                    authored.callback_guard(),
-                )
-                .await;
+                ).map_err(|(error, _)| MountSourceError::NativeWork(error))?,
+            };
+            let result = authored.shared_checkout().publish(
+                crate::PublicationPermit::Unrestricted, &work, &cancellation,
+                Some(authored.cancellation()),
+                &mut adapter::source_publication_guard(
+                    authored.callback_guard().cloned(), Some(authored.cancellation().clone()),
+                ), None, &mut None,
+            ).await.map_err(|(error, _)| error);
+            if borrowed {
+                carrier.with_work(|leaf| leaf.merge(work.receipt(), prior_live))
+                    .map_err(mount_demand_error)?;
+            }
+            return result;
         }
     }
     Err(MountSourceError::Stale)

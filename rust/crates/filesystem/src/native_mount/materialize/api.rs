@@ -31,12 +31,12 @@ where
     receipt
         .custody
         .grow((std::mem::size_of::<F>()) as u64)
-        .map_err(materialize_native_error)
+        .map_err(MaterializeError::from)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
     let custody = receipt
         .custody
         .split_off((std::mem::size_of::<F>()) as u64)
-        .map_err(materialize_native_error)
+        .map_err(MaterializeError::from)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
     let meter = receipt.custody.work().clone();
     let mut future = in_heap(move || create(receipt));
@@ -193,33 +193,39 @@ where
         let mut insertion = selected_paths.len();
         while insertion != 0 {
             let previous = selected_paths[insertion - 1];
-            receipt.run(|work| {
-                crate::native_host::NativeHostWork::started_io(work, WorkCounters {
+            receipt
+                .custody
+                .work()
+                .charge(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })
-            })?;
+                .map_err(MaterializeError::from)?;
             if previous <= path {
                 break;
             }
             insertion -= 1;
         }
-        receipt.run(|work| {
-            crate::native_host::NativeHostWork::started_io(work, WorkCounters {
+        receipt
+            .custody
+            .work()
+            .charge(WorkCounters {
                 bytes_copied: ((selected_paths.len() - insertion + 1)
                     * std::mem::size_of::<&NamespacePath>()) as u64,
                 ..WorkCounters::UNCHARGED
             })
-        })?;
+            .map_err(MaterializeError::from)?;
         selected_paths.insert(insertion, path);
     }
     for pair in selected_paths.windows(2) {
-        receipt.run(|work| {
-            crate::native_host::NativeHostWork::started_io(work, WorkCounters {
+        receipt
+            .custody
+            .work()
+            .charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
-        })?;
+            .map_err(MaterializeError::from)?;
         if matches!(pair, [ancestor, path] if path.is_within(ancestor)) {
             return Err(MaterializeError::OverlappingPaths.into());
         }
@@ -239,7 +245,7 @@ where
     for path in selected_paths {
         let host_path = materialize_host_path(None, path.components(), &mut receipt)?;
         if path.is_root() {
-            let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
+            let namespace = clone_namespace(path, None, limits, &mut receipt)?;
             let bytes = namespace.retained_bytes() as usize;
             let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(&mut pending, (namespace.clone(), host_path.clone()))?;
@@ -248,7 +254,11 @@ where
         }
         let record = match &mut source {
             GenerationSource::Standalone(checkout) => {
-                let remaining = receipt.run(|work| work.remaining())?;
+                let remaining = receipt
+                    .custody
+                    .work()
+                    .remaining()
+                    .map_err(MaterializeError::from)?;
                 let lookup = checkout
                     .lookup_no_follow(path, remaining, cancellation)
                     .await
@@ -291,7 +301,7 @@ where
         )
         .await?;
         let directory = if record.kind == FileKind::Directory {
-            let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
+            let namespace = clone_namespace(path, None, limits, &mut receipt)?;
             let bytes = namespace.retained_bytes() as usize;
             let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(
@@ -328,13 +338,17 @@ where
     receipt
         .custody
         .release(selection_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     while let Some((directory, host_directory)) = pending.pop() {
         let mut after: Option<LogicalName> = None;
         loop {
             let page = match &mut source {
                 GenerationSource::Standalone(checkout) => {
-                    let remaining = receipt.run(|work| work.remaining())?;
+                    let remaining = receipt
+                        .custody
+                        .work()
+                        .remaining()
+                        .map_err(MaterializeError::from)?;
                     let page = checkout
                         .list_directory_records(
                             &directory.0,
@@ -377,12 +391,7 @@ where
                 }
             }
             for entry in page.entries {
-                let child = clone_namespace_measured(
-                    &directory.0,
-                    Some(&entry.name),
-                    limits,
-                    &mut receipt,
-                )?;
+                let child = clone_namespace(&directory.0, Some(&entry.name), limits, &mut receipt)?;
                 let child_host = materialize_host_path(
                     Some(&host_directory.0),
                     std::slice::from_ref(&entry.name),
@@ -435,7 +444,7 @@ where
                     receipt
                         .custody
                         .release(child_bytes as u64)
-                        .map_err(materialize_native_error)?;
+                        .map_err(MaterializeError::from)?;
                 }
                 if let Some(previous) = after.replace(entry.name) {
                     let bytes = previous.retained_bytes();
@@ -443,13 +452,13 @@ where
                     receipt
                         .custody
                         .release(bytes as u64)
-                        .map_err(materialize_native_error)?;
+                        .map_err(MaterializeError::from)?;
                 }
             }
             receipt
                 .custody
                 .release(entry_bytes as u64)
-                .map_err(materialize_native_error)?;
+                .map_err(MaterializeError::from)?;
             if !page.has_more {
                 break;
             }
@@ -460,7 +469,7 @@ where
             receipt
                 .custody
                 .release(bytes as u64)
-                .map_err(materialize_native_error)?;
+                .map_err(MaterializeError::from)?;
         }
     }
     for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
@@ -512,7 +521,7 @@ where
                 receipt
                     .custody
                     .split_off(vector_bytes as u64)
-                    .map_err(materialize_native_error)?,
+                    .map_err(MaterializeError::from)?,
             );
             for relative in relatives {
                 let mut path = generation_namespace_from_host(
@@ -550,12 +559,14 @@ pub(super) fn generation_namespace_from_host(
     let limits = config.limits;
     let mut count = 0_usize;
     for component in relative.components() {
-        receipt.run(|work| {
-            crate::native_host::NativeHostWork::started_io(work, WorkCounters {
+        receipt
+            .custody
+            .work()
+            .charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })
-        })?;
+            .map_err(MaterializeError::from)?;
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(MaterializeError::InvalidPath);
         }
@@ -570,20 +581,22 @@ pub(super) fn generation_namespace_from_host(
     let mut names = Vec::new();
     receipt.reserve(&mut names, count)?;
     for component in relative.components() {
-        receipt.run(|work| {
-            crate::native_host::NativeHostWork::started_io(work, WorkCounters {
+        receipt
+            .custody
+            .work()
+            .charge(WorkCounters {
                 items_examined: 1,
                 source_path_components: 1,
                 ..WorkCounters::UNCHARGED
             })
-        })?;
+            .map_err(MaterializeError::from)?;
         let encoded = crate::native_name::host_name_bytes_with_native_work(
             component.as_os_str(),
             config.profile,
             limits.maximum_component_bytes,
             receipt.custody.work(),
         );
-        let ((encoding, bytes), custody) = encoded.map_err(materialize_native_error)?;
+        let ((encoding, bytes), custody) = encoded.map_err(MaterializeError::from)?;
         let bytes = receipt.accept_source(bytes, custody)?;
         let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
             .map_err(|_| MaterializeError::InvalidPath)?;
@@ -596,7 +609,7 @@ pub(super) fn generation_namespace_from_host(
         receipt
             .custody
             .split_off(retained as u64)
-            .map_err(materialize_native_error)?,
+            .map_err(MaterializeError::from)?,
     ))
 }
 
@@ -615,9 +628,12 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         ));
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(error, work)| OperationFailure::new(materialize_native_error(error), work))?;
+        .map_err(|(error, work)| OperationFailure::new(MaterializeError::from(error), work))?;
     let result = async {
         validate_bounds(options)?;
+        let mut receipt = GenerationReceipt::from_work(&native_work)?;
+        let path =
+            generation_namespace_from_host(relative, checkout.volume_config(), &mut receipt)?;
         let allocation_work = native_work.clone();
         let cleanup_allocation = allocation_work
             .claim(
@@ -625,23 +641,17 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                 u64::from((std::mem::size_of::<MaterializeError>() as u64) != 0),
                 crate::WorkCounters::UNCHARGED,
             )
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         let cleanup_slot = (
             Box::new(MaterializeError::InvalidOptions),
             cleanup_allocation,
         );
-        let (destination_root, relative) = {
-            let mut work = crate::NativeMaterializationWork::clone(&native_work);
-            validate_host_relative_measured(relative, &mut work)?;
-            (
-                allocation_work
-                    .path(&options.destination, None)
-                    .map_err(materialize_native_error)?,
-                allocation_work
-                    .path(relative, None)
-                    .map_err(materialize_native_error)?,
-            )
-        };
+        let destination_root = allocation_work
+            .path(&options.destination, None)
+            .map_err(MaterializeError::from)?;
+        let relative = allocation_work
+            .path(relative, None)
+            .map_err(MaterializeError::from)?;
         let expected_root_identity = options.expected_root_identity;
         let prepared = host_io(None, native_work.clone(), move |work| {
             prepare_restore(
@@ -654,7 +664,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         })
         .await
         .map_err(|error| {
-            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+            MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
                 error,
             ))
         })??;
@@ -677,25 +687,17 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             maximum_extent_spans: options.maximum_extent_spans,
             transfer_bytes: options.transfer_bytes,
         };
-        let materialized = async {
-            let mut receipt = GenerationReceipt::from_work(&native_work)?;
-            let path = generation_namespace_from_host(
-                &relative.0,
-                checkout.volume_config(),
-                &mut receipt,
-            )?;
-            materialize_source(
-                GenerationSource::Standalone(checkout),
-                std::slice::from_ref(&path.0),
-                &materialize_options,
-                MaterializeMode::DurableOutput,
-                receipt,
-                None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
-            )
-            .await
-            .map(|_| ())
-        }
-        .await;
+        let materialized = materialize_source(
+            GenerationSource::Standalone(checkout),
+            std::slice::from_ref(&path.0),
+            &materialize_options,
+            MaterializeMode::DurableOutput,
+            receipt,
+            None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+        )
+        .await
+        .map(|_| ());
+        drop(path);
         let stage_path = (materialize_options.destination, stage_allocation);
         host_io(Some(lock), native_work.clone(), move |work| {
             let mut cleanup_slot = cleanup_slot;
@@ -748,7 +750,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         })
         .await
         .map_err(|error| {
-            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+            MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
                 error,
             ))
         })?

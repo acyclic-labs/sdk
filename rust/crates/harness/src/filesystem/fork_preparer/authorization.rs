@@ -105,7 +105,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             "task preparation lacks its IO ledger",
                         )
                     })?
-                    .contains_capability(task.grants(), volume, "volume:read:"),
+                    .contains_capability(&task.origin().source_grants, volume, "volume:read:"),
                 None => Ok(true),
             }
         };
@@ -197,7 +197,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let bound = task.request();
             if task.origin().intended_child != bound.child.operation_id
                 || bound.child.parent != Some(task.origin().parent_task)
-                || task.grants() != &task.origin().source_grants
             {
                 return Err(reject(
                     crate::wire::ErrorCode::Unauthorized,
@@ -218,7 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 || bound.creation_grant != capability::FORK_PUBLISH
                 || bound.read_authorization != request.authorized_source
                 || request.preparation.maximum_inherited_bytes > bound.maximum_bytes
-                || bound.resources.len() != creation_volumes(request).count()
+                || bound.resources().count() != creation_volumes(request).count()
             {
                 return Err(reject(
                     crate::wire::ErrorCode::Unauthorized,
@@ -241,7 +240,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             drop(payload_hold);
             drop(encoded);
             drop(request_hold);
-            for (resource, volume) in bound.resources.iter().zip(creation_volumes(request)) {
+            for (resource, volume) in bound.resources().zip(creation_volumes(request)) {
                 let before = io.owned_bytes()?;
                 let resource_hold;
                 let actual = bounded_io::content_workspace(&self.host.provider, volume, Some(io))?

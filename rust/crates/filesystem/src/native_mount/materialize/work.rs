@@ -33,16 +33,14 @@ impl GenerationReceipt {
         cancellation: &CancellationToken,
     ) -> Result<Self, (MaterializeError, WorkCounters)> {
         let original = crate::NativeMaterializationWork::new(budget, cancellation)
-            .map_err(|(error, work)| (materialize_native_error(error), work))?;
+            .map_err(|(error, work)| (MaterializeError::from(error), work))?;
         Self::from_work(&original).map_err(|error| (error, original.receipt()))
     }
 
     pub(super) fn from_work(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, MaterializeError> {
-        let custody = work
-            .claim(0, 0, crate::WorkCounters::UNCHARGED)
-            .map_err(materialize_native_error)?;
+        let custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(Self {
             value: MaterializationReceipt::default(),
             custody,
@@ -53,10 +51,8 @@ impl GenerationReceipt {
         &self,
         operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, DemandError>,
     ) -> Result<T, MaterializeError> {
-        let result = operation(&mut crate::NativeMaterializationWork::clone(
-            self.custody.work(),
-        ));
-        result.map_err(materialize_demand_error)
+        let result = operation(&mut self.custody.work().clone());
+        result.map_err(MaterializeError::from)
     }
 
     pub(super) fn adopt(&mut self, bytes: usize) -> Result<(), MaterializeError> {
@@ -66,7 +62,7 @@ impl GenerationReceipt {
             .checked_add(bytes as u64)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         let result = self.custody.reconcile_capacity(retained);
-        result.map_err(materialize_native_error)
+        result.map_err(MaterializeError::from)
     }
 
     pub(super) fn owned_arc<T>(
@@ -75,16 +71,11 @@ impl GenerationReceipt {
         retained: usize,
     ) -> Result<Arc<(T, crate::NativeAllocation)>, MaterializeError> {
         let bytes = std::mem::size_of::<(T, crate::NativeAllocation)>();
-        self.custody
-            .grow(bytes as u64)
-            .map_err(materialize_native_error)?;
+        self.custody.grow(bytes as u64)?;
         let bytes = retained
             .checked_add(bytes)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        let custody = self
-            .custody
-            .split_off(bytes as u64)
-            .map_err(materialize_native_error)?;
+        let custody = self.custody.split_off(bytes as u64)?;
         Ok(Arc::new((value, custody)))
     }
 
@@ -99,7 +90,7 @@ impl GenerationReceipt {
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         let work = self.custody.work().clone();
         crate::core_state::reserve(values, required, &work, &mut self.custody)
-            .map_err(materialize_native_error)
+            .map_err(MaterializeError::from)
     }
 
     pub(super) fn push<T>(
@@ -122,7 +113,7 @@ impl GenerationReceipt {
     ) -> Result<T, MaterializeError> {
         let mut owned = (value, custody);
         let result = self.custody.absorb(&mut owned.1);
-        result.map_err(materialize_native_error)?;
+        result?;
         Ok(owned.0)
     }
 
@@ -138,55 +129,7 @@ impl GenerationReceipt {
     }
 }
 
-pub(super) fn materialize_runtime_error(error: std::io::Error) -> MaterializeError {
-    if let Some(work) = error
-        .get_ref()
-        .and_then(|error| error.downcast_ref::<WorkError>())
-    {
-        MaterializeError::Work(*work)
-    } else if let Some(demand) = error
-        .get_ref()
-        .and_then(|error| error.downcast_ref::<DemandError>())
-    {
-        match demand {
-            DemandError::Work(work) => MaterializeError::Work(*work),
-            DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
-            _ => MaterializeError::Io(error),
-        }
-    } else {
-        MaterializeError::Io(error)
-    }
-}
-
-pub(super) fn materialize_native_error(
-    error: crate::NativeTreeMaterializationError,
-) -> MaterializeError {
-    match error {
-        crate::NativeTreeMaterializationError::Work(error) => MaterializeError::Work(error),
-        crate::NativeTreeMaterializationError::Cancelled => {
-            MaterializeError::Cancelled(crate::CancellationError)
-        }
-        crate::NativeTreeMaterializationError::Io(error) => MaterializeError::Io(error),
-        error => MaterializeError::NativeWork(error),
-    }
-}
-
-pub(super) fn materialize_demand_error(error: DemandError) -> MaterializeError {
-    match error {
-        DemandError::Work(error) => MaterializeError::Work(error),
-        DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
-        DemandError::Io(error) => MaterializeError::Io(error),
-        #[cfg(target_os = "linux")]
-        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
-        #[cfg(target_os = "macos")]
-        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
-        #[cfg(windows)]
-        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
-        error => MaterializeError::Demand(error),
-    }
-}
-
-pub(super) fn clone_namespace_measured(
+pub(super) fn clone_namespace(
     path: &NamespacePath,
     extra: Option<&LogicalName>,
     limits: crate::model::VolumeLimits,
@@ -212,9 +155,9 @@ pub(super) fn clone_namespace_measured(
                 _ => crate::NativeTreeMaterializationError::InvalidLayout,
             })
         });
-    let (path, mut custody) = result.map_err(materialize_native_error)?;
+    let (path, mut custody) = result?;
     let result = receipt.custody.absorb(&mut custody);
-    result.map_err(materialize_native_error)?;
+    result?;
     Ok(path)
 }
 
@@ -235,11 +178,9 @@ pub(super) fn materialize_host_path(
         .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
         .ok_or(MaterializeError::Work(WorkError::Overflow))?;
     for name in names {
-        receipt.run(|work| {
-            work.started_io(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
+        receipt.custody.work().charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
         })?;
         #[cfg(unix)]
         let count = {
@@ -259,11 +200,9 @@ pub(super) fn materialize_host_path(
                     .map_err(|_| MaterializeError::UnrepresentableName)?;
                 let mut count = 0_usize;
                 for _ in text.encode_utf16() {
-                    receipt.run(|work| {
-                        work.started_io(WorkCounters {
-                            items_examined: 1,
-                            ..WorkCounters::UNCHARGED
-                        })
+                    receipt.custody.work().charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
                     })?;
                     count += 1;
                 }
@@ -277,19 +216,15 @@ pub(super) fn materialize_host_path(
     let mut units = Vec::new();
     receipt.reserve(&mut units, length)?;
     #[cfg(unix)]
-    receipt.run(|work| {
-        work.charge(WorkCounters {
-            bytes_copied: length as u64,
-            ..WorkCounters::UNCHARGED
-        })
+    receipt.custody.work().charge(WorkCounters {
+        bytes_copied: length as u64,
+        ..WorkCounters::UNCHARGED
     })?;
     #[cfg(windows)]
-    receipt.run(|work| {
-        work.started_io(WorkCounters {
-            bytes_copied: prefix.len() as u64 * 2,
-            bytes_encoded: (length - prefix.len()) as u64 * 2,
-            ..WorkCounters::UNCHARGED
-        })
+    receipt.custody.work().charge(WorkCounters {
+        bytes_copied: prefix.len() as u64 * 2,
+        bytes_encoded: (length - prefix.len()) as u64 * 2,
+        ..WorkCounters::UNCHARGED
     })?;
     units.extend_from_slice(prefix);
     for name in names {

@@ -1,55 +1,130 @@
 use super::*;
 use crate::demand::SourceDirectoryPage;
-use crate::kernel::{KernelAccounting, Owned, allocation::KernelOwnedAllocation};
 use std::ops::Bound;
 
-/// Sparse seek target for a lazily sourced regular file.
+/// Sparse seek target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LazySeekTarget {
-    /// First represented data byte.
+    /// First data byte.
     Data,
-    /// First hole byte, including the logical end of a dense source file.
+    /// First hole, including the end of a dense source file.
     Hole,
 }
-
-/// One merged directory entry.
+/// One merged authored/source directory entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LazyDirectoryEntry {
-    /// Exact profile-aware child name.
+    /// Profile-aware child name.
     pub name: LogicalName,
-    /// Observed or authored kind.
+    /// Exact observed kind.
     pub kind: SourceNodeKind,
-    /// Whether the authored checkout supplies the name.
+    /// Whether the authored checkout supplies the binding.
     pub authored: bool,
-    /// Source fact captured by this listing.
+    /// Source fact captured by this page.
     pub source: Option<SourceNode>,
-    /// Whether the observation index contains no child fact.
+    /// Whether no observation was previously recorded.
     pub unobserved: bool,
 }
-
-/// One bounded merged directory page.
-#[derive(Debug, Eq, PartialEq)]
+/// A bounded merged page and its continuation.
+#[derive(Debug)]
 pub struct LazyDirectoryPage {
     /// At most the requested number of visible entries.
     pub entries: Vec<LazyDirectoryEntry>,
-    /// Continuation, absent after the authored phase is exhausted.
+    /// Continuation for the same cut and directory.
     pub next: Option<LazyDirectoryCursor>,
+}
+/// Continuation tied to one immutable logical cut.
+pub struct LazyDirectoryCursor {
+    cut: LazySnapshotRef,
+    directory: NamespacePath,
+    phase: LazyDirectoryPhase,
+    allocation: KernelOwnedAllocation,
+}
+#[derive(Debug)]
+enum LazyDirectoryPhase {
+    Source(Option<SourceCursor>),
+    Authored(Option<LogicalName>),
+}
+impl std::fmt::Debug for LazyDirectoryCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyDirectoryCursor")
+            .field("cut", &self.cut)
+            .field("directory", &self.directory)
+            .field("phase", &self.phase)
+            .finish()
+    }
+}
+impl LazyDirectoryCursor {
+    /// Actual retained directory and continuation backing.
+    pub fn retained_bytes(&self) -> Result<u64, LazyWorkspaceError> {
+        self.directory
+            .retained_bytes()
+            .checked_add(match &self.phase {
+                LazyDirectoryPhase::Source(_) => 0,
+                LazyDirectoryPhase::Authored(n) => {
+                    n.as_ref().map_or(0, |n| n.retained_bytes() as u64)
+                }
+            })
+            .ok_or_else(|| crate::WorkError::Overflow.into())
+    }
+    /// Copies a continuation after funding its backing.
+    pub fn clone(&self, ctx: &mut KernelAccounting<'_>) -> Result<Self, LazyWorkspaceError> {
+        let (directory, guard) = self
+            .directory
+            .clone_with_accounting(ctx, cancellation(ctx))?;
+        let bytes = directory.retained_bytes();
+        let mut owned = Owned::new(directory, guard, bytes);
+        let phase = (|| {
+            Ok::<_, LazyWorkspaceError>(match &self.phase {
+                LazyDirectoryPhase::Source(Some(cursor)) => LazyDirectoryPhase::Source(Some(Clone::clone(cursor))),
+                LazyDirectoryPhase::Authored(Some(name)) => {
+                    let (name, mut guard) = name.clone_with_accounting(ctx, cancellation(ctx))?;
+                    owned.allocation.absorb(&mut guard)?;
+                    LazyDirectoryPhase::Authored(Some(name))
+                }
+                LazyDirectoryPhase::Source(None) => LazyDirectoryPhase::Source(None),
+                LazyDirectoryPhase::Authored(None) => LazyDirectoryPhase::Authored(None),
+            })
+        })();
+        match phase {
+            Ok(phase) => Ok(Self {
+                cut: self.cut,
+                directory: owned.value,
+                phase,
+                allocation: owned.allocation,
+            }),
+            Err(error) => {
+                owned.retire(ctx)?;
+                Err(error)
+            }
+        }
+    }
+    /// Drops the cursor before releasing its backing.
+    pub fn retire(self, ctx: &mut KernelAccounting<'_>) -> Result<(), LazyWorkspaceError> {
+        let bytes = self.retained_bytes()?;
+        drop(self.directory);
+        drop(self.phase);
+        Ok(crate::kernel::retire_allocation(
+            self.allocation,
+            bytes,
+            ctx,
+        )?)
+    }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
-    /// Reads the current merged directory under the supplied accounting context.
+    /// Lists the current merged directory.
     pub async fn list_directory(
         &self,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
         maximum: u32,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, KernelOwnedAllocation), LazyWorkspaceError> {
-        let state = self.state(accounting).await?;
+        let state = self.state(ctx).await?;
         let mut checkout = self
-            .checkout(crate::model::GenerationSelector::Head, accounting)
+            .checkout(crate::model::GenerationSelector::Head, ctx)
             .await?;
         let result = self
             .list_directory_at(
@@ -59,14 +134,44 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 cursor,
                 maximum,
                 None,
-                accounting,
+                ctx,
             )
             .await;
-        checkout.retire(accounting)?;
-        result.map(|(page, _, allocation)| (page, allocation))
+        checkout.retire(ctx)?;
+        result.map(|(page, _, guard)| (page, guard))
     }
-
-    /// Reads the merged directory against an unpublished mounted checkout.
+    /// Lists one frozen authored/source cut.
+    pub async fn list_directory_at_snapshot(
+        &self,
+        cut: LazySnapshotRef,
+        path: &str,
+        cursor: Option<LazyDirectoryCursor>,
+        maximum: u32,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx)?;
+        let state = LazyWorkspaceState::new(cut.workspace_id, cut.source, cut.overlay, cut.shadows);
+        let mut checkout = self
+            .checkout(
+                crate::model::GenerationSelector::Exact(cut.authored_generation),
+                ctx,
+            )
+            .await?;
+        let result = self
+            .list_directory_at(
+                &state,
+                &mut checkout.value,
+                path,
+                cursor,
+                maximum,
+                None,
+                ctx,
+            )
+            .await;
+        checkout.retire(ctx)?;
+        result
+    }
+    /// Lists a mounted unpublished checkout.
     #[cfg(feature = "native-mount")]
     pub(crate) async fn list_directory_in_checkout(
         &self,
@@ -75,14 +180,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         cursor: Option<LazyDirectoryCursor>,
         maximum: u32,
         mask: Option<(&[String], bool)>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, LazyWorkspaceState, KernelOwnedAllocation), LazyWorkspaceError>
     {
-        let state = self.state(accounting).await?;
-        let (page, _, allocation) = self
-            .list_directory_at(&state, checkout, path, cursor, maximum, mask, accounting)
+        let state = self.state(ctx).await?;
+        let (page, _, guard) = self
+            .list_directory_at(&state, checkout, path, cursor, maximum, mask, ctx)
             .await?;
-        Ok((page, state, allocation))
+        Ok((page, state, guard))
     }
 
     /// Lists the merged directory represented by the supplied state and checkout.
@@ -94,16 +199,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         cursor: Option<LazyDirectoryCursor>,
         maximum: u32,
         mask: Option<(&[String], bool)>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
         if maximum == 0 {
             return Err(LazyWorkspaceError::InvalidPageBound);
         }
-        let directory = self.namespace_path(path, accounting)?;
-        accounting.charge(WorkCounters {
-            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
-            ..WorkCounters::UNCHARGED
-        })?;
+        let directory = self.namespace_path(path, ctx)?;
+        let mut prior = None;
+        let mut phase = LazyDirectoryPhase::Source(None);
         let cut = LazySnapshotRef::new(
             self.workspace.id(),
             checkout.generation_id(),
@@ -111,374 +214,266 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             state.overlay,
             state.shadows,
         );
-        let mut prior = None;
-        let mut phase = LazyDirectoryPhase::Source(None);
         if let Some(cursor) = cursor {
             if cursor.cut != cut || cursor.directory != directory.value {
-                cursor.retire(accounting)?;
-                directory.retire(accounting)?;
+                cursor.retire(ctx)?;
+                directory.retire(ctx)?;
                 return Err(LazyWorkspaceError::StaleCursor);
             }
             let bytes = cursor.retained_bytes()?;
             phase = cursor.phase;
             prior = Some(Owned::new(cursor.directory, cursor.allocation, bytes));
         }
-        let result = self
-            .list_directory_phase(
-                state, checkout, path, directory, cut, phase, maximum, mask, accounting,
-            )
-            .await;
-        if let Some(prior) = prior {
-            prior.retire(accounting)?;
-        }
-        result
-    }
-
-    async fn list_directory_phase(
-        &self,
-        state: &LazyWorkspaceState,
-        checkout: &mut crate::Checkout<A, O>,
-        path: &str,
-        directory: Owned<NamespacePath>,
-        cut: LazySnapshotRef,
-        mut phase: LazyDirectoryPhase,
-        maximum: u32,
-        mask: Option<(&[String], bool)>,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
-        let mut source_used = false;
-        let cancellation = cancellation(accounting);
-        let authored = checkout
-            .lookup_no_follow_with_metadata_with_accounting(
-                &directory.value,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        if authored
-            .as_ref()
-            .is_some_and(|entry| entry.record.kind != FileKind::Directory)
-        {
-            directory.retire(accounting)?;
-            return Err(LazyWorkspaceError::NotDirectory);
-        }
-        let directory_authored = authored.is_some();
-        let hidden = self.tombstoned(state.overlay, path, accounting).await?;
-        if hidden && !directory_authored {
-            directory.retire(accounting)?;
-            return Err(LazyWorkspaceError::NotFound);
-        }
-        if matches!(phase, LazyDirectoryPhase::Source(None))
-            && (hidden || mask.is_some_and(|(_, opaque)| opaque))
-        {
-            phase = LazyDirectoryPhase::Authored(None);
-        }
-        if matches!(phase, LazyDirectoryPhase::Source(None))
-            && !directory.value.is_root()
-            && let Some(authored) = authored
-        {
-            source_used = true;
-            let source = self.source_lookup(state.source, path, accounting).await?;
-            let replaces = match source {
-                None => true,
-                Some(node) => {
-                    self.source_file_id(&node.file_identity, accounting)? != authored.record.file_id
-                }
-            };
-            if replaces {
-                let mut committed = self
-                    .checkout(crate::model::GenerationSelector::Head, accounting)
-                    .await?;
-                let record = committed
-                    .value
-                    .lookup_no_follow_with_metadata_with_accounting(
-                        &directory.value,
-                        accounting,
-                        cancellation,
-                    )
-                    .await;
-                committed.retire(accounting)?;
-                if record?.is_none_or(|record| record.record.file_id != authored.record.file_id) {
-                    phase = LazyDirectoryPhase::Authored(None);
-                }
+        let mut used = false;
+        let result = async {
+            let authored = checkout
+                .lookup_no_follow_with_metadata_with_accounting(
+                    &directory.value,
+                    ctx,
+                    cancellation(ctx),
+                )
+                .await?;
+            if authored
+                .as_ref()
+                .is_some_and(|entry| entry.record.kind != FileKind::Directory)
+            {
+                return Err(LazyWorkspaceError::NotDirectory);
             }
-        }
-        let mut source_absent = false;
-        loop {
-            match phase {
-                LazyDirectoryPhase::Source(source_cursor) => {
-                    source_used = true;
-                    if state.source != self.source.reference() {
-                        directory.retire(accounting)?;
-                        return Err(LazyWorkspaceError::StaleSource);
+            let authored_directory = authored.is_some();
+            let hidden = self.tombstoned(state.overlay, path, ctx).await?;
+            if hidden && !authored_directory {
+                return Err(LazyWorkspaceError::NotFound);
+            }
+            if matches!(phase, LazyDirectoryPhase::Source(None))
+                && (hidden || mask.is_some_and(|(_, opaque)| opaque))
+            {
+                phase = LazyDirectoryPhase::Authored(None);
+            }
+            if matches!(phase, LazyDirectoryPhase::Source(None))
+                && !directory.value.is_root()
+                && let Some(authored) = authored
+            {
+                used = true;
+                let source = self.source_lookup(state.source, path, ctx).await?;
+                let replaces = match source {
+                    None => true,
+                    Some(node) => {
+                        self.source_file_id(&node.file_identity, ctx)? != authored.record.file_id
                     }
-                    let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
-                    let cleanup_allocation = accounting.claim_owned(bytes, 1)?;
-                    let cleanup_slot = Box::<LazyWorkspaceError>::new_uninit();
-                    let answer = 'accounted: {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(original) = accounting.native_work() {
-                            break 'accounted {
-                                self.source
-                                    .list_page(
-                                        state.source,
-                                        &directory.value,
-                                        source_cursor,
-                                        maximum,
-                                        original,
-                                        cancellation,
-                                    )
-                                    .await
-                                    .map_err(LazyWorkspaceError::from)
-                            };
-                        }
-                        accept_receipt(
-                            self.source
-                                .list_page(
-                                    state.source,
-                                    &directory.value,
-                                    source_cursor,
-                                    maximum,
-                                    accounting.remaining()?,
-                                    cancellation,
-                                )
-                                .await,
-                            accounting,
-                        )
-                    };
-                    let mut page = match answer {
-                        Ok(page) => page,
-                        Err(LazyWorkspaceError::Demand(
-                            DemandError::Absent | DemandError::NotDirectory,
-                        )) => {
-                            drop(cleanup_slot);
-                            crate::kernel::retire_allocation(
-                                cleanup_allocation,
-                                bytes,
-                                accounting,
-                            )?;
-                            source_absent = true;
-                            phase = LazyDirectoryPhase::Authored(None);
-                            continue;
-                        }
-                        Err(error) => {
-                            drop(cleanup_slot);
-                            crate::kernel::retire_allocation(
-                                cleanup_allocation,
-                                bytes,
-                                accounting,
-                            )?;
-                            directory.retire(accounting)?;
-                            return Err(error);
-                        }
-                    };
-                    let retained = page.retained_bytes();
-                    let mut source_allocation = accounting.claim_owned(0, 0)?;
-                    let admitted = if accounting.standalone_parts().is_some() {
-                        let (claim, admitted) = accounting.record_actual_owned(retained)?;
-                        source_allocation = claim;
-                        admitted.map_err(LazyWorkspaceError::from)
-                    } else {
-                        Ok(())
-                    };
-                    let projection = match admitted {
-                        Ok(()) => {
-                            self.project_source_page(
-                                state,
-                                checkout,
-                                &directory.value,
-                                &page,
-                                maximum,
-                                mask,
-                                accounting,
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error),
-                    };
-                    let projection = match projection {
-                        Ok(entries) => {
-                            let accepted = page
-                                .publication
-                                .as_mut()
-                                .map_or(Ok(()), |publication| publication.accept(accounting));
-                            match accepted {
-                                Ok(()) => {
-                                    page.publication.take();
-                                    Ok(entries)
-                                }
-                                Err(error) => {
-                                    entries.retire(accounting)?;
-                                    Err(error.into())
-                                }
-                            }
-                        }
-                        Err(error) => Err(error),
-                    };
-                    let entries = match projection {
-                        Ok(entries) => entries,
-                        Err(primary) => {
-                            let rollback = page
-                                .publication
-                                .as_mut()
-                                .map_or(Ok(()), |publication| publication.abort(accounting));
-                            if let Err(cleanup) = rollback {
-                                let publication = page.publication.take();
-                                let primary = Box::write(cleanup_slot, primary);
-                                #[cfg(not(target_arch = "wasm32"))]
-                                let allocation = match cleanup_allocation {
-                                    KernelOwnedAllocation::NativeOriginal(allocation) => {
-                                        Some(allocation)
-                                    }
-                                    KernelOwnedAllocation::Standalone => None,
-                                };
-                                drop(page);
-                                crate::kernel::retire_allocation(
-                                    source_allocation,
-                                    retained,
-                                    accounting,
-                                )?;
-                                directory.retire(accounting)?;
-                                return Err(LazyWorkspaceError::SourcePageCleanup {
-                                    primary,
-                                    cleanup,
-                                    publication,
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    allocation,
-                                });
-                            }
-                            drop(page);
-                            crate::kernel::retire_allocation(
-                                source_allocation,
-                                retained,
-                                accounting,
-                            )?;
-                            drop(cleanup_slot);
-                            crate::kernel::retire_allocation(
-                                cleanup_allocation,
-                                bytes,
-                                accounting,
-                            )?;
-                            directory.retire(accounting)?;
-                            return Err(primary);
-                        }
-                    };
-                    drop(cleanup_slot);
-                    crate::kernel::retire_allocation(cleanup_allocation, bytes, accounting)?;
-                    let next = match page.next.take() {
-                        Some(cursor) => Some(LazyDirectoryPhase::Source(Some(cursor))),
-                        None if directory_authored => Some(LazyDirectoryPhase::Authored(None)),
-                        None => None,
-                    };
-                    drop(page);
-                    crate::kernel::retire_allocation(
-                        source_allocation,
-                        retained,
-                        accounting,
-                    )?;
-                    let cursor = if let Some(phase) = next {
-                        Some(LazyDirectoryCursor {
-                            cut,
-                            directory: directory.value,
-                            phase,
-                            allocation: directory.allocation,
-                        })
-                    } else {
-                        directory.retire(accounting)?;
-                        None
-                    };
-                    return Ok((
-                        LazyDirectoryPage {
-                            entries: entries.value,
-                            next: cursor,
-                        },
-                        source_used,
-                        entries.allocation,
-                    ));
-                }
-                LazyDirectoryPhase::Authored(after) => {
-                    let answer = checkout
-                        .list_directory_with_accounting(
+                };
+                if replaces {
+                    let mut committed = self
+                        .checkout(crate::model::GenerationSelector::Head, ctx)
+                        .await?;
+                    let original = committed
+                        .value
+                        .lookup_no_follow_with_metadata_with_accounting(
                             &directory.value,
-                            after.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
-                            maximum,
-                            accounting,
-                            cancellation,
+                            ctx,
+                            cancellation(ctx),
                         )
                         .await;
-                    let (page, allocation) = match answer {
-                        Ok(page) => page,
-                        Err(crate::FsError::NotFound) if !source_absent => {
-                            directory.retire(accounting)?;
-                            return Ok((
-                                LazyDirectoryPage {
-                                    entries: Vec::new(),
-                                    next: None,
-                                },
-                                source_used,
-                                accounting.claim_owned(0, 0)?,
-                            ));
-                        }
-                        Err(error) => {
-                            directory.retire(accounting)?;
-                            return Err(error.into());
-                        }
-                    };
-                    let retained = retained_directory_page_bytes(
-                        &page.entries,
-                        page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                    )?;
-                    let mut entries = Owned::allocate(page.entries.len(), accounting)?;
-                    for entry in &page.entries {
-                        let (name, mut claim) =
-                            entry.name.clone_with_accounting(accounting, cancellation)?;
-                        entries.bytes += name.retained_bytes() as u64;
-                        entries.allocation.absorb(&mut claim)?;
-                        entries.value.push(LazyDirectoryEntry {
-                            name,
-                            kind: source_kind(entry.kind),
-                            authored: true,
-                            source: None,
-                            unobserved: false,
-                        });
+                    committed.retire(ctx)?;
+                    if original?
+                        .is_none_or(|record| record.record.file_id != authored.record.file_id)
+                    {
+                        phase = LazyDirectoryPhase::Authored(None);
                     }
-                    let next = if page.has_more {
-                        let name = page
-                            .entries
-                            .last()
-                            .ok_or(LazyWorkspaceError::StaleCursor)?
-                            .name
-                            .clone_with_accounting(accounting, cancellation)?;
-                        Some(name)
-                    } else {
-                        None
-                    };
-                    drop(page);
-                    crate::kernel::retire_allocation(allocation, retained, accounting)?;
-                    let next = if let Some((name, mut claim)) = next {
-                        let mut allocation = directory.allocation;
-                        allocation.absorb(&mut claim)?;
-                        Some(LazyDirectoryCursor {
-                            cut,
-                            directory: directory.value,
-                            phase: LazyDirectoryPhase::Authored(Some(name)),
-                            allocation,
-                        })
-                    } else {
-                        directory.retire(accounting)?;
-                        None
-                    };
-                    return Ok((
-                        LazyDirectoryPage {
-                            entries: entries.value,
-                            next,
-                        },
-                        source_used,
-                        entries.allocation,
-                    ));
+                }
+            }
+            let mut absent = false;
+            loop {
+                match phase {
+                    LazyDirectoryPhase::Source(cursor) => {
+                        used = true;
+                        if state.source != self.source.reference() {
+                            return Err(LazyWorkspaceError::StaleSource);
+                        }
+                        let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
+                        let guard = ctx.claim_owned(bytes, 1)?;
+                        let mut failure =
+                            Owned::new(Box::<LazyWorkspaceError>::new_uninit(), guard, bytes);
+                        let fetched = accounted!(ctx, |work, cancel| self.source.list_page(
+                            state.source,
+                            &directory.value,
+                            cursor,
+                            maximum,
+                            work,
+                            cancel
+                        ));
+                        let mut page = match fetched {
+                            Ok(page) => page,
+                            Err(LazyWorkspaceError::Demand(
+                                DemandError::Absent | DemandError::NotDirectory,
+                            )) => {
+                                failure.retire(ctx)?;
+                                absent = true;
+                                phase = LazyDirectoryPhase::Authored(None);
+                                continue;
+                            }
+                            Err(error) => {
+                                failure.retire(ctx)?;
+                                return Err(error);
+                            }
+                        };
+                        let retained = page.retained_bytes();
+                        let mut source_guard = ctx.claim_owned(0, 0)?;
+                        let projected = async {
+                            if ctx.standalone_parts().is_some() {
+                                let (guard, admitted) = ctx.record_actual_owned(retained)?;
+                                source_guard = guard;
+                                admitted?;
+                            }
+                            let entries = self
+                                .project_source_page(
+                                    state,
+                                    checkout,
+                                    &directory.value,
+                                    &page,
+                                    maximum,
+                                    mask,
+                                    ctx,
+                                )
+                                .await?;
+                            if let Some(publication) = page.publication.as_mut()
+                                && let Err(error) = publication.accept(ctx)
+                            {
+                                entries.retire(ctx)?;
+                                return Err(error.into());
+                            }
+                            page.publication.take();
+                            Ok::<_, LazyWorkspaceError>(entries)
+                        }
+                        .await;
+                        let entries = match projected {
+                            Ok(entries) => entries,
+                            Err(primary) => {
+                                if let Err(cleanup) =
+                                    page.publication.as_mut().map_or(Ok(()), |p| p.abort(ctx))
+                                {
+                                    let publication = page.publication.take();
+                                    let primary = Box::write(failure.value, primary);
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    let allocation = match failure.allocation {
+                                        KernelOwnedAllocation::NativeOriginal(guard) => Some(guard),
+                                        KernelOwnedAllocation::Standalone => None,
+                                    };
+                                    drop(page);
+                                    crate::kernel::retire_allocation(source_guard, retained, ctx)?;
+                                    return Err(LazyWorkspaceError::SourcePageCleanup {
+                                        primary,
+                                        cleanup,
+                                        publication,
+                                        #[cfg(not(target_arch = "wasm32"))]
+                                        allocation,
+                                    });
+                                }
+                                drop(page);
+                                crate::kernel::retire_allocation(source_guard, retained, ctx)?;
+                                failure.retire(ctx)?;
+                                return Err(primary);
+                            }
+                        };
+                        drop(failure.value);
+                        ctx.release_owned(&mut failure.allocation, bytes)?;
+                        let next = page
+                            .next
+                            .take()
+                            .map(|c| LazyDirectoryPhase::Source(Some(c)))
+                            .or_else(|| {
+                                authored_directory.then_some(LazyDirectoryPhase::Authored(None))
+                            });
+                        drop(page);
+                        crate::kernel::retire_allocation(source_guard, retained, ctx)?;
+                        return Ok((entries, next.map(|phase| (phase, failure.allocation))));
+                    }
+                    LazyDirectoryPhase::Authored(after) => {
+                        let listed = checkout
+                            .list_directory_with_accounting(
+                                &directory.value,
+                                after.as_ref().map_or(Bound::Unbounded, Bound::Excluded),
+                                maximum,
+                                ctx,
+                                cancellation(ctx),
+                            )
+                            .await;
+                        let (page, mut guard) = match listed {
+                            Ok(page) => page,
+                            Err(crate::FsError::NotFound) if !absent => {
+                                return Ok((Owned::allocate(0, ctx)?, None));
+                            }
+                            Err(error) => return Err(error.into()),
+                        };
+                        let retained = retained_directory_page_bytes(
+                            &page.entries,
+                            page.entries.iter().map(|e| e.name.retained_bytes()),
+                        )?;
+                        let mut entries = Owned::allocate(page.entries.len(), ctx)?;
+                        let next = if page.has_more {
+                            let (name, guard) = page
+                                .entries
+                                .last()
+                                .ok_or(LazyWorkspaceError::StaleCursor)?
+                                .name
+                                .clone_with_accounting(ctx, cancellation(ctx))?;
+                            Some((LazyDirectoryPhase::Authored(Some(name)), guard))
+                        } else {
+                            None
+                        };
+                        let mut names = 0;
+                        for entry in page.entries {
+                            names += entry.name.retained_bytes() as u64;
+                            entries.value.push(LazyDirectoryEntry {
+                                name: entry.name,
+                                kind: source_kind(entry.kind),
+                                authored: true,
+                                source: None,
+                                unobserved: false,
+                            });
+                        }
+                        entries.bytes += names;
+                        ctx.release_owned(&mut guard, retained - names)?;
+                        entries.allocation.absorb(&mut guard)?;
+                        return Ok((entries, next));
+                    }
                 }
             }
         }
+        .await;
+        if let Some(prior) = prior {
+            prior.retire(ctx)?;
+        }
+        let (entries, next) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                directory.retire(ctx)?;
+                return Err(error);
+            }
+        };
+        let next = match next {
+            Some((phase, mut guard)) => {
+                let mut allocation = directory.allocation;
+                allocation.absorb(&mut guard)?;
+                Some(LazyDirectoryCursor {
+                    cut,
+                    directory: directory.value,
+                    phase,
+                    allocation,
+                })
+            }
+            None => {
+                directory.retire(ctx)?;
+                None
+            }
+        };
+        Ok((
+            LazyDirectoryPage {
+                entries: entries.value,
+                next,
+            },
+            used,
+            entries.allocation,
+        ))
     }
 
     async fn project_source_page(
@@ -489,66 +484,82 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         page: &SourceDirectoryPage,
         maximum: u32,
         mask: Option<(&[String], bool)>,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Owned<Vec<LazyDirectoryEntry>>, LazyWorkspaceError> {
         if page.entries.len() > maximum as usize {
             return Err(LazyWorkspaceError::TooLarge);
         }
-        let mut entries = Owned::allocate(page.entries.len(), accounting)?;
+        let mut paths = Owned::allocate(page.entries.len(), ctx)?;
+        let mut slots = Owned::allocate(page.entries.len(), ctx)?;
+        let mut entries = Owned::allocate(page.entries.len(), ctx)?;
         let result = async {
             for entry in page.entries.iter() {
-                let child = self.child_path(directory, &entry.name, accounting)?;
-                let mut unobserved = true;
-                let include = if let Some(child) = child {
+                let mut slot = (false, true, None);
+                if let Some(child) = self.child_path(directory, &entry.name, ctx)? {
                     let result = async {
-                        if mask.is_some_and(|(paths, _)| paths.binary_search(&child.value).is_ok())
-                        {
-                            return Ok(false);
+                        let fact = self.overlay_fact(state.overlay, &child.value, ctx).await?;
+                        slot.1 = fact.is_none();
+                        slot.0 = matches!(fact, Some(LazyOverlayChange::Tombstone { .. }))
+                            || mask.is_some_and(|(paths, _)| {
+                                paths.binary_search(&child.value).is_ok()
+                            });
+                        if !slot.0 {
+                            slot.2 = Some(paths.value.len());
+                            let namespace = self.namespace_path(&child.value, ctx)?;
+                            crate::Transaction::<A, O>::push_mutation(&mut paths, namespace, ctx)?;
                         }
-                        let fact = self
-                            .overlay_fact(state.overlay, &child.value, accounting)
-                            .await?;
-                        unobserved = fact.is_none();
-                        if matches!(fact, Some(LazyOverlayChange::Tombstone { .. })) {
-                            return Ok(false);
-                        }
-                        let namespace = self.namespace_path(&child.value, accounting)?;
-                        let authored = checkout
-                            .lookup_no_follow_with_metadata_with_accounting(
-                                &namespace.value,
-                                accounting,
-                                cancellation(accounting),
-                            )
-                            .await;
-                        namespace.retire(accounting)?;
-                        Ok::<_, LazyWorkspaceError>(authored?.is_none())
+                        Ok::<_, LazyWorkspaceError>(())
                     }
                     .await;
-                    child.retire(accounting)?;
-                    result?
-                } else {
-                    true
-                };
-                if include {
-                    let (name, mut claim) = entry
-                        .name
-                        .clone_with_accounting(accounting, cancellation(accounting))?;
-                    entries.bytes += name.retained_bytes() as u64;
-                    entries.allocation.absorb(&mut claim)?;
-                    entries.value.push(LazyDirectoryEntry {
-                        name,
-                        kind: entry.node.kind,
-                        authored: false,
-                        source: Some(entry.node),
-                        unobserved,
-                    });
+                    child.retire(ctx)?;
+                    result?;
                 }
+                slots.value.push(slot);
             }
-            Ok(())
+            let mut offset = 0;
+            for chunk in paths
+                .value
+                .chunks((self.workspace.limits().maximum_paths_per_batch as usize).max(1))
+            {
+                let (lookup, guard) = checkout
+                    .lookup_batch_no_follow_with_accounting(chunk, false, ctx, cancellation(ctx))
+                    .await?;
+                let bytes = lookup.retained_allocation_bytes;
+                for (hidden, _, slot) in &mut slots.value {
+                    if let Some(index) = *slot
+                        && index >= offset
+                        && index < offset + chunk.len()
+                    {
+                        *hidden |= lookup.entries[index - offset].record.is_some();
+                    }
+                }
+                offset += chunk.len();
+                drop(lookup);
+                crate::kernel::retire_allocation(guard, bytes, ctx)?;
+            }
+            for (entry, (hidden, unobserved, _)) in page.entries.iter().zip(&slots.value) {
+                if *hidden {
+                    continue;
+                }
+                let (name, mut guard) =
+                    entry.name.clone_with_accounting(ctx, cancellation(ctx))?;
+                entries.bytes += name.retained_bytes() as u64;
+                entries.allocation.absorb(&mut guard)?;
+                entries.value.push(LazyDirectoryEntry {
+                    name,
+                    kind: entry.node.kind,
+                    authored: false,
+                    source: Some(entry.node),
+                    unobserved: *unobserved,
+                });
+            }
+            Ok::<_, LazyWorkspaceError>(())
         }
         .await;
+        paths.retire(ctx)?;
+        slots.retire(ctx)?;
         if let Err(error) = result {
-            entries.retire(accounting)?;
+            entries.retire(ctx)?;
             return Err(error);
         }
         Ok(entries)

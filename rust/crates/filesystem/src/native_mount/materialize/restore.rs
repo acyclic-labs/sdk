@@ -9,7 +9,7 @@ pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
-        operation(&mut crate::NativeMaterializationWork::clone(&work))
+        operation(&mut work.clone())
     };
     let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))?;
     task.await
@@ -77,21 +77,17 @@ pub(super) fn prepare_restore(
         )?,
     }
     let stage_parent_path = match replacement {
-        HostPathReplacement::Atomic => allocation_work
-            .path(
-                destination_root
-                    .0
-                    .parent()
-                    .ok_or(MaterializeError::InvalidPath)?,
-                None,
-            )
-            .map_err(materialize_native_error)?,
-        HostPathReplacement::LiveMount => allocation_work
-            .path(
-                &destination_root.0,
-                Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
-            )
-            .map_err(materialize_native_error)?,
+        HostPathReplacement::Atomic => allocation_work.path(
+            destination_root
+                .0
+                .parent()
+                .ok_or(MaterializeError::InvalidPath)?,
+            None,
+        )?,
+        HostPathReplacement::LiveMount => allocation_work.path(
+            &destination_root.0,
+            Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
+        )?,
     };
     let stage_parent_root = match replacement {
         HostPathReplacement::Atomic => {
@@ -107,7 +103,7 @@ pub(super) fn prepare_restore(
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work
         .path(&stage_parent_path.0, Some(&stage_name.0))
-        .map_err(materialize_native_error)
+        .map_err(MaterializeError::from)
     {
         Ok(path) => path,
         Err(error) => {
@@ -180,30 +176,6 @@ pub(super) fn publish_restore(
     Ok(())
 }
 
-pub(super) fn validate_host_relative_measured(
-    relative: &Path,
-    work: &mut impl crate::demand::SourceDemandReadWork,
-) -> Result<(), MaterializeError> {
-    let mut any = false;
-    for component in relative.components() {
-        work.started_io(WorkCounters {
-            source_path_components: 1,
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(restore_demand_error)?;
-        if !matches!(component, std::path::Component::Normal(_)) {
-            return Err(MaterializeError::InvalidPath);
-        }
-        any = true;
-    }
-    if any {
-        Ok(())
-    } else {
-        Err(MaterializeError::InvalidPath)
-    }
-}
-
 pub(super) fn held_parent(
     root: &HostRoot,
     relative: &Path,
@@ -235,13 +207,11 @@ pub(super) fn create_restore_stage(
             ..WorkCounters::UNCHARGED
         };
         work.admit(delta).map_err(restore_demand_error)?;
-        let allocation = allocation_work
-            .claim(
-                bytes as u64,
-                u64::from((bytes as u64) != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(materialize_native_error)?;
+        let allocation = allocation_work.claim(
+            bytes as u64,
+            u64::from((bytes as u64) != 0),
+            crate::WorkCounters::UNCHARGED,
+        )?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}")
             .expect("String formatting cannot fail");
@@ -320,7 +290,7 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
+    work.claim_allocation(bytes as u64, u64::from(bytes != 0), WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {

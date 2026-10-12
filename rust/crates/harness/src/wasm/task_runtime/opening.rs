@@ -105,7 +105,7 @@ impl WasmTaskRuntime {
         let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
         for definition in defaults.tools.definitions(None).map_err(js_error)? {
             if tools
-                .get(&definition.name, None)
+                .get(&definition.name, None, None)
                 .map_err(js_error)?
                 .is_none()
             {
@@ -114,7 +114,7 @@ impl WasmTaskRuntime {
                         (
                             defaults
                                 .tools
-                                .get(&definition.name, None)
+                                .get(&definition.name, None, None)
                                 .map_err(js_error)?
                                 .expect("registered default")
                                 .clone(),

@@ -194,7 +194,7 @@ where
                 }
             };
             if length == 0 {
-                return carrier.empty_source_chunk();
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0));
             }
             self.read_source(offset, length, work)
         })

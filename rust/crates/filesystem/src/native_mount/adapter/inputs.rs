@@ -247,12 +247,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         let observer = if let Some(work) = self.carrier.original_native_work() {
             checkout.observer(&work, cancellation).map_err(fs_error)?
         } else {
-            let (budget, live) = self.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = self.carrier.remaining()?;
             self.carrier.accept_with_prior_live(
                 checkout.observer(budget, cancellation),
                 live,
