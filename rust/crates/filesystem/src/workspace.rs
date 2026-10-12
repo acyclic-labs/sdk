@@ -1574,20 +1574,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         maximum_entries: u32,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
-        in_heap(move || async move {
-            list_generation_directory(
-                self,
-                GenerationSelector::Head,
-                path,
-                after,
-                maximum_entries,
-                budget,
-                cancellation,
-            )
-            .await
-        })
-        .await
+    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::DirectoryPage>, WorkspaceError> {
+        list_generation_directory(self, GenerationSelector::Head, path, after, maximum_entries, budget, cancellation).await
     }
 
     /// Performs the bounded read symbolic link operation.
@@ -1803,52 +1791,19 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_entries: u32,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+) -> crate::MeasuredResult<crate::OperationReceipt<crate::kernel::DirectoryPage>, WorkspaceError> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
         let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
             &path.value, after, false, maximum_entries, &mut accounting, cancellation,
         ).await?;
-        project_workspace_directory_with_accounting(page, allocation, &mut accounting).map(|(page, _)| page)
+        Ok::<_, WorkspaceError>({ drop(allocation); page })
     }.await;
     let work = accounting.spent();
     result.map(|value| crate::OperationReceipt { value, work })
         .map_err(|error| crate::OperationFailure::new(error, work))
 }
-
-fn project_workspace_directory_with_accounting(
-    page: crate::kernel::DirectoryPage,
-    source_allocation: crate::kernel::allocation::KernelOwnedAllocation,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-) -> Result<(WorkspaceDirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), WorkspaceError> {
-    let source_bytes = workspace_vec_bytes(&page.entries);
-    let mut page = crate::kernel::Owned::new(page, source_allocation, source_bytes);
-    let mut entries = crate::kernel::Owned::<Vec<WorkspaceDirectoryEntry>>::allocate(
-        page.value.entries.len(), accounting,
-    )?;
-    entries.allocation.absorb(&mut page.allocation)?;
-    let has_more = page.value.has_more;
-    let mut source = page.value.entries.into_iter();
-    for entry in source.by_ref() {
-        let delta = crate::WorkCounters {
-            items_returned: 1,
-            bytes_copied: crate::foundation::usize_to_u64(std::mem::size_of::<WorkspaceDirectoryEntry>()),
-            ..crate::WorkCounters::UNCHARGED
-        };
-        accounting.admit(delta)?;
-        entries.value.push(WorkspaceDirectoryEntry {
-            name: entry.name, file_id: entry.file_id, kind: entry.kind,
-        });
-        accounting.record_completed(delta)?;
-    }
-    drop(source);
-    accounting.release_owned(&mut entries.allocation, source_bytes)?;
-    let crate::kernel::Owned { value, allocation, .. } = entries;
-    Ok((WorkspaceDirectoryPage { entries: value, has_more }, allocation))
-}
-
-
 
 async fn read_generation_symbolic_link<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
     workspace: &Workspace<A, O>,
@@ -3058,26 +3013,6 @@ const fn metadata_value<T: Copy>(field: MetadataField<T>) -> Option<T> {
         MetadataField::Unavailable => None,
         MetadataField::Value(value) => Some(value),
     }
-}
-
-/// One exact child binding in an authenticated directory page.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceDirectoryEntry {
-    /// Exact profile-aware name.
-    pub name: LogicalName,
-    /// Stable path-independent target identity.
-    pub file_id: crate::FileId,
-    /// Exact target kind.
-    pub kind: FileKind,
-}
-
-/// One bounded authenticated directory page.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceDirectoryPage {
-    /// Entries strictly after the supplied cursor.
-    pub entries: Vec<WorkspaceDirectoryEntry>,
-    /// Whether another page exists.
-    pub has_more: bool,
 }
 
 /// Customer-visible sparse representation class.
@@ -5315,18 +5250,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
 
 
 
-    /// Opens an immutable root carrier on the original native scope, without
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn pinned_reader_with_native_work(
-        &self,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::PinnedReader<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.readonly_pinned_reader_with_native_work(
-            self.id, original, cancellation,
-        ).await.map_err(|error| (error, None))
-    }
-
     /// Performs the bounded read range operation.
     pub async fn read_range<W: crate::facade::FsWork>(
         &self,
@@ -5411,7 +5334,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &'a crate::CancellationToken,
     ) -> impl std::future::Future<Output = crate::MeasuredResult<
-        crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError,
+        crate::OperationReceipt<crate::kernel::DirectoryPage>, WorkspaceError,
     >> + ProviderTask + 'a {
         list_generation_directory(
             &self.workspace, GenerationSelector::Exact(self.id), path, after,
@@ -5428,7 +5351,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         maximum: usize,
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<(WorkspaceDirectoryPage, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
+    ) -> Result<(crate::kernel::DirectoryPage, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
         let result = async {
             let maximum = u32::try_from(maximum).map_err(|_| crate::WorkError::Overflow)?;
             let mut accounting = KernelAccounting::native(original, cancellation);
@@ -5438,7 +5361,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
                 &path.value, after, false, maximum, &mut accounting, cancellation,
             ).await?;
-            let (page, allocation) = project_workspace_directory_with_accounting(page, allocation, &mut accounting)?;
             let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!() };
             Ok((page, allocation))
         }.await;

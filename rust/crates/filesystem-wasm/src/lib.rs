@@ -40,7 +40,7 @@ mod bindings {
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
         RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
         TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
-        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+        WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
@@ -1672,7 +1672,7 @@ mod bindings {
     }
 
     fn browser_workspace_directory_page(
-        value: WorkspaceDirectoryPage,
+        value: DirectoryPage,
     ) -> BrowserWorkspaceDirectoryPage {
         BrowserWorkspaceDirectoryPage {
             entries: value

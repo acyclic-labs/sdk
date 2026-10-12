@@ -220,6 +220,7 @@ pub use hosted::{
     MINIMUM_HANDSHAKE_RESPONSE_BYTES,
 };
 pub use kernel::{
+    DirectoryPage, TreeEntry,
     DependencyRegion, DependencyState, DependencyUse, ExtentSeekTarget, RebaseConflict,
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
@@ -397,7 +398,7 @@ pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
     IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
     JoinPlan, Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete,
-    WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
+    WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
     WorkspaceRestore, WorkspaceStat,
