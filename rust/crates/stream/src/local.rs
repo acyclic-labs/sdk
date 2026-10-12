@@ -79,34 +79,17 @@ fn finish_native<T>(
     result
 }
 
-pin_project_lite::pin_project! {
-    /// Funds the SDK-owned submitted frame before executor boxing.
-    struct FundedLocalTask<F> {
-        #[pin]
-        operation: F,
-        _allocation: Option<ReadAllocation>,
-    }
+fn fund_task<F>(value: F, meter: Option<&Arc<dyn NativeReadMeter>>) -> std::io::Result<MemoryOutput<F>> {
+    let allocation = meter.map(|meter| ReadAllocation::new(
+        meter, std::mem::size_of::<MemoryOutput<F>>(),
+    )).transpose()?;
+    Ok(MemoryOutput { value, allocation })
 }
 
-impl<F> FundedLocalTask<F> {
-    fn new(operation: F, meter: Option<&Arc<dyn NativeReadMeter>>) -> std::io::Result<Self> {
-        let allocation = meter.map(|meter| ReadAllocation::new(
-            meter, std::mem::size_of::<Self>(),
-        )).transpose()?;
-        Ok(Self { operation, _allocation: allocation })
-    }
-
-    fn run<T>(self, execute: impl FnOnce(F) -> T) -> T { execute(self.operation) }
-}
-
-impl<F: Future> Future for FundedLocalTask<F> {
+impl<F: Future> Future for MemoryOutput<F> {
     type Output = F::Output;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.project().operation.poll(context)
+    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        self.project().value.poll(context)
     }
 }
 
@@ -326,20 +309,17 @@ struct JournalPersistWork {
     inner: Arc<LocalInner>,
 }
 
-impl JournalPersistWork {
-    fn run(mut self) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
-        match self.inner.journal.lock() {
-            Ok(mut journal) => journal.append(
-                &self.frame.value, self.required, self.admission.as_mut(),
-            ),
-            Err(_) => (Err(LocalStreamError::Corrupt), Ok(())),
-        }
+fn persist(work: MemoryOutput<JournalPersistWork>) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
+    let mut job = work.value;
+    match job.inner.journal.lock() {
+        Ok(mut journal) => journal.append(&job.frame.value, job.required, job.admission.as_mut()),
+        Err(_) => (Err(LocalStreamError::Corrupt), Ok(())),
     }
 }
 
 /// The SAME persist and flush jobs are accepted on one blocking submission before issuing the late-input packet.
 struct PreparedLocalWork {
-    persist: FundedLocalTask<JournalPersistWork>,
+    persist: MemoryOutput<JournalPersistWork>,
     input: MemoryOutput<Command>,
     prepared: crate::memory::NativeMemoryPreparedCommit,
     record: Arc<crate::NativeCommitRecordSlot>,
@@ -369,11 +349,11 @@ impl PreparedLocalWork {
             let wire = crate::wire_codec::CanonicalWire::Journal(&self.input.value);
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut work.late, self.meter.record_examination(1, 0));
-            write_frame(&mut self.persist.operation.frame.value, &wire, committed_at, encoded_length, &mut work)
+            write_frame(&mut self.persist.value.frame.value, &wire, committed_at, encoded_length, &mut work)
                 .map_err(publication_error)?;
             self.stream.inner.journal.lock()
                 .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
-                .admit_bytes(self.persist.operation.frame.value.len() as u64).map_err(publication_error)?;
+                .admit_bytes(self.persist.value.frame.value.len() as u64).map_err(publication_error)?;
             let Command::Commit(request) = &mut self.input.value else { unreachable!("prepared Commit input") };
             let completion = self.runtime.block_on(
                 self.stream.inner.provider.finish_commit(
@@ -382,7 +362,7 @@ impl PreparedLocalWork {
             );
             let (outcome, error) = completion.map_err(MemoryFailure::Observer)?
                 .map_err(MemoryFailure::Provider)?;
-            let (physical, observed) = self.persist.run(JournalPersistWork::run);
+            let (physical, observed) = persist(self.persist);
             if physical.is_err() { self.stream.inner.poison(); }
             else { self.stream.inner.changed.send_modify(|revision| *revision = revision.saturating_add(1)); }
             if physical.is_ok() && self.stream.inner.compaction_due()
@@ -636,8 +616,8 @@ impl LocalStream {
         frame: MemoryOutput<Vec<u8>>,
         admission: Option<AdmittedFrameWrite>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> std::io::Result<FundedLocalTask<JournalPersistWork>> {
-        FundedLocalTask::new(JournalPersistWork {
+    ) -> std::io::Result<MemoryOutput<JournalPersistWork>> {
+        fund_task(JournalPersistWork {
             frame,
             required: !deferred(),
             admission,
@@ -647,12 +627,12 @@ impl LocalStream {
 
     async fn persist_planned(
         &self,
-        plan: FundedLocalTask<JournalPersistWork>,
+        plan: MemoryOutput<JournalPersistWork>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> MemoryResult<()>
     {
         let (physical, observed) = tokio::task::spawn_blocking(
-            move || plan.run(JournalPersistWork::run),
+            move || persist(plan),
         ).await
             .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
         if let Err(error) = physical {
@@ -684,7 +664,7 @@ impl LocalStream {
             "acyclic.stream.compact",
             bytes = state.value.len()
         ));
-        let operation = FundedLocalTask::new(move || {
+        let operation = fund_task(move || {
             span.in_scope(|| {
                 let mut journal = inner.journal.lock()
                     .map_err(|_| MemoryFailure::Provider(inner.poison()))?;
@@ -700,7 +680,11 @@ impl LocalStream {
                 physical.map_err(publication_error)
             })
         }, meter)?;
-        tokio::task::spawn_blocking(move || operation.run(|operation| operation())).await
+        tokio::task::spawn_blocking(move || {
+            let result = (operation.value)();
+            drop(operation.allocation);
+            result
+        }).await
             .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
     }
 
@@ -928,7 +912,7 @@ impl LocalStream {
             result
         });
         span.scope(async {
-            let task = FundedLocalTask::new(task, meter.as_ref())?;
+            let task = fund_task(task, meter.as_ref())?;
             tokio::spawn(task).await.map_err(|_| {
                 obs::failed(&span, StreamError::Unavailable.code());
                 MemoryFailure::Provider(StreamError::Unavailable)
@@ -1368,13 +1352,17 @@ impl StreamProvider for LocalStream {
                         }
                     }
                 })?;
-                let worker = FundedLocalTask::new(PreparedLocalWork {
+                let worker = fund_task(PreparedLocalWork {
                     persist, input, prepared, record: received,
                     runtime: tokio::runtime::Handle::current(), stream: self.clone(),
                     meter: Arc::clone(&meter), flush,
                 }, Some(&meter))?;
                 drop(visibility);
-                let worker = tokio::task::spawn_blocking(move || worker.run(PreparedLocalWork::run));
+                let worker = tokio::task::spawn_blocking(move || {
+                    let result = worker.value.run();
+                    drop(worker.allocation);
+                    result
+                });
                 let future = match NativeProviderFuture::try_new(&meter, async move {
                     match worker.await {
                         Ok(result) => result,

@@ -6,6 +6,7 @@
     reason = "Test fixtures and assertions must fail immediately on malformed inputs or violated expectations"
 )]
 use super::*;
+use crate::obs::tests::Capture;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tokio::{
@@ -444,90 +445,11 @@ async fn public_follow_uses_the_same_immediate_page_and_terminal_error_contract(
     assert_eq!(server.requests().len(), 3);
 }
 
-#[derive(Default, Clone)]
-struct CapturedSpans(
-    Arc<Mutex<std::collections::HashMap<u64, CapturedSpan>>>,
-    Arc<tokio::sync::Notify>,
-);
-#[derive(Default)]
-struct CapturedSpan {
-    name: &'static str,
-    parent: Option<u64>,
-    declared_fields: Vec<&'static str>,
-    fields: std::collections::HashMap<String, String>,
-    closed: bool,
-}
-struct Fields<'a>(&'a mut std::collections::HashMap<String, String>);
-impl tracing::field::Visit for Fields<'_> {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(field.name().to_owned(), format!("{value:?}"));
-    }
-}
-impl<S> tracing_subscriber::Layer<S> for CapturedSpans
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    fn on_new_span(
-        &self,
-        attributes: &tracing::span::Attributes<'_>,
-        id: &tracing::span::Id,
-        context: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        let mut captured = CapturedSpan {
-            name: attributes.metadata().name(),
-            declared_fields: attributes
-                .metadata()
-                .fields()
-                .iter()
-                .map(|field| field.name())
-                .collect(),
-            parent: context
-                .span(id)
-                .and_then(|span| span.parent().map(|parent| parent.id().into_u64())),
-            ..CapturedSpan::default()
-        };
-        // Check at creation as well: registry IDs may be reused after close.
-        for field in &captured.declared_fields {
-            assert!(
-                !["path", "token", "content", "body", "authorization", "error"].contains(field),
-                "forbidden trace field {field} on {}",
-                captured.name
-            );
-        }
-        attributes.record(&mut Fields(&mut captured.fields));
-        self.0.lock().unwrap().insert(id.into_u64(), captured);
-    }
-    fn on_record(
-        &self,
-        id: &tracing::span::Id,
-        values: &tracing::span::Record<'_>,
-        _: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        values.record(&mut Fields(
-            &mut self
-                .0
-                .lock()
-                .unwrap()
-                .get_mut(&id.into_u64())
-                .unwrap()
-                .fields,
-        ));
-        self.1.notify_one();
-    }
-    fn on_close(&self, id: tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-        self.0
-            .lock()
-            .unwrap()
-            .get_mut(&id.into_u64())
-            .unwrap()
-            .closed = true;
-    }
-}
-impl CapturedSpans {
+impl Capture {
     fn assert_cancelled_call(&self, route: &str) {
         let spans = self.0.lock().unwrap();
         let call = spans
-            .values()
+            .iter()
             .find(|span| {
                 span.name == "acyclic.stream.http.call"
                     && span
@@ -536,14 +458,14 @@ impl CapturedSpans {
                         .is_some_and(|value| value.trim_matches('"') == route)
             })
             .unwrap();
-        assert!(call.closed);
-        assert_eq!(call.fields["outcome"], "\"err\"");
-        assert_eq!(call.fields["error.kind"], "\"cancelled\"");
+        assert!(call.id.is_none());
+        assert_eq!(call.fields["outcome"], "err");
+        assert_eq!(call.fields["error.kind"], "cancelled");
     }
     async fn until_status(&self, route: &str) {
         loop {
             let notified = self.1.notified();
-            let headers_received = self.0.lock().unwrap().values().any(|span| {
+            let headers_received = self.0.lock().unwrap().iter().any(|span| {
                 span.name == "acyclic.stream.http.call"
                     && span
                         .fields
@@ -563,16 +485,16 @@ impl CapturedSpans {
     fn assert_parent_sentinels(&self) {
         let spans = self.0.lock().unwrap();
         let parent = spans
-            .values()
+            .iter()
             .find(|span| span.name == "test.parent")
             .unwrap();
-        assert_eq!(parent.fields["outcome"], "\"sentinel\"");
-        assert_eq!(parent.fields["error.kind"], "\"sentinel\"");
+        assert_eq!(parent.fields["outcome"], "sentinel");
+        assert_eq!(parent.fields["error.kind"], "sentinel");
         assert_eq!(parent.fields["bytes"], "777");
         assert_eq!(parent.fields["http.status"], "777");
     }
     fn assert_safe_fields(&self) {
-        for span in self.0.lock().unwrap().values() {
+        for span in self.0.lock().unwrap().iter() {
             for field in &span.declared_fields {
                 assert!(
                     !["path", "token", "content", "body", "authorization", "error"].contains(field),
@@ -597,7 +519,7 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
         [(true, true), (false, true), (true, false), (false, false)]
     {
         for fails in [false, true] {
-            let captured = CapturedSpans::default();
+            let captured = Capture::default();
             let filter = filter_fn(move |metadata| match metadata.name() {
                 "acyclic.stream.http.call" => request_enabled,
                 "acyclic.stream.http.follow" => follow_enabled,
@@ -632,7 +554,7 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                     if follow_enabled {
                         let spans = captured.0.lock().unwrap();
                         let follow = spans
-                            .values()
+                            .iter()
                             .find(|span| span.name == "acyclic.stream.http.follow")
                             .unwrap();
                         assert!(
@@ -653,17 +575,17 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                     if follow_enabled {
                         let spans = captured.0.lock().unwrap();
                         let follow = spans
-                            .values()
+                            .iter()
                             .find(|span| span.name == "acyclic.stream.http.follow")
                             .unwrap();
-                        assert!(follow.closed);
+                        assert!(follow.id.is_none());
                         assert_eq!(
                             follow.fields["terminal"],
-                            if fails { "\"error\"" } else { "\"dropped\"" }
+                            if fails { "error" } else { "dropped" }
                         );
                         if fails {
-                            assert_eq!(follow.fields["outcome"], "\"err\"");
-                            assert_eq!(follow.fields["error.kind"], "\"access_denied\"");
+                            assert_eq!(follow.fields["outcome"], "err");
+                            assert_eq!(follow.fields["error.kind"], "access_denied");
                         } else {
                             assert!(!follow.fields.contains_key("outcome"));
                         }
@@ -684,8 +606,8 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
 async fn visible_follow_descendants_stay_with_the_originating_subscriber() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
-    let origin = CapturedSpans::default();
-    let consumer = CapturedSpans::default();
+    let origin = Capture::default();
+    let consumer = Capture::default();
     let (server, mut stream) = async {
         let server = Server::new(vec![Reply::ok(json!("1")), Reply::ok(page(0, 1))]).await;
         let (delay, _) = clock();
@@ -708,40 +630,40 @@ async fn visible_follow_descendants_stay_with_the_originating_subscriber() {
     {
         let spans = origin.0.lock().unwrap();
         let (follow_id, follow) = spans
-            .iter()
+            .iter().enumerate()
             .find(|(_, span)| span.name == "acyclic.stream.http.follow")
             .unwrap();
-        assert!(follow.closed);
-        assert_eq!(follow.fields["terminal"], "\"dropped\"");
+        assert!(follow.id.is_none());
+        assert_eq!(follow.fields["terminal"], "dropped");
         assert!(!follow.fields.contains_key("outcome"));
         let (poll_id, poll) = spans
-            .iter()
+            .iter().enumerate()
             .find(|(_, span)| span.name == "acyclic.stream.http.follow.poll")
             .unwrap();
-        assert_eq!(poll.parent, Some(*follow_id));
-        assert!(poll.closed);
+        assert_eq!(poll.parent, Some(follow_id));
+        assert!(poll.id.is_none());
         let read = spans
-            .values()
+            .iter()
             .find(|span| {
                 span.name == "acyclic.stream.http.call"
                     && span
                         .fields
                         .get("route")
-                        .is_some_and(|route| route == "\"read\"")
+                        .is_some_and(|route| route == "read")
             })
             .unwrap();
-        assert_eq!(read.parent, Some(*poll_id));
-        assert!(read.closed);
-        assert_eq!(read.fields["outcome"], "\"ok\"");
+        assert_eq!(read.parent, Some(poll_id));
+        assert!(read.id.is_none());
+        assert_eq!(read.fields["outcome"], "ok");
     }
     assert!(
-        consumer.0.lock().unwrap().values().all(|span| {
+        consumer.0.lock().unwrap().iter().all(|span| {
             span.name != "acyclic.stream.http.follow.poll"
                 && !(span.name == "acyclic.stream.http.call"
                     && span
                         .fields
                         .get("route")
-                        .is_some_and(|route| route == "\"read\""))
+                        .is_some_and(|route| route == "read"))
         }),
         "consumption must not move follow descendants to a different subscriber"
     );
@@ -775,7 +697,7 @@ async fn truncated_http_body_yields_one_error_then_eof_without_retry() {
 async fn drop_during_startup_tail_body_closes_connection_and_follow_span() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
-    let captured = CapturedSpans::default();
+    let captured = Capture::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
     async {
         let (prefix_written, prefix) = oneshot::channel();
@@ -805,12 +727,12 @@ async fn drop_during_startup_tail_body_closes_connection_and_follow_span() {
         assert!(gates.recv().await.is_none(), "startup cancellation never creates an idle wait");
         {
             let spans = captured.0.lock().unwrap();
-            let follow = spans.values().find(|span| span.name == "acyclic.stream.http.follow").unwrap();
-            assert!(follow.closed);
-            assert_eq!(follow.fields["phase"], "\"tail\"");
-            assert_eq!(follow.fields["terminal"], "\"dropped\"");
+            let follow = spans.iter().find(|span| span.name == "acyclic.stream.http.follow").unwrap();
+            assert!(follow.id.is_none());
+            assert_eq!(follow.fields["phase"], "tail");
+            assert_eq!(follow.fields["terminal"], "dropped");
             assert!(!follow.fields.contains_key("outcome"));
-            assert!(spans.values().filter(|span| span.name == "acyclic.stream.http.call").all(|span| span.closed));
+            assert!(spans.iter().filter(|span| span.name == "acyclic.stream.http.call").all(|span| span.id.is_none()));
         }
         captured.assert_cancelled_call("tail");
         captured.assert_safe_fields();
@@ -821,7 +743,7 @@ async fn drop_during_startup_tail_body_closes_connection_and_follow_span() {
 async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
-    let captured = CapturedSpans::default();
+    let captured = Capture::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
     async {
         let (prefix_written, prefix) = oneshot::channel();
@@ -844,11 +766,11 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
         {
             let spans = captured.0.lock().unwrap();
             let follow = spans
-                .values()
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
-            assert!(!follow.closed);
-            assert_eq!(follow.fields["phase"], "\"read\"");
+            assert!(follow.id.is_some());
+            assert_eq!(follow.fields["phase"], "read");
         }
         drop(stream);
         // A real-time failure watchdog does not drive the follow clock or success path.
@@ -861,25 +783,25 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
         {
             let spans = captured.0.lock().unwrap();
             let (follow_id, follow) = spans
-                .iter()
+                .iter().enumerate()
                 .find(|(_, span)| span.name == "acyclic.stream.http.follow")
                 .unwrap();
-            assert!(follow.closed);
-            assert_eq!(follow.fields["phase"], "\"read\"");
-            assert_eq!(follow.fields["terminal"], "\"dropped\"");
+            assert!(follow.id.is_none());
+            assert_eq!(follow.fields["phase"], "read");
+            assert_eq!(follow.fields["terminal"], "dropped");
             assert!(!follow.fields.contains_key("outcome"));
             assert!(
                 spans
-                    .values()
+                    .iter()
                     .any(|span| span.name == "acyclic.stream.http.follow.poll"
-                        && span.parent == Some(*follow_id)
-                        && span.closed)
+                        && span.parent == Some(follow_id)
+                        && span.id.is_none())
             );
             assert!(
                 spans
-                    .values()
+                    .iter()
                     .filter(|span| span.name == "acyclic.stream.http.call")
-                    .all(|span| span.closed)
+                    .all(|span| span.id.is_none())
             );
         }
         captured.assert_cancelled_call("read");
@@ -891,7 +813,7 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
 
 async fn pending_read(
     stream: &mut RecordStream,
-    captured: &CapturedSpans,
+    captured: &Capture,
     prefix: oneshot::Receiver<()>,
 ) {
     // Failure watchdog only; success is driven by body and subscriber barriers.
@@ -915,8 +837,8 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
     for unwind in [false, true] {
-        let origin = CapturedSpans::default();
-        let consumer = CapturedSpans::default();
+        let origin = Capture::default();
+        let consumer = Capture::default();
         let origin_dispatch =
             tracing::Dispatch::new(tracing_subscriber::registry().with(origin.clone()));
         let (prefix_written, prefix) = oneshot::channel();
@@ -973,24 +895,24 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
         origin.assert_cancelled_call("read");
         {
             let spans = origin.0.lock().unwrap();
-            assert!(spans.values().any(|span| span.name == "test.origin_parent"));
-            assert!(spans.values().all(|span| span.closed));
+            assert!(spans.iter().any(|span| span.name == "test.origin_parent"));
+            assert!(spans.iter().all(|span| span.id.is_none()));
             let follow = spans
-                .values()
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
-            assert_eq!(follow.fields["phase"], "\"read\"");
-            assert_eq!(follow.fields["terminal"], "\"dropped\"");
+            assert_eq!(follow.fields["phase"], "read");
+            assert_eq!(follow.fields["terminal"], "dropped");
             assert!(!follow.fields.contains_key("outcome"));
         }
         {
             let spans = consumer.0.lock().unwrap();
             assert!(
                 spans
-                    .values()
+                    .iter()
                     .any(|span| span.name == "test.consumer_parent")
             );
-            assert!(spans.values().all(|span| span.closed));
+            assert!(spans.iter().all(|span| span.id.is_none()));
         }
         origin.assert_safe_fields();
         consumer.assert_safe_fields();
@@ -1002,7 +924,7 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
     for fails in [false, true] {
-        let captured = CapturedSpans::default();
+        let captured = Capture::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         async {
             let reply = if fails {
@@ -1020,11 +942,11 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
             let follow_id = {
                 let spans = captured.0.lock().unwrap();
                 let (id, span) = spans
-                    .iter()
+                    .iter().enumerate()
                     .find(|(_, span)| span.name == "acyclic.stream.http.follow")
                     .unwrap();
-                assert!(!span.closed, "constructor must not close the cursor span");
-                *id
+                assert!(span.id.is_some(), "constructor must not close the cursor span");
+                id
             };
             if fails {
                 assert_eq!(
@@ -1036,48 +958,48 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
                 let mut release = idle(&mut stream, &mut gates).await;
                 {
                     let spans = captured.0.lock().unwrap();
-                    let follow = &spans[&follow_id];
-                    assert!(!follow.closed);
-                    assert_eq!(follow.fields["phase"], "\"sleep\"");
+                    let follow = &spans[follow_id];
+                    assert!(follow.id.is_some());
+                    assert_eq!(follow.fields["phase"], "sleep");
                     assert!(
                         spans
-                            .values()
+                            .iter()
                             .any(|span| span.name == "acyclic.stream.http.follow.sleep"
                                 && span.parent == Some(follow_id)
-                                && !span.closed)
+                                && span.id.is_some())
                     );
                 }
                 drop(stream);
                 release.closed().await;
                 let spans = captured.0.lock().unwrap();
-                let follow = &spans[&follow_id];
-                assert!(follow.closed);
-                assert_eq!(follow.fields["terminal"], "\"dropped\"");
+                let follow = &spans[follow_id];
+                assert!(follow.id.is_none());
+                assert_eq!(follow.fields["terminal"], "dropped");
                 assert!(
                     !follow.fields.contains_key("outcome"),
                     "drop cannot claim success or cancellation"
                 );
                 assert!(
                     spans
-                        .values()
+                        .iter()
                         .filter(|span| span.name == "acyclic.stream.http.follow.sleep")
-                        .all(|span| span.closed)
+                        .all(|span| span.id.is_none())
                 );
                 return;
             }
             drop(stream);
             let spans = captured.0.lock().unwrap();
-            let follow = &spans[&follow_id];
-            assert!(follow.closed);
-            assert_eq!(follow.fields["terminal"], "\"error\"");
-            assert_eq!(follow.fields["outcome"], "\"err\"");
-            assert_eq!(follow.fields["error.kind"], "\"access_denied\"");
+            let follow = &spans[follow_id];
+            assert!(follow.id.is_none());
+            assert_eq!(follow.fields["terminal"], "error");
+            assert_eq!(follow.fields["outcome"], "err");
+            assert_eq!(follow.fields["error.kind"], "access_denied");
             assert!(
                 spans
-                    .values()
+                    .iter()
                     .any(|span| span.name == "acyclic.stream.http.follow.poll"
                         && span.parent == Some(follow_id)
-                        && span.closed)
+                        && span.id.is_none())
             );
         }
         .with_subscriber(subscriber)
@@ -1091,7 +1013,7 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
     for startup_error in [false, true] {
-        let captured = CapturedSpans::default();
+        let captured = Capture::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         async {
             let replies = if startup_error {
@@ -1110,11 +1032,11 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
                 {
                     let spans = captured.0.lock().unwrap();
                     let follow = spans
-                        .values()
+                        .iter()
                         .find(|span| span.name == "acyclic.stream.http.follow")
                         .unwrap();
-                    assert!(!follow.closed);
-                    assert_eq!(follow.fields["phase"], "\"consumer\"");
+                    assert!(follow.id.is_some());
+                    assert_eq!(follow.fields["phase"], "consumer");
                     assert_eq!(follow.fields["queued"], "1");
                     assert_eq!(follow.fields["rev"], "1");
                 }
@@ -1123,15 +1045,15 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
             }
             let spans = captured.0.lock().unwrap();
             let follow = spans
-                .values()
+                .iter()
                 .find(|span| span.name == "acyclic.stream.http.follow")
                 .unwrap();
-            assert!(follow.closed);
+            assert!(follow.id.is_none());
             if startup_error {
-                assert_eq!(follow.fields["terminal"], "\"error\"");
-                assert_eq!(follow.fields["error.kind"], "\"not_found\"");
+                assert_eq!(follow.fields["terminal"], "error");
+                assert_eq!(follow.fields["error.kind"], "not_found");
             } else {
-                assert_eq!(follow.fields["terminal"], "\"dropped\"");
+                assert_eq!(follow.fields["terminal"], "dropped");
                 assert!(!follow.fields.contains_key("outcome"));
             }
         }

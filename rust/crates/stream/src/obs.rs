@@ -40,14 +40,18 @@ pub(crate) mod tests {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     type Fields = HashMap<String, String>;
-    #[derive(Default)]
-    struct Captured {
-        spans: Vec<(&'static str, Fields)>,
-        parents: Vec<Option<usize>>,
-        live: HashMap<u64, usize>,
+    pub(crate) struct CapturedSpan {
+        pub(crate) id: Option<u64>,
+        pub(crate) name: &'static str,
+        pub(crate) parent: Option<usize>,
+        pub(crate) declared_fields: Vec<&'static str>,
+        pub(crate) fields: Fields,
     }
     #[derive(Clone, Default)]
-    pub(crate) struct Capture(Arc<Mutex<Captured>>);
+    pub(crate) struct Capture(
+        pub(crate) Arc<Mutex<Vec<CapturedSpan>>>,
+        pub(crate) Arc<tokio::sync::Notify>,
+    );
     struct Visitor<'a>(&'a mut Fields);
     impl tracing::field::Visit for Visitor<'_> {
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -58,82 +62,43 @@ pub(crate) mod tests {
         }
     }
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
-        fn on_new_span(
-            &self,
-            attributes: &tracing::span::Attributes<'_>,
-            id: &tracing::span::Id,
-            context: tracing_subscriber::layer::Context<'_, S>,
-        ) {
+        fn on_new_span(&self, attributes: &tracing::span::Attributes<'_>, id: &tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
             let mut fields = Fields::new();
             attributes.record(&mut Visitor(&mut fields));
             let parent = attributes.parent().cloned().or_else(|| {
-                attributes
-                    .is_contextual()
-                    .then(|| context.current_span().id().cloned())
-                    .flatten()
+                attributes.is_contextual().then(|| context.current_span().id().cloned()).flatten()
             });
+            let declared_fields: Vec<_> = attributes.metadata().fields().iter().map(|field| field.name()).collect();
+            for field in &declared_fields {
+                assert!(!["path", "token", "content", "body", "authorization", "error"].contains(field), "forbidden trace field {field}");
+            }
             let mut captured = self.0.lock().unwrap();
-            let index = captured.spans.len();
-            let parent = parent.and_then(|parent| captured.live.get(&parent.into_u64()).copied());
-            captured.spans.push((attributes.metadata().name(), fields));
-            captured.parents.push(parent);
-            captured.live.insert(id.into_u64(), index);
+            let parent = parent.and_then(|parent| captured.iter().rposition(|span| span.id == Some(parent.into_u64())));
+            captured.push(CapturedSpan { id: Some(id.into_u64()), name: attributes.metadata().name(), parent, declared_fields, fields });
         }
-        fn on_record(
-            &self,
-            id: &tracing::span::Id,
-            record: &tracing::span::Record<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
+        fn on_record(&self, id: &tracing::span::Id, record: &tracing::span::Record<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
             let mut captured = self.0.lock().unwrap();
-            let index = captured.live[&id.into_u64()];
-            record.record(&mut Visitor(&mut captured.spans[index].1));
+            let span = captured.iter_mut().rev().find(|span| span.id == Some(id.into_u64())).unwrap();
+            record.record(&mut Visitor(&mut span.fields));
+            self.1.notify_one();
         }
         fn on_close(&self, id: tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-            self.0.lock().unwrap().live.remove(&id.into_u64());
+            self.0.lock().unwrap().iter_mut().rev().find(|span| span.id == Some(id.into_u64())).unwrap().id = None;
         }
     }
-
     impl Capture {
         pub(crate) fn parent(&self, name: &str) -> Option<&'static str> {
             let captured = self.0.lock().unwrap();
-            captured
-                .spans
-                .iter()
-                .position(|(found, _)| *found == name)
-                .and_then(|index| captured.parents[index])
-                .map(|index| captured.spans[index].0)
+            captured.iter().find(|span| span.name == name).and_then(|span| span.parent).map(|index| captured[index].name)
         }
         pub(crate) fn closed(&self, name: &str) -> usize {
-            let captured = self.0.lock().unwrap();
-            captured
-                .spans
-                .iter()
-                .enumerate()
-                .filter(|(index, (found, _))| {
-                    *found == name && !captured.live.values().any(|live| live == index)
-                })
-                .count()
+            self.0.lock().unwrap().iter().filter(|span| span.name == name && span.id.is_none()).count()
         }
         pub(crate) fn all(&self, name: &str) -> Vec<Fields> {
-            self.0
-                .lock()
-                .unwrap()
-                .spans
-                .iter()
-                .filter(|(found, _)| *found == name)
-                .map(|(_, fields)| fields.clone())
-                .collect()
+            self.0.lock().unwrap().iter().filter(|span| span.name == name).map(|span| span.fields.clone()).collect()
         }
         pub(crate) fn fields(&self, name: &str) -> Fields {
-            self.0
-                .lock()
-                .unwrap()
-                .spans
-                .iter()
-                .find(|(found, _)| *found == name)
-                .map(|(_, fields)| fields.clone())
-                .unwrap_or_default()
+            self.0.lock().unwrap().iter().find(|span| span.name == name).map(|span| span.fields.clone()).unwrap_or_default()
         }
     }
 
