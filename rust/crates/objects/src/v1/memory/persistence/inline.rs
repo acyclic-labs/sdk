@@ -82,10 +82,10 @@ impl Journal {
                         // Compaction closes this handle before journal replacement.
                         let bytes = match &publication.meter {
                             Some(meter) => futures::executor::block_on(
-                                crate::physical::read_body_at_native(
+                                crate::physical::read_body_at(
                                     &self.root, &digest, length,
                                     &LocalBodyLocation::Journal { offset },
-                                    0, length, Arc::clone(meter),
+                                    0, length, BodyReadMode::Native(Arc::clone(meter)),
                                 ),
                             )?,
                             None => self.root.read_journal_body(offset, &digest, length)

@@ -98,14 +98,14 @@ pub(crate) fn vec_with_capacity<T>(
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
-            .ok_or_else(model_owned_overflow)?)?;
-        return Ok(values);
     }
-    #[cfg(not(feature = "filesystem"))]
     let _ = (io, bytes);
     values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+            .ok_or_else(model_owned_overflow)?)?;
+    }
     Ok(values)
 }
 
@@ -113,12 +113,7 @@ pub(crate) fn clone_file(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<FileRef> {
     model_step(io, 1)?;
-    crate::executor::with_history_io(io, |work| {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let file = crate::core::copy_file(file, &mut quota)?;
-        quota.transfer();
-        Ok(file)
-    })
+    crate::executor::with_history_io(io, |work| file.copy(work))
 }
 
 /// Copies the actual Value representation, including private/raw marker keys.
@@ -234,20 +229,17 @@ fn model_content_in_quota(
     })
 }
 
-pub(crate) fn clone_message(
-    message: &ModelMessage, io: Option<&crate::executor::PreparationIo>,
-) -> Result<ModelMessage> {
-    if io.is_none() { return Ok(message.clone()); }
-    model_step(io, 1)?;
-    Ok(ModelMessage { role: message.role, content: crate::executor::with_history_io(io, |work| clone_content(&message.content, work).map(|(copy, _)| copy))? })
-}
-
 pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
     let mut copied = vec_with_capacity(messages.len(), io)?;
-    for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
+    for message in messages {
+        model_step(io, 1)?;
+        let content = crate::executor::with_history_io(io, |work|
+            clone_content(&message.content, work).map(|(copy, _)| copy))?;
+        crate::executor::stock_vec_push(&mut copied, ModelMessage { role: message.role, content }, io)?;
+    }
     Ok(copied)
 }
 
@@ -405,6 +397,7 @@ pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&crate::executor::PreparationI
 
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Model {
     /// Provider selected by application code.
     pub provider: String,
@@ -413,6 +406,7 @@ pub struct Model {
     /// Immutable model revision or digest.
     pub revision: String,
     /// Provider-specific options retained as typed JSON.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     pub options: Value,
 }
 
@@ -451,6 +445,7 @@ impl Model {
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelMessage {
     /// Semantic role (`system`, `user`, `assistant`, or `tool`).
     pub role: ModelRole,
@@ -461,6 +456,7 @@ pub struct ModelMessage {
 /// Closed provider-neutral role set; adapters may reject unsupported combinations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelRole {
     /// Host instruction.
     System,
@@ -492,6 +488,7 @@ impl ModelRole {
     clippy::large_enum_variant,
     reason = "model parts retain their public untagged content shape"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContent {
     /// Plain prompt text or bounded projection produced by a resolver.
     Text(String),
@@ -647,6 +644,7 @@ impl ModelContent {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
     /// Plain text.
     Text {
@@ -656,6 +654,7 @@ pub enum ModelContentPart {
     /// Immutable file reference with an explicit byte-resolution policy.
     File {
         /// Immutable file identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Resolution and rendering policy.
         policy: FileProjectionPolicy,
@@ -668,6 +667,7 @@ pub enum ModelContentPart {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Tool result with matching call identity.
@@ -685,6 +685,7 @@ pub enum ModelContentPart {
 /// File handling policy selected before provider dispatch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileProjectionPolicy {
     /// Metadata-only file reference, with no byte read.
     Reference,
@@ -700,6 +701,7 @@ pub enum FileProjectionPolicy {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelDataPart {
     /// Exact text.
     Text {
@@ -709,6 +711,7 @@ pub enum ModelDataPart {
     /// Immutable data with an explicit resolution policy.
     File {
         /// Immutable media identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Explicit resolution intent.
         policy: FileProjectionPolicy,
@@ -718,10 +721,12 @@ pub enum ModelDataPart {
 /// The complete model-visible projection envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolResultContent {
     /// Explicit JSON projection.
     Json {
         /// Exact schema-defined JSON value.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         value: Value,
     },
     /// Ordered, nonrecursive text and file data.
@@ -734,12 +739,16 @@ pub enum ToolResultContent {
 /// Claim to verify against original task admission and linked implementation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeConfigurationBinding {
     /// Original immutable extension admission event.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmEventReferenceWire"))]
     pub source: crate::core::EventReference,
     /// Exact registered option schema and immutable JSON file.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmExtensionConfigurationWire"))]
     pub configuration: crate::core::ExtensionConfiguration,
     /// Original owner-linked executable implementation.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub implementation_digest: [u8; 32],
 }
 
@@ -817,6 +826,7 @@ impl NativeConfigurationBinding {
 /// Explicit common image quality intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ImageDetail {
     /// Select adapter image quality.
     Auto,
@@ -829,6 +839,7 @@ pub enum ImageDetail {
 /// Requested modality is independent of the stored file's MIME type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum NativeMediaIntent {
     /// Provider-native image with explicit detail.
     Image {
@@ -838,11 +849,13 @@ pub enum NativeMediaIntent {
     /// Entire audio input with a finite duration ceiling.
     Audio {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
     },
     /// Entire video input with finite duration and frame ceilings.
     Video {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
         /// Positive finite maximum source frame count.
         maximum_frames: u32,
@@ -857,14 +870,18 @@ pub enum NativeMediaIntent {
 /// Explicit native input contract; no implicit conversion or fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeMediaPolicy {
     /// Common modality and processing intent.
     pub intent: NativeMediaIntent,
     /// Positive finite byte ceiling, also bounded by task content limits.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_bytes: u64,
     /// Positive finite work ceiling interpreted by the selected adapter.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_work: u64,
     /// Optional immutable registered adapter options; never bearer authority.
+    #[cfg_attr(feature = "wasm", tsify(type = "NativeConfigurationBinding | null"))]
     pub configuration: Option<NativeConfigurationBinding>,
 }
 
@@ -1089,6 +1106,7 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
     /// Selected model value.
     pub model: Model,
@@ -1207,7 +1225,7 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+                            let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope.0, "model tool result", Some(io),
                             )?;
@@ -1256,7 +1274,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelRequest>, bytes, crate::wire::ErrorCode::Storage)?),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1452,8 +1470,6 @@ impl PreparedModelRequest {
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
         let mut expected_count = None;
-        let mut total_bytes = 0_u64;
-        let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
             crate::executor::with_history_io(io, |work| reference.validate(work))?;
@@ -1470,26 +1486,22 @@ impl PreparedModelRequest {
                     "model prefix identity or cycle is invalid".into(),
                 ));
             }
-            total_bytes = total_bytes
-                .checked_add(reference.descriptor().byte_length())
-                .ok_or_else(|| Error::Invalid("model prefix byte count overflow".into()))?;
             if visited.len() > limits.context_messages {
                 return Err(Error::Invalid(
                     "model prefix traversal exceeds limit".into(),
                 ));
             }
-            #[cfg(feature = "filesystem")]
-            let _bytes_hold;
-            crate::context::verify_file(&reference, verifier, io).await?;
-            let bytes = verifier.read(&reference, reference.descriptor().byte_length(), io)?.await?;
-            #[cfg(feature = "filesystem")]
-            {
-                _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            if !verifier.supports_read(reference.volume(), io)? {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
+                    "context verifier has no bounded capability"));
             }
-            crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
+            let _bytes_hold;
+            let (bytes, hold) = crate::conversation::verified_content_bytes(
+                verifier, &reference, reference.descriptor().byte_length(), io).await?;
+            _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelPrefix>, &bytes, crate::wire::ErrorCode::Storage)?),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1519,8 +1531,8 @@ impl PreparedModelRequest {
                     "model prefix parent count is invalid".into(),
                 ));
             }
-            total_messages = total_messages
-                .checked_add(segment.messages.len())
+            let total_messages = segment.total_messages
+                .checked_add(local.messages.len())
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
             if total_messages > limits.context_messages {
                 return Err(Error::Invalid(
@@ -1577,6 +1589,7 @@ fn model_hasher_update(
 /// Ordered event emitted by a model run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelEvent {
     /// User-visible content fragment.
     Content {
@@ -1596,11 +1609,13 @@ pub enum ModelEvent {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Model completed this step.
     Completed {
         /// Provider-owned usage and finish metadata.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         metadata: Value,
     },
 }
@@ -1608,12 +1623,15 @@ pub enum ModelEvent {
 /// Executor-owned identity supplied separately from canonical model-visible bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelDispatch {
     /// Admitted execution operation identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Zero-based logical executor step.
     pub step: u32,
     /// Digest of the exact canonical request supplied with this dispatch.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub request_digest: [u8; 32],
 }
 
@@ -1687,7 +1705,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = crate::filesystem::retain_decoded(io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?);
+        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Storage)?);
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))
@@ -2028,23 +2046,14 @@ mod tests {
     );
 
     impl crate::conversation::ContentResidencyVerifier for PrefixReader {
-        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 let capability = file.read_capability()?;
                 if !self.1.contains(&capability) {
                     return Err(Error::Unauthorized("prefix read is not granted".into()));
                 }
-                let bytes = self
-                    .0
-                    .get(&capability)
-                    .ok_or_else(|| Error::NotFound("prefix version is missing".into()))?;
-                file.descriptor().verify(bytes, &mut None)
-            })
-        }
-        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.0
-                    .get(&file.read_capability()?)
+                    .get(&capability)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("prefix version is missing".into()))
             })
@@ -2127,8 +2136,8 @@ mod tests {
             prepared = next;
         }
         let reopened = reader.clone();
+        let mut local = request()?;
         for child in ["a", "b"] {
-            let mut local = request()?;
             local.messages = vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(format!(
@@ -2143,64 +2152,52 @@ mod tests {
                 inherited.bytes(),
                 PreparedModelRequest::prepare(expected, limits, None)?.bytes()
             );
-            let mut changed = local.clone();
-            changed.model.revision = "changed".into();
-            let changed_request =
-                PreparedModelRequest::inherit(changed, &head, &reader, limits, None).await?;
-            assert_eq!(changed_request.request().model.revision, "changed");
-            assert_eq!(
-                changed_request.request().messages,
-                inherited.request().messages
-            );
-            // Inherited tool exchanges must still validate against the new schema set.
-            let mut incompatible = local.clone();
-            incompatible.tools.clear();
-            assert!(
-                PreparedModelRequest::inherit(incompatible, &head, &reader, limits, None)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                PreparedModelRequest::inherit(
-                    local.clone(),
-                    &head,
-                    &PrefixReader::default(),
-                    limits,
-                    None,
-                )
+        }
+        let mut changed = local.clone();
+        changed.model.revision = "changed".into();
+        let changed_request =
+            PreparedModelRequest::inherit(changed, &head, &reader, limits, None).await?;
+        assert_eq!(changed_request.request().model.revision, "changed");
+        let mut expected_messages = prepared.request().messages.clone();
+        expected_messages.extend(local.messages.clone());
+        assert_eq!(changed_request.request().messages, expected_messages);
+        // Inherited tool exchanges must still validate against the new schema set.
+        let mut incompatible = local.clone();
+        incompatible.tools.clear();
+        assert!(
+            PreparedModelRequest::inherit(incompatible, &head, &reader, limits, None)
                 .await
                 .is_err()
-            );
-            let mut denied = reader.clone();
-            denied.1.remove(&head.read_capability()?);
-            assert!(matches!(
-                PreparedModelRequest::inherit(local.clone(), &head, &denied, limits, None).await,
-                Err(Error::Unauthorized(_))
-            ));
-            let mut missing_attachment = reader.clone();
-            missing_attachment.0.remove(&attachment.read_capability()?);
-            assert!(
-                PreparedModelRequest::inherit(local.clone(), &head, &missing_attachment, limits, None)
-                    .await
-                    .is_err()
-            );
-            let lower_limits = Limits {
-                context_messages: prepared.request().messages.len(),
-                ..limits
-            };
-            assert!(
-                PreparedModelRequest::inherit(local.clone(), &head, &reader, lower_limits, None)
-                    .await
-                    .is_err()
-            );
-            let mut corrupt = reader.clone();
-            corrupt.0.insert(head.read_capability()?, b"{}".to_vec().into());
-            assert!(
-                PreparedModelRequest::inherit(local, &head, &corrupt, limits, None)
-                    .await
-                    .is_err()
-            );
-        }
+        );
+        let mut denied = reader.clone();
+        denied.1.remove(&head.read_capability()?);
+        assert!(matches!(
+            PreparedModelRequest::inherit(local.clone(), &head, &denied, limits, None).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let mut missing_attachment = reader.clone();
+        missing_attachment.0.remove(&attachment.read_capability()?);
+        assert!(
+            PreparedModelRequest::inherit(local.clone(), &head, &missing_attachment, limits, None)
+                .await
+                .is_err()
+        );
+        let lower_limits = Limits {
+            context_messages: prepared.request().messages.len(),
+            ..limits
+        };
+        assert!(
+            PreparedModelRequest::inherit(local.clone(), &head, &reader, lower_limits, None)
+                .await
+                .is_err()
+        );
+        let mut corrupt = reader.clone();
+        corrupt.0.insert(head.read_capability()?, b"{}".to_vec().into());
+        assert!(
+            PreparedModelRequest::inherit(local, &head, &corrupt, limits, None)
+                .await
+                .is_err()
+        );
         let mut changed_parent = prepared.request().clone();
         changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
         let changed_parent = PreparedModelRequest::prepare(changed_parent, limits, None)?;

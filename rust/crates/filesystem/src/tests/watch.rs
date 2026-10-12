@@ -259,7 +259,7 @@ fn measured_native_watch_open_admits_only_started_requests()
     assert_eq!(baseline.work, baseline_work);
     assert!(matches!(
         baseline.value,
-        WatchBatch::Changes { epoch, changes, .. } if epoch.get() == 1 && changes.is_empty()
+        WatchBatch::Changes { epoch, changes, .. } if epoch == 1 && changes.is_empty()
     ));
     Ok(())
 }
@@ -754,7 +754,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     assert!(!capabilities.persistent_restart);
     assert_eq!(
         capabilities.recursive,
-        capabilities.backend != NativeWatchBackend::Unsupported
+        capabilities.backend != "unsupported"
     );
     assert_eq!(capabilities.root_identity_fencing, cfg!(any(unix, windows)));
     let expected = if cfg!(target_os = "windows") {
@@ -766,7 +766,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     } else {
         "unsupported"
     };
-    assert_eq!(capabilities.backend.as_str(), expected);
+    assert_eq!(capabilities.backend, expected);
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -789,7 +789,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
         }
     ));
     let failed_epoch = watch.begin_rescan()?;
-    assert_eq!(failed_epoch.get(), 1);
+    assert_eq!(failed_epoch, 1);
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     assert!(matches!(
         watch
@@ -801,7 +801,7 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
         }
     ));
     let epoch = watch.begin_rescan()?;
-    assert_eq!(epoch.get(), 2);
+    assert_eq!(epoch, 2);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     let empty = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert_eq!(empty.work.backend_read_operations, 1);
@@ -1036,7 +1036,7 @@ fn live_native_backend_saturation_fails_closed_and_recovers()
     ));
 
     let epoch = watch.begin_rescan()?;
-    assert!(epoch.get() > 1);
+    assert!(epoch > 1);
     assert!(matches!(watch.finish_rescan()?, WatchBatch::Changes { .. }));
     Ok(())
 }

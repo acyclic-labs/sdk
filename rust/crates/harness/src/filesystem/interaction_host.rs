@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: acyclic_stream::StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -202,7 +202,7 @@ where
         let verifier = verifier.copy(&mut work)?;
         let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
@@ -213,7 +213,7 @@ where
             }
             None => None,
         };
-        Ok(Self { stream: acyclic_stream::StreamClient::new(stream), host, authority, verifier, schemas, owner_scope, private_volume,
+        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
             maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
@@ -226,7 +226,7 @@ where
                 "interaction ticket identity or deadline is invalid"));
         }
         let mut borrowed = io.map(PreparationIo::history_io);
-        request.validate_with_work(&mut borrowed.as_mut().map(
+        request.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let approval = match request {
             Interaction::Approval {
@@ -397,7 +397,7 @@ where
             .read_request(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        request.validate_response(&response)?;
+        request.validate_response(&response, &mut None)?;
         let answer = self
             .stage_answer(id, expected_version, operation_id, &response, None)
             .await?;
@@ -542,26 +542,20 @@ where
         let Some((ticket, _)) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
+        let bytes_hold;
+        let bytes = self.read_file(&ticket.request, io).await?;
+        bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         let request = match io {
             Some(io) => {
-                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
-                let bytes_hold;
-                let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
-                bytes_hold = io.guard_bytes(&bytes)?;
-                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
-                let mut borrowed = io.history_io();
-                ticket.validate_decoded_request_with_work(&request.0, &mut Some(&mut borrowed))?;
-                let request = crate::filesystem::retain_decoded(request);
-                drop(bytes);
-                drop(bytes_hold);
-                request
+                let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, crate::wire::ErrorCode::Storage)?;
+                crate::executor::with_history_io(Some(io), |work|
+                    ticket.validate_decoded_request_with_work(&request.0, work))?;
+                crate::filesystem::retain_decoded(request)
             }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
-                let bytes = self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?;
-                ticket.validate_request_bytes(&bytes)?
-            }
+            None => ticket.validate_request_bytes(&bytes)?,
         };
+        drop(bytes);
+        drop(bytes_hold);
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(request))
@@ -592,16 +586,15 @@ where
     async fn read_file(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        match io {
-            Some(io) => {
-                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
-                self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
-            }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
-                self.host.read_content(reference, &grant, self.maximum_bytes).await
-            }
-        }
+        let maximum = io.map(|io| io.remaining().map(|budget| budget.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+        crate::executor::with_history_io(io, |work| -> Result<()> {
+            reference.validate(work)?;
+            ContentGrant::authorize_volume(&self.verifier, &self.owner_scope,
+                reference.volume(), VolumeOperation::Read, maximum, work)
+        })?;
+        let bytes = self.host.read_pinned_io(reference, self.maximum_bytes, io).await?;
+        if io.is_none() { self.host.retain_file_generation(reference).await?; }
+        Ok(bytes)
     }
 
 
@@ -638,7 +631,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
+                let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, crate::wire::ErrorCode::Storage)?;
                 ticket.validate_decoded_request_with_work(&request.0, &mut work)?;
                 crate::filesystem::retain_decoded(request)
             }
@@ -662,7 +655,7 @@ where
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
+                    let response = io.decode(std::marker::PhantomData::<InteractionResponse>, &bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
                         &request, &resolution.outcome, detail, &response.0, &mut work)?;
                 }
@@ -695,8 +688,8 @@ where
         }
         let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_read_limits_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()

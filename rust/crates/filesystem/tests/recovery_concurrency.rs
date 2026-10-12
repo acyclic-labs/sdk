@@ -440,12 +440,6 @@ fn target_tree() -> BTreeMap<String, Vec<u8>> {
 
 impl MaterializationBackend for TreeBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
-        if preimage.custody.is_some() { return Err(TreeBackendError); }
-        journal.preimages.push(preimage);
-        Ok(())
-    }
-
     async fn capture(
         &self,
         edit: &MaterializationEdit,
@@ -624,10 +618,6 @@ impl MutationCrashBackend {
 
 impl MaterializationBackend for MutationCrashBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
-        self.inner.append_preimage(journal, preimage)
-    }
-
     async fn capture(
         &self,
         edit: &MaterializationEdit,
@@ -1184,7 +1174,7 @@ fn finite_native_budget() -> WorkBudget {
 fn native_backend(
     directory: &std::path::Path,
     work: &NativeMaterializationWork,
-) -> NativeTreeMaterializationBackend {
+) -> Arc<NativeTreeMaterializationBackend> {
     let root = directory.join("root");
     let operation = directory.join("operation");
     std::fs::create_dir(&root).expect("fixture source root");
@@ -1206,7 +1196,7 @@ fn native_backend(
 #[cfg(not(target_arch = "wasm32"))]
 async fn native_prepared_packet(
     store: &CrashJournalStore,
-    backend: &NativeTreeMaterializationBackend,
+    backend: &Arc<NativeTreeMaterializationBackend>,
     work: &NativeMaterializationWork,
     case: u8,
 ) -> MaterializationJournal {

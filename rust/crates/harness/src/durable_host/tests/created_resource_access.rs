@@ -1,6 +1,7 @@
 //! Canonical resource controls use real Stream/Filesystem allocation and IO.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeOperation;
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
@@ -487,7 +488,7 @@ impl CreationFixture {
             },
             schema: schema.clone(),
         });
-        let (task, machine, tasks, machines) = test_registries(
+        let (task, machine, tasks, machines) = test_registries::<Value>(
             implementation, schema.clone(), schema.clone(),
         )?;
         let creator = Arc::new(SandboxCreator {
@@ -505,7 +506,7 @@ impl CreationFixture {
         #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
+            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
             tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
         )?.with_session_limits(crate::scheduler::SessionLimits {
@@ -586,8 +587,7 @@ impl CreationFixture {
         let current = self.host.observe_task(preparation).await?;
         if current.phase == crate::scheduler::OperationPhase::Running {
             let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
-            self.host.settle_task(preparation, (&reservation).into(),
-                Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
+            self.host.settle_task(preparation, &(&reservation).into(), Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
         }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
@@ -804,8 +804,7 @@ impl CreationFixture {
         )?);
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
-            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-        ).await?;
+            &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command {
             operation_id: OperationId::from_bytes([90; 16]),
             idempotency_key: IdempotencyKey::new("created-fork-bind")?,
@@ -1714,7 +1713,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     let mut declaration = fixture.host.retained_declaration_with_work(operation, &mut None).await?
         .expect("genuine previously acknowledged root");
     let foreign = crate::core::AuthorityIssuer::new(
-        "created-controls-foreign", [93; 32], fixture.host.owner.clone(),
+        "created-controls-foreign", [93; 32], fixture.host.verifier.audience().clone(),
     );
     declaration.owner_scope = foreign.issue("foreign-declaration", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
     let cancellation = acyclic_fs::CancellationToken::new();

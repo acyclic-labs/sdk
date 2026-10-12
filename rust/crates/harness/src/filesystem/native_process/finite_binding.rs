@@ -84,7 +84,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
             }
             let bytes = authority.content.read(&plan.request, owner.input_limits().file_bytes, Some(&io))?.await?;
-            let request = crate::filesystem::retain_decoded(io.decode_preparation::<NativeProcessRequest>(
+            let request = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<NativeProcessRequest>,
                 bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
@@ -112,7 +112,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                     "effect schema must be JSON schema content"));
             }
             let schema = authority.content.read(&plan.result_schema, owner.input_limits().file_bytes, Some(&io))?.await?;
-            let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>, schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
             crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
             let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);

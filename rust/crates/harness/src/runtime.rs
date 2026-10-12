@@ -1737,7 +1737,7 @@ impl TaskAdmissionRecord {
         quota.adopt(grant_bytes)?;
         let policy = self.policy.as_ref().map(|policy| task_copy_component(policy, &mut quota)).transpose()?;
         let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
-            let copied = source.clone_with_work(quota.work())?;
+            let copied = source.copy(quota.work())?;
             quota.adopt(copied.logical_owned_bytes()?)?;
             Ok(copied)
         }).transpose()?;
@@ -2253,7 +2253,7 @@ impl TaskAdmissionRecord {
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
-pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
+pub trait DurableTaskHost: TaskStateProvider {
     /// Requires the current uncancelled running lease before a fresh task step or dispatch.
     fn verify_dispatch_owner<'a>(
         &'a self,
@@ -2265,16 +2265,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
                 "durable dispatch ownership is not bound".into(),
             ))
         })
-    }
-
-    /// Checks the same original dispatch lease on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_dispatch_owner_with_native_work<'a>(
-        &'a self, _task: TaskId, _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Unsupported,
-            reason:"durable host has no original-ledger dispatch verifier"})
     }
 
     /// Checks that this lease still owns execution or reconciliation.
@@ -2297,20 +2287,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         _work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         Ok(false)
-    }
-
-    /// Verifies the original retained execution lease without copying its fence.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_execution_owner_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _fence: &'a crate::scheduler::LeaseFence,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger execution verifier",
-        })
     }
 
     /// Charges one exact durable model attempt under the current task owner.
@@ -2343,97 +2319,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "durable host has no original-ledger model claim",
-        })
-    }
-
-    /// Policy identity enforced by this host at durable tool dispatch.
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-
-    /// Qualified execution provider this host routes to, if not process-local.
-    fn execution_identity(&self) -> Option<ComponentIdentity> {
-        None
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn policy_identity_with_native_work(
-        &self, _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original native policy binding source" })
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execution_identity_with_native_work(
-        &self, _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original native execution binding source" })
-    }
-
-    /// Authenticates every admission binding for an independently supplied spawner.
-    fn observe_admission<'a>(
-        &'a self,
-        _task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "full durable admission observation is not bound".into(),
-            ))
-        })
-    }
-
-    /// Observes the original admission with custody of its owned metadata.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_admission_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger admission observer",
-        })
-    }
-
-    /// Discovers direct owner-retained children at one pinned hierarchy revision.
-    fn children<'a>(
-        &'a self,
-        _parent: TaskId,
-        _expected_revision: Option<u64>,
-        _after_slot: Option<String>,
-        _maximum: usize,
-    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task hierarchy is not bound".into(),
-            ))
-        })
-    }
-
-    /// Authenticates a resumed task against its stable admission identity and the caller's pinned authority before a context is reconstructed.
-    fn resume_scope<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task context authentication is not bound".into(),
-            ))
-        })
-    }
-
-    /// Reconstructs an authenticated scope on its original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resume_scope_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "task state has no original-ledger scope producer",
         })
     }
 
@@ -2543,130 +2428,6 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
     /// Whether this owner durably declares cancellation before applying it.
     fn supports_batch_cancellation(&self) -> bool {
         false
-    }
-    /// Observes a previously admitted task without re-executing it.
-    fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
-
-    /// Observes a terminal value while retaining its original native allocation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn outcome_with_native_work<'a>(
-        &'a self,
-        _task: TaskId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger outcome observer",
-        })
-    }
-    /// Waits for a terminal observation.
-    fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        Box::pin(async move {
-            let mut delay_ms = 50_u64;
-            loop {
-                if let Some(outcome) = self.outcome(task_id).await? {
-                    return Ok(outcome);
-                }
-                crate::live::sleep_millis(delay_ms).await?;
-                delay_ms = delay_ms.saturating_mul(2).min(1_000);
-            }
-        })
-    }
-    /// Requests cancellation; an acknowledgement does not assert completion.
-    fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>>;
-
-    /// Routes an addressable interaction through the durable owner journal.
-    fn interact<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-        _interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable interaction routing is not bound".into(),
-            ))
-        })
-    }
-
-    /// Pure discovery of this original owner's native interaction boundary.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable owner has no original-ledger interaction route" })
-    }
-
-    /// Routes through the original durable owner without an ordinary callback.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn interact_with_native_work<'a>(
-        &'a self, _task_id: TaskId, _operation_id: OperationId,
-        _interaction: Interaction, _request_custody: acyclic_fs::NativeAllocation,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        let _paid = (_interaction, _request_custody);
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable owner has no original-ledger interaction route" })
-    }
-
-    /// Publishes one ref-only, idempotent task message.
-    fn send<'a>(
-        &'a self,
-        _sender: TaskId,
-        _recipient: TaskId,
-        _message_id: OperationId,
-        _payload: FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("durable task mail is not bound".into())) })
-    }
-
-    /// Reads a bounded, ordered page of committed inbox items.
-    fn inbox<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _after: u64,
-        _limit: usize,
-    ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        Box::pin(async { Err(Error::Unsupported("durable task inbox is not bound".into())) })
-    }
-
-    /// Registers or reconciles an absolute durable timer by operation identity.
-    fn wait_until<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-        _deadline_unix_ms: u64,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async { Err(Error::Unsupported("durable timers are not bound".into())) })
-    }
-
-    /// Observes an existing effect without dispatching it again.
-    fn reconcile_effect<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable effect reconciliation is not bound".into(),
-            ))
-        })
-    }
-
-    /// Reconciles or executes one exact, policy-checked tool operation.
-    fn execute_tool<'a>(
-        &'a self,
-        _task_id: TaskId,
-        _operation_id: OperationId,
-        _definition: ToolDefinition,
-        _arguments: Value,
-        _scope: RuntimeScope,
-        _context: ToolContext,
-    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable tool execution is not bound".into(),
-            ))
-        })
     }
 }
 
@@ -2881,13 +2642,13 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct HostTaskState(
+struct HostTaskSpawner(
     Arc<dyn DurableTaskHost>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     Option<acyclic_fs::NativeAllocation>,
 );
 
-impl HostTaskState {
+impl HostTaskSpawner {
     fn new_observed(host: Arc<dyn DurableTaskHost>, io: StartupIo<'_>) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if let Some(io) = io {
@@ -2900,161 +2661,7 @@ impl HostTaskState {
     }
 }
 
-impl TaskStateProvider for HostTaskState {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        self.0.policy_identity()
-    }
-    fn execution_identity(&self) -> Option<ComponentIdentity> {
-        self.0.execution_identity()
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn policy_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        self.0.policy_identity_with_native_work(work)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execution_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        self.0.execution_identity_with_native_work(work)
-    }
-    fn observe_admission<'a>(
-        &'a self,
-        task_id: TaskId,
-    ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-        self.0.observe_admission(task_id)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_admission_with_native_work<'a>(
-        &'a self,
-        task: TaskId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (TaskAdmissionRecord, acyclic_fs::NativeAllocation)>> {
-        self.0.observe_admission_with_native_work(task, work)
-    }
-    fn children<'a>(
-        &'a self,
-        parent: TaskId,
-        expected_revision: Option<u64>,
-        after_slot: Option<String>,
-        maximum: usize,
-    ) -> BoxFuture<'a, Result<TaskChildrenPage>> {
-        self.0
-            .children(parent, expected_revision, after_slot, maximum)
-    }
-    fn resume_scope<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<RuntimeScope>> {
-        self.0.resume_scope(task_id, operation_id)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resume_scope_with_native_work<'a>(
-        &'a self,
-        task: TaskId,
-        operation: OperationId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
-        self.0.resume_scope_with_native_work(task, operation, work)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_dispatch_owner_with_native_work<'a>(
-        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        self.0.verify_dispatch_owner_with_native_work(task, fence, work)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_execution_owner_with_native_work<'a>(
-        &'a self, task: TaskId, fence: &'a crate::scheduler::LeaseFence,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        self.0.verify_execution_owner_with_native_work(task, fence, work)
-    }
-    fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
-        self.0.outcome(task_id)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn outcome_with_native_work<'a>(
-        &'a self,
-        task: TaskId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Outcome<Value>>, acyclic_fs::NativeAllocation)>> {
-        self.0.outcome_with_native_work(task, work)
-    }
-    fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        self.0.wait_outcome(task_id)
-    }
-    fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        self.0.cancel(task_id)
-    }
-    fn interact<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<InteractionOutcome>> {
-        self.0.interact(task_id, operation_id, interaction)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_interactions(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.0.supports_native_interactions(work)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn interact_with_native_work<'a>(
-        &'a self, task_id: TaskId, operation_id: OperationId,
-        interaction: Interaction, request_custody: acyclic_fs::NativeAllocation,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (InteractionOutcome, acyclic_fs::NativeAllocation)>> {
-        self.0.interact_with_native_work(task_id, operation_id, interaction, request_custody, work)
-    }
-    fn send<'a>(
-        &'a self,
-        sender: TaskId,
-        recipient: TaskId,
-        message_id: OperationId,
-        payload: FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.0.send(sender, recipient, message_id, payload)
-    }
-    fn inbox<'a>(
-        &'a self,
-        task_id: TaskId,
-        after: u64,
-        limit: usize,
-    ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
-        self.0.inbox(task_id, after, limit)
-    }
-    fn wait_until<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        deadline_unix_ms: u64,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.0.wait_until(task_id, operation_id, deadline_unix_ms)
-    }
-    fn reconcile_effect<'a>(
-        &'a self,
-        task_id: TaskId,
-        effect_id: EffectId,
-    ) -> BoxFuture<'a, Result<crate::core::EffectStatus>> {
-        self.0.reconcile_effect(task_id, effect_id)
-    }
-    fn execute_tool<'a>(
-        &'a self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        definition: ToolDefinition,
-        arguments: Value,
-        scope: RuntimeScope,
-        context: ToolContext,
-    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
-        self.0
-            .execute_tool(task_id, operation_id, definition, arguments, scope, context)
-    }
-}
+
 
 /// Independently replaceable durable admission boundary.
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
@@ -3181,7 +2788,7 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     }
 }
 
-impl TaskSpawner for HostTaskState {
+impl TaskSpawner for HostTaskSpawner {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.0.policy_identity()
     }
@@ -3640,11 +3247,11 @@ impl RuntimeScope {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let extension_schemas = match &self.extension_schemas {
-            Some(schemas) => Some(schemas.clone_with_work(&mut Some(&mut io))?),
+            Some(schemas) => Some(schemas.copy(&mut Some(&mut io))?),
             None => None,
         };
         let extensions = match &self.extensions {
-            Some(extensions) => Some(extensions.clone_with_work(&mut Some(&mut io))?),
+            Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?),
             None => None,
         };
         let resource_proofs = {
@@ -3874,7 +3481,7 @@ impl RuntimeScope {
         let extensions = admission.extensions.as_ref()
             .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
         let extension_schemas = self.extension_schemas.as_ref()
-            .map(|schemas| schemas.clone_with_work(quota.work())).transpose()?;
+            .map(|schemas| schemas.copy(quota.work())).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if access.is_some()
             && let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work())
@@ -4364,131 +3971,117 @@ fn validate_task_requirements_observed(
     tools: &BTreeSet<(String, String)>, environment: &TaskDependencyEnvironment,
     grants: &BTreeSet<String>, io: StartupIo<'_>,
 ) -> Result<()> {
-    let validator = TaskDependencyValidator {
-        tasks,
-        tools,
-        environment,
-        grants,
-        io,
-    };
     let mut marks = BTreeMap::new();
     for key in tasks.keys() {
-        validator.visit(key, &mut marks)?;
+        visit_task_dependency(key, &mut marks, tasks, tools, environment, grants, io)?;
     }
     Ok(())
 }
 
-struct TaskDependencyValidator<'a> {
-    tasks: &'a BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &'a BTreeSet<(String, String)>,
-    environment: &'a TaskDependencyEnvironment,
-    grants: &'a BTreeSet<String>,
-    io: StartupIo<'a>,
+fn visit_task_dependency(
+    key: &(String, String), marks: &mut BTreeMap<(String, String), u8>,
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>, tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
+) -> Result<()> {
+    native_startup::item(io, 0)?;
+    match marks.get(key).copied() {
+        Some(1) => {
+            return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "task dependency cycle", || Error::Invalid(format!(
+                    "task dependency cycle at {}@{}", key.0, key.1,
+                ))));
+        }
+        Some(2) => return Ok(()),
+        _ => {}
+    }
+    let requirements = tasks.get(key).ok_or_else(|| {
+        native_startup::error(io, crate::wire::ErrorCode::Invalid,
+            "unsatisfied task requirement", || Error::Invalid(format!(
+                "unsatisfied task requirement: task:{}@{}", key.0, key.1,
+            )))
+    })?;
+    native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
+    marks.insert((native_startup::text(&key.0, io)?, native_startup::text(&key.1, io)?), 1);
+    for requirement in requirements {
+        validate_requirement(requirement, marks, tasks, tools, environment, grants, io)?;
+    }
+    *marks.get_mut(key).expect("the original task was marked before walking its dependencies") = 2;
+    Ok(())
 }
 
-impl TaskDependencyValidator<'_> {
-    fn visit(
-        &self,
-        key: &(String, String),
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        native_startup::item(self.io, 0)?;
-        match marks.get(key).copied() {
-            Some(1) => {
-                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "task dependency cycle", || Error::Invalid(format!(
-                        "task dependency cycle at {}@{}", key.0, key.1,
-                    ))));
-            }
-            Some(2) => return Ok(()),
-            _ => {}
+fn validate_requirement(
+    requirement: &str, marks: &mut BTreeMap<(String, String), u8>,
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>, tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
+) -> Result<()> {
+    native_startup::item(io, 0)?;
+    if let Some(target) = parse_dependency_target_observed(requirement, "task:", io)? {
+        if !tasks.contains_key(&target) {
+            return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied task requirement", || missing_task_requirement(requirement)));
         }
-        let requirements = self.tasks.get(key).ok_or_else(|| {
-            native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || Error::Invalid(format!(
-                    "unsatisfied task requirement: task:{}@{}", key.0, key.1,
-                )))
-        })?;
-        native_startup::item(self.io, std::mem::size_of::<((String, String), u8)>())?;
-        marks.insert((native_startup::text(&key.0, self.io)?, native_startup::text(&key.1, self.io)?), 1);
-        for requirement in requirements {
-            self.validate_requirement(requirement, marks)?;
-        }
-        *marks.get_mut(key).expect("the original task was marked before walking its dependencies") = 2;
-        Ok(())
+        return visit_task_dependency(&target, marks, tasks, tools, environment, grants, io);
     }
-
-    fn validate_requirement(
-        &self,
-        requirement: &str,
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        native_startup::item(self.io, 0)?;
-        if let Some(target) = parse_dependency_target_observed(requirement, "task:", self.io)? {
-            if !self.tasks.contains_key(&target) {
-                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied task requirement", || missing_task_requirement(requirement)));
-            }
-            return self.visit(&target, marks);
-        }
-        if let Some(target) = parse_dependency_target_observed(requirement, "tool:", self.io)? {
-            return self.tools.contains(&target).then_some(()).ok_or_else(|| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
-            });
-        }
-        if self.provider_requirement_satisfied(requirement)? {
-            return Ok(());
-        }
-        Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-            "unsatisfied task requirement", || missing_task_requirement(requirement)))
+    if let Some(target) = parse_dependency_target_observed(requirement, "tool:", io)? {
+        return tools.contains(&target).then_some(()).ok_or_else(|| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
+        });
     }
+    if provider_requirement_satisfied(requirement, environment, grants, io)? {
+        return Ok(());
+    }
+    Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+        "unsatisfied task requirement", || missing_task_requirement(requirement)))
+}
 
-    fn provider_requirement_satisfied(&self, requirement: &str) -> Result<bool> {
-        let available = match requirement {
-            "model" => Some(self.environment.model),
-            "context" => Some(self.environment.context),
-            "interactions" => Some(self.environment.interactions),
-            "policy" => Some(self.environment.policy),
-            "host" => Some(self.environment.host),
-            "state" => Some(self.environment.state),
-            "spawner" => Some(self.environment.spawner),
-            "content" => Some(self.environment.content),
-            "artifacts" => Some(self.environment.artifacts),
-            "content:write" => Some(self.environment.content_write),
-            "artifacts:write" => Some(self.environment.artifacts_write),
-            _ => None,
+fn provider_requirement_satisfied(
+    requirement: &str, environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>,
+    io: StartupIo<'_>,
+) -> Result<bool> {
+    let available = match requirement {
+        "model" => Some(environment.model),
+        "context" => Some(environment.context),
+        "interactions" => Some(environment.interactions),
+        "policy" => Some(environment.policy),
+        "host" => Some(environment.host),
+        "state" => Some(environment.state),
+        "spawner" => Some(environment.spawner),
+        "content" => Some(environment.content),
+        "artifacts" => Some(environment.artifacts),
+        "content:write" => Some(environment.content_write),
+        "artifacts:write" => Some(environment.artifacts_write),
+        _ => None,
+    };
+    if let Some(available) = available {
+        return if available {
+            Ok(true)
+        } else {
+            Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied task requirement", || missing_task_requirement(requirement)))
         };
-        if let Some(available) = available {
-            return if available {
-                Ok(true)
-            } else {
-                Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied task requirement", || missing_task_requirement(requirement)))
-            };
-        }
-        if let Some(grant) = requirement.strip_prefix("grant:") {
-            return Ok(!grant.is_empty() && self.grants.contains(grant));
-        }
-        if let Some(extension) = requirement.strip_prefix("extension:") {
-            let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
-            })?;
-            let version = version.parse::<u32>().map_err(|_| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
-            })?;
-            return Ok(!name.is_empty()
-                && !name.contains('@')
-                && self
-                    .environment
-                    .extensions
-                    .contains(&(native_startup::text(name, self.io)?, version)));
-        }
-        Ok(false)
     }
+    if let Some(grant) = requirement.strip_prefix("grant:") {
+        return Ok(!grant.is_empty() && grants.contains(grant));
+    }
+    if let Some(extension) = requirement.strip_prefix("extension:") {
+        let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+        })?;
+        let version = version.parse::<u32>().map_err(|_| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+        })?;
+        return Ok(!name.is_empty()
+            && !name.contains('@')
+            && environment
+                .extensions
+                .contains(&(native_startup::text(name, io)?, version)));
+    }
+    Ok(false)
 }
+
 
 fn parse_dependency_target_observed(
     requirement: &str, prefix: &str, io: StartupIo<'_>,
@@ -5714,13 +5307,10 @@ impl AgentHarness {
         let policy_identity = policy.as_ref().map(|policy| policy.identity());
         let extension_runtime = scope.extension_runtime();
         let spawner = host.as_ref().map(|host| {
-            HostTaskState::new_observed(Arc::clone(host), startup)
+            HostTaskSpawner::new_observed(Arc::clone(host), startup)
                 .map(|source| Arc::new(source) as Arc<dyn TaskSpawner>)
         }).transpose()?;
-        let state = host.as_ref().map(|host| {
-            HostTaskState::new_observed(Arc::clone(host), startup)
-                .map(|source| Arc::new(source) as Arc<dyn TaskStateProvider>)
-        }).transpose()?;
+        let state = host.as_ref().map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let live = if let Some(io) = startup {
             TaskGroup::new(concurrency, Some(io.original_native_work().ok_or(Error::NativeBoundary {
@@ -7190,7 +6780,7 @@ impl TaskContext {
         let tools = self
             .harness
             .tools
-            .definitions()?
+            .definitions(None)?
             .into_iter()
             .filter(|tool| {
                 self.scope
@@ -8350,7 +7940,7 @@ impl TaskContext {
         operation_id: OperationId,
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
-        interaction.validate()?;
+        interaction.validate(&mut None)?;
         if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
@@ -9917,7 +9507,7 @@ mod tests {
             .requires("interactions")?;
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
-        let tools = ToolRegistry::new();
+        let tools = ToolRegistry::default();
         let all_grants = ["model:generate", "context:build", "interaction:route"];
         let complete_scope = RuntimeScope::new(
             Capabilities::new(all_grants.iter().copied()),
@@ -10239,7 +9829,7 @@ mod tests {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let harness = AgentHarness::new(
             TaskRegistry::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
             scope.clone(),
             2,
             None,
@@ -10633,7 +10223,7 @@ mod tests {
         )?;
         let harness = AgentHarness::with_policy(
             TaskRegistry::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
             scope.clone(),
             1,
             None,
@@ -10884,7 +10474,6 @@ mod tests {
         record: TaskAdmissionRecord,
         polls: Arc<AtomicUsize>,
     }
-
     impl DurableTaskHost for IdentityHost {
         fn reconcile_admission<'a>(
             &'a self,
@@ -10897,12 +10486,6 @@ mod tests {
                 )))
             })
         }
-        fn observe_admission<'a>(
-            &'a self,
-            _task_id: TaskId,
-        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
-            Box::pin(async { Ok(self.record.clone()) })
-        }
         fn admit<'a>(
             &'a self,
             _request: TaskAdmissionRecord,
@@ -10912,6 +10495,15 @@ mod tests {
                     reason: "unused".into(),
                 })
             })
+        }
+    }
+
+    impl crate::runtime::TaskStateProvider for IdentityHost {
+        fn observe_admission<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            Box::pin(async { Ok(self.record.clone()) })
         }
         fn outcome<'a>(
             &'a self,
@@ -10927,6 +10519,22 @@ mod tests {
         }
         fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
+        }
+
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            None
+        }
+
+        fn resume_scope<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<RuntimeScope>> {
+            Box::pin(async {
+                Err(Error::Unsupported(
+                    "durable task context authentication is not bound".into(),
+                ))
+            })
         }
     }
 
@@ -11195,7 +10803,7 @@ mod tests {
         assert!(TaskAdmissionRecord::from_canonical_value(unknown).is_err());
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope,
             concurrency: 1,
@@ -11308,7 +10916,7 @@ mod tests {
         let polls = Arc::new(AtomicUsize::new(0));
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope,
             concurrency: 1,
@@ -11553,7 +11161,7 @@ mod tests {
         ));
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
             concurrency: 2,
@@ -11604,7 +11212,7 @@ mod tests {
         tasks.register(definition)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(
                 Capabilities::new(["task:spawn:test.recursive@1"]),
@@ -11683,7 +11291,7 @@ mod tests {
         )?)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(
                 Capabilities::new(["task:spawn:test.map.leaf@1"]),
@@ -11744,7 +11352,7 @@ mod tests {
         tasks.register(definition)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
             concurrency: 2,
@@ -11798,7 +11406,7 @@ mod tests {
                 .is_err()
         );
         let harness =
-            AgentHarness::new(TaskRegistry::default(), ToolRegistry::new(), root, 1, None)?;
+            AgentHarness::new(TaskRegistry::default(), ToolRegistry::default(), root, 1, None)?;
         let view = harness.scoped(Capabilities::new([] as [String; 0]), narrowed)?;
         assert!(harness.scope.grants().contains("tool:call:test.echo"));
         assert!(!view.scope.grants().contains("tool:call:test.echo"));
@@ -11877,7 +11485,7 @@ mod tests {
         let context = TaskContext {
             harness: AgentHarness::new(
                 TaskRegistry::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
                 scope.clone(),
                 1,
                 None,

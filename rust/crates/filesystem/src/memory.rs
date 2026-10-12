@@ -444,7 +444,7 @@ impl MemoryAuthorityStore {
     fn replay_accounted(
         &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit,
         accounting: &mut AuthorityAccounting<'_>,
-    ) -> Result<Vec<DurableCommit>, (AuthorityStoreError, WorkCounters)> {
+    ) -> Result<(Vec<DurableCommit>, KernelOwnedAllocation), (AuthorityStoreError, WorkCounters)> {
         accounting.check()?;
         if limit.records == 0 || limit.payload_bytes == 0 {
             return Err(accounting.failure(AuthorityStoreError::InvalidReplayLimit));
@@ -599,22 +599,6 @@ impl MemoryAuthorityStore {
         state.publication_gate_tail = next;
         Ok(())
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn with_native_authority<T>(
-        &self, work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-        operation: impl FnOnce(&mut AuthorityAccounting<'_>) -> Result<T, (AuthorityStoreError, WorkCounters)>,
-    ) -> Result<(T, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
-        let value = operation(&mut accounting).map_err(|(error, _)| error)?;
-        let AuthorityAccounting::Native { output_custody, .. } = accounting else { unreachable!("native authority funding"); };
-        let guard = match output_custody {
-            KernelOwnedAllocation::NativeOriginal(guard) => guard,
-            KernelOwnedAllocation::Standalone => work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
-        };
-        Ok((value, guard))
-    }
 }
 
 impl Default for MemoryAuthorityStore {
@@ -666,7 +650,7 @@ impl AuthorityStore for MemoryAuthorityStore {
         &self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget,
     ) -> AuthorityResult<Vec<DurableCommit>> {
         let mut accounting = AuthorityAccounting::ordinary(budget, None);
-        let value = self.replay_accounted(authority_id, after, limit, &mut accounting)?;
+        let (value, _allocation) = self.replay_accounted(authority_id, after, limit, &mut accounting)?;
         Ok(AuthorityReceipt { value, work: accounting.spent() })
     }
 
@@ -874,10 +858,11 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         &self, request: crate::storage::GuardedAppend, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(AppendOutcome, crate::NativeAllocation), AuthorityStoreError> {
-        self.with_native_authority(original, cancellation, |accounting| {
-            let plan = self.plan_append(&request, accounting)?;
-            self.publish_append(&request, plan, accounting)
-        })
+        let mut accounting = AuthorityAccounting::native(original, cancellation)?;
+        let plan = self.plan_append(&request, &mut accounting).map_err(|(error, _)| error)?;
+        let value = self.publish_append(&request, plan, &mut accounting).map_err(|(error, _)| error)?;
+        let allocation = original.claim_allocation(0, 0, WorkCounters::UNCHARGED)?;
+        Ok((value, allocation))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -906,9 +891,10 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Head, AuthorityStoreError> {
-        self.with_native_authority(work, cancellation, |accounting| {
-            self.head_accounted(authority_id, accounting)
-        }).map(|(head, _)| head)
+        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
+        let head = self.head_accounted(authority_id, &mut accounting).map_err(|(error, _)| error)?;
+        drop(work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?);
+        Ok(head)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -917,9 +903,13 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(Vec<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        self.with_native_authority(work, cancellation, |accounting| {
-            self.replay_accounted(authority_id, after, limit, accounting)
-        })
+        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
+        let (page, allocation) = self.replay_accounted(authority_id, after, limit, &mut accounting)
+            .map_err(|(error, _)| error)?;
+        match allocation {
+            KernelOwnedAllocation::NativeOriginal(allocation) => Ok((page, allocation)),
+            KernelOwnedAllocation::Standalone => unreachable!("native replay allocation"),
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -928,9 +918,10 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::storage::FenceOutcome, AuthorityStoreError> {
-        self.with_native_authority(work, cancellation, |accounting| {
-            self.fence_accounted(authority_id, expected, accounting)
-        }).map(|(outcome, _)| outcome)
+        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
+        let outcome = self.fence_accounted(authority_id, expected, &mut accounting).map_err(|(error, _)| error)?;
+        drop(work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?);
+        Ok(outcome)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -939,9 +930,11 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(Option<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        self.with_native_authority(work, cancellation, |accounting| {
-            self.find_operation_accounted(authority_id, operation_id, accounting)
-        })
+        let mut accounting = AuthorityAccounting::native(work, cancellation)?;
+        let value = self.find_operation_accounted(authority_id, operation_id, &mut accounting)
+            .map_err(|(error, _)| error)?;
+        let allocation = work.claim_allocation(0, 0, WorkCounters::UNCHARGED)?;
+        Ok((value, allocation))
     }
 }
 
@@ -961,13 +954,11 @@ enum AuthorityAccounting<'a> {
         work: WorkCounters, budget: WorkBudget,
         allocations: crate::kernel::allocation::AllocationLedger,
         cancellation: Option<&'a crate::CancellationToken>,
-        output_custody: KernelOwnedAllocation,
     },
     #[cfg(not(target_arch = "wasm32"))]
     Native {
         original: &'a crate::materializer::NativeMaterializationWork,
         cancellation: &'a crate::CancellationToken,
-        output_custody: KernelOwnedAllocation,
     },
 }
 
@@ -975,7 +966,6 @@ impl<'a> AuthorityAccounting<'a> {
     fn ordinary(budget: WorkBudget, cancellation: Option<&'a crate::CancellationToken>) -> Self {
         Self::Ordinary {
             work: WorkCounters::default(), budget, allocations: Default::default(), cancellation,
-            output_custody: KernelOwnedAllocation::Standalone,
         }
     }
 
@@ -984,7 +974,7 @@ impl<'a> AuthorityAccounting<'a> {
     -> Result<Self, AuthorityStoreError> {
         cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
         original.admit(WorkCounters::UNCHARGED)?;
-        Ok(Self::Native { original, cancellation, output_custody: KernelOwnedAllocation::Standalone })
+        Ok(Self::Native { original, cancellation })
     }
 
     fn spent(&self) -> WorkCounters {
@@ -1133,7 +1123,7 @@ impl<'a> AuthorityAccounting<'a> {
         self.allocate_commits(capacity).map(Some)
     }
 
-    fn clone_page(&mut self, commits: &[DurableCommit]) -> Result<Vec<DurableCommit>, (AuthorityStoreError, WorkCounters)> {
+    fn clone_page(&mut self, commits: &[DurableCommit]) -> Result<(Vec<DurableCommit>, KernelOwnedAllocation), (AuthorityStoreError, WorkCounters)> {
         let mut page = self.allocate_commits(commits.len())?;
         for commit in commits {
             self.examine()?;
@@ -1143,12 +1133,7 @@ impl<'a> AuthorityAccounting<'a> {
             }
             page.0.push(commit.clone());
         }
-        match self {
-            Self::Ordinary { output_custody, .. } => *output_custody = page.1,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { output_custody, .. } => *output_custody = page.1,
-        }
-        Ok(page.0)
+        Ok(page)
     }
 }
 
@@ -1206,11 +1191,15 @@ pub struct MemoryObjectStore {
 }
 
 // The backing vector is destroyed before its original capacity guard.
-#[derive(Default)]
 struct MemoryObjectState {
     objects: Vec<(ObjectId, OwnedBytes)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    table_custody: Option<crate::materializer::NativeAllocation>,
+    table_custody: KernelOwnedAllocation,
+}
+
+impl Default for MemoryObjectState {
+    fn default() -> Self {
+        Self { objects: Vec::new(), table_custody: KernelOwnedAllocation::Standalone }
+    }
 }
 
 impl MemoryObjectState {
@@ -1232,6 +1221,37 @@ enum MemoryObjectAccounting<'a> {
 }
 
 impl<'a> MemoryObjectAccounting<'a> {
+    fn allocate<T>(&mut self, count: usize) -> Result<(Vec<T>, KernelOwnedAllocation), ObjectStoreError> {
+        let requested = count.checked_mul(size_of::<T>())
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
+        let allocation = WorkCounters {
+            allocation_operations: 1, peak_allocation_bytes: requested,
+            ..WorkCounters::default()
+        };
+        self.admit(allocation)?;
+        let mut custody = match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => KernelOwnedAllocation::NativeOriginal(work.claim(requested)?),
+            Self::Portable { .. } => {
+                self.record(allocation)?;
+                KernelOwnedAllocation::Standalone
+            }
+        };
+        // Declare after the guard so errors free the backing first.
+        let mut values = Vec::<T>::new();
+        values.try_reserve_exact(count).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        let actual = values.capacity().checked_mul(size_of::<T>())
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
+        match &mut custody {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(custody) => custody.resize_retained(actual)?,
+            KernelOwnedAllocation::Standalone => if actual > requested {
+                self.charge(WorkCounters { peak_allocation_bytes: actual, ..WorkCounters::default() })?;
+            },
+        }
+        Ok((values, custody))
+    }
+
     fn portable(budget: &'a WorkBudget) -> Self {
         Self::Portable {
             work: WorkCounters::default(), budget,
@@ -1345,36 +1365,10 @@ impl MemoryObjectStore {
             }
         }
         let needed = state.objects.len().checked_add(missing).ok_or(crate::WorkError::Overflow)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut replacement_custody = None;
         let mut replacement = None;
         if needed > state.objects.capacity() {
             let capacity = needed.max(state.objects.capacity().checked_mul(2).ok_or(crate::WorkError::Overflow)?);
-            let requested = capacity.checked_mul(size_of::<(ObjectId, OwnedBytes)>())
-                .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-            let allocation = WorkCounters {
-                allocation_operations: 1, peak_allocation_bytes: requested,
-                ..WorkCounters::default()
-            };
-            accounting.admit(allocation)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let MemoryObjectAccounting::Native { work, .. } = accounting {
-                replacement_custody = Some(work.claim(requested)?);
-            }
-            if matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
-                accounting.record(allocation)?;
-            }
-            // Declare after the guard so allocator failure frees the backing first.
-            let mut table = Vec::new();
-            table.try_reserve_exact(capacity).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-            let actual = table.capacity().checked_mul(size_of::<(ObjectId, OwnedBytes)>())
-                .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(custody) = &mut replacement_custody { custody.resize_retained(actual)?; }
-            if actual > requested && matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
-                accounting.charge(WorkCounters { peak_allocation_bytes: actual, ..WorkCounters::default() })?;
-            }
-            replacement = Some(table);
+            replacement = Some(accounting.allocate(capacity)?);
         }
         let write = WorkCounters {
             backend_write_operations: 1, object_bytes_written: written,
@@ -1389,12 +1383,11 @@ impl MemoryObjectStore {
         };
         accounting.admit(write.checked_add(copy)?)?;
         accounting.record(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
-        if let Some(mut table) = replacement {
+        if let Some((mut table, custody)) = replacement {
             table.append(&mut state.objects);
             let old = std::mem::replace(&mut state.objects, table);
             drop(old);
-            #[cfg(not(target_arch = "wasm32"))]
-            { state.table_custody = replacement_custody; }
+            state.table_custody = custody;
         }
         accounting.record(copy)?;
         for entry in writes {
@@ -1450,29 +1443,7 @@ impl MemoryObjectStore {
     ) -> Result<(Vec<ObjectRead>, KernelOwnedAllocation), ObjectStoreError> {
         if requests.is_empty() { return Err(ObjectStoreError::EmptyReadBatch); }
         accounting.check()?;
-        let requested = requests.len().checked_mul(size_of::<ObjectRead>())
-            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-        let allocation = WorkCounters {
-            allocation_operations: 1, peak_allocation_bytes: requested,
-            ..WorkCounters::default()
-        };
-        accounting.admit(allocation)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut custody = if let MemoryObjectAccounting::Native { work, .. } = accounting {
-            Some(work.claim(requested)?)
-        } else { None };
-        if matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
-            accounting.record(allocation)?;
-        }
-        let mut reads = Vec::new();
-        reads.try_reserve_exact(requests.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-        let actual = reads.capacity().checked_mul(size_of::<ObjectRead>())
-            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(custody) = &mut custody { custody.resize_retained(actual)?; }
-        if actual > requested && matches!(accounting, MemoryObjectAccounting::Portable { .. }) {
-            accounting.charge(WorkCounters { peak_allocation_bytes: actual, ..WorkCounters::default() })?;
-        }
+        let mut output = accounting.allocate::<ObjectRead>(requests.len())?;
         accounting.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
         let state = self.objects.read().map_err(|_| ObjectStoreError::Corrupt)?;
         for request in requests {
@@ -1494,18 +1465,14 @@ impl MemoryObjectStore {
             let digest = object_digest(request.object_id.kind, bytes);
             accounting.record(read)?;
             if digest != request.object_id.digest { return Err(ObjectStoreError::Corrupt); }
-            reads.push(ObjectRead { bytes: bytes.clone(), retention: ObjectReadRetention::Shared });
+            output.0.push(ObjectRead { bytes: bytes.clone(), retention: ObjectReadRetention::Shared });
         }
         accounting.charge(WorkCounters {
-            items_returned: u64::try_from(reads.len()).map_err(|_| crate::WorkError::Overflow)?,
+            items_returned: u64::try_from(output.0.len()).map_err(|_| crate::WorkError::Overflow)?,
             ..WorkCounters::default()
         })?;
         accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = custody.map_or(KernelOwnedAllocation::Standalone, KernelOwnedAllocation::NativeOriginal);
-        #[cfg(target_arch = "wasm32")]
-        let allocation = KernelOwnedAllocation::Standalone;
-        Ok((reads, allocation))
+        Ok(output)
     }
 }
 
@@ -1553,9 +1520,8 @@ impl ObjectStore for MemoryObjectStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        let read = self.read_admitted(object_id, maximum_bytes,
-            &mut MemoryObjectAccounting::Native { work, cancellation })?;
-        Ok(read)
+        self.read_admitted(object_id, maximum_bytes,
+            &mut MemoryObjectAccounting::Native { work, cancellation })
     }
 
     fn read_many(
@@ -1587,46 +1553,14 @@ impl ObjectStore for MemoryObjectStore {
     }
 
     fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
-        let probe = WorkCounters {
-            object_probes: 1,
-            backend_read_operations: 1,
-            ..WorkCounters::default()
+        let mut accounting = MemoryObjectAccounting::portable(&budget);
+        let result = match self.read_admitted(object_id, u64::MAX, &mut accounting) {
+            Ok(_) => Ok(true),
+            Err(ObjectStoreError::Missing) => Ok(false),
+            Err(error) => Err(error),
         };
-        probe
-            .verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        let objects = self.objects.read().map_err(|_| ObjectFailure {
-            error: ObjectStoreError::Corrupt,
-            work: Box::new(probe),
-        })?;
-        let Some(bytes) = objects.get(&object_id) else {
-            return Ok(ObjectReceipt {
-                value: false,
-                work: probe,
-            });
-        };
-        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let work = probe
-            .checked_add(WorkCounters {
-                object_bytes_read: length,
-                bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure {
-                error: error.into(),
-                work: Box::new(probe),
-            })?;
-        work.verify(budget).map_err(|error| ObjectFailure {
-            error: error.into(),
-            work: Box::new(probe),
-        })?;
-        if object_digest(object_id.kind, bytes) != object_id.digest {
-            return Err(ObjectFailure {
-                error: ObjectStoreError::Corrupt,
-                work: Box::new(work),
-            });
-        }
-        Ok(ObjectReceipt { value: true, work })
+        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+            .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 }
 

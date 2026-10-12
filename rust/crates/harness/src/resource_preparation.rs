@@ -139,59 +139,37 @@ impl ResourcePreparationRequest {
         let maximum = value.get("maximum_bytes").and_then(Value::as_u64)
             .filter(|maximum| *maximum != 0 && *maximum != u64::MAX)
             .ok_or_else(|| crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "retained preparation has no finite byte bound"))?;
-        let encoded = crate::store::history::canonical_bytes_with_work(value, maximum, work)?;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+        let encoded = crate::store::history::canonical_bytes_with_work(value, maximum, quota.work())?;
         let encoded_extent = encoded.capacity() as u64;
-        let decoded = (|| {
-            if let Some(observer) = work.as_deref_mut() {
+        quota.adopt(encoded_extent)?;
+        let decoded: Result<_> = (|| {
+            if let Some(observer) = quota.work().as_deref_mut() {
                 observer.hashed_bytes(encoded.len() as u64)?;
             }
             let original = *blake3::hash(&encoded).as_bytes();
-            let (request, reserved) = Self::decode_retained_bytes(&encoded, work)?;
+            let (request, reserved) = Self::decode_retained_bytes(&encoded, quota.work())?;
             Ok((request, reserved, original))
         })();
+        if let Ok((_, reserved, _)) = &decoded { quota.adopt(*reserved)?; }
         drop(encoded);
-        if let Some(observer) = work.as_deref_mut() {
-            if let Err(error) = observer.release_owned(encoded_extent) {
-                return match decoded {
-                    Ok((request, reserved, _)) => {
-                        drop(request);
-                        let _ = observer.release_owned(reserved);
-                        Err(error)
-                    }
-                    Err(original) => Err(original),
-                };
-            }
-        }
+        let released = quota.relinquish(encoded_extent);
         let (request, reserved, original) = decoded?;
-        let checked = (|| {
-            request.validate(work)?;
-            let retained = crate::contract::canonical_json_digest_with_work(
-                &request, request.maximum_bytes, work)?;
-            if original != retained {
-                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "retained preparation input changes its canonical identity on decode"));
-            }
-            crate::core::resource_preparation_owned_bytes(&request, work)
-        })();
-        let extent = match checked {
-            Ok(extent) if extent <= reserved => extent,
-            Ok(_) => {
-                drop(request);
-                if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(reserved); }
-                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "closed preparation inventory exceeded its admitted reservation"));
-            }
-            Err(error) => {
-                drop(request);
-                if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(reserved); }
-                return Err(error);
-            }
-        };
-        if let Some(observer) = work.as_deref_mut() {
-            if let Err(error) = observer.release_owned(reserved - extent) {
-                drop(request);
-                let _ = observer.release_owned(extent);
-                return Err(error);
-            }
+        released?;
+        request.validate(quota.work())?;
+        let retained = crate::contract::canonical_json_digest_with_work(
+            &request, request.maximum_bytes, quota.work())?;
+        if original != retained {
+            return Err(crate::scheduler::diagnostic(quota.work(), crate::wire::ErrorCode::Invalid,
+                "retained preparation input changes its canonical identity on decode"));
         }
+        let extent = crate::core::resource_preparation_owned_bytes(&request, quota.work())?;
+        if extent > reserved {
+            return Err(crate::scheduler::diagnostic(quota.work(), crate::wire::ErrorCode::Invalid,
+                "closed preparation inventory exceeded its admitted reservation"));
+        }
+        quota.replace(extent)?;
+        quota.transfer();
         Ok((request, extent))
     }
 
@@ -216,7 +194,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = crate::filesystem::native_decoded(decoded)?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
@@ -233,14 +211,14 @@ impl ResourcePreparationRequest {
             maximum_depth: 128,
         };
         let mut items = 0_u64;
-        let mut retained = 0_u64;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
         let result = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
             bytes, bounds, 0, None, None, &mut |next| {
                 match next {
                     crate::contract::JsonCodecCharge::Work { items: count, .. } => {
                         items = items.checked_add(count)
                             .ok_or_else(|| Error::Invalid("preparation DTO item count overflow".into()))?;
-                        if let Some(observer) = work.as_deref_mut() { observer.codec_charge(next)?; }
+                        if let Some(observer) = quota.work().as_deref_mut() { observer.codec_charge(next)?; }
                         Ok(())
                     }
                     crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
@@ -251,27 +229,20 @@ impl ResourcePreparationRequest {
                             .and_then(|owned| owned.checked_add(maximum_owned_bytes))
                             .and_then(|owned| owned.checked_add(std::mem::size_of::<Self>() as u64))
                             .ok_or_else(|| Error::Invalid("preparation DTO ownership overflow".into()))?;
-                        if let Some(observer) = work.as_deref_mut() {
-                            observer.admit_owned(owned)?;
-                            observer.retain_owned(owned)?;
-                        }
-                        retained = owned;
+                        quota.replace(owned)?;
                         Ok(())
                     }
                     next => {
-                        if let Some(observer) = work.as_deref_mut() { observer.codec_charge(next)?; }
+                        if let Some(observer) = quota.work().as_deref_mut() { observer.codec_charge(next)?; }
                         Ok(())
                     }
                 }
             },
         );
-        match result {
-            Ok(request) => Ok((request, retained)),
-            Err(error) => {
-                if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(retained); }
-                Err(error)
-            }
-        }
+        let request = result?;
+        let retained = quota.retained();
+        quota.transfer();
+        Ok((request, retained))
     }
 
     /// Checks the complete request with the caller's optional work observer.
@@ -422,7 +393,7 @@ impl TaskResourcePreparation {
     /// Borrowed original preparation-task grants.
     #[must_use]
     pub fn grants(&self) -> &crate::Capabilities {
-        self.owner.grants()
+        &self.origin.source_grants
     }
 
     /// Borrowed actual preparation invocation token, if its owner was bound at the caller's live invocation boundary.
@@ -472,7 +443,6 @@ impl TaskResourcePreparation {
 #[cfg(feature = "filesystem")]
 pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
     fn verify_lease(&self, settlement: bool) -> acyclic_stream::BoxProviderFuture<'_, Result<()>>;
-    fn grants(&self) -> &crate::Capabilities;
     fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken>;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -485,10 +455,6 @@ pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
 impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
     for crate::durable_host::TaskJournalOwner<P>
 {
-    fn grants(&self) -> &crate::Capabilities {
-        self.input_grants()
-    }
-
     fn cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
         self.invocation_cancellation()
     }
@@ -1015,14 +981,9 @@ fn created_access_canonical_capability<T: Serialize + ?Sized>(
     identity: &T, prefix: &'static str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    let bytes = crate::store::history::canonical_bytes_with_work(
+    let digest = blake3::Hash::from_bytes(crate::contract::canonical_json_digest_with_work(
         identity, crate::store::default_projection_read_limits().maximum_bytes, work,
-    )?;
-    if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-    let digest = blake3::hash(&bytes);
-    let capacity = bytes.capacity() as u64;
-    drop(bytes);
-    created_access_release(work, capacity)?;
+    )?);
     let mut label = String::new();
     let capacity = prefix.len() + 64;
     if let Some(io) = work.as_deref_mut() {

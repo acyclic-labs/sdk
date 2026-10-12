@@ -1384,7 +1384,7 @@ name = "decoy-owner"
     #[test]
     fn current_source_closure_is_present_and_digested() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let metadata = crate::rustdoc_profiles::load_metadata(root.join("Cargo.toml"))
+        let metadata = crate::rustdoc_profiles::load_metadata(root.join("Cargo.toml"), crate::rustdoc_profiles::CargoExecutionContext::default())
             .expect("actual workspace Cargo metadata");
         let sources = validate(&root, &metadata).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());

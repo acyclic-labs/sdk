@@ -4,7 +4,7 @@ import { lifecycle } from "../../objects/test/v1-lifecycle.mjs";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
 import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
-import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
+import { WorkersService, WorkersTransportError, WorkersClient } from "@acyclic-labs/workers";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";
 
 function errorCode(error) {
@@ -35,7 +35,7 @@ try {
   const actors = new ActorsClient(options);
   assert.equal(await actors.transport, "grpc-web");
   let methods = 0;
-  for (const [service, client] of [[ActorsService, actors], [WorkersService, new HttpWorkersClient(options)]]) {
+  for (const [service, client] of [[ActorsService, actors], [WorkersService, new WorkersClient(options)]]) {
     for (const method of service.methods) {
       const init = {};
       if (method.name === "CreateActor") Object.assign(init, {
@@ -85,8 +85,8 @@ try {
   await assert.rejects(pending, error => error.code === "cancelled");
   delete globalThis.abortActorsRequest;
   const inspectJob = WorkersService.methods.find(method => method.name === "InspectJob");
-  await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.code === "service" && error.metadata?.grpcCode === 16);
-  await assert.rejects(new HttpWorkersClient({ ...options, maximumMessageBytes: 32 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.code === "service" && /byte ceiling|message.*(?:large|size)/i.test(error.message));
+  await assert.rejects(new WorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.code === "service" && error.metadata?.grpcCode === 16);
+  await assert.rejects(new WorkersClient({ ...options, maximumMessageBytes: 32 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.code === "service" && /byte ceiling|message.*(?:large|size)/i.test(error.message));
 
   const stream = new HttpStreamProvider(options);
   const key = text => idempotencyKey(new TextEncoder().encode(text));

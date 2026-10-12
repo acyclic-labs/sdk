@@ -4392,7 +4392,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         }
         let expected_child = parent
             .workspace()
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(GitCaptureError::Conflict);
@@ -5779,7 +5779,7 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("repo").expect("valid test workspace"),
+            &WorkspaceName::new("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid test workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value
     }
@@ -6652,7 +6652,7 @@ mod tests {
         let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
         let foreign_workspace = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign").expect("valid foreign workspace"),
+            &WorkspaceName::new("foreign", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid foreign workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let executor = TestExecutor::returning(GitFilesystemResult::Applied {
@@ -6702,7 +6702,7 @@ mod tests {
         };
         let foreign = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign-result").expect("valid workspace"),
+            &WorkspaceName::new("foreign-result", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         assert!(matches!(
@@ -6754,7 +6754,7 @@ mod tests {
         let mut state = GitCompatState::new("main", workspace());
         let foreign = WorkspaceId::derive(
             [8; 16],
-            &WorkspaceName::new("foreign-persisted-tree").expect("workspace name"),
+            &WorkspaceName::new("foreign-persisted-tree", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let commit = GitCommit::new_with_metadata(
@@ -6907,7 +6907,7 @@ mod tests {
         ));
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("feature-run").expect("valid workspace name"),
+            &WorkspaceName::new("feature-run", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let branch_executor = TestExecutor::returning(GitFilesystemResult::Forked {
@@ -6955,7 +6955,7 @@ mod tests {
             .expect("initial commit");
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("recover-run").expect("valid workspace name"),
+            &WorkspaceName::new("recover-run", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository
@@ -7048,7 +7048,7 @@ mod tests {
 
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("merge-control").expect("valid workspace name"),
+            &WorkspaceName::new("merge-control", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
@@ -7209,7 +7209,7 @@ mod tests {
         )
         .await
         .expect("pinned capture");
-        assert!(captured.generation.stat("/published.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/published.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
         assert!(captured.generation.stat("/later.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
@@ -7306,8 +7306,8 @@ mod tests {
         .await
         .expect("capture");
         assert!(captured.generation.stat("/src/drop.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-        assert!(captured.generation.stat("/src/keep.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
-        assert!(captured.generation.stat("/outside.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/src/keep.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
+        assert!(captured.generation.stat("/outside.tmp", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
     }
 
     #[tokio::test]
@@ -7837,8 +7837,8 @@ mod tests {
             Some(previous_capture.generation.workspace_id()),
             "incremental capture must fork from the prior filtered capture"
         );
-        let reopened = crate::DistributedFs::new(fs.clone(), state_store)
-            .workspace(captured.generation.workspace_id())
+        let reopened = crate::WorkspaceGraph::new(state_store)
+            .workspace(&fs, captured.generation.workspace_id(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
             .expect("reopen filtered capture from durable lineage");
         reopened
@@ -7918,7 +7918,7 @@ mod tests {
         .await
         .expect("capture");
         assert!(captured.generation.stat("/src/ignored.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-        assert!(captured.generation.stat("/src/.gitignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok());
+        assert!(captured.generation.stat("/src/.gitignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.is_ok());
     }
 
     #[tokio::test]
@@ -8174,7 +8174,7 @@ mod tests {
         };
         let source = WorkspaceId::derive(
             [0x51; 16],
-            &WorkspaceName::new("publication-source").expect("workspace name"),
+            &WorkspaceName::new("publication-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository
@@ -8328,7 +8328,7 @@ mod tests {
         assert!(switch);
         let child = WorkspaceId::derive(
             [9; 16],
-            &WorkspaceName::new("feature").expect("valid workspace name"),
+            &WorkspaceName::new("feature", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace name").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value;
         repository

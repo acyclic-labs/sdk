@@ -1,6 +1,7 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
@@ -65,7 +66,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?)); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?)); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -381,7 +382,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let owner_condition = match (owner, fence) {
                 (Some(owner), _) => Some(owner.condition(crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, Some(fence)) => Some(self.coordinator.lock().await.journal_condition(
-                    &self.owner, &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
+                    self.verifier.audience(), &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
                     fence, crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, None) => None,
             };

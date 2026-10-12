@@ -123,7 +123,7 @@ impl PiOwnerConfig {
             owned.0._native_custody.as_mut().unwrap().absorb(runtime_custody).map_err(native_work_error)?;
         }
         if let Some(runtime) = owned.0.native_runtime.take() {
-            owned.0.native_runtime = Some(runtime.sanitize()?);
+            owned.0.native_runtime = Some(runtime.sanitize(work)?);
         }
         let authority = owned.0.authority_with_native_work(work)?;
         drop(authority.0);
@@ -281,7 +281,7 @@ impl PiOwnerConfig {
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
-            task, agent, grants, &format_args!("pi:conversation:{task}"), work,
+            task, agent, grants, format_args!("pi:conversation:{task}"), work,
         )
     }
 
@@ -291,12 +291,12 @@ impl PiOwnerConfig {
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
             self.policy.root_task, self.policy.agent, &self.policy.grants,
-            &self.policy.root_task, work,
+            format_args!("{}", self.policy.root_task), work,
         )
     }
 
-    fn conversation_authority_parts_with_native_work<D: std::fmt::Display + ?Sized>(
-        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: &D,
+    fn conversation_authority_parts_with_native_work(
+        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: std::fmt::Arguments<'_>,
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         let original = self.authority_with_native_work(work)?;
@@ -304,18 +304,8 @@ impl PiOwnerConfig {
         drop(original.1);
         let audience_id = work.display(&task).map_err(native_work_error)?;
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
-        let issuer_audience_id = work.display(&audience.0.id).map_err(native_work_error)?;
-        let issuer_audience = (Authority {
-            kind: AggregateKind::Conversation, id: issuer_audience_id.0,
-        }, issuer_audience_id.1);
-        let issuer_id = work.display(ISSUER).map_err(native_work_error)?;
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_copied: self.key.len() as u64, ..acyclic_fs::WorkCounters::UNCHARGED
-        }).map_err(native_work_error)?;
-        let issuer = combine_native_metadata((AuthorityIssuer::new(
-            issuer_id.0, self.key, issuer_audience.0,
-        ), issuer_id.1, [issuer_audience.1]))?;
-        let scope_id = work.display(scope_id).map_err(native_work_error)?;
+        let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
+        let scope_id = work.display(&scope_id).map_err(native_work_error)?;
         let scope = issuer.0.root_for_agent_with_native_work(agent, &scope_id.0, grants, work)?;
         drop(scope_id.0);
         drop(scope_id.1);
@@ -417,9 +407,14 @@ impl PiOwnerConfig {
         let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))
             .map_err(native_work_error)?;
         let plain = NativeOwnerPlaintext { bytes: plain.0, _custody: plain.1 };
-        let owner = Self::decode_with_native_work(&plain.bytes, work);
+        let owner = super::pi_root_provider::guarded_pi_decode::<Self>(
+            &plain.bytes, MAXIMUM_OWNER_BYTES, std::mem::size_of::<Self>() as u64,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+            OWNER_DIAGNOSTIC_LABEL_BYTES, work,
+        );
         drop(plain);
-        let owner = owner?;
+        let (mut owner, custody) = owner?;
+        owner._native_custody = Some(custody);
         let authority = owner.authority_with_native_work(work)?;
         drop(authority.0);
         drop(authority.1);
@@ -463,61 +458,6 @@ impl PiOwnerConfig {
         sync_parent(session, Durability::Full).map_err(storage)?;
         Ok(owner)
     }
-    /// The existing SDK source pass issues this closed DTO's admission shape.
-    fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<Self> {
-        use acyclic_harness::contract::{
-            JsonBounds, JsonCodecCharge, JsonValueSchema,
-            json_from_slice_bounded_native_trusted, json_value_decode_owned_bytes,
-            json_typed_diagnostic_owned_bytes,
-        };
-        let remaining = work.remaining().map_err(native_work_error)?;
-        let mut custody = work.retain_owned(0).map_err(native_work_error)?;
-        let mut retained = 0;
-        let bounds = JsonBounds {
-            maximum_bytes: MAXIMUM_OWNER_BYTES,
-            maximum_items: remaining.items_examined,
-            maximum_depth: 64,
-        };
-        let decoded = json_from_slice_bounded_native_trusted::<Self, _>(
-            bytes, bounds, 0, acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None, &mut |charge| {
-                if let JsonCodecCharge::Release { bytes } = charge {
-                    return custody.release(bytes).map_err(native_work_error);
-                }
-                work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-                match charge {
-                    JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
-                        retained = json_value_decode_owned_bytes(value_shape)?
-                            .checked_add(std::mem::size_of::<Self>() as u64)
-                            .ok_or_else(|| native_invalid("Pi owner ownership allowance overflow"))?;
-                        let diagnostic = json_typed_diagnostic_owned_bytes(
-                            value_shape, OWNER_DIAGNOSTIC_LABEL_BYTES,
-                            Some(acyclic_harness::wire::ErrorCode::Invalid),
-                        )?;
-                        let admitted = retained.checked_add(maximum_owned_bytes)
-                            .and_then(|bytes| bytes.checked_add(diagnostic))
-                            .ok_or_else(|| native_invalid("Pi owner decoder allowance overflow"))?;
-                        custody.resize_retained(admitted).map_err(native_work_error)
-                    }
-
-                    JsonCodecCharge::Retain { bytes } => custody.grow(bytes).map_err(native_work_error),
-
-                charge => super::pi_root_provider::native_buffer_codec_charge(work, &mut custody, charge),}
-            },
-        );
-        match decoded {
-            Ok(mut owner) => {
-                owner._native_custody = Some(custody);
-                owner._native_custody.as_mut().unwrap().substitute(retained)
-                    .map_err(native_work_error)?;
-                Ok(owner)
-            }
-            Err(Error::NativeDecode { code, source, custody: None }) => {
-                Err(Error::NativeDecode { code, source, custody: Some(custody) })
-            }
-            Err(error) => Err(error),
-        }
-    }
 }
 
 /// Managed plaintext is wiped before its bytes and original allocation drop, including cancellation, malformed JSON and native authority failures.
@@ -540,7 +480,7 @@ fn storage(error: io::Error) -> Error { Error::Storage(error.to_string()) }
 
 #[cfg(test)]
 #[path = "pi_owner_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
