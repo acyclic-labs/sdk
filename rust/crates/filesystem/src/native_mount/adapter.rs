@@ -9324,7 +9324,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"actual")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &baseline_work)?;
         let cancellation = CancellationToken::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
@@ -9700,7 +9702,9 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"child")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &baseline_work)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

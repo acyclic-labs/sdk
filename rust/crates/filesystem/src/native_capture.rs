@@ -31,29 +31,20 @@ pub(crate) const MAX_NATIVE_EXACT_CAPTURE_PATHS: usize = 65_536;
 pub(crate) struct NativeViewBaseline {
     root_identity: NativeRootIdentity,
     read_only: bool,
-    _allocation: Option<crate::NativeAllocation>,
+    _allocation: crate::NativeAllocation,
 }
 
 impl NativeViewBaseline {
-    #[cfg(any(feature = "native-mount", all(test, unix)))]
-    pub(crate) fn new(root_identity: NativeRootIdentity) -> Self {
-        Self {
-            root_identity,
-            read_only: false,
-            _allocation: None,
-        }
-    }
-
     /// Creates the actual shared baseline control on the original invocation.
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn new_with_native_work(
+    #[cfg(any(feature = "native-mount", all(test, unix)))]
+    pub(crate) fn new(
         root_identity: NativeRootIdentity,
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
         let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
-            root_identity, read_only, _allocation: Some(allocation),
+            root_identity, read_only, _allocation: allocation,
         }))
     }
     fn restore_canonical_stamps(
@@ -112,7 +103,9 @@ mod native_view_baseline_tests {
         std::fs::write(directory.path().join("file"), b"body")?;
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
-        let baseline = NativeViewBaseline::new(identity);
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let baseline = NativeViewBaseline::new(identity, false, &work)?;
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
         let prior = FileMetadata {
             changed_ns: MetadataField::Value(-123),
