@@ -2021,15 +2021,7 @@ fn encode(
     let operation_id = formatted_text_with_work(36, format_args!("{operation_id}"), custody.work())?;
     if custody.work().is_some() { custody.adopt(operation_id.capacity() as u64)?; }
     let idempotency_key = crate::core::copy_text(key, &mut custody)?;
-    let mut event_digest = Vec::new();
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.reserve_bytes(&mut event_digest, digest.len())?;
-        custody.adopt(event_digest.capacity() as u64)?;
-        if let Some(work) = custody.work().as_deref_mut() { work.copy_bytes(digest.len() as u64)?; }
-    } else {
-        event_digest.reserve_exact(digest.len());
-    }
-    event_digest.extend_from_slice(&digest);
+    let event_digest = crate::core::copy_copy_vector(&digest, &mut custody)?;
     let envelope = wire::SchedulerEventEnvelope {
         protocol: Some(wire::ProtocolIdentity { version, descriptor_digest }),
         revision, operation_id, idempotency_key,
@@ -2436,7 +2428,6 @@ type PreparedNativeRecovery = std::convert::Infallible;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) struct PreparedMaterializationCommit {
     template: crate::filesystem::NativePreparationCompletionTemplate,
-    operation: OperationId,
     sdk: acyclic_stream::PreparedNativeCommit,
     sdk_recovery: PreparedNativeRecovery,
     sdk_custody: acyclic_fs::NativeAllocation,
@@ -2446,9 +2437,8 @@ pub(crate) struct PreparedMaterializationCommit {
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl PreparedMaterializationCommit {
     pub(crate) async fn prepare<P: StreamProvider>(
-        client: &StreamClient<P>,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
-        proof: crate::durable_host::AcceptedMaterializationOwnerProof<'_>,
         reservation: acyclic_fs::NativeWorkReservation,
         original: &acyclic_fs::NativeMaterializationWork, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
@@ -2486,9 +2476,19 @@ impl PreparedMaterializationCommit {
         }.verify(reservation.remaining_work()).map_err(|cause| Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Work(cause), custody: None,
         })?;
-        let (owner, target, _hash_prefix, operation, mut proof_custody) =
-            proof.into_parts(&template, original)?;
-        let owner_path_bytes = match &owner {
+        template.verify_owner(owner, original)?;
+        let client = owner.stream();
+        let owner_condition = owner.condition(JournalWrite::Fresh, work).await?;
+        let bounds = operations::bounds_with_work(&client, template.path(), work).await?
+            .map_err(|error| sdk_error(error, work))?;
+        if bounds.tail != template.expected_revision() {
+            return Err(coordinator_boundary(work, wire::ErrorCode::Conflict,
+                "native completion Preparing record changed before acceptance"));
+        }
+        let target = CommitCondition::Tail {
+            path: template.path().clone(), expected: template.expected_revision(),
+        };
+        let owner_path_bytes = match &owner_condition {
             CommitCondition::Tail { path, .. } => path.as_str().len() as u64,
             CommitCondition::Absent { .. } => return Err(Error::NativeBoundary {
                 code: wire::ErrorCode::Unauthorized,
@@ -2497,28 +2497,21 @@ impl PreparedMaterializationCommit {
         };
         let path_bytes = template.path().as_str().len() as u64;
         let key_bytes = template.key().as_bytes().len() as u64;
-        let overflow = || Error::NativeBoundary {
-            code: wire::ErrorCode::Invalid, reason: "native completion custody overflows",
-        };
+        // SDK paths, retry keys and the completion record are bounded before this arithmetic.
         let append_metadata = (4 * size_of::<CommittedMutation>() + 4 * size_of::<Record>()) as u64;
         let conflict_metadata = (4 * size_of::<CommitConflict>()) as u64;
-        let append_source = append_metadata.checked_add(path_bytes)
-            .and_then(|bytes| bytes.checked_add(maximum_bytes)).ok_or_else(overflow)?;
-        let conflict_source = conflict_metadata.checked_add(owner_path_bytes)
-            .and_then(|bytes| bytes.checked_add(path_bytes)).ok_or_else(overflow)?;
-        let pool_bytes = append_source.max(conflict_source)
-            .checked_add(key_bytes)
-            .and_then(|bytes| bytes.checked_add(size_of::<acyclic_stream::IdempotencyObservation>() as u64))
-            .and_then(|bytes| bytes.checked_add(size_of::<Error>() as u64))
-            .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
-            .and_then(|bytes| bytes.checked_add(size_of::<Self>() as u64))
-            .ok_or_else(overflow)?
+        let append_source = append_metadata + path_bytes + maximum_bytes;
+        let conflict_source = conflict_metadata + owner_path_bytes + path_bytes;
+        let pool_bytes = (append_source.max(conflict_source) + key_bytes
+            + size_of::<acyclic_stream::IdempotencyObservation>() as u64
+            + size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes()
+            + size_of::<Self>() as u64)
             .max(size_of::<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
         let mut prepared = PreparedCommitRequest::new(template.key().clone(), 0, work);
         reserve_prepared_vector(
             &mut prepared.request.conditions, 2, &mut prepared.custody,
         )?;
-        prepared.request.conditions.push(owner);
+        prepared.request.conditions.push(owner_condition);
         prepared.request.conditions.push(target);
         prepared.append(template.path().clone(), acyclic_stream::OwnedBytes::new())?;
         if let Some(io) = prepared.work().as_deref_mut() {
@@ -2527,15 +2520,11 @@ impl PreparedMaterializationCommit {
         }
         prepared.custody.adopt(pool_bytes)?;
         let retained = prepared.custody.retained();
-        let mut custody = prepared.work().as_deref_mut().expect("checked native observer")
+        let custody = prepared.work().as_deref_mut().expect("checked native observer")
             .take_native_custody(retained)?;
         prepared.custody.transfer();
         let PreparedCommitRequest { request, custody: quota } = prepared;
         drop(quota);
-        if let Err(cause) = custody.absorb(&mut proof_custody) {
-            drop((request, template));
-            return Err(Error::NativeWork { cause, custody: Some(custody) });
-        }
         let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
             Ok(observer) => observer,
             Err(error) => {
@@ -2566,7 +2555,7 @@ impl PreparedMaterializationCommit {
         }.await;
         match prepared {
             Ok((sdk, sdk_recovery, sdk_custody)) =>
-                Ok(Self { template, operation, sdk, sdk_recovery, sdk_custody, observer }),
+                Ok(Self { template, sdk, sdk_recovery, sdk_custody, observer }),
             Err(error) => {
                 drop(template);
                 Err(completion_error(error, observer.into_custody()))
@@ -2584,7 +2573,8 @@ impl PreparedMaterializationCommit {
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
-        let Self { mut template, operation, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
+        let Self { mut template, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
+        let operation = OperationId::from_bytes(template.task_binding().0.into_bytes());
         let finished = async {
             let key = template.key().clone();
             template.set_completed_work(counters)?;
@@ -3158,15 +3148,7 @@ pub(crate) fn digest_key(
     digest: &[u8; 32], work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamIdempotencyKey, u64)> {
     let mut custody = CodecQuota::new(work, 0)?;
-    let mut bytes = Vec::new();
-    if let Some(observer) = custody.work().as_deref_mut() {
-        observer.reserve_bytes(&mut bytes, digest.len())?;
-        custody.adopt(bytes.capacity() as u64)?;
-        custody.work().as_deref_mut().expect("original key observer").copy_bytes(digest.len() as u64)?;
-    } else {
-        bytes.try_reserve_exact(digest.len()).map_err(|cause| Error::Storage(cause.to_string()))?;
-    }
-    bytes.extend_from_slice(digest);
+    let bytes = crate::core::copy_copy_vector(digest, &mut custody)?;
     custody.transfer();
     let (bytes, retained) = operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
     Ok((StreamIdempotencyKey::new(bytes).expect("32-byte digest is a bounded SDK key"), retained))
