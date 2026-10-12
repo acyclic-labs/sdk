@@ -91,12 +91,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
                 .await
                 .map_err(fs_error)?
         } else {
-            let (budget, live) = carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = carrier.remaining()?;
             let result = state.file.read_range(range, budget, &cancellation).await;
             carrier.accept_with_prior_live(result, live, fs_error)?
         };
@@ -239,7 +234,14 @@ where
                 .saturating_sub(offset)
                 .min(u64::from(maximum_bytes));
             if length == 0 {
-                return carrier.empty_source_chunk();
+                return carrier.finish_read(
+                    crate::kernel::OwnedSourceChunk::intrinsic(
+                        acyclic_stream::OwnedBytes::new(),
+                        0,
+                    ),
+                    cancellation,
+                    Some(&self.cancellation),
+                );
             }
             let read = state
                 .file

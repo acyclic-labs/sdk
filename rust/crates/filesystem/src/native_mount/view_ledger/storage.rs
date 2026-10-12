@@ -6,7 +6,7 @@ use crate::demand::NativeMountAllocationCustody;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<NativeMountAllocationCustody>), MountSourceError> {
+) -> Result<(Vec<T>, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(mount_demand_error)?;
@@ -52,7 +52,7 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
 }
 
 pub(super) fn record(
@@ -82,7 +82,7 @@ pub(super) fn record(
         let ChangePositions {
             latest, custody, ..
         } = &mut *positions;
-        let borrowed = adopt_backing(custody.as_ref(), old_bytes, carrier)?;
+        let borrowed = adopt_backing(custody.as_deref(), old_bytes, carrier)?;
         let result = (|| {
             let next_custody = carrier.new_custody()?;
             let bytes = map_bytes(count)?;
@@ -147,7 +147,7 @@ pub(super) fn unchanged_since(
 }
 pub(super) fn grow_vector<T>(
     entries: &mut Vec<T>,
-    owner: &mut Option<NativeMountAllocationCustody>,
+    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
     capacity: usize,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {
@@ -155,7 +155,7 @@ pub(super) fn grow_vector<T>(
         .capacity()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)? as u64;
-    let borrowed = adopt_backing(owner.as_ref(), bytes, carrier)?;
+    let borrowed = adopt_backing(owner.as_deref(), bytes, carrier)?;
     let result = (|| {
         let (mut next, custody) = vector(capacity, carrier)?;
         charge(
@@ -186,7 +186,7 @@ fn adopt_backing(
         .is_some_and(|admitted| !admitted)
     {
         carrier
-            .with_work(|work| work.adopt(bytes))
+            .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
             .map_err(mount_demand_error)?;
         Ok(bytes)
     } else {

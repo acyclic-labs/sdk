@@ -70,34 +70,33 @@ impl McpStdioRequest {
     ) -> Result<(McpStdioExchange, Vec<u8>, NativeCustody)> {
         super::services::validate_params(self.method.as_str(), &self.params, work)?;
         if self.initialization == self.operation || self.maximum_bytes == 0 {
-            return Err(rejection(work, "invalid MCP stdio exchange contract"));
+            return Err(error(
+                work,
+                ErrorCode::Invalid,
+                "invalid MCP stdio exchange contract",
+            ));
         }
         let maximum_bytes = self.maximum_bytes as usize;
+        let params: &serde_json::value::RawValue = serde_json::from_str(concat!(
+            "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
+            env!("CARGO_PKG_VERSION"),
+            "\"},\"protocolVersion\":\"2025-11-25\"}",
+        ))
+        .map_err(|_| error(work, ErrorCode::Invalid, "invalid MCP client identity"))?;
         let first = encode_line(
             &Envelope {
                 id: self.initialization,
                 jsonrpc: "2.0",
                 method: "initialize",
-                params: InitializeParams {
-                    capabilities: Empty {},
-                    client_info: ClientInfo {
-                        name: "acyclic-harness",
-                        version: env!("CARGO_PKG_VERSION"),
-                    },
-                    protocol_version: PROTOCOL_VERSION,
-                },
+                params,
             },
             maximum_bytes,
             work,
         )?;
-        let ready = encode_line(
-            &Initialized {
-                jsonrpc: "2.0",
-                method: "notifications/initialized",
-            },
-            maximum_bytes,
-            work,
-        )?;
+        let initialized: &serde_json::value::RawValue =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .map_err(|_| error(work, ErrorCode::Invalid, "invalid MCP readiness message"))?;
+        let ready = encode_line(initialized, maximum_bytes, work)?;
         let request = encode_line(
             &Envelope {
                 id: self.operation,
@@ -108,11 +107,13 @@ impl McpStdioRequest {
             maximum_bytes,
             work,
         )?;
-        let followup = ready
-            .0
-            .len()
-            .checked_add(request.0.len())
-            .ok_or_else(|| rejection(work, "MCP stdio writes exceed admitted bound"))?;
+        let followup = ready.0.len().checked_add(request.0.len()).ok_or_else(|| {
+            error(
+                work,
+                ErrorCode::Invalid,
+                "MCP stdio writes exceed admitted bound",
+            )
+        })?;
         if first
             .0
             .len()
@@ -120,22 +121,30 @@ impl McpStdioRequest {
             .filter(|n| *n <= maximum_bytes)
             .is_none()
         {
-            return Err(rejection(work, "MCP stdio writes exceed admitted bound"));
+            return Err(error(
+                work,
+                ErrorCode::Invalid,
+                "MCP stdio writes exceed admitted bound",
+            ));
         }
         let mut combined = ready;
         reserve_write(&mut combined, followup, work)?;
-        copy_work(work, request.0.len())?;
+        charge(work, 0, 0, request.0.len() as u64)?;
         combined.0.extend_from_slice(&request.0);
         drop(request);
-        #[allow(unused_mut)] // Native-only capacity admission below.
-        let mut custody = native_custody(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(guard) = custody.as_mut() {
-            guard
-                .resize(std::mem::size_of::<McpStdioExchange>() as u64)
-                .map_err(native_error)?;
-            guard.grow(maximum_bytes as u64).map_err(native_error)?;
-        }
+        let custody = if let Some(work) = work {
+            // The fixed exchange header plus the u32 transcript bound fit u64.
+            Some(work.claim(
+                std::mem::size_of::<McpStdioExchange>() as u64 + maximum_bytes as u64,
+                1,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )?)
+        } else {
+            None
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = None;
         // Cumulative stdout fits the reserved buffer.
         let line = if work.is_some() {
             BytesMut::with_capacity(maximum_bytes)
@@ -157,11 +166,6 @@ impl McpStdioRequest {
             first.0,
             first.1,
         ))
-    }
-
-    /// Verifies the complete descriptor without launching or admitting work.
-    pub fn validate(&self) -> Result<()> {
-        self.exchange(None).map(drop)
     }
 
     /// Validates a retained complete transcript without performing its writes.

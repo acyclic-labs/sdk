@@ -112,7 +112,7 @@ impl PiNativeCommandHost {
                         let workflow = self
                             .runtime
                             .runtime
-                            .workflow_journal(task, effect.context.context().owned_task_fence()?)
+                            .workflow_journal(task, effect.context.owned_task_fence()?)
                             .await?;
                         effect
                             .journal
@@ -304,7 +304,7 @@ impl PiNativeCommandHost {
                 .ok_or(Error::Indeterminate(effect.command))?;
             root.release_scratch_with_work(
                 &effect.owner,
-                effect.context.context(),
+                effect.context.as_ref(),
                 effect.command,
                 drained,
                 &proof,
@@ -364,7 +364,7 @@ impl PiNativeCommandHost {
         let admission = self.child_admission(task, meter).await?;
         let input = &admission.1;
         let recorded_effect = self
-            .original_effect(context.context(), input, command, meter)
+            .original_effect(context.as_ref(), input, command, meter)
             .await?;
         if recorded_effect
             .0
@@ -409,7 +409,7 @@ impl PiNativeCommandHost {
                 PiNativeLiveView::inspect_preparation(&owner, allocation, meter, true)?.await?;
             }
         }
-        root.rollback(&owner, context.context(), &creator, meter)
+        root.rollback(&owner, context.as_ref(), &creator, meter)
             .await?;
         *entry
             .view
@@ -448,7 +448,7 @@ impl PiNativeCommandHost {
         let admission = self.child_admission(effect.owner.task_id(), meter).await?;
         let input = &admission.1;
         let recorded_effect = self
-            .original_effect(effect.context.context(), input, effect.command, meter)
+            .original_effect(effect.context.as_ref(), input, effect.command, meter)
             .await?;
         Ok(recorded_effect
             .0

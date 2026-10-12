@@ -41,6 +41,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     pub fn clear_retained_operation(&mut self, operation_id: OperationId) {
         if self.publication_operation == Some(operation_id) {
             self.publication_operation = None;
+            self.publication_evidence = None;
         }
     }
 
@@ -67,16 +68,12 @@ impl<A, O> SharedCheckoutState<A, O> {
                     .private_candidate(&work, cancellation)
                     .map_err(MountSourceError::Filesystem);
             }
-            let result = carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.live_allocation_bytes(),
-                    self.checkout.private_candidate(
-                        work.remaining().map_err(super::lazy::mount_demand_error)?,
-                        cancellation,
-                    ),
-                ))
-            })?;
-            let checkout = carrier.accept_with_prior_live(result.1, result.0, fs_error)?;
+            let (budget, live) = carrier.remaining()?;
+            let checkout = carrier.accept_with_prior_live(
+                self.checkout.private_candidate(budget, cancellation),
+                live,
+                fs_error,
+            )?;
             carrier
                 .with_work(|work| work.retain_checkout_control(&checkout.private_control_custody()))
                 .map_err(super::lazy::mount_demand_error)?;
@@ -85,6 +82,7 @@ impl<A, O> SharedCheckoutState<A, O> {
         Ok(CheckoutCandidate {
             base: clone(carrier)?,
             checkout: clone(carrier)?,
+            operation,
         })
     }
 
@@ -99,7 +97,6 @@ impl<A, O> SharedCheckoutState<A, O> {
             )),
         )
         .expect("external SDK view recording");
-        self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
     }
 }

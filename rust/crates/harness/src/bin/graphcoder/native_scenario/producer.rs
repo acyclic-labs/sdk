@@ -44,7 +44,7 @@ impl Producer {
         ] {
             tokio::fs::create_dir_all(directory)
                 .await
-                .map_err(|error| Error::Storage(error.to_string()))?;
+                .map_err(storage)?;
         }
         let options = NativeViewOptions {
             root: namespace.clone(),
@@ -112,7 +112,7 @@ impl Producer {
             &caller.binding,
             &caller.private,
             "command/request.json",
-            &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
+            &serde_json::to_vec(&request).map_err(invalid)?,
             "application/json",
             "request.json",
             "native-command-request",
@@ -140,7 +140,7 @@ impl Producer {
             &caller.binding,
             &caller.private,
             "command/approval.json",
-            &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
+            &serde_json::to_vec(&interaction).map_err(invalid)?,
             "application/json",
             "approval.json",
             "native-command-approval",
@@ -419,10 +419,7 @@ impl Producer {
                 inherited_messages: 64,
                 inherited_bytes: PAYLOAD_BYTES,
                 inherited_references: 64,
-                history_limits: HistoryReadLimits {
-                    maximum_events: 256,
-                    maximum_bytes: 4 * 1024 * 1024,
-                },
+                history_limits: HISTORY_LIMITS,
             },
             source_read,
             &self.cancellation,
@@ -452,8 +449,7 @@ impl Producer {
         let mut child = self.template.clone();
         child.operation_id = child_operation;
         child.parent = Some(parent.task);
-        child.input = serde_json::to_value(&self.planned_commands[label])
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        child.input = serde_json::to_value(&self.planned_commands[label]).map_err(invalid)?;
         // Parent-owned scratch rights never become generic child rights.
         let mut grants = COMMON_GRANTS
             .iter()
@@ -480,8 +476,7 @@ impl Producer {
             grants.push(grant.capability()?);
         }
         child.grants = Capabilities::new(grants);
-        let fork_bytes = serde_json::to_vec(&binding.request)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let fork_bytes = serde_json::to_vec(&binding.request).map_err(invalid)?;
         if fork_bytes.len() as u64 > PAYLOAD_BYTES {
             return Err(Error::Invalid(
                 "retained fork command exceeds fixture artifact bound".into(),
@@ -507,11 +502,7 @@ impl Producer {
             preparation_task,
             child,
             command,
-            ForkPreparationLimits {
-                resources: 3,
-                work: 16 * 1024 * 1024,
-                bytes: 16 * 1024 * 1024,
-            },
+            FORK_LIMITS,
             None,
             vec![command_file, self.planned_commands[label].payload.clone()],
         )?;
@@ -563,11 +554,7 @@ impl Producer {
                 project,
                 private_volume: private,
                 admission: request.child.clone(),
-                limits: ForkPreparationLimits {
-                    resources: 3,
-                    work: 16 * 1024 * 1024,
-                    bytes: 16 * 1024 * 1024,
-                },
+                limits: FORK_LIMITS,
                 result_volume: Some(result),
             });
             return Ok(None);
@@ -595,9 +582,7 @@ impl Producer {
             return Err(error);
         }
         let report: ForkReport = match self.runtime.task_host().outcome(preparation_task).await? {
-            Some(Outcome::Succeeded(value)) => {
-                serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?
-            }
+            Some(Outcome::Succeeded(value)) => serde_json::from_value(value).map_err(invalid)?,
             Some(Outcome::Failed { message }) => {
                 return Err(Error::Conflict(format!(
                     "real fork {label} failed: {message}"

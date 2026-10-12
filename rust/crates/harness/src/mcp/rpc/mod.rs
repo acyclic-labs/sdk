@@ -1,8 +1,8 @@
 //! Shared admitted JSON-RPC boundary.
-use super::{McpInitializeResult, McpToolDefinition, McpToolResult, McpToolsPage};
+use super::{charge, error};
 use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
 use rmcp::model::{JsonRpcRequest, RequestId};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
 pub(super) fn rpc_result(
@@ -15,7 +15,7 @@ pub(super) fn rpc_result(
         || field(&value, "jsonrpc", work)?.and_then(Value::as_str) != Some("2.0")
         || field(&value, "error", work)?.is_some()
     {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Invalid,
             "MCP response identity or envelope mismatch",
@@ -26,17 +26,23 @@ pub(super) fn rpc_result(
     let identity = uuid::Uuid::from_bytes(operation.into_bytes());
     let expected: &str = identity.hyphenated().encode_lower(&mut spelling);
     if field(&value, "id", work)?.and_then(Value::as_str) != Some(expected) {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Invalid,
             "MCP response identity mismatch",
         ));
     }
-    checkpoint(work, 1, 0)?;
+    charge(work, 1, 0, 0)?;
     value
         .as_object_mut()
         .and_then(|object| object.remove("result"))
-        .ok_or_else(|| protocol_error(work, ErrorCode::Invalid, "MCP response identity or envelope mismatch"))
+        .ok_or_else(|| {
+            error(
+                work,
+                ErrorCode::Invalid,
+                "MCP response identity or envelope mismatch",
+            )
+        })
 }
 
 pub(super) fn request(operation: OperationId, method: &str, params: Value) -> Result<Vec<u8>> {
@@ -57,23 +63,31 @@ pub(super) fn notification(value: &Value, work: NativeWork<'_>) -> Result<()> {
         || field(value, "result", work)?.is_some()
         || field(value, "error", work)?.is_some()
     {
-        return Err(protocol_error(work, ErrorCode::Invalid, "invalid MCP notification"));
+        return Err(error(work, ErrorCode::Invalid, "invalid MCP notification"));
     }
     if field(value, "id", work)?.is_some() {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Unsupported,
             "MCP server request needs a callback router",
         ));
     }
     if field(value, "jsonrpc", work)?.and_then(Value::as_str) != Some("2.0") {
-        return Err(protocol_error(work, ErrorCode::Invalid, "invalid MCP notification"));
+        return Err(error(work, ErrorCode::Invalid, "invalid MCP notification"));
     }
     Ok(())
 }
 
 pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> {
-    check::<McpInitializeResult>(value, work)?;
+    if field(value, "instructions", work)?
+        .is_some_and(|value| !value.is_null() && !value.is_string())
+    {
+        return Err(error(
+            work,
+            ErrorCode::Invalid,
+            "invalid MCP server instructions",
+        ));
+    }
     let info = field(value, "serverInfo", work)?.unwrap_or(&Value::Null);
     if field(value, "protocolVersion", work)?.and_then(Value::as_str)
         != Some(super::PROTOCOL_VERSION)
@@ -83,7 +97,7 @@ pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> 
             .and_then(Value::as_str)
             .is_none()
     {
-        return Err(protocol_error(
+        return Err(error(
             work,
             ErrorCode::Unsupported,
             "MCP initialization contract unsupported",
@@ -93,23 +107,15 @@ pub(super) fn initialization(value: &Value, work: NativeWork<'_>) -> Result<()> 
 }
 
 fn field<'a>(value: &'a Value, key: &str, work: NativeWork<'_>) -> Result<Option<&'a Value>> {
-    checkpoint(work, 1, 0)?;
+    charge(work, 1, 0, 0)?;
     Ok(value.get(key))
-}
-
-pub(super) fn decode_tool_result(value: Value) -> Result<McpToolResult> {
-    check::<rmcp::model::CallToolResult>(&value, None)?;
-    serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 pub(super) fn check<T: DeserializeOwned>(value: &Value, work: NativeWork<'_>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let custody = if let Some(work) = work {
         let quota = quota::dto_quota(value, work, 0)?;
-        Some(
-            work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED)
-                .map_err(native_work_error)?,
-        )
+        Some(work.claim(quota, 0, acyclic_fs::WorkCounters::UNCHARGED)?)
     } else {
         None
     };
@@ -132,44 +138,6 @@ pub(super) fn check<T: DeserializeOwned>(value: &Value, work: NativeWork<'_>) ->
             }
             Err(Error::Invalid(source.to_string()))
         }
-    }
-}
-
-pub(super) fn protocol_error(
-    work: NativeWork<'_>,
-    code: ErrorCode,
-    message: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::NativeBoundary { code, reason: message };
-    }
-    let _ = work;
-    match code {
-        ErrorCode::Unsupported => Error::Unsupported(message.into()),
-        _ => Error::Invalid(message.into()),
-    }
-}
-
-pub(super) fn checkpoint(work: NativeWork<'_>, items: u64, bytes: u64) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: items,
-            bytes_copied: bytes,
-            ..Default::default()
-        })
-        .map_err(native_work_error)?;
-    }
-    let _ = (work, items, bytes);
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn native_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
     }
 }
 

@@ -1,4 +1,4 @@
-use super::{McpToolResult, McpToolTransport, rpc};
+use super::McpToolTransport;
 use crate::{
     Error, Result,
     runtime::{RuntimeScope, ToolContext},
@@ -27,19 +27,25 @@ impl RemoteTool {
         self.authorize(Some(context.task().scope()), invocation)
     }
 
-    pub(super) fn result(&self, result: McpToolResult) -> Result<ToolResult> {
-        if !result.is_error
+    pub(super) fn result(&self, result: Value) -> Result<ToolResult> {
+        let mut value = super::services::validate_result("tools/call", result, None)?;
+        if value.get("isError").and_then(Value::as_bool) != Some(true)
             && let Some(schema) = &self.output_schema
         {
-            let value = result
-                .structured_content
-                .as_ref()
+            let result = value
+                .get("structuredContent")
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
-            crate::contract::validate_json_schema_value(schema, value, "MCP output", &mut None)?;
+            crate::contract::validate_json_schema_value(schema, result, "MCP output", &mut None)?;
         }
-        let value =
-            serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
-        rpc::check::<rmcp::model::CallToolResult>(&value, None)?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.retain(|key, value| {
+                matches!(
+                    key.as_str(),
+                    "content" | "structuredContent" | "isError" | "_meta"
+                ) && (key != "_meta" || !value.is_null())
+            });
+            fields.entry("isError").or_insert(Value::Bool(false));
+        }
         Ok(ToolResult { value })
     }
 }

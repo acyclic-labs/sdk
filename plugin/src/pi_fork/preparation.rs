@@ -8,7 +8,7 @@ impl<'a> PiForkCoordinator<'a> {
     )]
     pub(crate) async fn begin(
         &self,
-        shared: &Arc<acyclic_harness::runtime::NativeTaskContext>,
+        shared: &Arc<acyclic_harness::runtime::TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>,
         fence: &LeaseFence,
         parent: StreamAggregate<LocalStream>,
@@ -19,7 +19,7 @@ impl<'a> PiForkCoordinator<'a> {
         budget: WorkBudget,
         cancel: CancellationToken,
     ) -> Result<PiForkPlan> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let work = &self.work;
         let admission = self.authenticate(context, owner, fence).await?;
         let caller_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(

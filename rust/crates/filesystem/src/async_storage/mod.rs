@@ -16,6 +16,8 @@ use std::future::Future;
 use std::mem::size_of;
 use std::sync::Arc;
 
+#[macro_use]
+mod contract;
 mod cache;
 pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
 #[cfg(not(target_arch = "wasm32"))]

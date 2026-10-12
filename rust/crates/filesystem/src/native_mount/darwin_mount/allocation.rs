@@ -115,7 +115,7 @@ pub(super) fn retained_file(
 ) -> Result<
     (
         Arc<dyn MountOpenFile>,
-        Option<crate::demand::NativeMountAllocationCustody>,
+        Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
     ),
     NativeMountError,
 > {
@@ -124,7 +124,7 @@ pub(super) fn retained_file(
     }
     let retained = (|| {
         let custody = crate::demand::NativeMountAllocationCustody::new(
-            &mut crate::demand::NativeSourceWork::from_native_materialization_work(work),
+            &mut work.clone(),
         )?;
         work.with_original_leaf(|original| custody.retain_admitted(bytes, original))?;
         Ok::<_, crate::native_mount::NativeMountStartupAdmissionError>(custody)

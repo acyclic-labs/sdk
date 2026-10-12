@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event, EventPayload, Reducer},
 };
-use acyclic_stream::{Record, StreamPath, StreamProvider};
+use acyclic_stream::{Record, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

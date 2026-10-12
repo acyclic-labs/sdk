@@ -500,7 +500,7 @@ pub(super) fn fork_records_with_accounting<A, O>(
         crate::kernel::encode_retention_created(&fact.value, observe, allocation_error)
     })?;
     let retained_bytes = encoded.0.capacity() as u64;
-    let retained = creation_commit_with_accounting(
+    let retained = creation_commit(
         OperationId::from_bytes(retention.into_bytes()),
         encoded,
         accounting,
@@ -518,7 +518,7 @@ pub(super) fn fork_records_with_accounting<A, O>(
         )
     })?;
     let creation_bytes = encoded.0.capacity() as u64;
-    let creation = creation_commit_with_accounting(operation_id, encoded, accounting)?;
+    let creation = creation_commit(operation_id, encoded, accounting)?;
     let payload_bytes = retained_bytes
         .checked_add(creation_bytes)
         .ok_or(WorkError::Overflow)?;
