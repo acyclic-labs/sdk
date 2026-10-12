@@ -39,38 +39,6 @@ pub enum NotificationError {
 /// Receipt-bearing notification result.
 pub type NotificationResult<T> = Result<OperationReceipt<T>, OperationFailure<NotificationError>>;
 
-/// Optional synchronous authority-head hint adapter.
-///
-/// Implementations may coalesce, duplicate, delay, or lose hints. They must
-/// never invent a head not supplied to [`Self::publish`], and returning
-/// [`NotificationPoll::Unchanged`] must never be interpreted as proof that the
-/// authority head is unchanged.
-pub trait NotificationStore {
-    /// Publishes a disposable monotonic hint.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed adapter or work-budget failure without changing truth.
-    fn publish(
-        &self,
-        authority_id: AuthorityId,
-        head: Head,
-        budget: WorkBudget,
-    ) -> NotificationResult<()>;
-
-    /// Polls for a hint strictly newer than `after` in epoch/sequence order.
-    ///
-    /// # Errors
-    ///
-    /// Returns typed adapter or work-budget failure without changing truth.
-    fn poll_after(
-        &self,
-        authority_id: AuthorityId,
-        after: Head,
-        budget: WorkBudget,
-    ) -> NotificationResult<NotificationPoll>;
-}
-
 /// Runtime-neutral notification adapter suitable for browser and remote APIs.
 pub trait AsyncNotificationStore {
     /// Asynchronously publishes one disposable head hint.
@@ -100,37 +68,6 @@ pub trait AsyncNotificationStore {
     ) -> impl Future<Output = NotificationResult<NotificationPoll>>;
 }
 
-/// Explicit opt-in for synchronous notification stores that complete inline.
-pub trait ImmediateNotificationStore: NotificationStore {}
-
-impl<T: ImmediateNotificationStore + ?Sized> AsyncNotificationStore for T {
-    async fn publish_hint(
-        &self,
-        authority_id: AuthorityId,
-        head: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> NotificationResult<()> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
-        NotificationStore::publish(self, authority_id, head, budget)
-    }
-
-    async fn poll_hint_after(
-        &self,
-        authority_id: AuthorityId,
-        after: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> NotificationResult<NotificationPoll> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
-        NotificationStore::poll_after(self, authority_id, after, budget)
-    }
-}
-
 /// Deterministic process-local coalescing notification adapter.
 #[derive(Default)]
 pub struct MemoryNotificationStore {
@@ -145,13 +82,15 @@ impl MemoryNotificationStore {
     }
 }
 
-impl NotificationStore for MemoryNotificationStore {
-    fn publish(
+impl AsyncNotificationStore for MemoryNotificationStore {
+    async fn publish_hint(
         &self,
         authority_id: AuthorityId,
         head: Head,
         budget: WorkBudget,
+        cancellation: &CancellationToken,
     ) -> NotificationResult<()> {
+        cancellation.check().map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
         let work = WorkCounters {
             backend_write_operations: 1,
             items_examined: 1,
@@ -172,12 +111,14 @@ impl NotificationStore for MemoryNotificationStore {
         Ok(OperationReceipt { value: (), work })
     }
 
-    fn poll_after(
+    async fn poll_hint_after(
         &self,
         authority_id: AuthorityId,
         after: Head,
         budget: WorkBudget,
+        cancellation: &CancellationToken,
     ) -> NotificationResult<NotificationPoll> {
+        cancellation.check().map_err(|_| OperationFailure::before_work(NotificationError::Cancelled))?;
         let work = WorkCounters {
             backend_read_operations: 1,
             items_examined: 1,
@@ -197,8 +138,6 @@ impl NotificationStore for MemoryNotificationStore {
         Ok(OperationReceipt { value, work })
     }
 }
-
-impl ImmediateNotificationStore for MemoryNotificationStore {}
 
 fn head_is_newer(candidate: Head, current: Head) -> bool {
     candidate.epoch > current.epoch

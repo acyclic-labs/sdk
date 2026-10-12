@@ -206,7 +206,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     // Simulate collection of old closures while preserving the complete current
     // closure in an actual independent Objects provider.
     let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
-    let current = crate::kernel::prove_generation_closure_async(
+    let current = crate::kernel::prove_generation_closure(
         &objects, root(latest),
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
@@ -415,7 +415,7 @@ async fn prove_original(
     root: ObjectId,
     config: crate::model::VolumeConfig,
 ) -> Result<crate::kernel::GenerationProof, Box<dyn Error>> {
-    Ok(crate::kernel::prove_generation_closure_async(
+    Ok(crate::kernel::prove_generation_closure(
         objects, root,
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
@@ -491,7 +491,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         maximum_bytes: u64, _maximum_objects: u64, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        use crate::storage::{ObjectFailure, ObjectReceipt, ObjectStoreError};
+        use crate::storage::{ObjectFailure, ObjectStoreError};
         cancellation.check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         if self.evidence.bytes.len() as u64 > maximum_bytes {
@@ -507,7 +507,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
             ..crate::WorkCounters::default()
         };
         work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value, work })
+        Ok(crate::OperationReceipt { value, work })
     }
 }
 

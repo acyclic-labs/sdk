@@ -141,10 +141,10 @@ fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_projec
 
 async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let filesystem = Fs::memory();
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider = ProviderRef::new("qualification", "stream", "2")?;
+    let stream_provider = ProviderRef::new("qualification".into(), "stream".into(), "2".into(), &mut None)?;
 
     let shared = volume(
         &provider,
@@ -180,8 +180,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_limits(Limits::default())?
     .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
@@ -593,7 +592,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
             assert!(!readable.contains(&child_private.capability(VolumeOperation::Write)?));
             assert!(
-                seed.shared_capabilities_for(attached)?
+                seed.shared_capabilities(attached)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
@@ -702,7 +701,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     reader: child_agent,
                     attachment_manifest: None,
                 });
-            extra_reference.validate()?;
+            extra_reference.validate(&mut None)?;
             assert!(
                 aggregate
                     .reducer()
@@ -731,7 +730,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(capabilities.contains(&inherited.read_capability()?));
             assert!(capabilities.contains(&root_attachment.read_capability()?));
             assert!(
-                seed.shared_capabilities_for(inherited_reader)?
+                seed.shared_capabilities(inherited_reader)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
@@ -806,8 +805,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-            )
+                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(
@@ -832,8 +830,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-            )
+                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[Arc::new(
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?,
@@ -851,7 +848,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             assert_eq!(incomplete.reducer().revision(), seed.parent_revision);
             let mut foreign_history = seed.clone();
-            let foreign = ProviderRef::new("foreign", "stream", "2")?;
+            let foreign = ProviderRef::new("foreign".into(), "stream".into(), "2".into(), &mut None)?;
             let reference = ResourceRevision::History(StreamRef::new(
                 foreign,
                 authority.stream_path(&mut None)?.into_bytes(),
@@ -1039,8 +1036,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &stream,
             child_authority.clone(),
             child_issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
             host.clone(),
@@ -1058,8 +1054,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &prebound_stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-            )
+                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?;
             prebound_child
                 .execute(command(
@@ -1263,8 +1258,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-            )
+                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_limits(Limits::default())?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
@@ -1281,8 +1275,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-            )
+                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
@@ -1631,7 +1624,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
 
 #[tokio::test]
 async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Result<()> {
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let root = volume(
         &provider,

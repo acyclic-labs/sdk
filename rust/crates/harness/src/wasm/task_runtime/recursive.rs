@@ -1,5 +1,6 @@
 //! Explicit browser consumers of the ordinary authenticated recursive workflow.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     core::Snapshot,
     filesystem::{ForkToolArguments, RecursiveForkConfig,
@@ -97,7 +98,7 @@ impl WasmRecursiveForkSource {
         #[wasm_bindgen(unchecked_param_type = "WasmForkPreparationLimits")] limits: JsValue,
         #[wasm_bindgen(unchecked_param_type = "readonly WasmFileRefWire[]")] input_files: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?).map_err(js_error)?;
+        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?, &mut None).map_err(js_error)?.0;
         if child.parent != Some(self.caller) {
             return Err(js_error(Error::Unauthorized("fork child has a different original caller".into())));
         }
@@ -135,7 +136,7 @@ impl WasmTaskRuntime {
         }
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let parent = StreamAggregate::open(&self.stream, caller_owner.reducer.authority().clone(),
-            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
+            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let snapshot = parent.reducer().snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let arguments: ForkToolArguments = from_js(arguments)?;
@@ -185,7 +186,7 @@ impl WasmTaskRuntime {
         let history_limits: HistoryReadLimits = from_js(history_limits)?;
         let snapshot = original_owner.reducer.snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let head = snapshot.events.last().ok_or_else(|| js_error(Error::Unauthorized("fork source has no committed caller event".into())))?;
-        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), original_owner.issuer.verifier(&mut None).expect("verifier copy")).map_err(js_error)?;
+        let reader = HistoryReader::new(&self.stream, original_owner.reducer.authority(), &(original_owner.issuer.verifier(&mut None).expect("verifier copy")), &mut None).map_err(js_error)?;
         let revision = original_owner.reducer.revision();
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),

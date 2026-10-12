@@ -236,7 +236,7 @@ async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
             }),
     );
     let result = async {
-        let mut client = connect_with_ca_certificate(
+        let mut client = connect(
             &format!("https://{address}"),
             "private-token",
             Some(pem.as_bytes()),

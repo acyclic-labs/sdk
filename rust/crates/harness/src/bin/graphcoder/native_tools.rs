@@ -162,7 +162,7 @@ impl super::native::NativeSession {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let binding = self.caller_binding(caller).await?;
         let issuer = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.task_host().journal_owner_with_native_work(caller, &fence, &work)
             .await?.into_native_shared(&work)?;
@@ -239,9 +239,9 @@ impl super::native::NativeSession {
         custody.absorb(&mut id_custody)?;
         let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64)?;
         custody.absorb(&mut host_custody)?;
-        let effects = ConversationEffectHost::new_with_native_work(self.stream.clone(),
+        let effects = ConversationEffectHost::new(self.stream.clone(),
             acyclic_harness::core::Authority { kind: binding.authority.kind, id }, issuer, scope,
-            SchemaRegistry::default(), reader, registry, custody, &work)?;
+            SchemaRegistry::default(), reader, registry, Some(custody), Some(&work))?;
         let (status, _status_custody) = effects.run_task_effect_with_native_work(
             &owner, operation, &configured.plan, &work).await?;
         Ok(format!("command-json={}\n", serde_json::to_string(&status)

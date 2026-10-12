@@ -4,7 +4,7 @@ use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation
 #[cfg(test)]
 use super::extent::extent_page_encoded_length;
 use super::persistent_point::{Owned, retire_allocation};
-use super::search::{counted_binary_search, counted_partition_point};
+use super::search::{binary_search_with_accounting, partition_point_with_accounting};
 use super::{
     CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
     encode_extent_page,
@@ -341,8 +341,7 @@ fn radix_sort(
 fn coordinate_index(
     values: &[u64], target: u64, accounting: &mut KernelAccounting<'_>,
 ) -> Result<usize, FsError> {
-    let (found, probes) = counted_binary_search(values, |value| value.cmp(&target));
-    for _ in 0..probes { charge_items(accounting, 1)?; }
+    let found = binary_search_with_accounting(values, accounting, |value| value.cmp(&target))?;
     found.map_err(|_| extent_error(ExtentMutationError::PatchInvariant))
 }
 
@@ -568,9 +567,11 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             if index + 1 == frame.children.value.len() && frame.output_end > frame.original_end {
                 child_output_end = frame.output_end;
             }
-            let (patch_touched, comparisons) =
-                has_overlapping_patch(&self.patches.value, child.first_offset, child_output_end);
-            self.charge_items(comparisons.saturating_add(1))?;
+            let (first, last) = overlapping_patch_range(
+                &self.patches.value, child.first_offset, child_output_end, self.accounting,
+            )?;
+            self.charge_items(1)?;
+            let patch_touched = first < last;
             if child_output_end != child.end_offset || patch_touched {
                 return Ok(Some(NodeRequest {
                     page: child.page, original_first: child.first_offset, original_end: child.end_offset,
@@ -614,9 +615,9 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             self.accounting,
         )?;
         clip_and_grow(&extents.value, output_end, original_end, &mut clipped.value).map_err(extent_error)?;
-        let (first, last, comparisons) =
-            overlapping_patch_range(&self.patches.value, original_first, output_end);
-        self.charge_items(comparisons)?;
+        let (first, last) = overlapping_patch_range(
+            &self.patches.value, original_first, output_end, self.accounting,
+        )?;
         let patches = self.patches.value.get(first..last).ok_or(WorkError::Overflow)?;
         let capacity = clipped.value.len().checked_add(patches.len().checked_mul(2).ok_or(WorkError::Overflow)?)
             .ok_or(WorkError::Overflow)?;
@@ -754,103 +755,23 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 }
 
-pub(super) struct PageEncodeAccounting<'a, 'b> {
-    accounting: &'a mut KernelAccounting<'b>,
-    allocation: KernelOwnedAllocation,
-    bytes: u64,
-    header_bytes: u64,
-    maximum_bytes: u64,
-    admit_page_write: bool,
-}
-
-impl<'a, 'b> PageEncodeAccounting<'a, 'b> {
-    pub(super) fn new(
-        accounting: &'a mut KernelAccounting<'b>, maximum_bytes: u64, admit_page_write: bool,
-    ) -> Self {
-        Self { accounting, allocation: KernelOwnedAllocation::Standalone, bytes: 0, header_bytes: 0, maximum_bytes, admit_page_write }
-    }
-
-    pub(super) fn is_native(&self) -> bool {
-        #[cfg(not(target_arch = "wasm32"))]
-        { self.accounting.native_work().is_some() }
-        #[cfg(target_arch = "wasm32")]
-        { false }
-    }
-
-    pub(super) fn reserve_error(error: std::collections::TryReserveError, native: bool) -> FsError {
-        #[cfg(not(target_arch = "wasm32"))]
-        if native {
-            return FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error));
-        }
-        let _ = (error, native);
-        CanonicalDecodeError::AllocationFailed.into()
-    }
-
-    pub(super) fn observe(&mut self, step: super::codec::EncodeAllocationStep) -> Result<(), FsError> {
-        use super::codec::EncodeAllocationStep;
-        match step {
-            EncodeAllocationStep::Reserve { capacity } => {
-                let bytes = usize_to_u64(capacity);
-                if bytes > self.maximum_bytes {
-                    return Err(CanonicalDecodeError::ObjectTooLarge {
-                        observed: bytes, maximum: self.maximum_bytes,
-                    }.into());
-                }
-                if self.admit_page_write {
-                    self.accounting.admit(WorkCounters { page_writes: 1, ..WorkCounters::UNCHARGED })?;
-                }
-                self.accounting.admit(WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED })?;
-                self.allocation = self.accounting.claim_owned(bytes, u64::from(capacity != 0))?;
-                self.bytes = bytes;
-            }
-            EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-                self.bytes = actual_bytes;
-                self.accounting.reconcile_owned(&mut self.allocation, admitted_bytes, actual_bytes)?;
-            }
-            EncodeAllocationStep::BeforeHeader { .. } => self.accounting.check()?,
-            EncodeAllocationStep::HeaderWritten { bytes } => {
-                self.header_bytes = bytes;
-                self.accounting.record_completed(WorkCounters { bytes_encoded: bytes, ..WorkCounters::UNCHARGED })?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn finish(self, encoded: Result<Vec<u8>, FsError>) -> Result<Owned<Vec<u8>>, FsError> {
-        let encoded = match encoded {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                retire_allocation(self.allocation, self.bytes, self.accounting)?;
-                return Err(error);
-            }
-        };
-        let encoded = Owned::new(encoded, self.allocation, self.bytes);
-        let body_bytes = match usize_to_u64(encoded.value.len()).checked_sub(self.header_bytes) {
-            Some(bytes) => bytes,
-            None => { encoded.retire(self.accounting)?; return Err(WorkError::Overflow.into()); }
-        };
-        if let Err(error) = self.accounting.record_completed(WorkCounters {
-            bytes_encoded: body_bytes, ..WorkCounters::UNCHARGED
-        }) {
-            encoded.retire(self.accounting)?;
-            return Err(error);
-        }
-        Ok(encoded)
-    }
-}
-
 pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, page: &ExtentPage, limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
     accounting.check()?;
-    let mut encoder = PageEncodeAccounting::new(accounting, limits.maximum_page_object_bytes(), true);
-    let native = encoder.is_native();
-    let encoded = super::extent::encode_extent_page(
-        page, limits.maximum_page_items, |step| encoder.observe(step),
-        |error| PageEncodeAccounting::reserve_error(error, native),
-    );
-    let encoded = encoder.finish(encoded)?;
+    let length = usize_to_u64(super::extent::extent_page_encoded_length(page, limits.maximum_page_items)?);
+    if length > limits.maximum_page_object_bytes() {
+        return Err(CanonicalDecodeError::ObjectTooLarge {
+            observed: length, maximum: limits.maximum_page_object_bytes(),
+        }.into());
+    }
+    accounting.admit(WorkCounters { page_writes: 1, ..WorkCounters::UNCHARGED })?;
+    let (value, allocation) = super::codec::encode_owned(accounting, |observe, reserve_error| {
+        super::extent::encode_extent_page(page, limits.maximum_page_items, observe, reserve_error)
+    })?;
+    let bytes = usize_to_u64(value.capacity());
+    let encoded = Owned::new(value, allocation, bytes);
     put_encoded_with_accounting(store, ObjectKind::ExtentPage, encoded, accounting, cancellation).await
 }
 
@@ -1063,23 +984,12 @@ fn validate_children(
     Ok(())
 }
 
-fn overlapping_patch_range(patches: &[Patch], start: u64, end: u64) -> (usize, usize, u64) {
-    let (first, first_comparisons) = lower_bound(patches, |patch| patch.end <= start);
-    let (after_last, last_comparisons) = lower_bound(patches, |patch| patch.offset < end);
-    (
-        first,
-        after_last.max(first),
-        first_comparisons.saturating_add(last_comparisons),
-    )
-}
-
-fn has_overlapping_patch(patches: &[Patch], start: u64, end: u64) -> (bool, u64) {
-    let (first, after_last, comparisons) = overlapping_patch_range(patches, start, end);
-    (first < after_last, comparisons)
-}
-
-fn lower_bound(patches: &[Patch], before: impl Fn(&Patch) -> bool) -> (usize, u64) {
-    counted_partition_point(patches, before)
+fn overlapping_patch_range(
+    patches: &[Patch], start: u64, end: u64, accounting: &mut KernelAccounting<'_>,
+) -> Result<(usize, usize), FsError> {
+    let first = partition_point_with_accounting(patches, accounting, |patch| patch.end <= start)?;
+    let after_last = partition_point_with_accounting(patches, accounting, |patch| patch.offset < end)?;
+    Ok((first, after_last.max(first)))
 }
 
 fn extent_end(extent: &Extent) -> Result<u64, ExtentMutationError> {

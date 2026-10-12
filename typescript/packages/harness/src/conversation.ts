@@ -78,11 +78,6 @@ export type ReferencedAttachments =
 declare const conversationMessageIdBrand: unique symbol;
 export type ConversationMessageId = string & Readonly<{ readonly [conversationMessageIdBrand]: true }>;
 
-/** Native UUID validation is the only public constructor for canonical message identities. */
-export async function conversationMessageId(value: string): Promise<ConversationMessageId> {
-  return (await NativeContracts.create()).validateConversationMessageId(value);
-}
-
 interface ConversationMessageBase {
   readonly id: ConversationMessageId;
   /** Exact Rust u64 position; never round-tripped through a JavaScript number. */
@@ -116,14 +111,4 @@ export interface ConversationPage extends ConversationState {
 
 export async function descriptorFor(bytes: Uint8Array, mediaType: string): Promise<FileDescriptor> {
   return (await NativeContracts.create()).fileDescriptor(bytes, mediaType);
-}
-
-export async function verifyFileBytes(reference: FileRef, bytes: Uint8Array): Promise<void> {
-  (await NativeContracts.create()).verifyFileBytes(reference, bytes);
-}
-
-/** Resolves a complete pinned attachment list, rejecting reordered fields and partial pages. */
-export async function decodeAttachmentManifest(reference: FileRef, bytes: Uint8Array,
-  itemCount: number): Promise<readonly Attachment[]> {
-  return (await NativeContracts.create()).decodeAttachmentManifest(reference, bytes, itemCount);
 }

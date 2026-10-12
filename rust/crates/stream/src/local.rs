@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
@@ -218,7 +218,6 @@ pub struct LocalStream {
 
 struct LocalInner {
     provider: MemoryStream,
-    commit_clock: Arc<PinnedCommitClock>,
     journal: Arc<Mutex<Journal>>,
     _ownership_anchor: Option<OwnershipAnchor>,
     /// Held exclusively while a mutation applies and writes its frame, and shared while a read observes state; never across a device flush.
@@ -307,21 +306,10 @@ struct CommitCompletion<T> {
     value: T,
     error: Option<std::io::Error>,
     _input: Option<MemoryOutput<Command>>,
-    visibility: Option<CommitVisibility>,
+    visibility: Option<OwnedRwLockWriteGuard<()>>,
     // A rejected original guard did not publish and must not write its frame.
     persist: bool,
     primary_failure: bool,
-}
-
-struct CommitVisibility {
-    _visibility: OwnedRwLockWriteGuard<()>,
-    clock: Arc<PinnedCommitClock>,
-}
-
-impl Drop for CommitVisibility {
-    fn drop(&mut self) {
-        self.clock.unpin();
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -377,7 +365,7 @@ impl PreparedLocalWork {
             let mut work = FrameWork { meter: Some(&self.meter), accepted: true, late: Ok(()) };
             let visibility = self.stream.inner.visibility.blocking_write();
             self.stream.check_available()?;
-            let committed_at = self.stream.inner.commit_clock.source.now_unix_millis();
+            let committed_at = self.stream.inner.provider.clock.now_unix_millis();
             let wire = crate::wire_codec::CanonicalWire::Journal(&self.input.value);
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut work.late, self.meter.record_examination(1, 0));
@@ -386,14 +374,12 @@ impl PreparedLocalWork {
             self.stream.inner.journal.lock()
                 .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
                 .admit_bytes(self.persist.operation.frame.value.len() as u64).map_err(publication_error)?;
-            self.stream.inner.commit_clock.pin(committed_at);
             let Command::Commit(request) = &mut self.input.value else { unreachable!("prepared Commit input") };
             let completion = self.runtime.block_on(
                 self.stream.inner.provider.finish_commit(
-                    self.prepared, request,
+                    self.prepared, request, Some(committed_at),
                 ),
             );
-            self.stream.inner.commit_clock.unpin();
             let (outcome, error) = completion.map_err(MemoryFailure::Observer)?
                 .map_err(MemoryFailure::Provider)?;
             let (physical, observed) = self.persist.run(JournalPersistWork::run);
@@ -436,31 +422,6 @@ impl LocalInner {
             .lock()
             .map_err(|_| LocalStreamError::Corrupt)?
             .compaction_due())
-    }
-}
-
-/// Records the wall-clock sample in a frame and supplies that same sample on replay.
-struct PinnedCommitClock {
-    source: Arc<dyn UnixMillisClock>,
-    pinned: Mutex<Option<u64>>,
-}
-
-impl PinnedCommitClock {
-    fn pin(&self, at: u64) {
-        *self.pinned.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
-    }
-
-    fn unpin(&self) {
-        *self.pinned.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    }
-}
-
-impl UnixMillisClock for PinnedCommitClock {
-    fn now_unix_millis(&self) -> u64 {
-        self.pinned
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .unwrap_or_else(|| self.source.now_unix_millis())
     }
 }
 
@@ -548,15 +509,7 @@ impl LocalStream {
                             let _ = submitted.send(());
                         }
                     }
-                    let commit_clock = Arc::new(PinnedCommitClock {
-                        source: Arc::clone(&clock),
-                        pinned: Mutex::new(None),
-                    });
-                    let provider = MemoryStream::new_with_commit_clock(
-                        limits.memory,
-                        clock,
-                        Arc::clone(&commit_clock) as _,
-                    );
+                    let provider = MemoryStream::new_with_clock(limits.memory, clock);
                     let mut replay_error = None;
                     while let Some(recovered) = receiver.recv().await {
                         let replayed = match recovered {
@@ -573,8 +526,7 @@ impl LocalStream {
                                 committed_at_millis,
                                 command,
                             } => {
-                                commit_clock.pin(committed_at_millis);
-                                replay(&provider, command)
+                                replay(&provider, command, committed_at_millis)
                                     .await
                                     .map_err(LocalStreamError::Replay)
                             }
@@ -587,12 +539,10 @@ impl LocalStream {
                     if let Some(error) = replay_error {
                         return Err(error);
                     }
-                    commit_clock.unpin();
                     let (changed, _) = watch::channel(0_u64);
                     Ok(Self {
                         inner: Arc::new(LocalInner {
                             provider,
-                            commit_clock,
                             journal: Arc::new(Mutex::new(journal)),
                             _ownership_anchor: ownership_anchor,
                             visibility: Arc::new(RwLock::new(())),
@@ -627,9 +577,8 @@ impl LocalStream {
         &self,
         command: &Command,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-        pin: bool,
     ) -> MemoryResult<(MemoryOutput<Vec<u8>>, u64)> {
-        let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
+        let committed_at_millis = self.inner.provider.clock.now_unix_millis();
         if let Some(meter) = meter {
             if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(meter))? > MAX_COMMAND_BYTES {
                 return Err(StreamError::Capacity.into());
@@ -641,7 +590,6 @@ impl LocalStream {
             .map_err(|_| MemoryFailure::Provider(StreamError::Unavailable))?
             .admit_bytes(frame.value.len() as u64)
             .map_err(publication_error)?;
-        if pin { self.inner.commit_clock.pin(committed_at_millis); }
         Ok((frame, committed_at_millis))
     }
 
@@ -924,7 +872,6 @@ impl LocalStream {
                         let command = &input.value;
                         let (frame, committed_at) = stream.prepare(
                             command, observer.as_ref(),
-                            matches!(visibility, MutationVisibility::BeforeMutation),
                         )?;
                         let frame_bytes = frame.value.len() as u64;
                         let admission = observer.as_ref()
@@ -949,7 +896,6 @@ impl LocalStream {
                         persisted?;
                         Ok(())
                     }.await;
-                    if matches!(visibility, MutationVisibility::BeforeMutation) { stream.inner.commit_clock.unpin(); }
                     let required = stream.inner.required();
                     if let Some(completion) = &mut completion { drop(completion.visibility.take()); }
                     (result, required)
@@ -1053,15 +999,12 @@ impl LocalStream {
                                 if admitted.is_err() {
                                     return Err(E::from(StreamError::Capacity));
                                 }
-                                stream.inner.commit_clock.pin(committed_at);
-                                return Ok(CommitVisibility {
-                                    _visibility: visibility, clock: Arc::clone(&stream.inner.commit_clock),
-                                });
+                                return Ok(visibility);
                             }
                         }
                     };
                     let completion = provider.apply_commit(&mut request, deadline, Some(&execute_meter),
-                        if guarded { Some(&mut acquire) } else { None },
+                        if guarded { Some(&mut acquire) } else { None }, Some(committed_at),
                     ).await;
                     drop(acquire);
                     let (result, visibility, persist) = match completion {
@@ -1112,12 +1055,13 @@ impl StreamProvider for LocalStream {
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.mutation(MemoryOutput { value: Command::Append(request), allocation: Default::default() }, None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
+        self.mutation(MemoryOutput { value: Command::Append(request), allocation: Default::default() }, None, None, MutationVisibility::BeforeMutation, |provider, input, _, committed_at, _| async move {
             let Command::Append(request) = input.value else { unreachable!() };
             let retain_conflict = request.idempotency_key.is_some();
-            let value = provider.append(request).await?;
+            let (outcome, error) = provider.apply_append(&request, None, Some(committed_at)).await?;
+            let value = outcome.value;
             let persist = matches!(value, AppendOutcome::Committed(_)) || retain_conflict;
-            Ok(CommitCompletion { value, error: None, persist, _input: None, visibility: None, primary_failure: false })
+            Ok(CommitCompletion { value, error, persist, _input: None, visibility: None, primary_failure: false })
         }).await.map_err(ordinary_failure)
     }
 
@@ -1201,9 +1145,9 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.mutation(MemoryOutput { value: Command::Commit(request), allocation: Default::default() }, None, None, MutationVisibility::BeforeMutation, |provider, input, _, _, _| async move {
+        self.mutation(MemoryOutput { value: Command::Commit(request), allocation: Default::default() }, None, None, MutationVisibility::BeforeMutation, |provider, input, _, committed_at, _| async move {
             let Command::Commit(request) = input.value else { unreachable!() };
-            let value = provider.commit(request).await?;
+            let value = provider.commit_value(request, None, Some(committed_at)).await?;
             Ok(CommitCompletion { value, error: None, _input: None, visibility: None, persist: true, primary_failure: false })
         }).await.map_err(ordinary_failure)
     }
@@ -1215,9 +1159,9 @@ impl StreamProvider for LocalStream {
     ) -> Result<CommitOutcome, StreamError> {
         self.mutation(
             MemoryOutput { value: Command::Commit(request), allocation: Default::default() }, Some(deadline_unix_millis), None, MutationVisibility::BeforeMutation,
-            |provider, input, deadline, _, _| async move {
+            |provider, input, deadline, committed_at, _| async move {
                 let Command::Commit(request) = input.value else { unreachable!() };
-                let value = provider.commit_before(request, deadline.expect("deadline is supplied")).await?;
+                let value = provider.commit_value(request, deadline, Some(committed_at)).await?;
                 Ok(CommitCompletion { value, error: None, _input: None, visibility: None, persist: true, primary_failure: false })
             },
         ).await.map_err(ordinary_failure)
@@ -1260,12 +1204,12 @@ impl StreamProvider for LocalStream {
             let execute_meter = Arc::clone(&observer);
             let result = self.mutation(
                 input, None, Some(observer), MutationVisibility::BeforeMutation,
-                move |provider, input, _, _, _| async move {
+                move |provider, input, _, committed_at, _| async move {
                     let MemoryOutput { value, allocation } = input;
                     let Command::Append(request) = value else { unreachable!() };
                     let retain_conflict = request.idempotency_key.is_some();
                     let (outcome, error) = provider.apply_append(
-                        &request, Some(&execute_meter),
+                        &request, Some(&execute_meter), Some(committed_at),
                     ).await?;
                     let value = crate::memory::native(Ok(outcome), &execute_meter)?
                         .expect("successful append completion");
@@ -2434,7 +2378,7 @@ mod tests {
     async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.deny_allocation.store(true, Ordering::SeqCst);
         let error = provider.native_read(ReadRequest {
             path: StreamPath::new("uncaptured")?, from: 0, limit: 1,
@@ -2465,7 +2409,7 @@ mod tests {
         let provider = LocalStream::open(directory.path(), limits).await?;
         let request = keyed_append("native-append-lost-ack", 0)?;
         let key = request.idempotency_key.clone().ok_or("append fixture lacks a key")?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.cancel_on_write.store(true, Ordering::SeqCst);
         let error = provider.native_append(request.clone(), meter.original()).await.err()
             .ok_or("accepted cancelled append fabricated an acknowledgement")?;
@@ -2511,7 +2455,7 @@ mod tests {
         }).await?;
         let request = keyed_append(path.as_str(), 0)?;
         let key = request.idempotency_key.clone().ok_or("append fixture lacks a key")?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let expected = AppendOutcome::TailConflict { actual_tail: 1 };
         let conflict = provider.native_append(request.clone(), meter.original()).await??;
         assert_eq!(conflict.value(), &expected);
@@ -2556,7 +2500,7 @@ mod tests {
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = keyed_commit("uncaptured-request", 0)?;
         let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.cancel_on_copy.store(true, Ordering::SeqCst);
         let error = provider.native_commit(request, meter.original()).await.err()
             .ok_or("cancelled capture escaped into publication")?;
@@ -2576,7 +2520,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.deny_durability.store(true, Ordering::SeqCst);
         let request = keyed_commit("not-published", 0)?;
         let key = request.idempotency_key.clone();
@@ -2682,7 +2626,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = prepared_fixture(&provider).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.deny_allocation.store(true, Ordering::SeqCst);
         let error = match provider.native_prepare_commit(request, 64, meter.original()).await {
             Err(error) => error,
@@ -2702,7 +2646,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let mut request = prepared_fixture(&provider).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let packet = provider.native_prepare_commit(request.clone(), 64, meter.original()).await??;
         let (mut packet, packet_guard) = packet.into_parts();
         let recovery = packet.take_recovery_future().ok_or("missing precreated recovery")?;
@@ -2746,7 +2690,7 @@ mod tests {
             }
             fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
         }
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let mut plan = AdmittedFrameWrite::new(&meter.original(), 6)?.close_plan();
         let mut writer = Partial { bytes: Vec::new() };
         let (physical, observed) = plan.write_all(&mut writer, b"abcdef");
@@ -2765,7 +2709,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = prepared_fixture(&provider).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let packet = provider.native_prepare_commit(request, 64, meter.original()).await??;
         let (packet, guard) = packet.into_parts();
         drop(packet);
@@ -2787,7 +2731,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = prepared_fixture(&provider).await?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let packet = provider.native_prepare_commit(request, 64, meter.original()).await??;
         let (packet, packet_guard) = packet.into_parts();
         let (started_send, started_receive) = std::sync::mpsc::sync_channel(1);
@@ -2820,7 +2764,7 @@ mod tests {
         let provider = LocalStream::open(directory.path(), limits).await?;
         let request = keyed_commit("lost-native-ack", 0)?;
         let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.cancel_on_write.store(true, Ordering::SeqCst);
         let error = provider.native_commit(request.clone(), meter.original()).await.err()
             .ok_or("cancelled accepted mutation fabricated an acknowledgement")?;
@@ -2851,7 +2795,7 @@ mod tests {
         let provider = LocalStream::open(directory.path(), limits).await?;
         let request = keyed_commit("compact-native-ack", 0)?;
         let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         meter.cancel_on_durability.store(true, Ordering::SeqCst);
         let error = provider.native_commit(request.clone(), meter.original()).await.err()
             .ok_or("late cancelled compaction fabricated an acknowledgement")?;
@@ -2887,7 +2831,7 @@ mod tests {
         ).await?;
         let request = keyed_commit("native-expired", 0)?;
         let journal_before = std::fs::read(directory.path().join(JOURNAL_FILE))?;
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         *meter.expire_after_hash.lock().map_err(|_| "native clock seam was poisoned")? =
             Some((clock.clone(), 100));
         let expired = provider.native_commit_before(request.clone(), 100, meter.original()).await?;
@@ -2912,7 +2856,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2993,7 +2937,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -3079,7 +3023,7 @@ mod tests {
             let request = keyed_commit("native-detached-input", 0)?;
             let key = request.idempotency_key.clone();
             let input_bytes = request_control_capacity(&request);
-            let meter = Arc::new(Meter::default());
+            let meter = Arc::new(Meter::local());
             let original = meter.original();
             let caller_controls = ReadAllocation::adopt(&original, input_bytes)?;
             let journal_identity = Arc::as_ptr(&provider.inner.journal) as usize;
@@ -3706,7 +3650,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let subscriber = tracing_subscriber::Registry::default()
             .with(captured.clone())
             .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -3783,7 +3727,7 @@ mod tests {
                     idempotency_key: None,
                 })
                 .await?;
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let mut records = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
@@ -3798,7 +3742,7 @@ mod tests {
                     .contains_key("outcome")
             );
             assert_eq!(captured.closed("acyclic.stream.follow"), 0);
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -3841,7 +3785,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let visibility = provider.inner.visibility.write().await;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -3859,7 +3803,7 @@ mod tests {
         );
         let mut future = Box::pin(future);
         assert!(futures::poll!(future.as_mut()).is_pending());
-        let other = obs::tests::Capture::default();
+        let other = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -4326,7 +4270,7 @@ mod tests {
         let before = std::fs::read(directory.path().join(JOURNAL_FILE))?;
         let request = keyed_commit("guard-denied", 0)?;
         let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let callback_provider = provider.clone();
         let callback_meter = Arc::clone(&meter);
         let callback_path = StreamPath::new("guard-readable")?;
@@ -4362,7 +4306,7 @@ mod tests {
         let provider = LocalStream::open(directory.path(), limits).await?;
         let request = keyed_commit("guard-drift-target", 0)?;
         let key = request.idempotency_key.clone();
-        let meter = Arc::new(Meter::default());
+        let meter = Arc::new(Meter::local());
         let calls = Arc::new(AtomicU64::new(0));
         let callback_provider = provider.clone();
         let callback_meter = Arc::clone(&meter);
@@ -4413,7 +4357,7 @@ mod tests {
             let provider = LocalStream::open(directory.path(), limits).await?;
             let request = keyed_commit("guard-owned-drain", 0)?;
             let key = request.idempotency_key.clone();
-            let meter = Arc::new(Meter::default());
+            let meter = Arc::new(Meter::local());
             let released = Arc::new(AtomicU64::new(0));
             let lease = Arc::new(GuardLeaseWitness(Arc::clone(&released)));
             let weak = Arc::downgrade(&lease);
