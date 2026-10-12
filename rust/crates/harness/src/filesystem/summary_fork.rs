@@ -84,7 +84,7 @@ fn rewritten_context(context: &Context, replacements: &References, io: Option<&P
         }
         Ok(())
     }
-    let mut context = crate::context::context_clone_with_io(context, io)?;
+    let mut context = crate::context::copy_context(context, io)?;
     for message in &mut context.messages {
         let parts = match &mut message.content {
             ModelContent::Text(_) => continue,
@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork capture allowance must be positive"));
         }
         let limits = prepared.selection().limits;
-        crate::context::validate_projected_context_with_io(prepared.context(), limits, io)?;
+        crate::context::validate_projected_context(prepared.context(), limits, io)?;
         let (payloads, references) = split_references(prepared, io)?;
         if payloads
             .len()
@@ -273,7 +273,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
         let planned = copy_references(&payloads, child_private, ZERO_VERSION, io)?;
         let context = rewritten_context(prepared.context(), &planned, io)?;
-        crate::context::validate_projected_context_with_io(&context, limits, io)?;
+        crate::context::validate_projected_context(&context, limits, io)?;
         let planned_bytes = match io {
             Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
@@ -360,7 +360,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         )?;
         for file in copies.values() { self.host.read_pinned_io(file, maximum_bytes, io).await?; }
         let context = rewritten_context(prepared.context(), &copies, io)?;
-        crate::context::validate_projected_context_with_io(&context, limits, io)?;
+        crate::context::validate_projected_context(&context, limits, io)?;
         let bytes = match io {
             Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
