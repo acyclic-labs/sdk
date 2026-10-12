@@ -540,9 +540,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        let pinned = StreamAggregate::open_measured(&self.stream, caller.owner.authority().clone(),
-            verifier(&caller.owner)?, SchemaRegistry::default(), Some(intent.request.parent_revision),
-            self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
+        let authority = caller.owner.authority().clone();
+        let authority_verifier = verifier(&caller.owner)?;
+        let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+        let pinned = async {
+            open_work.preflight()?;
+            StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(intent.request.parent_revision), &mut Some(&mut open_work)).await
+        }.await;
+        let pinned = open_work.finish(pinned).map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
         let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None, None)?;
         let source_read = self.restore_intent_source(context.task(), &intent.request, cancellation).await?;
@@ -699,9 +704,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_measured(&self.stream, binding.owner.authority().clone(),
-                verifier(&binding.owner)?, SchemaRegistry::default(), Some(request.parent_revision),
-                self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
+            let authority = binding.owner.authority().clone();
+            let authority_verifier = verifier(&binding.owner)?;
+            let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+            let opened = async {
+                open_work.preflight()?;
+                StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(request.parent_revision), &mut Some(&mut open_work)).await
+            }.await;
+            aggregate = open_work.finish(opened).map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
         restore_recursive_fork_source(self.filesystem.clone(), &self.stream, reducer, verifier(&binding.owner)?,
@@ -803,9 +813,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     reason: "native source binding differs from authenticated current allocation" });
             }
         }
-        owner.require_volume_grant_with_native_work(&caller.private_volume, VolumeOperation::Read, work)?;
+        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if require_project_read {
-            owner.require_volume_grant_with_native_work(&caller.project, VolumeOperation::Read, work)?;
+            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
