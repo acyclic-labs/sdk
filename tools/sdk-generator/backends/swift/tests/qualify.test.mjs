@@ -61,7 +61,7 @@ function installedFixture(t) {
 
 test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", t => {
   const f = installedFixture(t), result = qualify(f.args, f);
-  assert.equal(result.native_in_process_rpc_methods, 25);
+  assert.equal(result.native_in_process_rpc_methods, 19);
   assert.equal(Object.keys(result.dependencies).length, 4);
   assert.equal(result.negative_type_controls.length, 2);
   assert.equal(result.network_transport_qualified, false); assert.equal(result.rust_backed_rpc_qualified, false);
@@ -120,4 +120,17 @@ test("existing and overlapping output paths remain intact", t => {
   assert.throws(() => qualify(f.args,f), /absent/); assert.equal(readFileSync(join(f.args.output,"keep"),"utf8"),"caller bytes");
   f.args.output = join(f.args.dependencies,"new-output"); assert.throws(() => qualify(f.args,f),/overlaps/);
   assert.equal(f.calls.length,0);
+});
+
+
+test("receipt coverage matches the probe's checked and invoked method inventory", t => {
+  const probe = readFileSync(new URL("./fixtures/consumer/RPCConsumer.swift", import.meta.url), "utf8");
+  const inventory = probe.match(/methods.count == (\d+)/);
+  assert.ok(inventory);
+  const count = Number(inventory[1]);
+  const calls = [...probe.matchAll(/\bapi\d+\.(\w+)\(request:/g)].map(([, method]) => method);
+  assert.equal(calls.length, count);
+  assert.equal(new Set(calls).size, count);
+  const f = installedFixture(t);
+  assert.equal(qualify(f.args, f).native_in_process_rpc_methods, count);
 });
