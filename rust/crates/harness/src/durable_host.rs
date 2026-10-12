@@ -717,21 +717,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.input_grants
     }
 
-    /// Checks the original cached grant with bounded canonical identity work.
-    pub fn require_volume_grant_measured(
-        &self,
-        volume: &crate::conversation::VolumeRef,
-        operation: crate::conversation::VolumeOperation,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = work.preflight().and_then(|()|
-            self.require_volume_grant(volume, operation, &mut Some(&mut work)));
-        work.finish(result)
-    }
-
-    pub(crate) fn require_volume_grant(
+    /// Checks the retained volume grant on the optional work ledger.
+    pub fn require_volume_grant(
         &self, volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1044,7 +1031,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-    pub(crate) async fn verify(
+    /// Checks the original owner fence for dispatch or settlement.
+    pub async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1168,20 +1156,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let output = outcome.clone_with_work(&mut Some(&mut io))?;
         Ok((Some(output), io.into_custody()))
-    }
-
-    /// Checks fresh dispatch authority under the supplied work budget.
-    pub async fn verify_dispatch_measured(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.condition(crate::distributed::JournalWrite::Fresh, &mut Some(&mut work)).await.map(|_| ())
-        }.await;
-        work.finish(result)
     }
 
     /// Authenticates one immutable resource request under this ordinary task's current uncancelled lease.
@@ -7081,10 +7055,10 @@ pub(crate) mod tests {
         let fence = fence.clone();
         let operation = OperationId::from_bytes(task.into_bytes());
         let attempt = OperationId::from_bytes([54; 16]);
-        let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
-            owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
-        )?);
+        let workflow = FilesystemWorkflowJournal::for_task(
+            owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
+        )?;
         let journal = FilesystemExecutionJournal::for_task(
             owner.clone(), attempt, attempt, filesystem.clone(), &volume,
             &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
@@ -7237,8 +7211,8 @@ pub(crate) mod tests {
         ).await?;
         assert_ne!(replacement_owner.task_binding().1, &fence);
         let replacement_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            replacement_owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let denied_prefix = work.receipt();
         assert!(matches!(
@@ -7261,8 +7235,8 @@ pub(crate) mod tests {
             other_volume.capability(crate::conversation::VolumeOperation::Write)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let other_volume_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner, filesystem.clone(), other_volume,
-            issuer.verifier(&mut None).expect("verifier copy"), other_scope, 65_536,
+            replacement_owner, filesystem.clone(), &other_volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &other_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
@@ -7274,8 +7248,8 @@ pub(crate) mod tests {
         });
         assert!(matches!(
             FilesystemWorkflowJournal::for_task(
-                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(), 65_536,
+                owner, filesystem.clone(), &volume, &other_issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope, 65_536, None,
             ),
             Err(Error::Unauthorized(_))
         ));
@@ -7300,7 +7274,7 @@ pub(crate) mod tests {
             crate::scheduler::LeaseFence::from(&other_lease.reservation),
         ).await?;
         let other_workflow = FilesystemWorkflowJournal::for_task(
-            other_owner, filesystem, volume, issuer.verifier(&mut None).expect("verifier copy"), content_scope, 65_536,
+            other_owner, filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
@@ -7319,9 +7293,9 @@ pub(crate) mod tests {
         let prepared_request = crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
                 model: crate::model::Model::new(
-                    "synthetic",
-                    "journal-test",
-                    "1",
+                    "synthetic".into(),
+                    "journal-test".into(),
+                    "1".into(),
                     serde_json::json!({}),
                 )?,
                 messages: vec![crate::model::ModelMessage {
@@ -7472,14 +7446,14 @@ pub(crate) mod tests {
             );
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let admission = binding.workflow_admission().clone();
-            let journal = Arc::new(crate::filesystem::FilesystemWorkflowJournal::for_task(
+            let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
-            )?);
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
+            )?;
             let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
             let before_admission = crate::filesystem::PreparationIo::from_budget(
@@ -7877,14 +7851,14 @@ pub(crate) mod tests {
                 "a task storage owner is not a retained task lease"
             );
             let id = crate::InteractionId::from_bytes([91; 16]);
-            let request = Interaction::approval("approve exact action", attempt, [5; 32])?;
+            let request = Interaction::approval("approve exact action".into(), attempt, [5; 32])?;
             journal.open_interaction(id, request.clone()).await?;
             journal.open_interaction(id, request.clone()).await?;
             assert_eq!(journal.interaction_outcome(id).await?, None);
             assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path(&mut None)?)?.tail().await?, 2);
             assert!(matches!(
                 journal
-                    .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
+                    .open_interaction(id, Interaction::approval("changed".into(), attempt, [6; 32])?)
                     .await,
                 Err(Error::Conflict(_))
             ));
@@ -8061,10 +8035,10 @@ pub(crate) mod tests {
             let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             assert!(matches!(
                 journal

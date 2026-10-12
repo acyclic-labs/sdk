@@ -219,7 +219,7 @@ fn selection_boundary(
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if selection_has_native_work(work) {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -284,8 +284,7 @@ pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
         &self,
         _: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-            "context renderer has no native contract capability"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native contract capability" })
     }
 
     /// Renders the same selection after funding the concrete future frame.
@@ -298,8 +297,7 @@ pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
         _: Limits,
         _: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
-        Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-            "context renderer has no native capability"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" })
     }
 }
 
@@ -390,8 +388,7 @@ impl ContextStage for SelectionStage {
         work.remaining().map_err(super::native_context_work_error)?;
         let renderer = self.renderer.contract_with_native_work(work)?;
         if !renderer.0.is_object() {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                "context renderer contract must be an object"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context renderer contract must be an object" });
         }
         let mut source_io = crate::store::history::native_work_io(work)
             .map_err(super::native_context_work_error)?;
@@ -429,12 +426,10 @@ impl ContextStage for SelectionStage {
     ) -> Result<()> {
         work.remaining().map_err(super::native_context_work_error)?;
         if !crate::is_valid_component_label(&self.name) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                "selection stage identity is invalid"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
         }
         if !self.renderer.supports_native() {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context renderer has no native capability"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
         }
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(super::native_context_work_error)?;
@@ -451,12 +446,10 @@ impl ContextStage for SelectionStage {
     ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
         work.remaining().map_err(super::native_context_work_error)?;
         if !crate::is_valid_component_label(&self.name) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                "selection stage identity is invalid"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
         }
         if !self.renderer.supports_native() {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context renderer has no native capability"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
         }
         crate::NativeFutureBundle::new(work, || async move {
             let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;

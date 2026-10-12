@@ -215,7 +215,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let bundle = storage
         .builder()
         .model(
-            Model::new("synthetic", "summary-fork", "1", Value::Null)?,
+            Model::new("synthetic".into(), "summary-fork".into(), "1".into(), Value::Null)?,
             model.clone(),
         )
         .grant("model:generate")
@@ -246,7 +246,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         3
     );
     {
-        let aggregate = storage.open_conversation(limits).await?;
+        let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
             .reducer()
             .conversation()
@@ -747,7 +747,7 @@ async fn assert_summary_child_import(
     );
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
-        Model::new("synthetic", "summary-child", "1", Value::Null)?,
+        Model::new("synthetic".into(), "summary-child".into(), "1".into(), Value::Null)?,
         model.clone(),
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
         ToolRegistry::default(),
@@ -943,13 +943,10 @@ async fn assert_cold_summary_reads(
     let parent_history = parent.history_reader()?;
     let child_history = HistoryReader::new(&storage.stream, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let binding = child_history
-        .read_page(
-            &child_history.pin(0, None).await?,
-            HistoryReadLimits {
+        .read_page(&child_history.pin(0, None).await?, HistoryReadLimits {
                 maximum_events: 1,
                 maximum_bytes: 262_144,
-            },
-        )
+            }, None)
         .await?
         .events
         .into_iter()
@@ -1085,7 +1082,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         storage
             .builder()
             .model(
-                Model::new("synthetic", "small-message-continuation", "1", Value::Null)?,
+                Model::new("synthetic".into(), "small-message-continuation".into(), "1".into(), Value::Null)?,
                 model.clone(),
             )
             .grant("model:generate")
@@ -1122,7 +1119,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if original.is_none() {
             original = Some((operation, input, output));
         }
-        let aggregate = storage.open_conversation(limits).await?;
+        let aggregate = storage.journal.conversation_projection(limits).await?;
         let conversation = aggregate
             .reducer()
             .conversation()
@@ -1186,7 +1183,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let limits = Limits { context_messages: 8, ..Limits::default() };
     let model = Arc::new(SummaryModel::default());
     let bundle = storage.builder()
-        .model(Model::new("synthetic", "retired-full-fork", "1", Value::Null)?, model)
+        .model(Model::new("synthetic".into(), "retired-full-fork".into(), "1".into(), Value::Null)?, model)
         .grant("model:generate").limits(limits).build()?;
     for index in 0..6 {
         let operation = OperationId::new();
@@ -1194,7 +1191,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             b"small input", "text/plain", "input.txt").await?;
         storage.run_conversation(&bundle, operation, input, Vec::new(), 1).await?;
     }
-    let mut parent = storage.open_conversation(limits).await?;
+    let mut parent = storage.journal.conversation_projection(limits).await?;
     let conversation = parent.reducer().conversation()
         .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
     assert!(conversation.resident_after_sequence() > 0);
@@ -1291,7 +1288,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         action: Action::PublishFork { seed: Box::new(seed.clone()) },
     };
     parent.execute(command.clone()).await?;
-    let mut reopened = storage.open_conversation(limits).await?
+    let mut reopened = storage.journal.conversation_projection(limits).await?
         .with_fork_verifier(fork_verifier);
     assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;

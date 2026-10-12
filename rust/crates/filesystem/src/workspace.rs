@@ -66,59 +66,6 @@ impl From<crate::NativeTreeMaterializationError> for WorkspaceError {
     }
 }
 
-fn workspace_name_scratch_witness(
-    name: &str,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<crate::WorkCounters, WorkspaceError> {
-    let mut pending = 0_u64;
-    let mut maximum_pending = 0_u64;
-    let mut maximum_chunk = 0_u64;
-    for character in name.chars() {
-        accounting.check()?;
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let mut chunk = 0_u64;
-        let mut failure = None;
-        unicode_normalization::char::decompose_canonical(character, |scalar| {
-            if failure.is_some() { return; }
-            let result = (|| -> Result<(), WorkspaceError> {
-                accounting.check()?;
-                accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
-                    pending = 0;
-                } else {
-                    pending = pending.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                    maximum_pending = maximum_pending.max(pending);
-                }
-                Ok(())
-            })();
-            failure = result.err();
-        });
-        if let Some(error) = failure { return Err(error); }
-        maximum_chunk = maximum_chunk.max(chunk);
-    }
-    // unicode-normalization 0.1.25 uses two four-element TinyVecs. NFD
-    let buffer = |elements: u64, element_bytes: u64| -> Result<u64, WorkspaceError> {
-        if elements <= 4 { return Ok(0); }
-        elements.checked_next_power_of_two()
-            .and_then(|capacity| capacity.checked_mul(2))
-            .and_then(|capacity| capacity.checked_mul(element_bytes))
-            .ok_or(crate::WorkError::Overflow.into())
-    };
-    let nfd_bytes = buffer(
-        maximum_pending.checked_add(maximum_chunk).ok_or(crate::WorkError::Overflow)?,
-        std::mem::size_of::<(u8, char)>() as u64,
-    )?;
-    let nfc_bytes = buffer(maximum_pending, std::mem::size_of::<char>() as u64)?;
-    let sort_bytes = maximum_pending.checked_mul(std::mem::size_of::<(u8, char)>() as u64)
-        .ok_or(crate::WorkError::Overflow)?;
-    Ok(crate::WorkCounters {
-        peak_allocation_bytes: nfd_bytes.checked_add(nfc_bytes).and_then(|n| n.checked_add(sort_bytes))
-            .ok_or(crate::WorkError::Overflow)?,
-        ..crate::WorkCounters::UNCHARGED
-    })
-}
-
 fn accounting_live_bytes(accounting: &KernelAccounting<'_>) -> u64 {
     match accounting {
         KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
@@ -126,75 +73,6 @@ fn accounting_live_bytes(accounting: &KernelAccounting<'_>) -> u64 {
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
     }
-}
-
-fn normalize_workspace_name(
-    name: &str,
-    accounting: &mut KernelAccounting<'_>,
-    custody_bytes: u64,
-) -> Result<(Arc<str>, KernelOwnedAllocation), WorkspaceError> {
-    accounting.check()?;
-    let witness = workspace_name_scratch_witness(name, accounting)?;
-    accounting.admit(crate::WorkCounters {
-        peak_allocation_bytes: accounting_live_bytes(accounting)
-            .checked_add(witness.peak_allocation_bytes).ok_or(crate::WorkError::Overflow)?,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    let mut output = [0_u8; MAXIMUM_WORKSPACE_NAME_BYTES];
-    let mut length = 0;
-    {
-        let mut normalized = name.nfc();
-        loop {
-            accounting.charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            })?;
-            let Some(character) = normalized.next() else { break };
-            let end = length + character.len_utf8();
-            if end > output.len() { return Err(WorkspaceNameError::TooLong.into()); }
-            let copied = crate::WorkCounters {
-                bytes_copied: character.len_utf8() as u64, ..crate::WorkCounters::UNCHARGED
-            };
-            accounting.admit(copied)?;
-            character.encode_utf8(&mut output[length..end]);
-            length = end;
-            accounting.record_completed(copied)?;
-        }
-    }
-    accounting.charge(crate::WorkCounters {
-        items_examined: length as u64, ..crate::WorkCounters::UNCHARGED
-    })?;
-    let canonical = std::str::from_utf8(&output[..length]).map_err(WorkspaceError::engine)?;
-    if canonical.is_empty() { return Err(WorkspaceNameError::Empty.into()); }
-    if canonical == "." || canonical == ".." { return Err(WorkspaceNameError::Reserved.into()); }
-    for character in canonical.chars() {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        if character.is_control() || matches!(character, '/' | '\\') {
-            return Err(WorkspaceNameError::InvalidCharacter.into());
-        }
-    }
-    let copied = crate::WorkCounters {
-        bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED
-    };
-    accounting.admit(crate::WorkCounters {
-        allocation_operations: 1 + u64::from(custody_bytes != 0),
-        peak_allocation_bytes: accounting_live_bytes(accounting).checked_add(length as u64)
-            .and_then(|bytes| bytes.checked_add(custody_bytes)).ok_or(crate::WorkError::Overflow)?,
-        ..copied
-    })?;
-    let mut allocation = accounting.claim_owned(length as u64, 1)?;
-    let name: Arc<str> = Arc::from(canonical);
-    let completed = accounting.record_completed(copied).and_then(|()| {
-        if custody_bytes != 0 {
-            allocation.absorb(&mut accounting.claim_owned(custody_bytes, 1)?)?;
-        }
-        Ok(())
-    });
-    if let Err(error) = completed {
-        drop(name);
-        accounting.release_owned(&mut allocation, length as u64)?;
-        return Err(error.into());
-    }
-    Ok((name, allocation))
 }
 
 impl WorkspaceName {
@@ -213,7 +91,110 @@ impl WorkspaceName {
         let custody_bytes = if accounting.native_work().is_some() {
             std::mem::size_of::<(Arc<str>, crate::NativeAllocation)>() as u64
         } else { custody_bytes };
-        let (name, allocation) = normalize_workspace_name(name, accounting, custody_bytes)?;
+        accounting.check()?;
+        let mut pending = 0_u64;
+        let mut maximum_pending = 0_u64;
+        let mut maximum_chunk = 0_u64;
+        for character in name.chars() {
+            accounting.check()?;
+            accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+            let mut chunk = 0_u64;
+            let mut failure = None;
+            unicode_normalization::char::decompose_canonical(character, |scalar| {
+                if failure.is_some() { return; }
+                let result = (|| -> Result<(), WorkspaceError> {
+                    accounting.check()?;
+                    accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+                    chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                    if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
+                        pending = 0;
+                    } else {
+                        pending = pending.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+                        maximum_pending = maximum_pending.max(pending);
+                    }
+                    Ok(())
+                })();
+                failure = result.err();
+            });
+            if let Some(error) = failure { return Err(error); }
+            maximum_chunk = maximum_chunk.max(chunk);
+        }
+        // unicode-normalization 0.1.25 uses two four-element TinyVecs. NFD
+        let buffer = |elements: u64, element_bytes: u64| -> Result<u64, WorkspaceError> {
+            if elements <= 4 { return Ok(0); }
+            elements.checked_next_power_of_two()
+                .and_then(|capacity| capacity.checked_mul(2))
+                .and_then(|capacity| capacity.checked_mul(element_bytes))
+                .ok_or(crate::WorkError::Overflow.into())
+        };
+        let nfd_bytes = buffer(
+            maximum_pending.checked_add(maximum_chunk).ok_or(crate::WorkError::Overflow)?,
+            std::mem::size_of::<(u8, char)>() as u64,
+        )?;
+        let nfc_bytes = buffer(maximum_pending, std::mem::size_of::<char>() as u64)?;
+        let sort_bytes = maximum_pending.checked_mul(std::mem::size_of::<(u8, char)>() as u64)
+            .ok_or(crate::WorkError::Overflow)?;
+        let scratch_bytes = nfd_bytes.checked_add(nfc_bytes).and_then(|n| n.checked_add(sort_bytes))
+            .ok_or(crate::WorkError::Overflow)?;
+        accounting.admit(crate::WorkCounters {
+            peak_allocation_bytes: accounting_live_bytes(accounting)
+                .checked_add(scratch_bytes).ok_or(crate::WorkError::Overflow)?,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        let mut output = [0_u8; MAXIMUM_WORKSPACE_NAME_BYTES];
+        let mut length = 0;
+        {
+            let mut normalized = name.nfc();
+            loop {
+                accounting.charge(crate::WorkCounters {
+                    items_examined: 1, ..crate::WorkCounters::UNCHARGED
+                })?;
+                let Some(character) = normalized.next() else { break };
+                let end = length + character.len_utf8();
+                if end > output.len() { return Err(WorkspaceNameError::TooLong.into()); }
+                let copied = crate::WorkCounters {
+                    bytes_copied: character.len_utf8() as u64, ..crate::WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                character.encode_utf8(&mut output[length..end]);
+                length = end;
+                accounting.record_completed(copied)?;
+            }
+        }
+        accounting.charge(crate::WorkCounters {
+            items_examined: length as u64, ..crate::WorkCounters::UNCHARGED
+        })?;
+        let canonical = std::str::from_utf8(&output[..length]).map_err(WorkspaceError::engine)?;
+        if canonical.is_empty() { return Err(WorkspaceNameError::Empty.into()); }
+        if canonical == "." || canonical == ".." { return Err(WorkspaceNameError::Reserved.into()); }
+        for character in canonical.chars() {
+            accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+            if character.is_control() || matches!(character, '/' | '\\') {
+                return Err(WorkspaceNameError::InvalidCharacter.into());
+            }
+        }
+        let copied = crate::WorkCounters {
+            bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.admit(crate::WorkCounters {
+            allocation_operations: 1 + u64::from(custody_bytes != 0),
+            peak_allocation_bytes: accounting_live_bytes(accounting).checked_add(length as u64)
+                .and_then(|bytes| bytes.checked_add(custody_bytes)).ok_or(crate::WorkError::Overflow)?,
+            ..copied
+        })?;
+        let mut allocation = accounting.claim_owned(length as u64, 1)?;
+        let name: Arc<str> = Arc::from(canonical);
+        let completed = accounting.record_completed(copied).and_then(|()| {
+            if custody_bytes != 0 {
+                allocation.absorb(&mut accounting.claim_owned(custody_bytes, 1)?)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = completed {
+            drop(name);
+            accounting.release_owned(&mut allocation, length as u64)?;
+            return Err(error.into());
+        }
         match allocation {
             #[cfg(not(target_arch = "wasm32"))]
             KernelOwnedAllocation::NativeOriginal(allocation) => Ok(Self(Arc::clone(&name), Some(Arc::new((name, allocation))))),
@@ -393,87 +374,71 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
-    /// Reserves the original authority head with one cumulative work allowance.
-    pub async fn reserve_publication(
-        &self,
-        operation_id: OperationId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::PublicationReservation>, WorkspaceError> {
-        cancellation.check()
-            .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        let head = self.volume.fs.authority().head(
-            self.authority_id(), budget, cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(
-            crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
-        ))?;
-        let reserved = self.volume.fs.authority().reserve_publication(
-            self.authority_id(), head.value, operation_id,
-            head.work.remaining(budget)
-                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
-            cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(
-            head.work, |error| WorkspaceError::from(FsError::Authority(error)),
-        ))?;
-        let work = head.work.checked_add(reserved.work)
-            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?;
-        match reserved.value {
-            crate::ReservationOutcome::Reserved(reservation)
-            | crate::ReservationOutcome::AlreadyReserved(reservation) => {
-                if reservation.authority_id != self.authority_id()
-                    || reservation.operation_id != operation_id
-                {
-                    return Err(crate::OperationFailure::new(WorkspaceError::IncompatibleWorkspace, work));
-                }
-                Ok(crate::OperationReceipt { value: reservation, work })
-            }
-            crate::ReservationOutcome::Conflict { .. } => {
-                Err(crate::OperationFailure::new(WorkspaceError::StaleGeneration, work))
-            }
-        }
-    }
-
-    /// Releases only the actual reservation using the caller's cleanup token.
-    pub async fn release_publication(
-        &self,
-        reservation: crate::PublicationReservation,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<()>, WorkspaceError> {
-        if reservation.authority_id != self.authority_id() {
-            return Err(crate::OperationFailure::before_work(WorkspaceError::IncompatibleWorkspace));
-        }
-        cancellation.check()
-            .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        self.volume.fs.authority().release_publication(reservation, budget, cancellation).await
-            .map_err(|failure| failure.map_with_prior_work(
-                crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
-            ))
-    }
-
-
-
-    /// Acquires the original proof; recovery owns every check after acquisition.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn reserve_publication_with_native_work(
-        &self, operation_id: OperationId, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::PublicationReservation, (WorkspaceError, Option<crate::NativeAllocation>)> {
+    /// Reserves the current authority head under supplied work limits.
+    pub async fn reserve_publication<W: crate::facade::FsWork>(
+        &self, operation_id: OperationId, work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<crate::PublicationReservation, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
-            original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
-            cancellation.check().map_err(WorkspaceError::from)?;
+            accounting.check()?;
+            let authority = self.volume.fs.authority();
             let authority_id = self.authority_id();
-            let head = self.volume.fs.authority().head_with_native_work(authority_id, original, cancellation)
-                .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
-            let reservation = self.volume.fs.authority().reserve_publication_with_native_work(
-                authority_id, head, operation_id, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+            let reservation = async {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    let head = authority.head_with_native_work(authority_id, original, cancellation)
+                        .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
+                    return authority.reserve_publication_with_native_work(
+                        authority_id, head, operation_id, original, cancellation,
+                    ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+                }
+                let head = authority.head(authority_id, accounting.remaining()?, cancellation).await
+                    .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
+                        |error| WorkspaceError::from(FsError::Authority(error))));
+                let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
+                let head = merge_workspace_backend(head, counters, 0)?.value;
+                let reserved = authority.reserve_publication(
+                    authority_id, head, operation_id, accounting.remaining()?, cancellation,
+                ).await.map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
+                    |error| WorkspaceError::from(FsError::Authority(error))));
+                let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
+                match merge_workspace_backend(reserved, counters, 0)?.value {
+                    crate::ReservationOutcome::Reserved(reservation)
+                    | crate::ReservationOutcome::AlreadyReserved(reservation) => Ok(reservation),
+                    crate::ReservationOutcome::Conflict { .. } => Err(WorkspaceError::StaleGeneration),
+                }
+            }.await?;
             if reservation.authority_id != authority_id || reservation.operation_id != operation_id {
                 return Err(WorkspaceError::IncompatibleWorkspace);
             }
             Ok(reservation)
         }.await;
-        result.map_err(|error| (error, None))
+        work.finish(result, &accounting)
+    }
+
+    /// Releases only this workspace's reservation under supplied work limits.
+    pub async fn release_publication<W: crate::facade::FsWork>(
+        &self, reservation: crate::PublicationReservation, work: W,
+        cancellation: &crate::CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            if reservation.authority_id != self.authority_id() {
+                return Err(WorkspaceError::IncompatibleWorkspace);
+            }
+            accounting.check()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                return self.volume.fs.authority().release_publication_with_native_work(reservation, original, cancellation)
+                    .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+            }
+            let released = self.volume.fs.authority().release_publication(reservation, accounting.remaining()?, cancellation).await
+                .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::UNCHARGED,
+                    |error| WorkspaceError::from(FsError::Authority(error))));
+            let (_, counters, _, _) = accounting.standalone_parts().ok_or(crate::WorkError::Overflow)?;
+            merge_workspace_backend(released, counters, 0).map(|receipt| receipt.value)
+        }.await;
+        work.finish(result, &accounting)
     }
 
     /// Queries only the durable proof belonging to this exact operation.
@@ -498,24 +463,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         result.map_err(|error| (error, None))
     }
 
-    /// Releases the retained original proof without adopting a newer head.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn release_publication_with_native_work(
-        &self, reservation: crate::PublicationReservation, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let result = async {
-            if reservation.authority_id != self.authority_id() {
-                return Err(WorkspaceError::IncompatibleWorkspace);
-            }
-            original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
-            cancellation.check().map_err(WorkspaceError::from)?;
-            self.volume.fs.authority().release_publication_with_native_work(reservation, original, cancellation)
-                .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
-        }.await;
-        result.map_err(|error| (error, None))
-    }
-
     /// Resolves one immutable operation without adopting the mutable head.
     pub async fn operation_generation<W: crate::facade::FsWork>(
         &self, key: IdempotencyKey, work: W, cancellation: &crate::CancellationToken,
@@ -531,45 +478,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
-    /// Returns the protected original operation record with its genuine
-    pub(crate) async fn operation_generation_record_measured(
-        &self, key: IdempotencyKey, budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Option<(Generation<A, O>, crate::DurableCommit)>>, WorkspaceError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
+    /// Returns the original operation record and its backing allocation.
+    pub(crate) async fn operation_generation_record<W: crate::facade::FsWork>(
+        &self, key: IdempotencyKey, work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<(Option<(Generation<A, O>, crate::DurableCommit)>, KernelOwnedAllocation), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = self.volume.fs.workspace_operation_generation(
             &self.volume, key.operation_id(), &mut accounting, cancellation,
-        ).await.map(|(value, allocation)| { drop(allocation); value });
-        let receipt = crate::facade::measured(result, &accounting)?;
-        Ok(crate::OperationReceipt {
-            value: receipt.value.map(|(id, record)| (
-                Generation { workspace: self.clone(), id, publication_closure: None },
-                record,
-            )),
-            work: receipt.work,
-        })
-    }
-
-    /// Keeps original record bytes ahead of their metadata allocation until
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn operation_generation_record_with_native_work(
-        &self, operation_id: crate::OperationId,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<
-        (Option<(Generation<A, O>, crate::DurableCommit)>, crate::NativeAllocation),
-        (WorkspaceError, Option<crate::NativeAllocation>),
-    > {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let observed = self.volume.fs.workspace_operation_generation(
-            &self.volume, operation_id, &mut accounting, cancellation,
-        ).await.map_err(|error| (error, None))?;
-        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = observed.1
-            else { unreachable!("native operation retains its allocation"); };
-        Ok((observed.0.map(|(id, record)| (
-            Generation { workspace: self.clone(), id, publication_closure: None },
-            record,
-        )), allocation))
+        ).await.map(|(value, allocation)| (value.map(|(id, record)| (
+            Generation { workspace: self.clone(), id, publication_closure: None }, record,
+        )), allocation));
+        work.finish(result, &accounting)
     }
 
     /// Proves an immutable result was committed by this workspace's exact
@@ -838,8 +757,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 .map_err(|error| crate::OperationFailure::new(error, work))
         }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None).await
     }
-
-
 
     fn restore_absolute_path_with_accounting(
         relative: &str,
@@ -1258,24 +1175,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         &self,
         label: impl AsRef<str>,
     ) -> Result<(WorkspaceName, Generation<A, O>), WorkspaceError> {
-        async move {
-                let label = WorkspaceName::new(label, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-                let generation = self.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-                let retained_label = label.as_str().to_owned();
-                let bytes = retained_label.capacity() as u64;
-                self.volume
-                    .fs
-                    .retain_workspace_generation(
-                        &self.volume,
-                        generation.id,
-                        crate::kernel::RetentionKind::Checkpoint,
-                        crate::kernel::Owned::new(retained_label, crate::kernel::allocation::KernelOwnedAllocation::Standalone, bytes),
-                        None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-                    )
-                    .await.map_err(|failure| failure.error)?;
-                Ok((label, generation))
-            }
-            .await
+        let label = WorkspaceName::new(label, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let generation = self.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let retained_label = label.as_str().to_owned();
+        let bytes = retained_label.capacity() as u64;
+        self.volume
+            .fs
+            .retain_workspace_generation(
+                &self.volume,
+                generation.id,
+                crate::kernel::RetentionKind::Checkpoint,
+                crate::kernel::Owned::new(retained_label, crate::kernel::allocation::KernelOwnedAllocation::Standalone, bytes),
+                None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+            )
+            .await.map_err(|failure| failure.error)?;
+        Ok((label, generation))
     }
 
     /// Durably pins the current immutable generation under an opaque customer
@@ -1304,35 +1218,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         to: &Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
-        async move {
-                if from.workspace.id != self.id || to.workspace.id != self.id
-                    || !self.volume.fs.same_deployment(&from.workspace.volume.fs)
-                    || !self.volume.fs.same_deployment(&to.workspace.volume.fs)
-                {
-                    return Err(WorkspaceError::ForeignGeneration);
-                }
-                let receipt = self
-                    .volume
-                    .diff_generations(
-                        from.id,
-                        to.id,
-                        maximum_changes,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(WorkspaceError::engine)?;
-                if receipt.value.truncated {
-                    return Err(WorkspaceError::JoinLimit);
-                }
-                Ok(ChangeSet {
-                    from: from.clone(),
-                    to: to.clone(),
-                    changes: receipt.value,
-                    work: receipt.work,
-                })
-            }
+        if from.workspace.id != self.id || to.workspace.id != self.id
+            || !self.volume.fs.same_deployment(&from.workspace.volume.fs)
+            || !self.volume.fs.same_deployment(&to.workspace.volume.fs)
+        {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        let receipt = self
+            .volume
+            .diff_generations(
+                from.id,
+                to.id,
+                maximum_changes,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await
+            .map_err(WorkspaceError::engine)?;
+        if receipt.value.truncated {
+            return Err(WorkspaceError::JoinLimit);
+        }
+        Ok(ChangeSet {
+            from: from.clone(),
+            to: to.clone(),
+            changes: receipt.value,
+            work: receipt.work,
+        })
     }
 
     /// Begins a side-effect-free join description from this workspace into a
@@ -1356,60 +1267,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         maximum_changes: u32,
         maximum_conflicts: u32,
     ) -> Result<WorkspaceRebase<A, O>, WorkspaceError> {
-        async move {
-                let outcome = self
-                    .volume
-                    .fs
-                    .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
-                        target: &self.volume,
-                        operation_id: idempotency_key.operation_id(),
-                        maximum_generations,
-                        maximum_changes,
-                        maximum_conflicts,
-                    })
-                    .await?;
-                let generation = |id| Generation { workspace: self.clone(), id, publication_closure: None };
-                Ok(match outcome {
-                    crate::facade::WorkspaceJoinOutcome::Applied(id) => {
-                        WorkspaceRebase::Rebased(generation(id))
-                    }
-                    crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
-                        WorkspaceRebase::AlreadyRebased(generation(id))
-                    }
-                    crate::facade::WorkspaceJoinOutcome::Joined(_, _)
-                    | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
-                        return Err(WorkspaceError::IncompatibleWorkspace);
-                    }
-                    crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
-                        WorkspaceRebase::Current(generation(id))
-                    }
-                    crate::facade::WorkspaceJoinOutcome::Stale(id) => {
-                        WorkspaceRebase::Stale(generation(id))
-                    }
-                    crate::facade::WorkspaceJoinOutcome::Conflicted(conflicts, truncated) => {
-                        WorkspaceRebase::Conflicted {
-                            conflicts,
-                            truncated,
-                        }
-                    }
-                    crate::facade::WorkspaceJoinOutcome::Fenced => WorkspaceRebase::Fenced,
-                    crate::facade::WorkspaceJoinOutcome::IdempotencyConflict => {
-                        WorkspaceRebase::IdempotencyConflict
-                    }
-                })
-            }
-            .await
-    }
-
-    /// The parent head that [`Self::live_rebase`] would rebase this fork onto,
-    pub(crate) async fn parent_advance(
-        &self,
-        maximum_generations: u32,
-    ) -> Result<Option<GenerationId>, WorkspaceError> {
-        self.volume
+        let outcome = self
+            .volume
             .fs
-            .parent_advance(&self.volume, maximum_generations)
-            .await
+            .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
+                target: &self.volume,
+                operation_id: idempotency_key.operation_id(),
+                maximum_generations,
+                maximum_changes,
+                maximum_conflicts,
+            })
+            .await?;
+        let generation = |id| Generation { workspace: self.clone(), id, publication_closure: None };
+        Ok(match outcome {
+            crate::facade::WorkspaceJoinOutcome::Applied(id) => {
+                WorkspaceRebase::Rebased(generation(id))
+            }
+            crate::facade::WorkspaceJoinOutcome::AlreadyApplied(id) => {
+                WorkspaceRebase::AlreadyRebased(generation(id))
+            }
+            crate::facade::WorkspaceJoinOutcome::Joined(_, _)
+            | crate::facade::WorkspaceJoinOutcome::AlreadyJoined(_, _) => {
+                return Err(WorkspaceError::IncompatibleWorkspace);
+            }
+            crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
+                WorkspaceRebase::Current(generation(id))
+            }
+            crate::facade::WorkspaceJoinOutcome::Stale(id) => {
+                WorkspaceRebase::Stale(generation(id))
+            }
+            crate::facade::WorkspaceJoinOutcome::Conflicted(conflicts, truncated) => {
+                WorkspaceRebase::Conflicted {
+                    conflicts,
+                    truncated,
+                }
+            }
+            crate::facade::WorkspaceJoinOutcome::Fenced => WorkspaceRebase::Fenced,
+            crate::facade::WorkspaceJoinOutcome::IdempotencyConflict => {
+                WorkspaceRebase::IdempotencyConflict
+            }
+        })
     }
 
     /// Reads the head through the canonical engine with exact failure work.
@@ -1575,7 +1472,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn readonly_pinned_reader_with_native_work(
+    pub(crate) async fn reader(
         &self,
         generation: GenerationId,
         original: &crate::NativeMaterializationWork,
@@ -1591,7 +1488,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .map_err(WorkspaceError::from)
     }
 }
-
 
 async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -1625,8 +1521,6 @@ async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
     ).await.map(|read| read.bytes).map_err(WorkspaceError::from)
 }
 
-
-
 async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
@@ -1648,7 +1542,6 @@ async fn read_generation_range<A: AsyncAuthorityStore, O: AsyncObjectStore, W: c
     }.await;
     work.finish(result, &accounting)
 }
-
 
 async fn stat_generation<A: AsyncAuthorityStore, O: AsyncObjectStore, W: crate::facade::FsWork>(
     workspace: &Workspace<A, O>, selector: GenerationSelector, path: &str,
@@ -1689,7 +1582,6 @@ fn workspace_stat_from_lookup(
         metadata: WorkspaceMetadata::from_engine(lookup.metadata),
     })
 }
-
 
 async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
@@ -2713,32 +2605,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self,
         maximum_conflicts: u32,
     ) -> Result<TransactionRebase<A, O>, WorkspaceError> {
-        async move {
-                let decision = self
-                    .checkout
-                    .rebase_head(
-                        maximum_conflicts,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(WorkspaceError::engine)?
-                    .value;
-                Ok(match decision {
-                    crate::kernel::RebaseDecision::Safe { generation } => {
-                        self.requires_rebase = false;
-                        TransactionRebase::Rebased(Generation { workspace: self.workspace.clone(), id: generation, publication_closure: None })
-                    }
-                    crate::kernel::RebaseDecision::Conflicted {
-                        conflicts,
-                        truncated,
-                    } => TransactionRebase::Conflicted {
-                        conflicts,
-                        truncated,
-                    },
-                })
-            }
+        let decision = self
+            .checkout
+            .rebase_head(
+                maximum_conflicts,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
             .await
+            .map_err(WorkspaceError::engine)?
+            .value;
+        Ok(match decision {
+            crate::kernel::RebaseDecision::Safe { generation } => {
+                self.requires_rebase = false;
+                TransactionRebase::Rebased(Generation { workspace: self.workspace.clone(), id: generation, publication_closure: None })
+            }
+            crate::kernel::RebaseDecision::Conflicted {
+                conflicts,
+                truncated,
+            } => TransactionRebase::Conflicted {
+                conflicts,
+                truncated,
+            },
+        })
     }
 
     async fn apply(&mut self, operations: Vec<AuthoredMutation>) -> Result<(), WorkspaceError> {
@@ -3125,8 +3014,6 @@ fn merge_binding_endpoint(
     }
     Ok(())
 }
-
-
 
 // Query tuples drop their data before the allocation guard.
 fn reverse_drop<T>(owned: (T, KernelOwnedAllocation), bytes: u64, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
@@ -3900,36 +3787,10 @@ pub enum JoinOutcome<A, O> {
 
 /// One durable join result together with its exact conflict-resolution input.
 pub struct JoinApplication<A, O> {
-    generation: Generation<A, O>,
-    resolutions_digest: crate::Digest,
-}
-
-impl<A, O> JoinApplication<A, O> {
     /// Immutable generation made durable by this join.
-    #[must_use]
-    pub const fn generation(&self) -> &Generation<A, O> {
-        &self.generation
-    }
-
-    /// Consumes the proof wrapper when only the resulting generation is needed.
-    #[must_use]
-    pub fn into_generation(self) -> Generation<A, O> {
-        self.generation
-    }
-
-    /// Domain-separated digest of the exact applied conflict resolutions.
-    #[must_use]
-    pub const fn resolutions_digest(&self) -> crate::Digest {
-        self.resolutions_digest
-    }
-}
-
-impl<A, O> std::ops::Deref for JoinApplication<A, O> {
-    type Target = Generation<A, O>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.generation
-    }
+    pub generation: Generation<A, O>,
+    /// Digest of the exact applied conflict resolutions.
+    pub resolutions_digest: crate::Digest,
 }
 
 /// Terminal semantic outcome of an exact workspace-head restoration.
@@ -4091,8 +3952,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .await
             .map_err(Into::into)
     }
-
-
 
     /// Validates the ordinary conflict set, then seals the same second application.
     #[cfg(not(target_arch = "wasm32"))]
@@ -4483,29 +4342,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<FsError> + From<WorkspaceError> + Send + 'static,
     {
-        async {
-            if options.if_target != self.target_head.id {
-                let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                let (id, _) = self.target.volume.fs.workspace_head_state(
-                    &self.target.volume, &mut accounting, cancellation,
-                ).await?;
-                return Ok((JoinOutcome::StaleTarget(Generation {
-                    workspace: self.target.clone(), id, publication_closure: None,
-                }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
-            }
-            let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
-                crate::facade::WorkspaceJoinRequest {
-                    target: &self.target.volume, base: self.base, source: &self.source_head,
-                    expected_target: options.if_target, expected_head: self.target_authority_head,
-                    history: self.history, operation_id: options.idempotency_key.operation_id(),
-                    permit, maximum_generations: self.maximum_generations,
-                    maximum_changes: self.maximum_changes, maximum_conflicts: self.maximum_conflicts,
-                    resolutions,
-                },
-                original, cancellation, before_publication,
+        if options.if_target != self.target_head.id {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+            let (id, _) = self.target.volume.fs.workspace_head_state(
+                &self.target.volume, &mut accounting, cancellation,
             ).await?;
-            self.map_join_outcome(outcome).map(|outcome| (outcome, allocation)).map_err(E::from)
-        }.await
+            return Ok((JoinOutcome::StaleTarget(Generation {
+                workspace: self.target.clone(), id, publication_closure: None,
+            }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
+        }
+        let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
+            crate::facade::WorkspaceJoinRequest {
+                target: &self.target.volume, base: self.base, source: &self.source_head,
+                expected_target: options.if_target, expected_head: self.target_authority_head,
+                history: self.history, operation_id: options.idempotency_key.operation_id(),
+                permit, maximum_generations: self.maximum_generations,
+                maximum_changes: self.maximum_changes, maximum_conflicts: self.maximum_conflicts,
+                resolutions,
+            },
+            original, cancellation, before_publication,
+        ).await?;
+        self.map_join_outcome(outcome).map(|outcome| (outcome, allocation)).map_err(E::from)
     }
 
     fn map_join_outcome(
@@ -4858,16 +4715,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .await
     }
 
-    /// Opens one cheap immutable reader pinned to this exact generation.
-    pub async fn reader(&self) -> Result<crate::PinnedReader<A, O>, WorkspaceError> {
-        self.workspace
-            .checkout(
-                GenerationSelector::Exact(self.id),
-                CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-            .pinned_reader()
-            .map_err(WorkspaceError::engine)
-    }
-
     /// Computes a semantic delta under explicit work and cancellation limits.
     pub async fn diff_to(
         &self,
@@ -4993,8 +4840,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         merge_workspace_work(checkout.work, receipt, budget)
     }
 
-
-
     /// Reads the authenticated parent generations under supplied work limits.
     pub async fn parents(
         &self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
@@ -5015,8 +4860,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             GenerationSelector::Exact(self.id), path, maximum_bytes, work, cancellation,
         ).await
     }
-
-
 
     /// Performs the bounded read range operation.
     pub async fn read_range<W: crate::facade::FsWork>(
@@ -5210,7 +5053,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         result.map_err(WorkspaceError::from)
     }
 
-
     /// Performs the bounded read symbolic link operation.
     pub async fn read_symbolic_link<W: crate::facade::FsWork>(
         &self,
@@ -5286,7 +5128,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 + publication.as_ref().map_or(0, crate::facade::VerifiedPublication::retained_bytes)
         })
     }
-
 
 }
 
@@ -5582,7 +5423,6 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::FileRangeReadError; [Extent, Blob, Context]; [Cancelled]);
     bounded!(crate::kernel::DirectoryReadError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeLookupError; [Storage]; [Cancelled]);
-    bounded!(crate::kernel::AttributeListError; [Storage]; [Cancelled]);
     bounded!(crate::kernel::AttributeMutationError; [Storage]; []);
     bounded!(crate::kernel::AuthenticatedProbeError;
         [Storage, FileRecord, Tree, Directory, Extent, Blob]; [Cancelled]);
@@ -5660,42 +5500,6 @@ fn workspace_allocation_error(error: crate::kernel::allocation::AllocationError)
     crate::collection::handle_allocation_error(error).into()
 }
 
-pub(crate) fn new_workspace_vec<T>(
-    capacity: usize,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<Vec<T>, WorkspaceError> {
-    let mut accounting = KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-    crate::kernel::Owned::<Vec<T>>::allocate(capacity, &mut accounting)
-        .map(|owned| owned.value).map_err(WorkspaceError::from)
-}
-
-pub(crate) fn grow_workspace_vec<T>(
-    values: &mut Vec<T>,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<(), WorkspaceError> {
-    if values.len() < values.capacity() { return Ok(()); }
-    cancellation.check()?;
-    let capacity = values.capacity().checked_mul(2).map(|value| value.max(1))
-        .ok_or(crate::WorkError::Overflow)?;
-    let copied = values.len().checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let delta = crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::default() };
-    work.admit(&delta, &budget)?;
-    let mut replacement = new_workspace_vec(capacity, allocations, work, budget, cancellation)?;
-    work.charge(&delta, &budget)?;
-    let old_bytes = workspace_vec_bytes(values);
-    replacement.append(values);
-    *values = replacement;
-    allocations.release(old_bytes).map_err(workspace_allocation_error)?;
-    Ok(())
-}
-
 pub(crate) fn workspace_remaining(
     work: crate::WorkCounters,
     budget: crate::WorkBudget,
@@ -5737,24 +5541,11 @@ pub(crate) fn customer_path(
     path: &str,
     config: crate::model::VolumeConfig,
 ) -> Result<NamespacePath, WorkspaceError> {
-    customer_path_measured(
-        path, config, &mut crate::kernel::allocation::AllocationLedger::default(),
-        &mut crate::WorkCounters::default(), crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-}
-
-/// Uses the caller's cumulative full budget and shared live ledger.
-pub(crate) fn customer_path_measured(
-    path: &str,
-    config: crate::model::VolumeConfig,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut crate::WorkCounters,
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-) -> Result<NamespacePath, WorkspaceError> {
     NamespacePath::parse_in_profile_with_ledger(
-        path, config.profile, config.limits, allocations, work, budget, cancellation,
+        path, config.profile, config.limits,
+        &mut crate::kernel::allocation::AllocationLedger::default(),
+        &mut crate::WorkCounters::UNCHARGED, crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
     ).map_err(namespace_path_error)
 }
 

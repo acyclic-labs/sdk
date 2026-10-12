@@ -245,7 +245,7 @@ impl PiNativeCommandHost {
     }
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
-        let original_work = prepared.original_work().clone();
+        let original_work = prepared._metadata_custody.work().clone();
         prepared.report.validate_with_native_work(&original_work)?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), false, &original_work)?;
@@ -1540,7 +1540,7 @@ fn validate_child_binding(actual: &PiTaskBinding, admitted: &PiTaskBinding) -> R
 fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<GenerationRef> {
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest).map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider().clone(), digest, None)
+    GenerationRef::new(file.volume().provider().clone(), digest.into(), None)
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {

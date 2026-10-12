@@ -1,6 +1,7 @@
 //! SDK boundaries on the original native ledger, without another budget/meter.
 
-use super::HistoryIo;
+use super::{HistoryCursor, HistoryIo, HistoryPage, HistoryReadLimits, HistoryReader};
+use acyclic_stream::StreamProvider;
 use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, NativeWorkReservation, WorkCounters};
 use std::mem::size_of;
@@ -1257,4 +1258,64 @@ mod tests {
         assert_eq!(io.custody.bytes(), 16);
         assert_eq!(work.receipt(), prefix);
     }
+}
+
+impl<P: StreamProvider> HistoryReader<P> {
+    /// Pins the original committed cut using the caller's native ledger.
+    pub async fn pin_with_native_work(
+        &self,
+        after_revision: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
+        Ok((cursor, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated bounded page on the same native ledger.
+    pub async fn read_page_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let page = self.read_page(cursor, limits, Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((page, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated immutable operation locator and event.
+    pub async fn operation_event_bounded_with_native_work(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<Event>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (event, _) = self.operation_event(operation, maximum_bytes, &mut Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((event, native_io.into_custody()))
+    }
+
+    /// Projects the archived effect through the original bounded state engine.
+    pub async fn effect_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let state = self.effect(
+            cursor, effect, limits, Some(&mut native_io),
+        ).await?.map(|(state, _)| state);
+        native_io.return_staged_output()?;
+        Ok((state, native_io.into_custody()))
+    }
+
 }

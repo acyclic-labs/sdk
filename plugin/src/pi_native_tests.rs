@@ -29,7 +29,7 @@ fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
     let provider = ProviderRef::new("pi-native-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([31; 16]);
     let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-    let generation = GenerationRef::new(provider.clone(), [32; 32], None).unwrap();
+    let generation = GenerationRef::new(provider.clone(), [32; 32].into(), None).unwrap();
     let binding = PiTaskBinding { native_session_id: "child".into(), task_id: TaskId::from_bytes([33; 16]), agent_id: agent,
         project_volumes: BTreeMap::new(),
         scratch: super::super::PiScratchBinding { volume: scratch.clone(), allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {

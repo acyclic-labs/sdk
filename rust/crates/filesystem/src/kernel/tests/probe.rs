@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::VolumeId;
 use crate::kernel::{
@@ -7,12 +8,12 @@ use crate::kernel::{
     encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectStore, object_digest};
+use crate::storage::{object_digest};
 use acyclic_stream::OwnedBytes;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
     bytes: Vec<u8>,
@@ -21,11 +22,11 @@ fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    ObjectStore::put(store, id, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(store, id, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn fixture(
+async fn fixture(
     store: &MemoryObjectStore,
     inserted_name: Option<&str>,
 ) -> Result<(GenerationId, FileId, ObjectId), Box<dyn std::error::Error>> {
@@ -46,7 +47,7 @@ fn fixture(
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let file_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([3; 16]);
     let tree_entries = inserted_name
@@ -63,7 +64,7 @@ fn fixture(
         store,
         ObjectKind::TreePage,
         encode_tree_page(&TreePage::Leaf(tree_entries), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let mut records = vec![FileRecord {
         file_id,
         kind: FileKind::Directory,
@@ -84,7 +85,7 @@ fn fixture(
         store,
         ObjectKind::FileTablePage,
         encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
@@ -95,11 +96,11 @@ fn fixture(
             parents: Vec::new(),
             required_features: 0,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     Ok((GenerationId::new(root.digest), file_id, metadata))
 }
 
-fn non_regular_fixture(
+async fn non_regular_fixture(
     store: &MemoryObjectStore,
 ) -> Result<(GenerationId, Vec<FileId>), Box<dyn std::error::Error>> {
     let metadata = put(
@@ -119,7 +120,7 @@ fn non_regular_fixture(
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let root_id = FileId::from_bytes([11; 16]);
     let symbolic_link_id = FileId::from_bytes([12; 16]);
     let empty_id = FileId::from_bytes([13; 16]);
@@ -129,7 +130,7 @@ fn non_regular_fixture(
         store,
         ObjectKind::TreePage,
         encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let absent_blob = ObjectId {
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([16; 32]),
@@ -183,7 +184,7 @@ fn non_regular_fixture(
         store,
         ObjectKind::FileTablePage,
         encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
@@ -194,7 +195,7 @@ fn non_regular_fixture(
             parents: Vec::new(),
             required_features: 0,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     Ok((
         GenerationId::new(root.digest),
         vec![symbolic_link_id, empty_id, device_id, reparse_id],
@@ -209,7 +210,7 @@ struct SparseProbeFixture {
     regular_name: LogicalName,
 }
 
-fn sparse_probe_fixture(
+async fn sparse_probe_fixture(
     store: &MemoryObjectStore,
 ) -> Result<SparseProbeFixture, Box<dyn std::error::Error>> {
     let metadata = put(
@@ -229,8 +230,8 @@ fn sparse_probe_fixture(
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
-    let chunk = put(store, ObjectKind::BlobChunk, b"DATA".to_vec())?;
+    ).await?;
+    let chunk = put(store, ObjectKind::BlobChunk, b"DATA".to_vec()).await?;
     let blob = put(
         store,
         ObjectKind::Blob,
@@ -243,7 +244,7 @@ fn sparse_probe_fixture(
                     chunk,
                 }]),
             }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let extents = put(
         store,
         ObjectKind::ExtentPage,
@@ -272,7 +273,7 @@ fn sparse_probe_fixture(
                     kind: ExtentKind::Hole,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let root_id = FileId::from_bytes([21; 16]);
     let inline_id = FileId::from_bytes([22; 16]);
     let regular_id = FileId::from_bytes([23; 16]);
@@ -293,7 +294,7 @@ fn sparse_probe_fixture(
                     kind: FileKind::Regular,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let table = put(
         store,
         ObjectKind::FileTablePage,
@@ -323,7 +324,7 @@ fn sparse_probe_fixture(
                     },
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     let root = put(
         store,
         ObjectKind::GenerationRoot,
@@ -334,7 +335,7 @@ fn sparse_probe_fixture(
             parents: Vec::new(),
             required_features: 0,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-    )?;
+    ).await?;
     Ok(SparseProbeFixture {
         generation: GenerationId::new(root.digest),
         root_id,
@@ -348,7 +349,7 @@ fn sparse_probe_fixture(
 async fn immutable_summaries_are_cached_without_becoming_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_id, metadata) = fixture(&store, None)?;
+    let (generation, file_id, metadata) = fixture(&store, None).await?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let first = probe.probe_async(
         generation,
@@ -415,11 +416,11 @@ async fn immutable_summaries_are_cached_without_becoming_authority()
     Ok(())
 }
 
-#[test]
-fn poisoned_summary_caches_fail_closed()
+#[tokio::test]
+async fn poisoned_summary_caches_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_id, _) = fixture(&store, None)?;
+    let (generation, file_id, _) = fixture(&store, None).await?;
     let region = DependencyRegion::Metadata(file_id);
 
     let generation_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
@@ -430,13 +431,12 @@ fn poisoned_summary_caches_fail_closed()
     }));
     assert!(poisoned.is_err());
     let cancellation = CancellationToken::new();
-    let failure = crate::async_storage::poll_ready(generation_probe.probe_async(
+    let failure = (generation_probe.probe_async(
         generation,
         &region,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("poisoned asynchronous generation cache probe blocked")?
+    )).await
     .err()
     .ok_or("poisoned asynchronous generation cache probe succeeded")?;
     assert!(matches!(
@@ -452,13 +452,12 @@ fn poisoned_summary_caches_fail_closed()
         std::panic::resume_unwind(Box::new("poison record summary cache"));
     }));
     assert!(poisoned.is_err());
-    let failure = crate::async_storage::poll_ready(record_probe.probe_async(
+    let failure = (record_probe.probe_async(
         generation,
         &region,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("poisoned asynchronous record cache probe blocked")?
+    )).await
     .err()
     .ok_or("poisoned asynchronous record cache probe succeeded")?;
     assert!(matches!(
@@ -473,8 +472,8 @@ fn poisoned_summary_caches_fail_closed()
 async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (base, directory_id, _) = fixture(&store, None)?;
-    let (candidate, _, _) = fixture(&store, Some("phantom"))?;
+    let (base, directory_id, _) = fixture(&store, None).await?;
+    let (candidate, _, _) = fixture(&store, Some("phantom")).await?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let region = DependencyRegion::DirectoryRange {
         directory_id,
@@ -515,7 +514,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let (_, file_id, metadata) = fixture(&store, None)?;
+    let (_, file_id, metadata) = fixture(&store, None).await?;
     let domain = b"acyclic-fs-dependency-content-range-v1\0";
     let hash_bytes = u64::try_from(domain.len())?.saturating_add(16);
     let exact_budget = WorkBudget {
@@ -529,7 +528,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
             length: 8,
             kind: ExtentKind::Hole,
         }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
-    )?)?;
+    )?).await?;
     let sparse = probe.capture_record_async(
         Some(FileRecord { file_id, kind: FileKind::Regular, link_count: 1, metadata,
             payload: FilePayload::Regular { logical_bytes: 8, extents } }),
@@ -784,8 +783,8 @@ fn every_zero_probe_bound_is_rejected_before_cache_or_backend_access() {
 async fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation_a, file_id, metadata) = fixture(&store, None)?;
-    let (generation_b, _, _) = fixture(&store, Some("other"))?;
+    let (generation_a, file_id, metadata) = fixture(&store, None).await?;
+    let (generation_b, _, _) = fixture(&store, Some("other")).await?;
     let probe = AuthenticatedGenerationProbe::new(
         &store,
         ProbeLimits {
@@ -814,7 +813,7 @@ async fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
 async fn non_regular_dependency_regions_use_authenticated_record_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_ids) = non_regular_fixture(&store)?;
+    let (generation, file_ids) = non_regular_fixture(&store).await?;
     let name = LogicalName::new(NameEncoding::Utf8, b"not-a-directory-entry".to_vec(), 255)?;
     for file_id in file_ids {
         let baseline_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
@@ -849,13 +848,12 @@ async fn non_regular_dependency_regions_use_authenticated_record_state()
         for region in regions {
             let asynchronous_probe =
                 AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-            let asynchronous = crate::async_storage::poll_ready(asynchronous_probe.probe_async(
+            let asynchronous = (asynchronous_probe.probe_async(
                 generation,
                 &region,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-            ))
-            .ok_or("memory-backed dependency probe remained pending")??;
+            )).await?;
             assert_eq!(asynchronous.value, baseline.value);
         }
     }
@@ -897,8 +895,8 @@ async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
     Ok(())
 }
 
-#[test]
-fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
+#[tokio::test]
+async fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let SparseProbeFixture {
@@ -907,7 +905,7 @@ fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
         inline_id,
         regular_id,
         regular_name,
-    } = sparse_probe_fixture(&store)?;
+    } = sparse_probe_fixture(&store).await?;
     let missing_name = LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?;
     let regions = vec![
         DependencyRegion::FileRecord(regular_id),
@@ -972,13 +970,12 @@ fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
     let mut page_states = Vec::new();
     for region in regions {
         let asynchronous_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-        let asynchronous = crate::async_storage::poll_ready(asynchronous_probe.probe_async(
+        let asynchronous = (asynchronous_probe.probe_async(
             generation,
             &region,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
-        ))
-        .ok_or("memory-backed sparse probe remained pending")??;
+        )).await?;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
@@ -989,9 +986,9 @@ fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
             let (native_probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
                 &store, ProbeLimits::default(), &mut accounting,
             )?;
-            let native = crate::async_storage::poll_ready(native_probe.probe_async_with_accounting(
+            let native = (native_probe.probe_async_with_accounting(
                 generation, &region, &mut accounting, &cancellation,
-            )).ok_or("original sparse probe remained pending")??;
+            )).await?;
             assert_eq!(native, asynchronous.value);
             native_probe.retire_with_accounting(&mut accounting)?;
             drop(constructor);
@@ -1006,25 +1003,24 @@ fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
     Ok(())
 }
 
-#[test]
-fn bounded_batch_capture_reuses_generation_and_record_frontiers()
+#[tokio::test]
+async fn bounded_batch_capture_reuses_generation_and_record_frontiers()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_id, metadata) = fixture(&store, None)?;
+    let (generation, file_id, metadata) = fixture(&store, None).await?;
     let regions = vec![
         DependencyRegion::Metadata(file_id),
         DependencyRegion::FileRecord(file_id),
         DependencyRegion::Metadata(file_id),
     ];
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let captured = crate::async_storage::poll_ready(probe.capture_many_async(
+    let captured = (probe.capture_many_async(
         generation,
         regions.clone(),
         3,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed batch probe remained pending")??;
+    )).await?;
 
     assert_eq!(captured.value.len(), 3);
     assert_eq!(captured.value[0].region, regions[0]);
@@ -1039,14 +1035,13 @@ fn bounded_batch_capture_reuses_generation_and_record_frontiers()
     assert!(captured.work.bytes_copied >= 3 * usize_to_u64(size_of::<Dependency>()));
 
     let rejected_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let rejected = crate::async_storage::poll_ready(rejected_probe.capture_many_async(
+    let rejected = (rejected_probe.capture_many_async(
         generation,
         regions,
         2,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed rejected batch remained pending")?
+    )).await
     .err()
     .ok_or("excessive batch unexpectedly succeeded")?;
     assert!(matches!(
@@ -1061,7 +1056,7 @@ fn bounded_batch_capture_reuses_generation_and_record_frontiers()
 async fn authenticated_batch_admits_dependency_copy_before_output_push()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_id, metadata) = fixture(&store, None)?;
+    let (generation, file_id, metadata) = fixture(&store, None).await?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
@@ -1070,9 +1065,9 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
         WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
         WorkBudget { items_returned: 0, ..WorkBudget::UNBOUNDED },
     ] {
-        let failure = crate::async_storage::poll_ready(probe.capture_records_many_async(
+        let failure = (probe.capture_records_many_async(
             vec![(record, DependencyRegion::Metadata(file_id))], 1, budget, &cancellation,
-        )).ok_or("dependency copy denial remained pending")?.err().ok_or("output push exceeded its budget")?;
+        )).await.err().ok_or("output push exceeded its budget")?;
         assert!(matches!(failure.error, AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })));
         assert_eq!(failure.work.bytes_copied, 0);
         assert_eq!(failure.work.items_returned, 0);
@@ -1080,10 +1075,10 @@ async fn authenticated_batch_admits_dependency_copy_before_output_push()
         assert_eq!(failure.work.allocation_operations, 1);
     }
     let copied = usize_to_u64(size_of::<Dependency>());
-    let receipt = crate::async_storage::poll_ready(probe.capture_records_many_async(
+    let receipt = (probe.capture_records_many_async(
         vec![(record, DependencyRegion::Metadata(file_id))], 1,
         WorkBudget { bytes_copied: copied, items_returned: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    )).ok_or("dependency output push remained pending")??;
+    )).await?;
     assert_eq!(receipt.value.len(), 1);
     assert_eq!(receipt.value[0].expected, DependencyState::Present(metadata.digest));
     assert_eq!(receipt.work.bytes_copied, copied);
@@ -1152,11 +1147,11 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_probe_denies_before_backend_and_retires_panic_temporaries()
+#[tokio::test]
+async fn original_probe_denies_before_backend_and_retires_panic_temporaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, file_id, _) = fixture(&store, None)?;
+    let (generation, file_id, _) = fixture(&store, None).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { backend_read_operations: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
@@ -1170,9 +1165,9 @@ fn original_probe_denies_before_backend_and_retires_panic_temporaries()
         &store, ProbeLimits::default(), &mut accounting,
     )?;
     let region = DependencyRegion::Metadata(file_id);
-    let denied = crate::async_storage::poll_ready(super::super::rebase::AccountingRebaseProbe::probe_with_accounting(
+    let denied = (super::super::rebase::AccountingRebaseProbe::probe_with_accounting(
         &probe, generation, &region, &mut accounting, &cancellation,
-    )).ok_or("original probe denial remained pending")?.err().ok_or("zero read budget accepted")?;
+    )).await.err().ok_or("zero read budget accepted")?;
     assert!(matches!(denied, super::super::rebase::ClassifyRebaseFailure::Accounting(
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
     )));
@@ -1193,11 +1188,11 @@ fn original_probe_denies_before_backend_and_retires_panic_temporaries()
     let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
         &store, ProbeLimits::default(), &mut accounting,
     )?;
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::async_storage::poll_ready(probe.probe_async_with_accounting(
+    let panic = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+        (probe.probe_async_with_accounting(
             generation, &region, &mut accounting, &cancellation,
-        ))
-    }));
+        )).await
+    })).await;
     assert!(panic.is_err());
     let (reached_live, reached_work) = store.reached.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
         .ok_or("original file-table read was not reached")?;
@@ -1219,8 +1214,8 @@ fn original_probe_denies_before_backend_and_retires_panic_temporaries()
 async fn original_probe_generation_caches_preserve_dependency_conflicts()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (base, directory_id, _) = fixture(&store, None)?;
-    let (candidate, _, _) = fixture(&store, Some("phantom"))?;
+    let (base, directory_id, _) = fixture(&store, None).await?;
+    let (candidate, _, _) = fixture(&store, Some("phantom")).await?;
     let region = DependencyRegion::DirectoryRange { directory_id, after: None, maximum_entries: 8 };
     let ordinary = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let expected = ordinary.probe_async(base, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
@@ -1234,21 +1229,21 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
         &store, ProbeLimits { maximum_cached_generations: 1, maximum_cached_records: 1, ..ProbeLimits::default() },
         &mut accounting,
     )?;
-    let source = crate::async_storage::poll_ready(probe.probe_async_with_accounting(
+    let source = (probe.probe_async_with_accounting(
         base, &region, &mut accounting, &cancellation,
-    )).ok_or("original source probe remained pending")??;
-    let destination = crate::async_storage::poll_ready(probe.probe_async_with_accounting(
+    )).await?;
+    let destination = (probe.probe_async_with_accounting(
         candidate, &region, &mut accounting, &cancellation,
-    )).ok_or("original destination probe remained pending")??;
+    )).await?;
     assert_eq!(source, expected);
     assert_ne!(destination, source);
-    let source_again = crate::async_storage::poll_ready(probe.probe_async_with_accounting(
+    let source_again = (probe.probe_async_with_accounting(
         base, &region, &mut accounting, &cancellation,
-    )).ok_or("original source re-probe remained pending")??;
+    )).await?;
     assert_eq!(source_again, source);
-    let (decision, allocation) = crate::async_storage::poll_ready(super::super::rebase::classify_rebase_with_accounting(
+    let (decision, allocation) = (super::super::rebase::classify_rebase_with_accounting(
         &probe, base, candidate, &dependencies, 1, &mut accounting, &cancellation,
-    )).ok_or("original classification remained pending")?
+    )).await
         .map_err(|failure| -> Box<dyn std::error::Error> {
             match failure {
                 super::super::rebase::ClassifyRebaseFailure::Accounting(error)

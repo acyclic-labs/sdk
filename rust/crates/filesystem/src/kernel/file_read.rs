@@ -77,7 +77,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             accounting.admit(copied)?;
             let mut output = allocate_read_buffer(region.len(), accounting)?;
             output.value.extend_from_slice(region);
-            completed_read_work(accounting, copied)?;
+            accounting.record_completed(copied)?;
             output
         }
         FilePayload::Regular { logical_bytes, extents } => {
@@ -94,7 +94,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             accounting.admit(zeroed)?;
             let mut output = allocate_read_buffer(length, accounting)?;
             output.value.resize(length, 0);
-            completed_read_work(accounting, zeroed)?;
+            accounting.record_completed(zeroed)?;
             for span in &plan.value.spans {
                 let ExtentKind::Content { object, object_offset } = span.kind else { continue };
                 let nested = super::blob::read_blob_range_for_copy_with_accounting(
@@ -108,7 +108,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                 let copied = WorkCounters { bytes_copied: span.length, ..WorkCounters::UNCHARGED };
                 accounting.admit(copied)?;
                 destination.copy_from_slice(&nested.bytes);
-                completed_read_work(accounting, copied)?;
+                accounting.record_completed(copied)?;
                 let retained = nested.logical_owned_bytes;
                 drop(nested);
                 release_standalone_read_bytes(retained, accounting)?;
@@ -134,12 +134,6 @@ fn file_error(error: FsError) -> FileRangeReadError {
         FsError::Cancelled(_) => FileRangeReadError::Cancelled,
         error => FileRangeReadError::Context(Box::new(error)),
     }
-}
-
-pub(crate) fn completed_read_work(
-    accounting: &mut KernelAccounting<'_>, delta: WorkCounters,
-) -> Result<(), FsError> {
-    accounting.record_completed(delta)
 }
 
 pub(crate) fn allocation_error(error: AllocationError) -> FsError {
@@ -174,7 +168,7 @@ pub(crate) fn allocate_read_buffer(
     let result = (|| {
         owner.value.try_reserve_exact(length).map_err(|error| {
             #[cfg(not(target_arch = "wasm32"))]
-            if native { return ReadDecodeError::AllocationFailed(error).into_original_fs_error(); }
+            if native { return crate::NativeTreeMaterializationError::AllocationFailed(error).into(); }
             let _ = error;
             FsError::FileRead(FileRangeReadError::AllocationFailed)
         })?;
@@ -359,39 +353,6 @@ pub(crate) fn retained_object_reads_bytes(
     })
 }
 
-pub(crate) enum ReadDecodeError {
-    Canonical(super::CanonicalDecodeError),
-    AllocationFailed(std::collections::TryReserveError),
-    Accounting(FsError),
-}
-
-impl ReadDecodeError {
-    pub(crate) fn into_original_fs_error(self) -> FsError {
-        match self {
-            Self::Canonical(error) => error.into(),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::AllocationFailed(error) => FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::AllocationFailed(error),
-            ),
-            #[cfg(target_arch = "wasm32")]
-            Self::AllocationFailed(_) => super::CanonicalDecodeError::AllocationFailed.into(),
-            Self::Accounting(error) => error,
-        }
-    }
-}
-
-impl From<super::CanonicalDecodeError> for ReadDecodeError {
-    fn from(error: super::CanonicalDecodeError) -> Self { Self::Canonical(error) }
-}
-
-impl From<FsError> for ReadDecodeError {
-    fn from(error: FsError) -> Self { Self::Accounting(error) }
-}
-
-impl From<WorkError> for ReadDecodeError {
-    fn from(error: WorkError) -> Self { Self::Accounting(error.into()) }
-}
-
 pub(crate) struct OriginalReadAccounting<'a, 'operation> {
     accounting: &'a mut KernelAccounting<'operation>,
     allocation: KernelOwnedAllocation,
@@ -404,7 +365,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         Ok(Self { accounting, allocation, owned_bytes: 0 })
     }
 
-    pub(crate) fn observe(&mut self, step: super::codec::ReadAllocationStep) -> Result<(), ReadDecodeError> {
+    pub(crate) fn observe(&mut self, step: super::codec::ReadAllocationStep) -> Result<(), FsError> {
         use super::codec::ReadAllocationStep;
         match step {
             ReadAllocationStep::Allocate { bytes, operations } => {
@@ -413,7 +374,14 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
                 self.allocation.absorb(&mut allocation)?;
                 self.owned_bytes = next;
             }
-            ReadAllocationStep::ReserveFailed(error) => return Err(ReadDecodeError::AllocationFailed(error)),
+            ReadAllocationStep::ReserveFailed(error) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if self.accounting.native_work().is_some() {
+                    return Err(crate::NativeTreeMaterializationError::AllocationFailed(error).into());
+                }
+                drop(error);
+                return Err(super::CanonicalDecodeError::AllocationFailed.into());
+            }
             ReadAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
                 let next = self.owned_bytes.checked_sub(admitted_bytes)
                     .and_then(|bytes| bytes.checked_add(actual_bytes)).ok_or(WorkError::Overflow)?;
@@ -578,9 +546,9 @@ mod tests;
 
 pub(crate) fn decode_owned<T>(
     accounting: &mut KernelAccounting<'_>,
-    create: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), ReadDecodeError>)
-        -> Result<T, ReadDecodeError>,
-) -> Result<(T, KernelOwnedAllocation), ReadDecodeError> {
+    create: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), FsError>)
+        -> Result<T, FsError>,
+) -> Result<(T, KernelOwnedAllocation), FsError> {
     let mut observed = OriginalReadAccounting::new(accounting)?;
     match create(&mut |step| observed.observe(step)) {
         Ok(value) => Ok((value, observed.into_allocation())),
