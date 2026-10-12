@@ -422,7 +422,7 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        let client = acyclic_stream::StreamClient::new(stream.clone());
+        let client = Arc::clone(&stream);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;

@@ -327,7 +327,7 @@ fn definition(kind: Kind, maximum: u64) -> Result<ToolDefinition> {
             Kind::Merge => "Import an explicitly readable pinned source project into the actual caller's project through approval and the original inspected CAS target" }.into(),
         input_schema: input, output_schema: output.clone(),
         projection_schema: crate::tool::json_projection_schema(output) };
-    value.validate()?;
+    value.validate(&mut None)?;
     Ok(value)
 }
 
@@ -2018,7 +2018,7 @@ fn recursive_effective_scope<'a>(
     } else { context.scope() }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProjectController<'_, A, O> {
     /// Restores the exact originally inspected plan after a lost acknowledgement.
     pub async fn prepare_project_import_at(&self, source: &VolumeRef, source_generation: &GenerationRef,
         target_generation: &GenerationRef) -> Result<ParentMergePlan<A, O>> {
