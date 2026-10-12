@@ -82,7 +82,8 @@ pub(crate) fn root_materialization_directory(
     root: &Path,
     operation_id: OperationId,
 ) -> Result<PathBuf, String> {
-    let parent = root.parent()
+    let parent = root
+        .parent()
         .ok_or_else(|| "root checkout has no same-filesystem staging parent".to_owned())?;
     let digest = blake3::hash(root.as_os_str().to_string_lossy().as_bytes());
     let leaf = root_materialization_leaf(&digest, operation_id).map_err(display)?;
@@ -109,10 +110,12 @@ pub(crate) fn root_materialization_directory_with_native_work(
     operation_id: OperationId,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(PathBuf, acyclic_fs::NativeAllocation)> {
-    let parent = root.parent().ok_or(acyclic_harness::Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Invalid,
-        reason: "root checkout has no same-filesystem staging parent",
-    })?;
+    let parent = root
+        .parent()
+        .ok_or(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Invalid,
+            reason: "root checkout has no same-filesystem staging parent",
+        })?;
     let borrowed = root.as_os_str().to_str();
     // A tuple drops formatted bytes before their original allocation custody,
     // including every early hash or path-construction refusal.
@@ -122,10 +125,15 @@ pub(crate) fn root_materialization_directory_with_native_work(
     };
     let text = match borrowed {
         Some(text) => text,
-        None => &lossy.as_ref().ok_or(acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Storage,
-            reason: "root staging path has no admitted display image",
-        })?.0,
+        None => {
+            &lossy
+                .as_ref()
+                .ok_or(acyclic_harness::Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Storage,
+                    reason: "root staging path has no admitted display image",
+                })?
+                .0
+        }
     };
     let hashing = acyclic_fs::WorkCounters {
         bytes_hashed: text.len() as u64,
@@ -141,17 +149,18 @@ pub(crate) fn root_materialization_directory_with_native_work(
         ..acyclic_fs::WorkCounters::UNCHARGED
     };
     work.admit(encoding)?;
-    let leaf = root_materialization_leaf(&digest, operation_id)
-        .map_err(|_| acyclic_harness::Error::NativeBoundary {
+    let leaf = root_materialization_leaf(&digest, operation_id).map_err(|_| {
+        acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Storage,
             reason: "root staging identifier encoding exceeded its fixed width",
-        })?;
+        }
+    })?;
     work.spent(encoding)?;
     let leaf = std::str::from_utf8(&leaf).map_err(|_| acyclic_harness::Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Storage,
         reason: "root staging identifier encoding is not UTF-8",
     })?;
-    Ok(work.join_path(parent, Path::new(leaf))?)
+    Ok(work.path(parent, Some(Path::new(leaf)))?)
 }
 
 pub(crate) fn conflict_json(conflict: &MergeConflict) -> Value {

@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use crate::OwnedBytes;
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
     OwnershipAnchor, ReadAllocation,
 };
 use async_trait::async_trait;
-#[cfg(test)]
-use crate::OwnedBytes;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
 use sha2::{Digest as _, Sha256};
@@ -25,12 +25,11 @@ use tracing::field::Empty;
 
 use crate::journal::{Command, decode_command, replay};
 use crate::obs;
-use crate::memory::MemoryOutput;
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
-    NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult, RecordStream,
+    IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, NativeProviderFuture,
+    NativeRecordStream, NativeStreamOutput, NativeStreamResult, ReadRequest, RecordStream,
     StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
@@ -54,14 +53,14 @@ const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 use crate::memory::{MemoryFailure, MemoryResult, native_result};
 
-mod startup;
-mod publication;
-mod provider;
-mod native;
-mod journal;
 mod frame;
 mod io;
+mod journal;
+mod native;
+mod provider;
+mod publication;
 mod snapshot;
+mod startup;
 #[cfg(test)]
 mod tests;
 use frame::*;
@@ -253,13 +252,23 @@ impl LocalInner {
     }
 }
 
-fn flush(plan: MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>, target: u64) -> MemoryResult<()> {
+fn flush(
+    plan: NativeStreamOutput<(
+        Arc<LocalInner>,
+        LocalDurability,
+        Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
+    )>,
+    target: u64,
+) -> MemoryResult<()> {
     let (inner, durability, admission) = plan.value;
     inner.flush_through(target, durability, admission)
 }
 
 fn ordinary_failure(error: MemoryFailure) -> StreamError {
-    match error { MemoryFailure::Provider(error) => error, MemoryFailure::Observer(_) => StreamError::Unavailable }
+    match error {
+        MemoryFailure::Provider(error) => error,
+        MemoryFailure::Observer(_) => StreamError::Unavailable,
+    }
 }
 
 fn publication_error(error: LocalStreamError) -> MemoryFailure {
@@ -276,7 +285,9 @@ fn finish_native<T>(
     result: NativeStreamResult<T>,
 ) -> NativeStreamResult<T> {
     match &result {
-        Ok(Ok(_)) => { let _ = obs::finish(span, Ok::<(), StreamError>(())); }
+        Ok(Ok(_)) => {
+            let _ = obs::finish(span, Ok::<(), StreamError>(()));
+        }
         Ok(Err(error)) => obs::failed(span, error.code()),
         Err(_) => obs::failed(span, "native_work"),
     }

@@ -262,12 +262,11 @@ pub(crate) async fn register(
         owner.save_new_with_native_work(&resources.private_state_root, relative_directory, work)?;
         owner
     };
-    let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
+    let filesystem = acyclic_harness::filesystem::FilesystemHost::new(
         resources.fs.clone(),
         &provider,
-        work,
-    )?
-    .into_native_shared(work)?;
+        Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+    )?;
     let journal_name = {
         let mut io = acyclic_harness::store::history::native_work_io(work)?;
         let value = journal.storage_name(&mut Some(&mut io))?;

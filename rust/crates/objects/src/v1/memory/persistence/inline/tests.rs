@@ -1,10 +1,9 @@
 use super::super::tests::{bucket, put, reopen, seeded};
-use crate::v1::tests::get;
 use super::*;
+use crate::v1::tests::get;
 
 #[tokio::test]
-async fn small_bodies_survive_compaction()
--> Result<(), Box<dyn std::error::Error>> {
+async fn small_bodies_survive_compaction() -> Result<(), Box<dyn std::error::Error>> {
     for length in [0, 1, LIMIT, LIMIT + 1] {
         let root = tempfile::tempdir()?;
         let core = seeded(root.path()).await?;
@@ -12,12 +11,22 @@ async fn small_bodies_survive_compaction()
         let receipt = core.put(put("boundary"), bytes.clone()).await?;
         drop(core);
         let core = reopen(root.path())?;
-        assert_eq!(core.get(get(bucket(), "boundary"), length as u64).await?.into_body(), bytes);
+        assert_eq!(
+            core.get(get(bucket(), "boundary"), length as u64)
+                .await?
+                .into_body(),
+            bytes
+        );
         assert_eq!(core.put(put("boundary"), bytes.clone()).await?, receipt);
         core.collect_local_garbage(10)?;
         drop(core);
         let core = reopen(root.path())?;
-        assert_eq!(core.get(get(bucket(), "boundary"), length as u64).await?.into_body(), bytes);
+        assert_eq!(
+            core.get(get(bucket(), "boundary"), length as u64)
+                .await?
+                .into_body(),
+            bytes
+        );
         assert_eq!(core.put(put("boundary"), bytes).await?, receipt);
     }
     Ok(())
@@ -30,7 +39,8 @@ async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
     let core = seeded(template.path()).await?;
     let path = template.path().join("mutations.log");
     let before = fs::read(&path)?;
-    core.put(put("new"), OwnedBytes::from_static(b"payload")).await?;
+    core.put(put("new"), OwnedBytes::from_static(b"payload"))
+        .await?;
     let after = fs::read(&path)?;
     let frame = after.get(before.len()..).ok_or("missing appended frame")?;
     drop(core);
@@ -51,7 +61,10 @@ async fn every_incomplete_inline_frame_boundary_recovers_the_previous_state()
             );
         } else {
             assert_eq!(
-                core.get(get(bucket(), "new"), 7).await.err().map(|error| error.code),
+                core.get(get(bucket(), "new"), 7)
+                    .await
+                    .err()
+                    .map(|error| error.code),
                 Some(NotFound)
             );
             assert_eq!(fs::read(root.path().join("mutations.log"))?, before);
@@ -67,7 +80,8 @@ async fn checksum_valid_inline_offsets_still_require_authenticated_body_binding(
     let core = seeded(root.path()).await?;
     let path = root.path().join("mutations.log");
     let mut before = fs::read(&path)?;
-    core.put(put("new"), OwnedBytes::from_static(b"payload")).await?;
+    core.put(put("new"), OwnedBytes::from_static(b"payload"))
+        .await?;
     let all = fs::read(&path)?;
     drop(core);
     let encoded = all.get(before.len() + 36..).ok_or("missing frame")?;
@@ -117,7 +131,12 @@ async fn durable_batch_reopens_values_and_original_overwritten_receipts()
     let results = core
         .put_batch(
             (0..40)
-                .map(|number| (put(&format!("split-{number}")), OwnedBytes::from(vec![7; LIMIT])))
+                .map(|number| {
+                    (
+                        put(&format!("split-{number}")),
+                        OwnedBytes::from(vec![7; LIMIT]),
+                    )
+                })
                 .collect(),
         )
         .await;
@@ -125,11 +144,15 @@ async fn durable_batch_reopens_values_and_original_overwritten_receipts()
     drop(core);
     let core = reopen(root.path())?;
     assert_eq!(
-        core.get(get(bucket(), "batch-8"), LIMIT as u64).await?.into_body(),
+        core.get(get(bucket(), "batch-8"), LIMIT as u64)
+            .await?
+            .into_body(),
         OwnedBytes::from(vec![42; LIMIT])
     );
     assert_eq!(
-        core.get(get(bucket(), "split-39"), LIMIT as u64).await?.into_body(),
+        core.get(get(bucket(), "split-39"), LIMIT as u64)
+            .await?
+            .into_body(),
         OwnedBytes::from(vec![7; LIMIT])
     );
     assert_eq!(

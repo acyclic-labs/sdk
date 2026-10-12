@@ -102,7 +102,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             work.remaining()?;
-            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
@@ -259,7 +261,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
             self.io.remaining()?, self.io.cancellation()).await;
-        let page = self.io.receive(result);
+        let page = self.io.receive(result).map(|(page, _)| page);
         Self::verify_owner(&self.owner, &self.io).await?;
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)

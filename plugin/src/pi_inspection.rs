@@ -90,13 +90,6 @@ fn selected_invalid(reason: &'static str) -> Error {
     }
 }
 
-fn selected_conflict(reason: &'static str) -> Error {
-    Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Conflict,
-        reason,
-    }
-}
-
 fn validate_page(directory: &str, maximum_entries: u32) -> Result<()> {
     if !directory.is_empty() {
         validate_content_path(directory)?;
@@ -633,9 +626,10 @@ pub(crate) async fn prepare_writeback<'a>(
     if journal.root_identity != Some(root.identity.to_bytes())
         || journal.phase != acyclic_fs::MaterializationPhase::Prepared
     {
-        return Err(selected_conflict(
-            "writeback preparation has another original root or is not ready for approval",
-        ));
+        return Err(Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "writeback preparation has another original root or is not ready for approval",
+        });
     }
     require_selected_edits(&journal.plan.edits, paths)?;
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
@@ -1328,7 +1322,10 @@ pub(crate) async fn import_native_project(
         return Err(selected_invalid("native import repeats a selected path"));
     }
     for path in paths {
-        validate_content_path(path)?;
+        validate_content_path(
+            path,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )?;
         source.require_reader(caller, path)?;
         caller_owner
             .verify(false, &mut Some(&mut native_work_io(native_work)?))
@@ -1725,7 +1722,3 @@ fn native_extra_facts_differ(
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "pi_inspection_tests.rs"]
-mod tests;

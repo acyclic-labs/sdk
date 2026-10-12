@@ -178,7 +178,7 @@ pub(crate) enum PiTaskObservation {
         #[serde(rename = "task")]
         task_id: TaskId,
         preparation: TaskId,
-        phase: PiPreparationPhase,
+        phase: &'static str,
     },
     Outcome {
         #[serde(rename = "task")]
@@ -197,17 +197,6 @@ fn serialize_lease_task<S: serde::Serializer>(
     )
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PiPreparationPhase {
-    Pending,
-    Reserved,
-    Uncertain,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
 /// The same complete graph observer, supplied the caller's ORIGINAL native work.
 pub(crate) async fn observe_pi_session<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>,
@@ -224,8 +213,8 @@ where
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(
-            acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?
-                .definition_with_native_work(work)?,
+            std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new())
+                .definition()?,
         )
     } else {
         None
@@ -329,19 +318,19 @@ where
                 (value, io.into_custody())
             };
             let phase = match recovered.0 {
-                WorkPull::Claimed(_) => PiPreparationPhase::Reserved,
-                WorkPull::Unresolved { .. } => PiPreparationPhase::Uncertain,
+                WorkPull::Claimed(_) => "reserved",
+                WorkPull::Unresolved { .. } => "uncertain",
                 WorkPull::Idle => {
                     let outcome = runtime
                         .task_host()
                         .outcome_with_native_work(preparation, work)
                         .await?;
                     match outcome.0 {
-                        None => PiPreparationPhase::Pending,
-                        Some(Outcome::Succeeded(_)) => PiPreparationPhase::Succeeded,
-                        Some(Outcome::Failed { .. }) => PiPreparationPhase::Failed,
-                        Some(Outcome::Cancelled) => PiPreparationPhase::Cancelled,
-                        Some(Outcome::Indeterminate { .. }) => PiPreparationPhase::Uncertain,
+                        None => "pending",
+                        Some(Outcome::Succeeded(_)) => "succeeded",
+                        Some(Outcome::Failed { .. }) => "failed",
+                        Some(Outcome::Cancelled) => "cancelled",
+                        Some(Outcome::Indeterminate { .. }) => "uncertain",
                     }
                 }
             };

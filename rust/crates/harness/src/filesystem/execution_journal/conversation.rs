@@ -30,7 +30,14 @@ where
         self.host
             .put_internal_content(
                 &self.volume,
-                &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
+                &ContentGrant::verify(
+                    &self.verifier,
+                    &self.scope,
+                    &self.volume,
+                    VolumeOperation::Write,
+                    u64::MAX,
+                    &mut None,
+                )?,
                 "turns/.canonical/payload",
                 bytes,
                 media_type,
@@ -38,6 +45,7 @@ where
                 self.maximum_payload_bytes,
                 &retry,
                 InternalContentClass::Conversation,
+                None,
             )
             .await
     }
@@ -69,10 +77,18 @@ where
             ReferencedAttachments::Inline { items: attachments }
         } else {
             let bytes = crate::conversation::encode_attachment_manifest(&attachments)?;
-            let manifest = self.host
+            let manifest = self
+                .host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
+                    &ContentGrant::verify(
+                        &self.verifier,
+                        &self.scope,
+                        &self.volume,
+                        VolumeOperation::Write,
+                        u64::MAX,
+                        &mut None,
+                    )?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",
@@ -80,6 +96,7 @@ where
                     self.maximum_payload_bytes,
                     &IdempotencyKey::new(format!("conversation:{operation_id}:attachments"))?,
                     InternalContentClass::Conversation,
+                    None,
                 )
                 .await?;
             ReferencedAttachments::Manifest {
@@ -129,8 +146,8 @@ where
             match &checkpoint_reference {
                 Some(reference) => Some(
                     crate::executor::load_canonical_checkpoint(self, reference, limits, None, None)
-                    .await?
-                    .0,
+                        .await?
+                        .0,
                 ),
                 None => None,
             }
@@ -191,7 +208,9 @@ where
             historical,
             selection.conversation_revision,
             selection,
-            self.input_verifier.as_deref().ok_or_else(|| Error::Unsupported("canonical conversation reader is not bound".into()))?,
+            self.input_verifier.as_deref().ok_or_else(|| {
+                Error::Unsupported("canonical conversation reader is not bound".into())
+            })?,
             limits,
             limits.attachments,
             None,
@@ -219,12 +238,9 @@ where
         operation_id: OperationId,
         limits: Limits,
     ) -> Result<()> {
-        let Some(reference) = crate::executor::canonical_checkpoint_for_operation(
-            self,
-            operation_id,
-            limits, None,
-        )
-        .await?
+        let Some(reference) =
+            crate::executor::canonical_checkpoint_for_operation(self, operation_id, limits, None)
+                .await?
         else {
             return Ok(());
         };
@@ -263,16 +279,21 @@ where
         action: Action,
     ) -> Result<()> {
         aggregate
-            .execute(Command {
-                operation_id,
-                idempotency_key: IdempotencyKey::new(format!(
-                    "conversation:{operation_id}:{label}"
-                ))?,
-                expected_revision: aggregate.reducer().revision(),
-                scope: self.scope.clone(),
-                causal_parent: None,
-                action,
-            }, #[cfg(feature = "filesystem")] None, &mut None)
+            .execute(
+                Command {
+                    operation_id,
+                    idempotency_key: IdempotencyKey::new(format!(
+                        "conversation:{operation_id}:{label}"
+                    ))?,
+                    expected_revision: aggregate.reducer().revision(),
+                    scope: self.scope.clone(),
+                    causal_parent: None,
+                    action,
+                },
+                #[cfg(feature = "filesystem")]
+                None,
+                &mut None,
+            )
             .await?;
         Ok(())
     }
@@ -333,19 +354,25 @@ where
         }
         let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
         let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
-        let content = self.stage_conversation(operation_id,
-        &format!("turns/{operation_id}/assistant.txt"),
-        output.text.as_bytes(),
-        "text/plain",
-        "assistant.txt",)
+        let content = self
+            .stage_conversation(
+                operation_id,
+                &format!("turns/{operation_id}/assistant.txt"),
+                output.text.as_bytes(),
+                "text/plain",
+                "assistant.txt",
+            )
             .await?;
         let metadata = serde_json::to_vec(&output.metadata)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let metadata = self.stage_conversation(operation_id,
-        &format!("turns/{operation_id}/metadata.json"),
-        &metadata,
-        "application/json",
-        "metadata.json",)
+        let metadata = self
+            .stage_conversation(
+                operation_id,
+                &format!("turns/{operation_id}/metadata.json"),
+                &metadata,
+                "application/json",
+                "metadata.json",
+            )
             .await?;
         let attachments = if output.attachments.len() <= 128 {
             ReferencedAttachments::Inline {
@@ -353,10 +380,18 @@ where
             }
         } else {
             let bytes = crate::conversation::encode_attachment_manifest(&output.attachments)?;
-            let manifest = self.host
+            let manifest = self
+                .host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
+                    &ContentGrant::verify(
+                        &self.verifier,
+                        &self.scope,
+                        &self.volume,
+                        VolumeOperation::Write,
+                        u64::MAX,
+                        &mut None,
+                    )?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",
@@ -366,6 +401,7 @@ where
                         "conversation:{operation_id}:assistant-attachments"
                     ))?,
                     InternalContentClass::Conversation,
+                    None,
                 )
                 .await?;
             ReferencedAttachments::Manifest {

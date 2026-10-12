@@ -11,7 +11,6 @@ use acyclic_harness::{
     scheduler::LeaseFence,
     workflow::{MachineCheckpoint, WorkflowCommand},
 };
-use native_work_io;
 use pi_selected_host::PiControlHost;
 
 impl PiControlHost<'_> {

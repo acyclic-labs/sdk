@@ -389,7 +389,7 @@ const STATE_SCHEMA: &str = r#"{
 }"#;
 
 fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate()?;
+    command.validate(&mut None)?;
     if command.kind != EFFECT_TASK_COMMAND_KIND {
         return Err(transition_error(
             "Pi task requires the existing effect command",
@@ -399,7 +399,7 @@ fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result
 }
 
 fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate()?;
+    command.validate(&mut None)?;
     if command.kind != EFFECT_TASK_COMMAND_KIND && command.kind != NATIVE_LAUNCH_TASK_COMMAND_KIND {
         return Err(transition_error(
             "Pi child requires its retained native launch command",

@@ -1011,7 +1011,3 @@ fn is_absent(error: &Error) -> bool {
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "pi_builtin_tests.rs"]
-mod tests;

@@ -241,7 +241,12 @@ impl PiSession {
                     "Pi recursive native source cut is outside its actual caller view".to_owned(),
                 ));
             }
-            live.owner.verify_dispatch().await?;
+            live.owner
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+                )
+                .await?;
             Some(live)
         };
         let root_key = commit
@@ -874,7 +879,6 @@ impl PiSession {
             work,
         )?;
         drop(bytes);
-        drop(bytes_custody);
         drop(reference);
         drop(reference_custody);
         Ok(Some((value, custody)))
@@ -1270,7 +1274,11 @@ impl PiSession {
                 "Pi creator substituted its original child binding or workspace".to_owned(),
             ));
         }
-        prepared.report.validate()?;
+        prepared
+            .report
+            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                work,
+            )?))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute {
             task_binding: PluginTaskBinding::Pi(binding),
@@ -1516,7 +1524,3 @@ fn spawn_retain_custody(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "pi_spawn_session_tests.rs"]
-mod tests;

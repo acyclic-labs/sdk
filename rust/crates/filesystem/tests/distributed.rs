@@ -10,11 +10,11 @@ use acyclic_fs::{
 };
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
 use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
+use acyclic_stream::OwnedBytes;
 use acyclic_stream::{
     AppendRequest, ChildrenRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
     StreamProvider,
 };
-use acyclic_stream::OwnedBytes;
 use futures::StreamExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -348,22 +348,39 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
     };
     let cancellation = CancellationToken::new();
-    store
-        .put(
+    {
+        let __object_args = (
             object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )
-        .await?;
-    let read = store
-        .read(object_id, 64, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
+        );
+        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
+    let read = {
+        let __object_args = (object_id, 64,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(read.value.bytes, bytes);
     assert!(
-        store
-            .contains(object_id, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
+        {
+            let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }?
             .value
     );
     let wrong = ObjectId {
@@ -371,15 +388,21 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
         digest: Digest::from_bytes([11; 32]),
     };
     assert!(
-        store
-            .put(
+        {
+            let __object_args = (
                 wrong,
                 OwnedBytes::from_static(b"not-that-digest"),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )
-            .await
-            .is_err()
+            );
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .is_err()
     );
     Ok(())
 }
@@ -409,7 +432,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     let lineage = |workspace: acyclic_fs::WorkspaceId| {
@@ -454,7 +480,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;

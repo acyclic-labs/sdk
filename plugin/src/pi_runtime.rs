@@ -156,15 +156,20 @@ impl PiTaskRuntime {
             journal,
             &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
-        let mut tools = ToolRegistry::new(work)?;
+        let (mut tools, tools_custody) = ToolRegistry::new(work)?;
+        let mut tools_custody = Some(tools_custody);
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
-        tools.0.register_with_native_work(
-            builtin.0,
-            builtin.1,
-            super::pi_builtin::builtin_tool_executor_with_native_work(work)?,
-            Arc::new(acyclic_harness::tool::JsonToolProjection),
-            &mut tools.1,
-            work,
+        tools.register(
+            (
+                acyclic_harness::tool::Tool {
+                    definition: builtin.0,
+                    executor: super::pi_builtin::builtin_tool_executor_with_native_work(work)?,
+                    projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
+                },
+                Some(builtin.1),
+            ),
+            &mut tools_custody,
+            Some(work),
         )?;
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let mut slot = work.claim(
@@ -174,11 +179,10 @@ impl PiTaskRuntime {
         )?;
         authority.custody.absorb(&mut slot)?;
         let machine = PiTaskMachine::new(work)?;
-        let fork_machine =
-            acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
+        let fork_machine = Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new());
         let mut tasks = TaskRegistry::default();
         tasks.register(machine.definition(work)?)?;
-        tasks.register(fork_machine.definition_with_native_work(work)?)?;
+        tasks.register(fork_machine.definition()?)?;
         let definition =
             tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
@@ -193,7 +197,8 @@ impl PiTaskRuntime {
         let creation_providers: [Arc<
             dyn acyclic_harness::resource_preparation::ResourceCreationProvider,
         >; 1] = [creation];
-        let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let runtime = FilesystemTaskRuntime::open(
             stream,
             filesystem,
             journal,
@@ -202,15 +207,15 @@ impl PiTaskRuntime {
             &authority.scope,
             &tasks,
             &machines.0,
-            &tools.0,
-            &resumable_tools,
+            &tools,
             authority.session_limits,
             authority.concurrency,
             authority.maximum_payload_bytes,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
             &creation_providers,
-            work,
+            &resumable_tools,
+            Some(&io),
         )
         .await?;
         Ok(Self {

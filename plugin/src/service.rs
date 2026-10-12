@@ -7,7 +7,8 @@ use super::*;
 use acyclic_harness::Error;
 
 pub(crate) fn session_directory(data: &Path, session_id: &str) -> PathBuf {
-    data.join("sessions").join(blake3::hash(session_id.as_bytes()).to_hex().as_str())
+    data.join("sessions")
+        .join(blake3::hash(session_id.as_bytes()).to_hex().as_str())
 }
 
 #[derive(Clone)]
@@ -26,15 +27,21 @@ pub(crate) type ServiceConfiguredInfrastructure = (LocalFs, LocalCoreStateStore,
 impl ServiceResources {
     // The trusted, locked CLI bootstrap configures daemon-lifetime backends
     // before finite native work. This is not a Root IO/allocation receipt.
-    pub(crate) async fn configure(data: &Path) -> acyclic_harness::Result<ServiceConfiguredInfrastructure> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(|error| Error::Storage(display(error)))?;
-        acyclic_fs::initialize_native_mount_services().map_err(|error| Error::Storage(display(error)))?;
+    pub(crate) async fn configure(
+        data: &Path,
+    ) -> acyclic_harness::Result<ServiceConfiguredInfrastructure> {
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|error| Error::Storage(display(error)))?;
+        acyclic_fs::initialize_native_mount_services()
+            .map_err(|error| Error::Storage(display(error)))?;
         let identity_data = data.to_path_buf();
         let binary_identity = tokio::task::spawn_blocking(move || service_identity(&identity_data));
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(display(error)))?;
-        let binary_identity = binary_identity.await.map_err(|error| Error::Storage(display(error)))?
+        let binary_identity = binary_identity
+            .await
+            .map_err(|error| Error::Storage(display(error)))?
             .map_err(Error::Storage)?;
         let store = LocalCoreStateStore::open_owned(data.join("core-state"))
             .map_err(|error| Error::Storage(display(error)))?;
@@ -47,9 +54,8 @@ impl ServiceResources {
         private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, BTreeMap<String, SessionController>)> {
-        original_bootstrap_work.create_directories_with_native_work(
-            &private_state_root, Path::new("sessions"),
-        ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        original_bootstrap_work
+            .create_directories_with_native_work(&private_state_root, Path::new("sessions"))?;
         let (fs, store, binary_identity, instance_id) = configured;
         let resources = Self {
             store,
@@ -65,21 +71,28 @@ impl ServiceResources {
             .collection
             .start(resources.fs.clone(), resources.store.clone());
         let mut entries = original_bootstrap_work.read_private_state_directory_with_native_work(
-            &resources.private_state_root, Path::new("sessions"),
-        ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            &resources.private_state_root,
+            Path::new("sessions"),
+        )?;
         for entry in entries.0.iter_mut().filter(|entry| entry.is_directory) {
-            let relative = original_bootstrap_work.join_path(Path::new("sessions"), Path::new(&entry.name))
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let relative = original_bootstrap_work
+                .path(Path::new("sessions"), Some(Path::new(&entry.name)))?;
             let mut modified: Option<std::time::SystemTime> = None;
             for slot in ADAPTER_STATE_SLOTS {
-                let path = original_bootstrap_work.join_path(&relative.0, Path::new(slot))
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                match original_bootstrap_work.state_path_modified_with_native_work(
-                    &resources.private_state_root, &path.0,
-                ) {
-                    Ok(Some(value)) => modified = Some(modified.map_or(value, |old| old.max(value))),
+                let path = original_bootstrap_work.path(&relative.0, Some(Path::new(slot)))?;
+                match original_bootstrap_work
+                    .state_path_modified_with_native_work(&resources.private_state_root, &path.0)
+                {
+                    Ok(Some(value)) => {
+                        modified = Some(modified.map_or(value, |old| old.max(value)))
+                    }
                     Ok(None) | Err(acyclic_fs::NativeTreeMaterializationError::Io(_)) => {}
-                    Err(cause) => return Err(Error::NativeWork { cause, custody: None }),
+                    Err(cause) => {
+                        return Err(Error::NativeWork {
+                            cause,
+                            custody: None,
+                        });
+                    }
                 }
             }
             entry.modified = modified.unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -96,15 +109,15 @@ impl ServiceResources {
                 return Ok(order == std::cmp::Ordering::Less);
             }
             Ok(left.name < right.name)
-        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        })?;
         let mut sessions = BTreeMap::new();
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for row in entries.0.iter().filter(|entry| entry.is_directory) {
-            let relative = original_bootstrap_work.join_path(Path::new("sessions"), Path::new(&row.name))
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let relative =
+                original_bootstrap_work.path(Path::new("sessions"), Some(Path::new(&row.name)))?;
             let (directory_custody, entry) = {
-                let (path, custody) = original_bootstrap_work.join_path(&resources.data, &relative.0)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let (path, custody) =
+                    original_bootstrap_work.path(&resources.data, Some(&relative.0))?;
                 (custody, path)
             };
             let loaded = crate::adapter_state::load_state_with_native_work(
@@ -117,10 +130,11 @@ impl ServiceResources {
                 continue;
             }
             if matches!(state.task_binding, PluginTaskBinding::Pi(_)) {
-                let control = SessionController::open(entry, &resources, original_bootstrap_work).await?
+                let control = SessionController::open(entry, &resources, original_bootstrap_work)
+                    .await?
                     .retain_original_input(directory_custody)?;
-                let (session_id, key_custody) = original_bootstrap_work.display(&state.root_session_id)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let (session_id, key_custody) =
+                    original_bootstrap_work.display(&state.root_session_id)?;
                 let control = control.retain_original_input(key_custody)?;
                 sessions.insert(session_id, control);
                 continue;
@@ -129,7 +143,10 @@ impl ServiceResources {
             let mut stale = false;
             for root in state.roots.values() {
                 let creation = root.created().map_err(Error::Invalid)?;
-                let canonical = root.path.canonicalize().map_err(|error| Error::Storage(display(error)))?;
+                let canonical = root
+                    .path
+                    .canonicalize()
+                    .map_err(|error| Error::Storage(display(error)))?;
                 if retained_sources.get(&canonical).is_some_and(
                     |(source_identity, native_identity)| {
                         *native_identity == creation.native_root_identity
@@ -148,12 +165,16 @@ impl ServiceResources {
                 fs::remove_dir_all(&entry).map_err(|error| Error::Storage(display(error)))?;
                 continue;
             }
-            let control = resources.open_session_directory(entry).await.map_err(Error::Storage)?;
+            let control = resources
+                .open_session_directory(entry)
+                .await
+                .map_err(Error::Storage)?;
             if !control.state.root_session_id.is_empty() {
                 retained_sources.extend(roots);
-                let (session_id, key_custody) = original_bootstrap_work.display(&control.state.root_session_id)
-                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                let control = SessionController::from(control).retain_original_input(directory_custody)?
+                let (session_id, key_custody) =
+                    original_bootstrap_work.display(&control.state.root_session_id)?;
+                let control = SessionController::from(control)
+                    .retain_original_input(directory_custody)?
                     .retain_original_input(key_custody)?;
                 sessions.insert(session_id, control);
             }
@@ -171,22 +192,32 @@ impl ServiceResources {
         session_id: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<bool> {
-        let items_examined = (session_id.len() as u64).checked_add(64).ok_or(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
-            reason: "original session identity inspection count overflows",
+        let items_examined =
+            (session_id.len() as u64)
+                .checked_add(64)
+                .ok_or(Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Invalid,
+                    reason: "original session identity inspection count overflows",
+                })?;
+        work.charge(acyclic_fs::WorkCounters {
+            items_examined,
+            ..Default::default()
         })?;
-        work.charge(acyclic_fs::WorkCounters { items_examined, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let key = blake3::hash(session_id.as_bytes()).to_hex();
         Ok(relative_directory.parent() == Some(Path::new("sessions"))
             && relative_directory.file_name() == Some(std::ffi::OsStr::new(key.as_str())))
     }
 
-    pub(crate) fn private_session_data<'a>(&self, directory: &'a Path) -> acyclic_harness::Result<&'a Path> {
-        let relative = directory.strip_prefix(&self.data).map_err(|_| Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unauthorized,
-            reason: "private session directory is outside the configured service root",
-        })?;
+    pub(crate) fn private_session_data<'a>(
+        &self,
+        directory: &'a Path,
+    ) -> acyclic_harness::Result<&'a Path> {
+        let relative = directory
+            .strip_prefix(&self.data)
+            .map_err(|_| Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "private session directory is outside the configured service root",
+            })?;
         let mut components = relative.components();
         let Some(std::path::Component::Normal(namespace)) = components.next() else {
             return Err(Error::NativeBoundary {
@@ -199,7 +230,12 @@ impl ServiceResources {
             _ => None,
         };
         if namespace != "sessions"
-            || !key.is_some_and(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+            || !key.is_some_and(|key| {
+                key.len() == 64
+                    && key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
             || components.next().is_some()
         {
             return Err(Error::NativeBoundary {
@@ -208,11 +244,6 @@ impl ServiceResources {
             });
         }
         Ok(relative)
-    }
-
-    pub(crate) async fn open_session(&self, session_id: &str) -> Result<ControlPlane, String> {
-        self.open_session_directory(self.session_directory(session_id))
-            .await
     }
 
     pub(crate) async fn open_session_directory(
@@ -227,300 +258,6 @@ impl ServiceResources {
             self.shared_roots.clone(),
         )
         .await
-    }
-}
-
-#[cfg(test)]
-pub(crate) struct ServiceControl {
-    pub(crate) resources: ServiceResources,
-    pub(crate) sessions: BTreeMap<String, ControlPlane>,
-}
-
-#[cfg(test)]
-impl std::ops::Deref for ServiceControl {
-    type Target = ServiceResources;
-
-    fn deref(&self) -> &Self::Target {
-        &self.resources
-    }
-}
-
-#[cfg(test)]
-impl ServiceControl {
-    pub(crate) async fn open(
-        data: PathBuf,
-        configured: ServiceConfiguredInfrastructure,
-        private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
-        original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Self> {
-        let (resources, sessions) = ServiceResources::open(data, configured, private_state_root, original_bootstrap_work).await?;
-        let sessions = sessions
-            .into_iter()
-            .map(|(id, controller)| match controller {
-                SessionController::HostManaged(control) => Ok((id, *control)),
-                SessionController::Pi(_) => {
-                    Err(Error::Invalid("Pi sessions must recover through their owning task runtime".to_owned()))
-                }
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            resources,
-            sessions,
-        })
-    }
-
-    pub(crate) async fn create_session(
-        &mut self,
-        session_id: &str,
-    ) -> Result<&mut ControlPlane, String> {
-        if !self.sessions.contains_key(session_id) {
-            let control = self.resources.open_session(session_id).await?;
-            self.sessions.insert(session_id.to_owned(), control);
-        }
-        self.sessions
-            .get_mut(session_id)
-            .ok_or_else(|| "Acyclic session registration failed".to_owned())
-    }
-
-    pub(crate) fn session_for_cwd(&self, cwd: &Path) -> Result<Option<String>, String> {
-        let cwd = cwd.canonicalize().map_err(display)?;
-        let mut matches = Vec::new();
-        for (session_id, control) in &self.sessions {
-            control.state.require_created_roots()?;
-            let mut score = control
-                .state
-                .roots
-                .values()
-                .filter_map(|root| root.path.canonicalize().ok())
-                .filter(|root| cwd.starts_with(root))
-                .map(|root| root.components().count())
-                .max();
-            for route in control
-                .state
-                .routes
-                .values()
-                .filter(|route| route.lifecycle.needs_mount())
-            {
-                if let Ok(mount_path) = route.mount_path.canonicalize()
-                    && cwd.starts_with(&mount_path)
-                {
-                    score = Some(score.unwrap_or(0).max(mount_path.components().count()));
-                }
-            }
-            if let Some(score) = score {
-                matches.push((score, session_id.clone()));
-            }
-        }
-        matches.sort_by(|left, right| right.cmp(left));
-        let Some((score, session_id)) = matches.first() else {
-            return Ok(None);
-        };
-        if matches
-            .get(1)
-            .is_some_and(|candidate| candidate.0 == *score)
-        {
-            return Err(
-                "cwd belongs to multiple Acyclic sessions; run inside a managed child mount"
-                    .to_owned(),
-            );
-        }
-        Ok(Some(session_id.clone()))
-    }
-
-    pub(crate) async fn session_for_cwd_or_register(
-        &mut self,
-        cwd: &Path,
-    ) -> Result<String, String> {
-        if let Some(session_id) = self.session_for_cwd(cwd)? {
-            return Ok(session_id);
-        }
-        if !self.sessions.is_empty() {
-            return Err(
-                "cwd is outside every registered Acyclic session; refusing service-assisted filesystem access"
-                    .to_owned(),
-            );
-        }
-        let canonical = cwd.canonicalize().map_err(display)?;
-        let session_id = format!(
-            "cwd:{}",
-            blake3::hash(canonical.as_os_str().to_string_lossy().as_bytes()).to_hex()
-        );
-        self.create_session(&session_id)
-            .await?
-            .session_start(json!({
-                "session_id": session_id,
-                "cwd": canonical,
-                "host": "cli"
-            }))
-            .await?;
-        Ok(session_id)
-    }
-
-    pub(crate) fn child_mount_for_cwd(
-        &self,
-        cwd: &Path,
-    ) -> Result<Option<(String, String)>, String> {
-        let cwd = cwd.canonicalize().map_err(display)?;
-        let mut matches = Vec::new();
-        for (session_id, control) in &self.sessions {
-            for route in control
-                .state
-                .routes
-                .values()
-                .filter(|route| route.lifecycle.needs_mount())
-            {
-                if let Ok(mount_path) = route.mount_path.canonicalize()
-                    && cwd.starts_with(&mount_path)
-                {
-                    matches.push((
-                        mount_path.components().count(),
-                        session_id.clone(),
-                        route.agent_id.clone(),
-                    ));
-                }
-            }
-            for pending in control
-                .state
-                .pending
-                .iter()
-                .filter(|pending| pending.lifecycle == PendingSpawnLifecycle::Prepared)
-            {
-                if let Ok(mount_path) = pending.mount_path.canonicalize()
-                    && cwd.starts_with(&mount_path)
-                {
-                    matches.push((
-                        mount_path.components().count(),
-                        session_id.clone(),
-                        format!("pending:{}", pending.mount_name()),
-                    ));
-                }
-            }
-        }
-        matches.sort_by(|left, right| right.cmp(left));
-        let Some((depth, session_id, agent_id)) = matches.first() else {
-            return Ok(None);
-        };
-        if matches
-            .get(1)
-            .is_some_and(|candidate| candidate.0 == *depth)
-        {
-            return Err("cwd belongs to multiple managed child mounts".to_owned());
-        }
-        Ok(Some((session_id.clone(), agent_id.clone())))
-    }
-
-    pub(crate) async fn shutdown_sessions(&mut self, deactivate: bool) -> Result<(), String> {
-        let sessions = self.sessions.keys().cloned().collect::<Vec<_>>();
-        let mut failed_sessions = 0_usize;
-        let mut first_error = None;
-        for session_id in sessions {
-            let error = self.close_session(&session_id, deactivate).await.err();
-            let session_failed = error.is_some();
-            if let Some(error) = error {
-                first_error.get_or_insert_with(|| format!("session {session_id}: {error}"));
-            }
-            failed_sessions += usize::from(session_failed);
-        }
-        first_error.map_or(Ok(()), |error| {
-            Err(format!(
-                "Acyclic service shutdown failed for {failed_sessions} session(s); first error: {error}"
-            ))
-        })
-    }
-
-    pub(crate) async fn close_session(
-        &mut self,
-        session_id: &str,
-        deactivate: bool,
-    ) -> Result<(), String> {
-        let control = self
-            .sessions
-            .remove(session_id)
-            .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
-        let mut terminal_state = control.state.clone();
-        let directory = control.data.clone();
-        let mut slots = match control.close(deactivate).await {
-            Ok(slots) => slots,
-            Err(shutdown_error) => {
-                let recovered = ControlPlane::open_with(
-                    directory,
-                    self.data.clone(),
-                    self.fs.clone(),
-                    self.store.clone(),
-                    self.shared_roots.clone(),
-                )
-                .await;
-                return match recovered {
-                    Ok(control) => {
-                        self.sessions.insert(session_id.to_owned(), control);
-                        Err(format!(
-                            "Acyclic session shutdown failed and was restored: {shutdown_error}"
-                        ))
-                    }
-                    Err(recovery_error) => Err(format!(
-                        "Acyclic session shutdown failed: {shutdown_error}; live recovery failed: {recovery_error}"
-                    )),
-                };
-            }
-        };
-        if deactivate {
-            terminal_state.active = false;
-            slots.save(&directory, &terminal_state, Survives::PowerLoss)?;
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn shutdown(mut self) -> Result<(), String> {
-        let root_released = self.fs.local_root_release_barrier();
-        let result = self.shutdown_sessions(false).await;
-        self.shared_roots.collection.stop().await;
-        // Publish service shutdown only after its final LocalFs handle has released the durable
-        // Stream and Objects roots. A completed async future may otherwise retain `self` until the
-        // executor drops the future, allowing an immediate replacement service to race the lock.
-        drop(self);
-        wait_for_root_release(root_released).await?;
-        result
-    }
-
-    pub(crate) async fn dispatch_native_hook(
-        &mut self,
-        host: &str,
-        event: &str,
-        input: Value,
-        cwd: &Path,
-    ) -> Result<Value, String> {
-        let session_id = hook_id(&input, "session_id", "sessionId")?;
-        if matches!(event, "SessionStart" | "sessionStart") {
-            let root = hook_root_path(&input).unwrap_or_else(|| cwd.to_path_buf());
-            if let Some((owner_session, owner_agent)) = self.child_mount_for_cwd(&root)? {
-                return Err(format!(
-                    "session {session_id} cannot attach a managed child mount owned by {owner_agent} in session {owner_session} as a physical root"
-                ));
-            }
-            let control = self.create_session(&session_id).await?;
-            let output = control
-                .session_start(json!({"session_id":session_id,"cwd":root,"host":host}))
-                .await?;
-            if host == "cursor" {
-                return Ok(json!({
-                    "additional_context": output
-                        .pointer("/hookSpecificOutput/additionalContext")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                }));
-            }
-            return Ok(output);
-        }
-        if matches!(event, "SessionEnd" | "sessionEnd") {
-            self.close_session(&session_id, true).await?;
-            return Ok(json!({}));
-        }
-        let control = self
-            .sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| "Acyclic native hook session is not registered".to_owned())?;
-        dispatch_native_session_hook(control, host, event, input, cwd).await
     }
 }
 
@@ -875,61 +612,6 @@ pub(crate) fn native_hook_is_process_local_noop(host: &str, event: &str, input: 
             .is_some_and(|tool| is_known_non_filesystem_tool(&tool))
 }
 
-#[cfg(test)]
-impl ControlRequestDispatcher for ServiceControl {
-    async fn dispatch_request(&mut self, request: ControlRequest, _original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
-        if matches!(request.command, ControlCommand::Ping) {
-            return Ok((json!({
-                "identity": self.binary_identity,
-                "instanceId": self.instance_id,
-                "sessions": self.sessions.len(),
-            }), None));
-        }
-        if matches!(request.command, ControlCommand::Doctor) {
-            parse_read_only_arguments(&request.argv).map_err(Error::Invalid)?;
-            let executable = executable_digests_async().await.map_err(Error::Storage)?;
-            let routes = self
-                .sessions
-                .values()
-                .map(|session| session.state.routes.len())
-                .sum();
-            let leases = self
-                .sessions
-                .values()
-                .map(|session| session.state.leases.len())
-                .sum();
-            let pending_recovery = self.sessions.values().any(|session| {
-                !session.state.pending_discards.is_empty() || !session.state.pending.is_empty()
-            });
-            return doctor_report(
-                &self.data,
-                &self.binary_identity,
-                &executable.sha256,
-                &executable.blake3,
-                self.sessions.len(),
-                routes,
-                leases,
-                pending_recovery,
-            ).map(|value| (value, None)).map_err(Error::Storage);
-        }
-        if matches!(request.command, ControlCommand::Hook) {
-            let (host, event) = request
-                .name
-                .split_once(':')
-                .ok_or_else(|| Error::Invalid("native hook request has no host/event pair".to_owned()))?;
-            return self
-                .dispatch_native_hook(host, event, request.arguments, &request.cwd)
-                .await.map(|value| (value, None)).map_err(Error::Storage);
-        }
-        let session_id = self.session_for_cwd_or_register(&request.cwd).await.map_err(Error::Storage)?;
-        let control = self
-            .sessions
-            .get_mut(&session_id)
-            .ok_or_else(|| Error::Invalid("Acyclic session is not registered".to_owned()))?;
-        dispatch_session_request(control, request).await.map(|value| (value, None)).map_err(Error::Storage)
-    }
-}
-
 pub(crate) const SESSION_ACTIVE: u8 = 0;
 pub(crate) const SESSION_CLOSING: u8 = 1;
 pub(crate) const SESSION_CLOSED: u8 = 2;
@@ -974,8 +656,14 @@ impl SessionSnapshot {
             PluginTaskBinding::Pi(binding) => Self::Pi {
                 original_task_id: binding.task_id,
                 pending_root_registration: state.pending_root_registration,
-                roots_created: state.roots.values().all(|root| matches!(root.allocation, RootAllocation::Created(_))),
-                scratch_created: matches!(binding.scratch.allocation, PiScratchAllocation::Created(_)),
+                roots_created: state
+                    .roots
+                    .values()
+                    .all(|root| matches!(root.allocation, RootAllocation::Created(_))),
+                scratch_created: matches!(
+                    binding.scratch.allocation,
+                    PiScratchAllocation::Created(_)
+                ),
                 routes: state.routes.len(),
                 leases: state.leases.len(),
                 pending_recovery: !state.pending_discards.is_empty() || !state.pending.is_empty(),
@@ -999,13 +687,19 @@ pub(crate) enum SessionCommand {
     Dispatch {
         request: ControlRequest,
         original_native_work: Option<acyclic_fs::NativeMaterializationWork>,
-        response: tokio::sync::oneshot::Sender<(acyclic_harness::Result<ControlDispatchResponse>, Option<acyclic_fs::NativeMaterializationWork>)>,
+        response: tokio::sync::oneshot::Sender<(
+            acyclic_harness::Result<ControlDispatchResponse>,
+            Option<acyclic_fs::NativeMaterializationWork>,
+        )>,
         _permit: tokio::sync::OwnedSemaphorePermit,
     },
     Shutdown {
         deactivate: bool,
         original_native_work: Option<acyclic_fs::NativeMaterializationWork>,
-        response: tokio::sync::oneshot::Sender<(acyclic_harness::Result<SessionCloseState>, Option<acyclic_fs::NativeMaterializationWork>)>,
+        response: tokio::sync::oneshot::Sender<(
+            acyclic_harness::Result<SessionCloseState>,
+            Option<acyclic_fs::NativeMaterializationWork>,
+        )>,
     },
     #[cfg(test)]
     Pause {
@@ -1021,7 +715,9 @@ impl SessionHandle {
         resources: (ServiceResources, Option<acyclic_fs::NativeAllocation>),
     ) -> Self {
         let control = control.into();
-        let snapshot = Arc::new(std::sync::RwLock::new(Some(SessionSnapshot::observe(&control))));
+        let snapshot = Arc::new(std::sync::RwLock::new(Some(SessionSnapshot::observe(
+            &control,
+        ))));
         let actor_snapshot = Arc::clone(&snapshot);
         let state = Arc::new(std::sync::atomic::AtomicU8::new(SESSION_ACTIVE));
         let actor_state = Arc::clone(&state);
@@ -1041,8 +737,12 @@ impl SessionHandle {
                         _permit,
                     } => {
                         let result = match control.as_mut() {
-                            Some(control) => control.dispatch(request, &mut original_native_work).await,
-                            None => Err(Error::Invalid("Acyclic session actor has no workspace".to_owned())),
+                            Some(control) => {
+                                control.dispatch(request, &mut original_native_work).await
+                            }
+                            None => Err(Error::Invalid(
+                                "Acyclic session actor has no workspace".to_owned(),
+                            )),
                         };
                         // Other sessions see only durable state: an unflushed
                         // save is published once flushed, after the reply.
@@ -1073,58 +773,95 @@ impl SessionHandle {
                     } => {
                         let result = async {
                             if original_native_work.is_none()
-                                && control.as_ref().is_some_and(|current| matches!(current, SessionController::Pi(_)))
+                                && control.as_ref().is_some_and(|current| {
+                                    matches!(current, SessionController::Pi(_))
+                                })
                             {
                                 let cancellation = CancellationToken::new();
-                                original_native_work = Some(acyclic_fs::NativeMaterializationWork::new(
-                                    pi_root_provider::allocation_budget(), &cancellation,
-                                ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?);
+                                original_native_work = Some(
+                                    acyclic_fs::NativeMaterializationWork::new(
+                                        pi_root_provider::allocation_budget(),
+                                        &cancellation,
+                                    )
+                                    .map_err(
+                                        |(cause, work)| Error::NativeConstruction { cause, work },
+                                    )?,
+                                );
                             }
-                            let current = control.as_ref()
-                                .ok_or_else(|| Error::Invalid("Acyclic session actor has no workspace".to_owned()))?;
+                            let current = control.as_ref().ok_or_else(|| {
+                                Error::Invalid("Acyclic session actor has no workspace".to_owned())
+                            })?;
                             let native = matches!(current, SessionController::Pi(_));
-                            let mut terminal_state = if native { None } else { Some(current.state().clone()) };
+                            let mut terminal_state = if native {
+                                None
+                            } else {
+                                Some(current.state().clone())
+                            };
                             let mut directory = match (native, original_native_work.as_ref()) {
                                 (true, Some(work)) => {
-                                    let copied = work.copy_path(current.directory())
-                                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                                    let copied = work.path(current.directory(), None)?;
                                     (copied.0, Some(copied.1))
                                 }
-                                (true, None) => return Err(Error::NativeBoundary {
-                                    code: acyclic_harness::wire::ErrorCode::Storage,
-                                    reason: "Pi close requires its original native query span",
-                                }),
+                                (true, None) => {
+                                    return Err(Error::NativeBoundary {
+                                        code: acyclic_harness::wire::ErrorCode::Storage,
+                                        reason: "Pi close requires its original native query span",
+                                    });
+                                }
                                 (false, _) => (current.directory().to_path_buf(), None),
                             };
-                            let current = control.take()
-                                .ok_or_else(|| Error::Invalid("Acyclic session actor has no workspace".to_owned()))?;
-                            match current.close(deactivate, original_native_work.as_ref()).await {
+                            let current = control.take().ok_or_else(|| {
+                                Error::Invalid("Acyclic session actor has no workspace".to_owned())
+                            })?;
+                            match current
+                                .close(deactivate, original_native_work.as_ref())
+                                .await
+                            {
                                 Ok(mut slots) => {
-                                    if deactivate && let Some(terminal_state) = terminal_state.as_mut() {
+                                    if deactivate
+                                        && let Some(terminal_state) = terminal_state.as_mut()
+                                    {
                                         terminal_state.active = false;
-                                        slots.save(&directory.0, terminal_state, Survives::PowerLoss)
+                                        slots
+                                            .save(&directory.0, terminal_state, Survives::PowerLoss)
                                             .map_err(Error::Storage)?;
                                     }
                                     Ok(SessionCloseState::Closed)
                                 }
                                 Err(shutdown_error) => {
                                     let recovered = match original_native_work.as_ref() {
-                                        Some(work) => SessionController::open(directory.0, &resources.0, work).await,
-                                        None => resources.0.open_session_directory(directory.0).await
-                                            .map(Into::into).map_err(Error::Storage),
+                                        Some(work) => {
+                                            SessionController::open(directory.0, &resources.0, work)
+                                                .await
+                                        }
+                                        None => resources
+                                            .0
+                                            .open_session_directory(directory.0)
+                                            .await
+                                            .map(Into::into)
+                                            .map_err(Error::Storage),
                                     };
                                     if let Ok(recovered) = recovered {
                                         let recovered = match directory.1.take() {
-                                            Some(custody) => recovered.retain_original_input(custody),
+                                            Some(custody) => {
+                                                recovered.retain_original_input(custody)
+                                            }
                                             None => Ok(recovered),
                                         };
-                                        if let Ok(recovered) = recovered { control = Some(recovered); }
+                                        if let Ok(recovered) = recovered {
+                                            control = Some(recovered);
+                                        }
                                     }
                                     Err(shutdown_error)
                                 }
                             }
-                        }.await;
-                        let status = if result.is_ok() { SessionCloseState::Closed } else { SessionCloseState::Failed };
+                        }
+                        .await;
+                        let status = if result.is_ok() {
+                            SessionCloseState::Closed
+                        } else {
+                            SessionCloseState::Failed
+                        };
                         let _ = actor_close_result.send(Some(status));
                         if result.is_ok() {
                             actor_state.store(SESSION_CLOSED, std::sync::atomic::Ordering::Release);
@@ -1140,7 +877,8 @@ impl SessionHandle {
                         if let Ok(mut snapshot) = actor_snapshot.write() {
                             *snapshot = next;
                         }
-                        if let Err((Err(error), _)) = response.send((result, original_native_work)) {
+                        if let Err((Err(error), _)) = response.send((result, original_native_work))
+                        {
                             if undelivered_close_failure.is_none() {
                                 undelivered_close_failure = Some(error);
                             }
@@ -1169,7 +907,10 @@ impl SessionHandle {
         }
     }
 
-    pub(crate) fn with_snapshot<T>(&self, read: impl FnOnce(Option<&SessionSnapshot>) -> T) -> Result<T, String> {
+    pub(crate) fn with_snapshot<T>(
+        &self,
+        read: impl FnOnce(Option<&SessionSnapshot>) -> T,
+    ) -> Result<T, String> {
         self.snapshot
             .read()
             .map(|snapshot| read(snapshot.as_ref()))
@@ -1180,7 +921,11 @@ impl SessionHandle {
         self.state.load(std::sync::atomic::Ordering::Acquire) == SESSION_ACTIVE
     }
 
-    pub(crate) async fn dispatch(&self, request: ControlRequest, original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
+    pub(crate) async fn dispatch(
+        &self,
+        request: ControlRequest,
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatchResponse> {
         let (response, result) = tokio::sync::oneshot::channel();
         {
             let _admission = self
@@ -1192,7 +937,9 @@ impl SessionHandle {
             }
             let permit = Arc::clone(&self.data_slots)
                 .try_acquire_owned()
-                .map_err(|_| Error::Invalid("Acyclic session operation queue is full".to_owned()))?;
+                .map_err(|_| {
+                    Error::Invalid("Acyclic session operation queue is full".to_owned())
+                })?;
             self.sender
                 .try_send(SessionCommand::Dispatch {
                     request,
@@ -1200,22 +947,29 @@ impl SessionHandle {
                     response,
                     _permit: permit,
                 })
-                .map_err(|error| Error::Invalid(match error {
-                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                        "Acyclic session operation queue is full".to_owned()
-                    }
-                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                        "Acyclic session actor stopped".to_owned()
-                    }
-                }))?;
+                .map_err(|error| {
+                    Error::Invalid(match error {
+                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                            "Acyclic session operation queue is full".to_owned()
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                            "Acyclic session actor stopped".to_owned()
+                        }
+                    })
+                })?;
         }
-        let (result, returned_work) = result.await
-            .map_err(|_| Error::Storage("Acyclic session actor dropped an accepted operation".to_owned()))?;
+        let (result, returned_work) = result.await.map_err(|_| {
+            Error::Storage("Acyclic session actor dropped an accepted operation".to_owned())
+        })?;
         *original_native_work = returned_work;
         result
     }
 
-    pub(crate) async fn shutdown(&self, deactivate: bool, original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<SessionCloseState> {
+    pub(crate) async fn shutdown(
+        &self,
+        deactivate: bool,
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<SessionCloseState> {
         let (response, result) = tokio::sync::oneshot::channel();
         let mut existing = None;
         {
@@ -1230,7 +984,11 @@ impl SessionHandle {
                 SESSION_CLOSING => existing = Some(self.close_result.subscribe()),
                 SESSION_CLOSE_FAILED => return Ok(SessionCloseState::Failed),
                 SESSION_CLOSED => return Ok(SessionCloseState::Closed),
-                _ => return Err(Error::Invalid("invalid Acyclic session lifecycle state".to_owned())),
+                _ => {
+                    return Err(Error::Invalid(
+                        "invalid Acyclic session lifecycle state".to_owned(),
+                    ));
+                }
             }
             if existing.is_none()
                 && let Err(error) = self.sender.try_send(SessionCommand::Shutdown {
@@ -1241,7 +999,8 @@ impl SessionHandle {
             {
                 let error = Error::Invalid(match error {
                     tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                        "Acyclic session control queue is unexpectedly full during shutdown".to_owned()
+                        "Acyclic session control queue is unexpectedly full during shutdown"
+                            .to_owned()
                     }
                     tokio::sync::mpsc::error::TrySendError::Closed(_) => {
                         "Acyclic session actor stopped before shutdown".to_owned()
@@ -1255,12 +1014,17 @@ impl SessionHandle {
         }
         if let Some(mut existing) = existing {
             if existing.borrow().is_none() {
-                existing.changed().await.map_err(|error| Error::Storage(display(error)))?;
+                existing
+                    .changed()
+                    .await
+                    .map_err(|error| Error::Storage(display(error)))?;
             }
-            return existing.borrow().as_ref().copied()
-                .ok_or_else(|| Error::Storage("Acyclic session close completed without a status".to_owned()));
+            return existing.borrow().as_ref().copied().ok_or_else(|| {
+                Error::Storage("Acyclic session close completed without a status".to_owned())
+            });
         }
-        let (result, returned_work) = result.await
+        let (result, returned_work) = result
+            .await
             .map_err(|_| Error::Storage("Acyclic session actor dropped shutdown".to_owned()))?;
         *original_native_work = returned_work;
         result
@@ -1322,7 +1086,13 @@ impl ConcurrentServiceControl {
         private_state_root: acyclic_fs::materializer::NativeHostPrivateStateRoot,
         original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Self> {
-        let (resources, sessions) = ServiceResources::open(data, configured, private_state_root, original_bootstrap_work).await?;
+        let (resources, sessions) = ServiceResources::open(
+            data,
+            configured,
+            private_state_root,
+            original_bootstrap_work,
+        )
+        .await?;
         Self::from_parts(resources, sessions, original_bootstrap_work)
     }
 
@@ -1339,11 +1109,16 @@ impl ConcurrentServiceControl {
                 epoch: catalog.next_epoch,
             };
             let actor_resources = pi_root_provider::service_resources_with_native_work(
-                &resources, original_bootstrap_work,
+                &resources,
+                original_bootstrap_work,
             )?;
             catalog.active.insert(
                 session_id,
-                Arc::new(SessionHandle::new(key, control, (actor_resources.0, Some(actor_resources.1)))),
+                Arc::new(SessionHandle::new(
+                    key,
+                    control,
+                    (actor_resources.0, Some(actor_resources.1)),
+                )),
             );
         }
         Ok(Self {
@@ -1380,9 +1155,12 @@ impl ConcurrentServiceControl {
         mut input: Value,
         original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
     ) -> acyclic_harness::Result<(Arc<SessionHandle>, ControlDispatchResponse)> {
-        let root = root.canonicalize().map_err(|error| Error::Storage(display(error)))?;
-        let arguments = input.as_object_mut()
-            .ok_or_else(|| Error::Invalid("session bootstrap input must be an object".to_owned()))?;
+        let root = root
+            .canonicalize()
+            .map_err(|error| Error::Storage(display(error)))?;
+        let arguments = input.as_object_mut().ok_or_else(|| {
+            Error::Invalid("session bootstrap input must be an object".to_owned())
+        })?;
         arguments.insert("session_id".to_owned(), json!(session_id));
         arguments.insert("cwd".to_owned(), json!(root));
         if let Some(owner) = self.route_session(&root).await.map_err(Error::Storage)?
@@ -1401,14 +1179,17 @@ impl ConcurrentServiceControl {
                     let handle = Arc::clone(handle);
                     drop(catalog);
                     let output = handle
-                        .dispatch(ControlRequest {
-                            version: 1,
-                            command: ControlCommand::Hook,
-                            cwd: root.clone(),
-                            argv: Vec::new(),
-                            name: format!("{host}:SessionStart"),
-                            arguments: input.clone(),
-                        }, original_native_work)
+                        .dispatch(
+                            ControlRequest {
+                                version: 1,
+                                command: ControlCommand::Hook,
+                                cwd: root.clone(),
+                                argv: Vec::new(),
+                                name: format!("{host}:SessionStart"),
+                                arguments: input.clone(),
+                            },
+                            original_native_work,
+                        )
                         .await?;
                     return Ok((handle, output));
                 }
@@ -1434,7 +1215,9 @@ impl ConcurrentServiceControl {
             };
             if let Some(mut wait) = wait {
                 if !*wait.borrow() {
-                    wait.changed().await.map_err(|error| Error::Storage(display(error)))?;
+                    wait.changed()
+                        .await
+                        .map_err(|error| Error::Storage(display(error)))?;
                 }
                 continue;
             }
@@ -1443,44 +1226,83 @@ impl ConcurrentServiceControl {
                 if host == "pi" {
                     if original_native_work.is_none() {
                         let cancellation = CancellationToken::new();
-                        *original_native_work = Some(acyclic_fs::NativeMaterializationWork::new(
-                            pi_root_provider::allocation_budget(), &cancellation,
-                        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?);
+                        *original_native_work = Some(
+                            acyclic_fs::NativeMaterializationWork::new(
+                                pi_root_provider::allocation_budget(),
+                                &cancellation,
+                            )
+                            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?,
+                        );
                     }
-                    let work = original_native_work.as_ref()
-                        .ok_or_else(|| Error::NativeBoundary {
-                            code: acyclic_harness::wire::ErrorCode::Storage,
-                            reason: "Pi session bootstrap lost its original query work",
-                        })?;
+                    let work =
+                        original_native_work
+                            .as_ref()
+                            .ok_or_else(|| Error::NativeBoundary {
+                                code: acyclic_harness::wire::ErrorCode::Storage,
+                                reason: "Pi session bootstrap lost its original query work",
+                            })?;
                     let actor_resources = pi_root_provider::service_resources_with_native_work(
-                        &self.resources, work,
+                        &self.resources,
+                        work,
                     )?;
-                    let native_runtime = input.get("runtime").cloned()
-                        .map(serde_json::from_value).transpose().map_err(|error| Error::Invalid(display(error)))?;
+                    let native_runtime = input
+                        .get("runtime")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|error| Error::Invalid(display(error)))?;
                     let mut control = pi_registration::register(
-                        &self.resources, session_id, root.clone(), native_runtime, work,
-                    ).await?;
-                    let opened = control.dispatch(ControlRequest {
-                        version: 1, command: ControlCommand::Hook, cwd: root.clone(),
-                        argv: Vec::new(), name: "pi:SessionStart".to_owned(),
-                        arguments: input.clone(),
-                    }, original_native_work).await;
-                    Ok::<_, Error>((control, opened, (actor_resources.0, Some(actor_resources.1))))
+                        &self.resources,
+                        session_id,
+                        root.clone(),
+                        native_runtime,
+                        work,
+                    )
+                    .await?;
+                    let opened = control
+                        .dispatch(
+                            ControlRequest {
+                                version: 1,
+                                command: ControlCommand::Hook,
+                                cwd: root.clone(),
+                                argv: Vec::new(),
+                                name: "pi:SessionStart".to_owned(),
+                                arguments: input.clone(),
+                            },
+                            original_native_work,
+                        )
+                        .await;
+                    Ok::<_, Error>((
+                        control,
+                        opened,
+                        (actor_resources.0, Some(actor_resources.1)),
+                    ))
                 } else {
-                    let mut control = self.resources.open_session(session_id).await.map_err(Error::Storage)?;
-                    let opened = control.session_start(json!({"session_id": session_id, "cwd": root, "host": host})).await
-                        .map(|value| (value, None)).map_err(Error::Storage);
+                    let mut control = self
+                        .resources
+                        .open_session_directory(self.resources.session_directory(session_id))
+                        .await
+                        .map_err(Error::Storage)?;
+                    let opened = control
+                        .session_start(json!({"session_id": session_id, "cwd": root, "host": host}))
+                        .await
+                        .map(|value| (value, None))
+                        .map_err(Error::Storage);
                     Ok((control.into(), opened, (self.resources.clone(), None)))
                 }
-            }.await;
+            }
+            .await;
             let (control, opened, actor_resources) = match opening_result {
                 Ok(opened) => opened,
                 Err(error) => {
                     let mut catalog = self.catalog.lock().await;
-                    let opening = catalog.opening.remove(session_id)
-                        .ok_or_else(|| Error::Storage("Acyclic session opening reservation disappeared".to_owned()))?;
+                    let opening = catalog.opening.remove(session_id).ok_or_else(|| {
+                        Error::Storage("Acyclic session opening reservation disappeared".to_owned())
+                    })?;
                     if opening.key != key {
-                        return Err(Error::Storage("Acyclic session opening epoch changed".to_owned()));
+                        return Err(Error::Storage(
+                            "Acyclic session opening epoch changed".to_owned(),
+                        ));
                     }
                     opening.complete.send_replace(true);
                     return Err(error);
@@ -1493,12 +1315,13 @@ impl ConcurrentServiceControl {
             )));
             let (cancelled, complete) = {
                 let mut catalog = self.catalog.lock().await;
-                let opening = catalog
-                    .opening
-                    .remove(session_id)
-                    .ok_or_else(|| Error::Storage("Acyclic session opening reservation disappeared".to_owned()))?;
+                let opening = catalog.opening.remove(session_id).ok_or_else(|| {
+                    Error::Storage("Acyclic session opening reservation disappeared".to_owned())
+                })?;
                 if opening.key != key {
-                    return Err(Error::Storage("Acyclic session opening epoch changed".to_owned()));
+                    return Err(Error::Storage(
+                        "Acyclic session opening epoch changed".to_owned(),
+                    ));
                 }
                 let cancelled = opened.is_err()
                     || opening.cancelled
@@ -1521,7 +1344,10 @@ impl ConcurrentServiceControl {
                 Err(error) => {
                     let cleanup = if let Some(handle) = &handle {
                         let cleanup = handle.shutdown(true, original_native_work).await;
-                        if cleanup.as_ref().is_ok_and(|status| *status == SessionCloseState::Closed) {
+                        if cleanup
+                            .as_ref()
+                            .is_ok_and(|status| *status == SessionCloseState::Closed)
+                        {
                             let mut catalog = self.catalog.lock().await;
                             catalog.draining.remove(&handle.key);
                             catalog.completed.insert(session_id.to_owned());
@@ -1537,17 +1363,23 @@ impl ConcurrentServiceControl {
                     };
                 }
             };
-            let handle = handle.ok_or_else(|| Error::Storage("Acyclic session did not open".to_owned()))?;
+            let handle =
+                handle.ok_or_else(|| Error::Storage("Acyclic session did not open".to_owned()))?;
             if cancelled {
                 let cleanup = handle.shutdown(true, original_native_work).await;
-                if cleanup.as_ref().is_ok_and(|status| *status == SessionCloseState::Closed) {
+                if cleanup
+                    .as_ref()
+                    .is_ok_and(|status| *status == SessionCloseState::Closed)
+                {
                     let mut catalog = self.catalog.lock().await;
                     catalog.draining.remove(&handle.key);
                     catalog.completed.insert(session_id.to_owned());
                 }
                 let _ = complete.send(true);
                 let _ = cleanup?;
-                return Err(Error::Invalid("Acyclic session start was cancelled".to_owned()));
+                return Err(Error::Invalid(
+                    "Acyclic session start was cancelled".to_owned(),
+                ));
             }
             let _ = complete.send(true);
             return Ok((handle, output));
@@ -1574,7 +1406,9 @@ impl ConcurrentServiceControl {
             };
             if let Some(mut wait) = wait {
                 if !*wait.borrow() {
-                    wait.changed().await.map_err(|error| Error::Storage(display(error)))?;
+                    wait.changed()
+                        .await
+                        .map_err(|error| Error::Storage(display(error)))?;
                 }
                 continue;
             }
@@ -1601,18 +1435,26 @@ impl ConcurrentServiceControl {
                 if catalog.completed.contains(session_id) {
                     return Ok(SessionCloseState::Closed);
                 }
-                return Err(Error::Invalid("Acyclic native hook session is not registered".to_owned()));
+                return Err(Error::Invalid(
+                    "Acyclic native hook session is not registered".to_owned(),
+                ));
             }
         };
         let result = handle.shutdown(deactivate, original_native_work).await;
         {
             let mut catalog = self.catalog.lock().await;
-            if result.as_ref().is_ok_and(|status| *status == SessionCloseState::Closed) {
+            if result
+                .as_ref()
+                .is_ok_and(|status| *status == SessionCloseState::Closed)
+            {
                 catalog.draining.remove(&handle.key);
                 catalog.completed.insert(session_id.to_owned());
             }
         }
-        if result.as_ref().is_ok_and(|status| *status == SessionCloseState::Closed) {
+        if result
+            .as_ref()
+            .is_ok_and(|status| *status == SessionCloseState::Closed)
+        {
             self.shared_roots.prune().await;
         }
         result
@@ -1677,7 +1519,10 @@ impl ConcurrentServiceControl {
         Ok(Some(Arc::clone(handle)))
     }
 
-    pub(crate) async fn drain_sessions(&self, deactivate: bool) -> acyclic_harness::Result<SessionCloseState> {
+    pub(crate) async fn drain_sessions(
+        &self,
+        deactivate: bool,
+    ) -> acyclic_harness::Result<SessionCloseState> {
         self.lifecycle
             .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
         loop {
@@ -1697,7 +1542,9 @@ impl ConcurrentServiceControl {
             };
             for mut wait in waits {
                 if !*wait.borrow() {
-                    wait.changed().await.map_err(|error| Error::Storage(display(error)))?;
+                    wait.changed()
+                        .await
+                        .map_err(|error| Error::Storage(display(error)))?;
                 }
             }
         }
@@ -1721,7 +1568,9 @@ impl ConcurrentServiceControl {
                 Ok(SessionCloseState::Failed) => status = SessionCloseState::Failed,
                 Err(error) => {
                     status = SessionCloseState::Failed;
-                    if first_error.is_none() { first_error = Some(error); }
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
                 }
             }
         }
@@ -1729,7 +1578,8 @@ impl ConcurrentServiceControl {
             Err(error)
         } else {
             if status == SessionCloseState::Closed {
-                self.lifecycle.store(SERVICE_CLOSED, std::sync::atomic::Ordering::Release);
+                self.lifecycle
+                    .store(SERVICE_CLOSED, std::sync::atomic::Ordering::Release);
             }
             Ok(status)
         }
@@ -1764,20 +1614,27 @@ impl ConcurrentServiceControl {
 }
 
 impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
-    async fn dispatch_request(&self, request: ControlRequest, original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
+    async fn dispatch_request(
+        &self,
+        request: ControlRequest,
+        original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatchResponse> {
         if request.command == ControlCommand::Ping {
             let catalog = self.catalog.lock().await;
             let active_sessions = catalog.active.len();
             let opening_sessions = catalog.opening.len();
             let draining_sessions = catalog.draining.len();
-            return Ok((json!({
-                "identity": self.binary_identity,
-                "instanceId": self.instance_id,
-                "sessions": active_sessions + opening_sessions + draining_sessions,
-                "activeSessions": active_sessions,
-                "openingSessions": opening_sessions,
-                "drainingSessions": draining_sessions,
-            }), None));
+            return Ok((
+                json!({
+                    "identity": self.binary_identity,
+                    "instanceId": self.instance_id,
+                    "sessions": active_sessions + opening_sessions + draining_sessions,
+                    "activeSessions": active_sessions,
+                    "openingSessions": opening_sessions,
+                    "drainingSessions": draining_sessions,
+                }),
+                None,
+            ));
         }
         self.ensure_running().map_err(Error::Invalid)?;
         if request.command == ControlCommand::Doctor {
@@ -1799,19 +1656,27 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
             let mut leases = 0;
             let mut pending_recovery = false;
             for handle in &handles {
-                handle.with_snapshot(|snapshot| match snapshot {
-                    Some(SessionSnapshot::HostManaged(state)) => {
-                        routes += state.routes.len();
-                        leases += state.leases.len();
-                        pending_recovery |= !state.pending_discards.is_empty() || !state.pending.is_empty();
-                    }
-                    Some(SessionSnapshot::Pi { routes: count_routes, leases: count_leases, pending_recovery: pending, .. }) => {
-                        routes += count_routes;
-                        leases += count_leases;
-                        pending_recovery |= pending;
-                    }
-                    None => {}
-                }).map_err(Error::Storage)?;
+                handle
+                    .with_snapshot(|snapshot| match snapshot {
+                        Some(SessionSnapshot::HostManaged(state)) => {
+                            routes += state.routes.len();
+                            leases += state.leases.len();
+                            pending_recovery |=
+                                !state.pending_discards.is_empty() || !state.pending.is_empty();
+                        }
+                        Some(SessionSnapshot::Pi {
+                            routes: count_routes,
+                            leases: count_leases,
+                            pending_recovery: pending,
+                            ..
+                        }) => {
+                            routes += count_routes;
+                            leases += count_leases;
+                            pending_recovery |= pending;
+                        }
+                        None => {}
+                    })
+                    .map_err(Error::Storage)?;
             }
             return doctor_report(
                 &self.data,
@@ -1822,39 +1687,71 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
                 routes,
                 leases,
                 pending_recovery,
-            ).map(|value| (value, None)).map_err(Error::Storage);
+            )
+            .map(|value| (value, None))
+            .map_err(Error::Storage);
         }
         if request.command == ControlCommand::Hook {
-            let (host, event) = request
-                .name
-                .split_once(':')
-                .ok_or_else(|| Error::Invalid("native hook request has no host/event pair".to_owned()))?;
-            let session_id = hook_id(&request.arguments, "session_id", "sessionId").map_err(Error::Invalid)?;
-            if host == "pi" && let Some(caller) = request.arguments.get("caller") {
-                let caller: acyclic_harness::core::Scope = serde_json::from_value(caller.clone())
-                    .map_err(|error| Error::Invalid(display(error)))?;
+            let (host, event) = request.name.split_once(':').ok_or_else(|| {
+                Error::Invalid("native hook request has no host/event pair".to_owned())
+            })?;
+            let session_id =
+                hook_id(&request.arguments, "session_id", "sessionId").map_err(Error::Invalid)?;
+            if host == "pi"
+                && let Some(caller) = request.arguments.get("caller")
+            {
+                let caller: acyclic_harness::core::Scope =
+                    serde_json::from_value(caller.clone())
+                        .map_err(|error| Error::Invalid(display(error)))?;
                 let root_session = pi_caller::routing_session(&caller).map_err(Error::Invalid)?;
                 // Routing is not authentication: only the existing original
                 // actor verifies this proof and its admitted native child.
                 // A recursive child can never bootstrap another root budget.
-                return self.session(&root_session).await.map_err(Error::Invalid)?.dispatch(request, original_native_work).await;
+                return self
+                    .session(&root_session)
+                    .await
+                    .map_err(Error::Invalid)?
+                    .dispatch(request, original_native_work)
+                    .await;
             }
             if matches!(event, "SessionStart" | "sessionStart") {
                 let root =
                     hook_root_path(&request.arguments).unwrap_or_else(|| request.cwd.clone());
-                let (_, output) = self.start_session(&session_id, host, root, request.arguments.clone(), original_native_work).await?;
+                let (_, output) = self
+                    .start_session(
+                        &session_id,
+                        host,
+                        root,
+                        request.arguments.clone(),
+                        original_native_work,
+                    )
+                    .await?;
                 return Ok(output);
             }
             if matches!(event, "SessionEnd" | "sessionEnd") {
-                let status = self.end_session(&session_id, true, original_native_work).await?;
-                return Ok((match status {
-                    SessionCloseState::Closed => json!({}),
-                    SessionCloseState::Failed => json!({"closed": false, "state": "failed"}),
-                }, None));
+                let status = self
+                    .end_session(&session_id, true, original_native_work)
+                    .await?;
+                return Ok((
+                    match status {
+                        SessionCloseState::Closed => json!({}),
+                        SessionCloseState::Failed => json!({"closed": false, "state": "failed"}),
+                    },
+                    None,
+                ));
             }
-            return self.session(&session_id).await.map_err(Error::Invalid)?.dispatch(request, original_native_work).await;
+            return self
+                .session(&session_id)
+                .await
+                .map_err(Error::Invalid)?
+                .dispatch(request, original_native_work)
+                .await;
         }
-        let handle = if let Some(handle) = self.route_session(&request.cwd).await.map_err(Error::Storage)? {
+        let handle = if let Some(handle) = self
+            .route_session(&request.cwd)
+            .await
+            .map_err(Error::Storage)?
+        {
             handle
         } else {
             let catalog = self.catalog.lock().await;
@@ -1865,20 +1762,38 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
                 return Err(Error::Invalid("cwd is outside every registered Acyclic session; refusing service-assisted filesystem access".to_owned()));
             }
             drop(catalog);
-            let canonical = request.cwd.canonicalize().map_err(|error| Error::Storage(display(error)))?;
+            let canonical = request
+                .cwd
+                .canonicalize()
+                .map_err(|error| Error::Storage(display(error)))?;
             let session_id = format!(
                 "cwd:{}",
                 blake3::hash(canonical.as_os_str().to_string_lossy().as_bytes()).to_hex()
             );
-            self.start_session(&session_id, "cli", canonical, json!({}), original_native_work).await?.0
+            self.start_session(
+                &session_id,
+                "cli",
+                canonical,
+                json!({}),
+                original_native_work,
+            )
+            .await?
+            .0
         };
         handle.dispatch(request, original_native_work).await
     }
 }
 
 impl ControlRequestDispatcher for ControlPlane {
-    async fn dispatch_request(&mut self, request: ControlRequest, _original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>) -> acyclic_harness::Result<ControlDispatchResponse> {
-        dispatch_session_request(self, request).await.map(|value| (value, None)).map_err(Error::Storage)
+    async fn dispatch_request(
+        &mut self,
+        request: ControlRequest,
+        _original_native_work: &mut Option<acyclic_fs::NativeMaterializationWork>,
+    ) -> acyclic_harness::Result<ControlDispatchResponse> {
+        dispatch_session_request(self, request)
+            .await
+            .map(|value| (value, None))
+            .map_err(Error::Storage)
     }
 }
 
@@ -2050,8 +1965,14 @@ pub(crate) async fn dispatch_plane_request(
     }
 }
 
-pub(crate) fn uncorrelated_control_response(error: &str) -> acyclic_harness::Result<ControlEncodedResponse> {
-    Ok((encode_control_response(&json!({"version":2,"ok":false,"error":error}), None), None, None))
+pub(crate) fn uncorrelated_control_response(
+    error: &str,
+) -> acyclic_harness::Result<ControlEncodedResponse> {
+    Ok((
+        encode_control_response(&json!({"version":2,"ok":false,"error":error}), None),
+        None,
+        None,
+    ))
 }
 
 pub(crate) fn invalid_control_request_response(
@@ -2135,12 +2056,19 @@ pub(crate) fn control_response_for(
                     reason: "native response has no original control-query work",
                 });
             }
-            if failure.as_ref().is_some_and(|error| !matches!(
-                error,
-                Error::NotFound(_) | Error::Conflict(_) | Error::Unsupported(_)
-                    | Error::Invalid(_) | Error::Unauthorized(_) | Error::Storage(_)
-                    | Error::InteractionRejected(_) | Error::Indeterminate(_)
-            )) {
+            if failure.as_ref().is_some_and(|error| {
+                !matches!(
+                    error,
+                    Error::NotFound(_)
+                        | Error::Conflict(_)
+                        | Error::Unsupported(_)
+                        | Error::Invalid(_)
+                        | Error::Unauthorized(_)
+                        | Error::Storage(_)
+                        | Error::InteractionRejected(_)
+                        | Error::Indeterminate(_)
+                )
+            }) {
                 return Err(failure.expect("native failure is present"));
             }
             (encode_control_response(&response, Some(request_id)), None)
@@ -2150,7 +2078,6 @@ pub(crate) fn control_response_for(
     drop(source_allocation);
     Ok((encoded.0, encoded.1, failure))
 }
-
 
 pub(crate) struct BoundedJsonBuffer {
     pub(crate) bytes: Vec<u8>,

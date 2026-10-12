@@ -188,5 +188,4 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         let _ = (request, deadline_unix_millis);
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
-
 }

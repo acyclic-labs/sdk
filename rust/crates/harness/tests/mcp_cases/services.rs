@@ -66,7 +66,15 @@ pub(super) async fn admitted_context(scope: RuntimeScope, router: Arc<dyn Intera
             Ok(())
         }
     })?)?;
-    let runtime = AgentHarness::with_content(tasks, ToolRegistry::default(), scope, 1, None, Some(router), content)?;
+    let runtime = acyclic_harness::runtime::Bindings {
+        tasks,
+        tools: ToolRegistry::default(), scope,
+        concurrency: 1,
+        durable_host: None,
+        interactions: Some(router), content,
+        ..acyclic_harness::runtime::Bindings::local()
+    }
+    .build(None)?;
     let definition = runtime.task::<(), ()>("mcp-context@1")?;
     assert!(matches!(runtime.spawn(&definition, ()).await?.result().await?, Outcome::Succeeded(())));
     let context = result.lock().map_err(|error| Error::Storage(error.to_string()))?.take().ok_or_else(|| Error::NotFound("admitted context".into()))?;
@@ -96,7 +104,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let scope = RuntimeScope::new(Capabilities::new(["model:generate", "context:build", "interaction:route"]), Limits::default())?;
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
         let operation = OperationId::from_bytes([81;16]);
-        let tool = ToolContext::new(context, operation, "remote")?;
+        let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
         let callback: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
@@ -138,7 +146,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         drop(transport); drop(callback); drop(disk); drop(tool);
         let (disk, issuer, _) = journal(root.path(), false).await?;
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
-        let tool = ToolContext::new(context, operation, "remote")?;
+        let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let reopened = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
         let result = reopened.admit(tool.clone(), &sampling(operation)).await?;
         assert_eq!(result.pointer("/result/role"), Some(&json!("assistant")));
@@ -158,7 +166,7 @@ async fn form_callback_replays_owner_answer_and_rejects_changed_schema() -> Resu
     let scope = RuntimeScope::new(Capabilities::new(["model:generate", "context:build", "interaction:route"]), Limits::default())?;
     let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
     let operation = OperationId::from_bytes([82;16]);
-    let tool = ToolContext::new(context, operation, "form")?;
+    let tool = ToolContext::new(std::sync::Arc::new(context), operation, "form", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
     let callbacks = McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk, "deterministic".into(), sampling_policy())?;
     let mut form = McpCallbackRequest { parent: operation, policy: policy(), message: json!({"jsonrpc":"2.0","id":7,"method":"elicitation/create","params":{"mode":"form","message":"Question","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}}) };
@@ -213,7 +221,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let scope = RuntimeScope::new(Capabilities::new(["model:generate", "context:build", "interaction:route"]), Limits::default())?;
     let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), None).await?;
     let operation = OperationId::from_bytes([83;16]);
-    let tool = ToolContext::new(context, operation, "cancel")?;
+    let tool = ToolContext::new(std::sync::Arc::new(context), operation, "cancel", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: true });
     let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
@@ -253,18 +261,18 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
         let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         let volume = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41;16])))?;
         let mut grants = vec!["model:generate".into(), "context:build".into(), "interaction:route".into()];
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
+            reader: FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?,
+            writer: Some(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);
-        let tool = ToolContext::new(context.clone(), operation, "media")?;
+        let tool = ToolContext::new(std::sync::Arc::new(context.clone()), operation, "media", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
         let mut selection = sampling_policy();
         selection.image = Some(NativeMediaPolicy { intent: NativeMediaIntent::Image { detail: ImageDetail::Low }, maximum_bytes: 8, maximum_work: 16, configuration: None });

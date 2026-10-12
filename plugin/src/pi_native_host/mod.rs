@@ -45,7 +45,6 @@ use acyclic_harness::{
     workflow::WorkflowCommand,
 };
 use acyclic_stream::{BoxProviderFuture, LocalStream};
-use native_work_io;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -219,6 +218,3 @@ fn unauthorized(reason: &'static str) -> Error {
         reason,
     }
 }
-#[cfg(test)]
-#[path = "../pi_native_host_tests.rs"]
-mod tests;

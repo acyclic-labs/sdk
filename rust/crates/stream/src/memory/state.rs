@@ -1,14 +1,14 @@
 use super::*;
 
 #[derive(Default)]
-pub(super) struct State {
+pub(crate) struct State {
     pub(super) paths: BTreeMap<StreamPath, PathState>,
     pub(super) commits: BTreeMap<CommitId, Arc<Replay>>,
     pub(super) replays: BTreeMap<OwnedBytes, Arc<Replay>>,
     /// Indefinite receipt inventory used by the current snapshot codec.
     pub(super) retained: Vec<Retained>,
     pub(super) path_bytes: usize,
-    /// Records and payload bytes retained, each counted once however many
+    /// Unique retained record count.
     pub(super) record_count: usize,
     pub(super) payload_bytes: usize,
     /// High-water mark survives clock rollback and snapshot restoration.
@@ -23,7 +23,9 @@ impl Drop for State {
         for (_, mut path) in std::mem::take(&mut self.paths) {
             let mut cursor = path.history.take();
             while let Some(node) = cursor {
-                let Ok(history) = Arc::try_unwrap(node) else { break; };
+                let Ok(history) = Arc::try_unwrap(node) else {
+                    break;
+                };
                 cursor = match history {
                     History::Batch { parent, .. } => parent,
                     History::Prefix { source, .. } => source,
@@ -54,7 +56,7 @@ pub(super) struct PathState {
 pub(super) enum History {
     Batch {
         parent: Option<Arc<Self>>,
-        records: Arc<MemoryOutput<Vec<Record>>>,
+        records: Arc<NativeStreamOutput<Vec<Record>>>,
         _allocation: Allocation,
     },
     Prefix {
@@ -87,9 +89,19 @@ impl Replay {
 }
 
 pub(super) fn cache_replay(
-    meter: WireMeter<'_>, envelope: Option<CommittedEnvelope>, result: IdempotencyOutcome,
+    meter: WireMeter<'_>,
+    envelope: Option<CommittedEnvelope>,
+    result: IdempotencyOutcome,
     mut allocation: Allocation,
 ) -> std::io::Result<Arc<Replay>> {
-    absorb(&mut allocation, allocate(meter, std::mem::size_of::<Replay>())?)?;
-    Ok(Arc::new(Replay { digest: [0; 32], result, envelope, _allocation: allocation }))
+    absorb(
+        &mut allocation,
+        allocate(meter, std::mem::size_of::<Replay>())?,
+    )?;
+    Ok(Arc::new(Replay {
+        digest: [0; 32],
+        result,
+        envelope,
+        _allocation: allocation,
+    }))
 }

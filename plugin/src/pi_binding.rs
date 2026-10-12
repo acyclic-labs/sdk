@@ -377,4 +377,4 @@ fn invalid_binding(reason: &'static str) -> acyclic_harness::Error {
 
 #[cfg(test)]
 #[path = "pi_binding_tests.rs"]
-mod tests;
+pub(crate) mod tests;

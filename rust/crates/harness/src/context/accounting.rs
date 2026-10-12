@@ -54,7 +54,10 @@ impl ModelTokenCount {
         if self.request_digest != request.request_digest()
             || self.message_tokens.len() != request.request().messages.len()
         {
-            return Err(token_count_invalid(work, "token count does not bind the prepared request"));
+            return Err(token_count_invalid(
+                work,
+                "token count does not bind the prepared request",
+            ));
         }
         self.message_tokens
             .iter()
@@ -63,19 +66,26 @@ impl ModelTokenCount {
                     io.check_cancellation()?;
                     io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 }
-                total
-                    .checked_add(u64::from(*count))
-                    .ok_or_else(|| token_count_invalid(work, "token count exceeds portable arithmetic"))
+                total.checked_add(u64::from(*count)).ok_or_else(|| {
+                    token_count_invalid(work, "token count exceeds portable arithmetic")
+                })
             })
     }
 }
 
 fn token_count_invalid(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
+    reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
+        return Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -113,7 +123,12 @@ mod tests {
     #[test]
     fn accounting_binds_content_model_and_message_dimensions() -> Result<()> {
         let request = ModelRequest {
-            model: Model::new("provider".into(), "model".into(), "revision".into(), serde_json::json!({}))?,
+            model: Model::new(
+                "provider".into(),
+                "model".into(),
+                "revision".into(),
+                serde_json::json!({}),
+            )?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("hello".into()),
@@ -121,34 +136,46 @@ mod tests {
             tools: Vec::new(),
             max_output_tokens: Some(1),
         };
-        let prepared =
-            PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default(), None)?;
+        let prepared = PreparedModelRequest::prepare(
+            request.clone(),
+            crate::conversation::Limits::default(),
+            None,
+        )?;
         let mut count = ModelTokenCount {
             request_digest: prepared.request_digest(),
             fixed_tokens: u32::MAX,
             message_tokens: vec![u32::MAX],
         };
-        assert_eq!(count.validate(&prepared, &mut None)?, 2 * u64::from(u32::MAX));
+        assert_eq!(
+            count.validate(&prepared, &mut None)?,
+            2 * u64::from(u32::MAX)
+        );
         let mut changed = request.clone();
         changed.model.revision = "different".into();
         assert!(
             count
-                .validate(&PreparedModelRequest::prepare(
-                    changed,
-                    crate::conversation::Limits::default(),
-                    None,
-                )?, &mut None)
+                .validate(
+                    &PreparedModelRequest::prepare(
+                        changed,
+                        crate::conversation::Limits::default(),
+                        None,
+                    )?,
+                    &mut None
+                )
                 .is_err()
         );
         let mut changed = request;
         changed.messages[0].content = ModelContent::Text("different".into());
         assert!(
             count
-                .validate(&PreparedModelRequest::prepare(
-                    changed,
-                    crate::conversation::Limits::default(),
-                    None,
-                )?, &mut None)
+                .validate(
+                    &PreparedModelRequest::prepare(
+                        changed,
+                        crate::conversation::Limits::default(),
+                        None,
+                    )?,
+                    &mut None
+                )
                 .is_err()
         );
         count.message_tokens.clear();

@@ -79,7 +79,9 @@ impl PiRootPreparation {
                 "Pi root preparation requires its original host admission",
             ));
         };
-        preparation.validate()?;
+        preparation.validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+            work,
+        )?))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
         {

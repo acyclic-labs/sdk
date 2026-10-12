@@ -167,7 +167,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         }
         let bytes = self.authority.result_content.read(&reference, maximum, Some(&io))?.await?;
         let value = io.decode(std::marker::PhantomData::<serde_json::Value>, &bytes, crate::wire::ErrorCode::Invalid)?;
-        crate::contract::validate_json_schema_value(&invocation.result_schema, &value.0, "native process result", Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(&invocation.result_schema, &value.0, "native process result", work))?;
         drop(value);
         drop(bytes);
         drop(io);
@@ -210,7 +210,7 @@ impl<P: StreamProvider> EffectProvider for NativeProcessProvider<P> {
         -> Result<crate::NativeFutureBundle<'a, (EffectObservation, NativeAllocation)>> {
         finite_dispatch::require_finite(work)?;
         finite_binding::require_family(self._custody.work(), work)?;
-        self.invocation()?.view.operation_cancellation().check()
+        self.invocation()?.view.original_native_work().cancellation().check()
             .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         let bytes = receipt_observation::add(receipt_observation::add(dispatch.provider.capacity() as u64,
             dispatch.effect_kind.capacity() as u64)?, dispatch.request.logical_owned_bytes()?)?;
