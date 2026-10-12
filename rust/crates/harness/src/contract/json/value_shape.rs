@@ -31,27 +31,12 @@ enum Scope { Ignore, Value, Unknown, Gate(u16, u8) }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Node {
-    Ignore, Value, Unknown, Interaction, ControlResponse, EventPayload, Resolution,
-    Snapshot, Events, Event, Projection, Resolutions, ResolutionTuple,
-    Context, Messages, Message, ResponseProjection, ModelRequest, Model,
-    Tools, Tool, ModelContent, Parts, Part, ToolResult, ModelEvent,
-    WorkflowRecord, StateRecord, Transition, Status, WorkflowAdmission, MachineCheckpoint,
-    ProjectedToolInvocation, ResourcePreparationRequest, TaskAdmissionRecord,
-    SchedulerEvent, OperationSpec, EntrypointRef, Orchestration,
-    InteractionResponse, RecursiveForkToolPlan, RecursivePlan, RecursiveInitialPlan,
-    RecursiveState, RecursiveReceipt, ValueOutcome, ProjectMergeReceipt, ProviderProof,
-    ToolTaskCommand, TaskAdmitCommand, PreparedTaskAdmitCommand, ModelTaskCommand,
-    NativeProcessRequest, McpStdioRequest,
-    ProjectSourceAuthorization, ForkRequest, ForkReport, ForkSeed, RecursiveForkSourceIntent,
-    RecursiveSourcePin, ForkPreparationCommandResults, ForkPreparationCommands,
-    ForkPreparationCommandResult, ForkReportOutcome, Forks, ForkTuple,
-    ConfiguredRecursiveSourceCheckpoint,
-    RecursiveMergeToolPlan, RecursivePlanPayload,
+    Schema(JsonValueSchema), Unknown, Resolution, Events, Event, Projection, Resolutions, ResolutionTuple, Messages, Message, Model, Tools, Tool, Parts, StateRecord, Transition, Status, OperationSpec, EntrypointRef, Orchestration, ProviderProof, McpStdioRequest, ForkPreparationCommands, ForkPreparationCommandResult, ForkReportOutcome, Forks, ForkTuple, RecursivePlanPayload,
 }
 #[derive(Clone, Copy)]
 struct Selection { node: Node, scope: Scope }
 impl Selection {
-    const IGNORE: Self = Self { node: Node::Ignore, scope: Scope::Ignore };
+    const IGNORE: Self = Self { node: Node::Schema(JsonValueSchema::None), scope: Scope::Ignore };
 }
 
 #[derive(Clone, Copy, Default)]
@@ -242,7 +227,6 @@ struct Pending { layer: usize, bytes: [u8; 4], len: u8, position: u8 }
 impl Pending { const EMPTY: Self = Self { layer: 0, bytes: [0; 4], len: 0, position: 0 }; }
 
 pub(super) struct ValueInspector {
-    schema: Option<JsonValueSchema>,
     bounds: JsonBounds,
     frames: [Frame; FRAMES],
     frame_len: usize,
@@ -253,54 +237,10 @@ pub(super) struct ValueInspector {
 
 impl ValueInspector {
     pub(super) fn new(schema: Option<JsonValueSchema>, bounds: JsonBounds) -> Self {
-        let node = match schema {
-            None => Node::Unknown,
-            Some(JsonValueSchema::None) => Node::Ignore,
-            Some(JsonValueSchema::Root) => Node::Value,
-            Some(JsonValueSchema::Interaction) => Node::Interaction,
-            Some(JsonValueSchema::ControlResponse) => Node::ControlResponse,
-            Some(JsonValueSchema::EventPayload) => Node::EventPayload,
-            Some(JsonValueSchema::Snapshot) => Node::Snapshot,
-            Some(JsonValueSchema::Context) => Node::Context,
-            Some(JsonValueSchema::ResponseProjection) => Node::ResponseProjection,
-            Some(JsonValueSchema::ModelEvent) => Node::ModelEvent,
-            Some(JsonValueSchema::ModelRequest) => Node::ModelRequest,
-            Some(JsonValueSchema::ModelContent) => Node::ModelContent,
-            Some(JsonValueSchema::ModelContentPart) => Node::Part,
-            Some(JsonValueSchema::WorkflowRecord) => Node::WorkflowRecord,
-            Some(JsonValueSchema::WorkflowAdmission) => Node::WorkflowAdmission,
-            Some(JsonValueSchema::MachineCheckpoint) => Node::MachineCheckpoint,
-            Some(JsonValueSchema::ProjectedToolInvocation) => Node::ProjectedToolInvocation,
-            Some(JsonValueSchema::ToolResultContent) => Node::ToolResult,
-            Some(JsonValueSchema::ResourcePreparationRequest) => Node::ResourcePreparationRequest,
-            Some(JsonValueSchema::SchedulerEvent) => Node::SchedulerEvent,
-            Some(JsonValueSchema::InteractionResponse) => Node::InteractionResponse,
-            Some(JsonValueSchema::TaskAdmissionRecord) => Node::TaskAdmissionRecord,
-            Some(JsonValueSchema::RecursiveForkToolPlan) => Node::RecursiveForkToolPlan,
-            Some(JsonValueSchema::RecursivePlan) => Node::RecursivePlan,
-            Some(JsonValueSchema::RecursiveInitialPlan) => Node::RecursiveInitialPlan,
-            Some(JsonValueSchema::RecursiveState) => Node::RecursiveState,
-            Some(JsonValueSchema::RecursiveReceipt) => Node::RecursiveReceipt,
-            Some(JsonValueSchema::TaskOutcome) => Node::ValueOutcome,
-            Some(JsonValueSchema::ProjectMergeReceipt) => Node::ProjectMergeReceipt,
-            Some(JsonValueSchema::ToolTaskCommand) => Node::ToolTaskCommand,
-            Some(JsonValueSchema::TaskAdmitCommand) => Node::TaskAdmitCommand,
-            Some(JsonValueSchema::PreparedTaskAdmitCommand) => Node::PreparedTaskAdmitCommand,
-            Some(JsonValueSchema::ModelTaskCommand) => Node::ModelTaskCommand,
-            Some(JsonValueSchema::NativeProcessRequest) => Node::NativeProcessRequest,
-            Some(JsonValueSchema::ProjectSourceAuthorization) => Node::ProjectSourceAuthorization,
-            Some(JsonValueSchema::ForkRequest) => Node::ForkRequest,
-            Some(JsonValueSchema::ForkReport) => Node::ForkReport,
-            Some(JsonValueSchema::ForkSeed) => Node::ForkSeed,
-            Some(JsonValueSchema::RecursiveForkSourceIntent) => Node::RecursiveForkSourceIntent,
-            Some(JsonValueSchema::RecursiveSourcePin) => Node::RecursiveSourcePin,
-            Some(JsonValueSchema::ForkPreparationCommandResults) => Node::ForkPreparationCommandResults,
-            Some(JsonValueSchema::ConfiguredRecursiveSourceCheckpoint) => Node::ConfiguredRecursiveSourceCheckpoint,
-            Some(JsonValueSchema::RecursiveMergeToolPlan) => Node::RecursiveMergeToolPlan,
-        };
+        let node = schema.map_or(Node::Unknown, Node::Schema);
         let mut layers = [Layer::EMPTY; LAYERS];
         layers[0].root = Selection { node, scope: if node == Node::Unknown { Scope::Unknown } else { Scope::Value } };
-        Self { schema, bounds, frames: [Frame::EMPTY; FRAMES], frame_len: 0, layers, stats: Stats::EMPTY, potential_raw: false }
+        Self { bounds, frames: [Frame::EMPTY; FRAMES], frame_len: 0, layers, stats: Stats::EMPTY, potential_raw: false }
     }
 
     fn stats(&mut self, scope: Scope) -> Option<&mut Stats> {
@@ -318,35 +258,35 @@ impl ValueInspector {
         self.unresolved(scope);
     }
     fn value_scope(selection: Selection) -> Scope {
-        if matches!(selection.node, Node::Value | Node::Unknown) { selection.scope } else { Scope::Ignore }
+        if matches!(selection.node, Node::Schema(JsonValueSchema::Root) | Node::Unknown) { selection.scope } else { Scope::Ignore }
     }
     fn tag_key(node: Node) -> &'static [u8] {
         match node {
-            Node::Interaction | Node::InteractionResponse => b"type",
-            Node::EventPayload | Node::Part | Node::ToolResult => b"kind",
-            Node::ModelEvent => b"kind",
+            Node::Schema(JsonValueSchema::Interaction) | Node::Schema(JsonValueSchema::InteractionResponse) => b"type",
+            Node::Schema(JsonValueSchema::EventPayload) | Node::Schema(JsonValueSchema::ModelContentPart) | Node::Schema(JsonValueSchema::ToolResultContent) => b"kind",
+            Node::Schema(JsonValueSchema::ModelEvent) => b"kind",
             Node::Status => b"kind",
-            Node::SchedulerEvent | Node::Orchestration | Node::RecursivePlan => b"kind",
-            Node::RecursiveState => b"phase",
+            Node::Schema(JsonValueSchema::SchedulerEvent) | Node::Orchestration | Node::Schema(JsonValueSchema::RecursivePlan) => b"kind",
+            Node::Schema(JsonValueSchema::RecursiveState) => b"phase",
             _ => b"",
         }
     }
     fn tag_branches(node: Node, tag: &[u8]) -> u8 {
         match (node, tag) {
-            (Node::Interaction, b"question") | (Node::EventPayload, b"interaction_resolved")
-                | (Node::Part, b"tool_call") | (Node::ToolResult, b"json")
-                | (Node::ModelEvent, b"tool_call") | (Node::Status, b"completed") => 1,
-            (Node::Interaction, b"form") | (Node::Part, b"tool_result")
-                | (Node::ModelEvent, b"completed") => 2,
-            (Node::EventPayload, b"fork_published") => 2,
-            (Node::EventPayload, b"project_merge_published") => 4,
-            (Node::SchedulerEvent, b"declared") | (Node::Orchestration, b"reduce") => 1,
-            (Node::SchedulerEvent, b"orchestrated") => 2,
-            (Node::InteractionResponse, b"question" | b"form") | (Node::RecursivePlan, b"fork") => 1,
-            (Node::RecursivePlan, b"merge") => 2,
-            (Node::RecursiveState, b"ready" | b"source_pinned") => 1,
-            (Node::RecursiveState, b"waiting") => 3,
-            (Node::RecursiveState, b"complete") => 4,
+            (Node::Schema(JsonValueSchema::Interaction), b"question") | (Node::Schema(JsonValueSchema::EventPayload), b"interaction_resolved")
+                | (Node::Schema(JsonValueSchema::ModelContentPart), b"tool_call") | (Node::Schema(JsonValueSchema::ToolResultContent), b"json")
+                | (Node::Schema(JsonValueSchema::ModelEvent), b"tool_call") | (Node::Status, b"completed") => 1,
+            (Node::Schema(JsonValueSchema::Interaction), b"form") | (Node::Schema(JsonValueSchema::ModelContentPart), b"tool_result")
+                | (Node::Schema(JsonValueSchema::ModelEvent), b"completed") => 2,
+            (Node::Schema(JsonValueSchema::EventPayload), b"fork_published") => 2,
+            (Node::Schema(JsonValueSchema::EventPayload), b"project_merge_published") => 4,
+            (Node::Schema(JsonValueSchema::SchedulerEvent), b"declared") | (Node::Orchestration, b"reduce") => 1,
+            (Node::Schema(JsonValueSchema::SchedulerEvent), b"orchestrated") => 2,
+            (Node::Schema(JsonValueSchema::InteractionResponse), b"question" | b"form") | (Node::Schema(JsonValueSchema::RecursivePlan), b"fork") => 1,
+            (Node::Schema(JsonValueSchema::RecursivePlan), b"merge") => 2,
+            (Node::Schema(JsonValueSchema::RecursiveState), b"ready" | b"source_pinned") => 1,
+            (Node::Schema(JsonValueSchema::RecursiveState), b"waiting") => 3,
+            (Node::Schema(JsonValueSchema::RecursiveState), b"complete") => 4,
             _ => 0,
         }
     }
@@ -357,100 +297,100 @@ impl ValueInspector {
         let scope = frame.selection.scope;
         let gate = |branch| Scope::Gate(index as u16, branch);
         let (node, scope) = match (frame.selection.node, frame.key) {
-            (Node::Value, _) => (Node::Value, scope),
+            (Node::Schema(JsonValueSchema::Root), _) => (Node::Schema(JsonValueSchema::Root), scope),
             (Node::Unknown, _) => (Node::Unknown, Scope::Unknown),
-            (Node::Interaction, b"response_schema") => (Node::Value, gate(0)),
-            (Node::Interaction, b"schema") => (Node::Value, gate(1)),
-            (Node::ControlResponse, b"result") => (Node::Value, scope),
-            (Node::EventPayload, b"resolution") => (Node::Resolution, gate(0)),
-            (Node::EventPayload, b"seed") => (Node::ForkSeed, gate(1)),
-            (Node::EventPayload, b"receipt") => (Node::ProjectMergeReceipt, gate(2)),
-            (Node::Resolution, b"outcome") => (Node::Value, scope),
-            (Node::Snapshot, b"events") => (Node::Events, scope),
-            (Node::Snapshot, b"projection") => (Node::Projection, scope),
+            (Node::Schema(JsonValueSchema::Interaction), b"response_schema") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::Interaction), b"schema") => (Node::Schema(JsonValueSchema::Root), gate(1)),
+            (Node::Schema(JsonValueSchema::ControlResponse), b"result") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::EventPayload), b"resolution") => (Node::Resolution, gate(0)),
+            (Node::Schema(JsonValueSchema::EventPayload), b"seed") => (Node::Schema(JsonValueSchema::ForkSeed), gate(1)),
+            (Node::Schema(JsonValueSchema::EventPayload), b"receipt") => (Node::Schema(JsonValueSchema::ProjectMergeReceipt), gate(2)),
+            (Node::Resolution, b"outcome") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::Snapshot), b"events") => (Node::Events, scope),
+            (Node::Schema(JsonValueSchema::Snapshot), b"projection") => (Node::Projection, scope),
             (Node::Events, _) if !frame.object => (Node::Event, scope),
-            (Node::Event, b"payload") => (Node::EventPayload, scope),
+            (Node::Event, b"payload") => (Node::Schema(JsonValueSchema::EventPayload), scope),
             (Node::Projection, b"interactions") => (Node::Resolutions, scope),
             (Node::Projection, b"forks") => (Node::Forks, scope),
             (Node::Forks, _) if !frame.object => (Node::ForkTuple, scope),
-            (Node::ForkTuple, _) if !frame.object && frame.array_index == 1 => (Node::ForkSeed, scope),
+            (Node::ForkTuple, _) if !frame.object && frame.array_index == 1 => (Node::Schema(JsonValueSchema::ForkSeed), scope),
             (Node::Resolutions, _) if frame.object => (Node::ResolutionTuple, scope),
             (Node::ResolutionTuple, _) if !frame.object && frame.array_index == 1 => (Node::Resolution, scope),
-            (Node::Context, b"messages") => (Node::Messages, scope),
+            (Node::Schema(JsonValueSchema::Context), b"messages") => (Node::Messages, scope),
             (Node::Messages, _) if !frame.object => (Node::Message, scope),
-            (Node::Message, b"content") => (Node::ModelContent, scope),
-            (Node::ResponseProjection, b"context") => (Node::Context, scope),
-            (Node::ModelRequest, b"model") => (Node::Model, scope),
-            (Node::Model, b"options") => (Node::Value, scope),
-            (Node::ModelRequest, b"messages") => (Node::Messages, scope),
-            (Node::ModelRequest, b"tools") => (Node::Tools, scope),
+            (Node::Message, b"content") => (Node::Schema(JsonValueSchema::ModelContent), scope),
+            (Node::Schema(JsonValueSchema::ResponseProjection), b"context") => (Node::Schema(JsonValueSchema::Context), scope),
+            (Node::Schema(JsonValueSchema::ModelRequest), b"model") => (Node::Model, scope),
+            (Node::Model, b"options") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::ModelRequest), b"messages") => (Node::Messages, scope),
+            (Node::Schema(JsonValueSchema::ModelRequest), b"tools") => (Node::Tools, scope),
             (Node::Tools, _) if !frame.object => (Node::Tool, scope),
-            (Node::Tool, b"input_schema" | b"output_schema" | b"projection_schema") => (Node::Value, scope),
-            (Node::Parts, _) if !frame.object => (Node::Part, scope),
-            (Node::Part, b"arguments") => (Node::Value, gate(0)),
-            (Node::Part, b"content") => (Node::ToolResult, gate(1)),
-            (Node::ToolResult, b"value") => (Node::Value, gate(0)),
-            (Node::ModelEvent, b"arguments") => (Node::Value, gate(0)),
-            (Node::ModelEvent, b"metadata") => (Node::Value, gate(1)),
-            (Node::ProjectedToolInvocation, b"arguments") => (Node::Value, scope),
-            (Node::WorkflowRecord, b"input") => (Node::Value, scope),
-            (Node::WorkflowRecord, b"prior" | b"next") => (Node::StateRecord, scope),
-            (Node::WorkflowRecord, b"transition") => (Node::Transition, scope),
-            (Node::StateRecord | Node::Transition | Node::MachineCheckpoint, b"state") => (Node::Value, scope),
+            (Node::Tool, b"input_schema" | b"output_schema" | b"projection_schema") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Parts, _) if !frame.object => (Node::Schema(JsonValueSchema::ModelContentPart), scope),
+            (Node::Schema(JsonValueSchema::ModelContentPart), b"arguments") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::ModelContentPart), b"content") => (Node::Schema(JsonValueSchema::ToolResultContent), gate(1)),
+            (Node::Schema(JsonValueSchema::ToolResultContent), b"value") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::ModelEvent), b"arguments") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::ModelEvent), b"metadata") => (Node::Schema(JsonValueSchema::Root), gate(1)),
+            (Node::Schema(JsonValueSchema::ProjectedToolInvocation), b"arguments") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::WorkflowRecord), b"input") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::WorkflowRecord), b"prior" | b"next") => (Node::StateRecord, scope),
+            (Node::Schema(JsonValueSchema::WorkflowRecord), b"transition") => (Node::Transition, scope),
+            (Node::StateRecord | Node::Transition | Node::Schema(JsonValueSchema::MachineCheckpoint), b"state") => (Node::Schema(JsonValueSchema::Root), scope),
             (Node::Transition, b"status") => (Node::Status, scope),
-            (Node::Status, b"value") => (Node::Value, gate(0)),
-            (Node::WorkflowAdmission, b"initial") => (Node::StateRecord, scope),
-            (Node::ResourcePreparationRequest, b"payload") => (Node::Value, scope),
-            (Node::ResourcePreparationRequest, b"child") => (Node::TaskAdmissionRecord, scope),
-            (Node::ResourcePreparationRequest, b"read_authorization") => (Node::ProjectSourceAuthorization, scope),
-            (Node::TaskAdmissionRecord, b"input" | b"input_schema" | b"output_schema") => (Node::Value, scope),
-            (Node::SchedulerEvent, b"spec") => (Node::OperationSpec, gate(0)),
-            (Node::SchedulerEvent, b"reducer") => (Node::EntrypointRef, gate(1)),
+            (Node::Status, b"value") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::WorkflowAdmission), b"initial") => (Node::StateRecord, scope),
+            (Node::Schema(JsonValueSchema::ResourcePreparationRequest), b"payload") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::ResourcePreparationRequest), b"child") => (Node::Schema(JsonValueSchema::TaskAdmissionRecord), scope),
+            (Node::Schema(JsonValueSchema::ResourcePreparationRequest), b"read_authorization") => (Node::Schema(JsonValueSchema::ProjectSourceAuthorization), scope),
+            (Node::Schema(JsonValueSchema::TaskAdmissionRecord), b"input" | b"input_schema" | b"output_schema") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::SchedulerEvent), b"spec") => (Node::OperationSpec, gate(0)),
+            (Node::Schema(JsonValueSchema::SchedulerEvent), b"reducer") => (Node::EntrypointRef, gate(1)),
             (Node::OperationSpec, b"entrypoint") => (Node::EntrypointRef, scope),
             (Node::OperationSpec, b"orchestration") => (Node::Orchestration, scope),
             (Node::Orchestration, b"reducer") => (Node::EntrypointRef, gate(0)),
-            (Node::EntrypointRef, b"result_schema") => (Node::Value, scope),
-            (Node::InteractionResponse, b"value") => (Node::Value, gate(0)),
-            (Node::RecursiveForkToolPlan | Node::RecursivePlanPayload, b"request") => (Node::ResourcePreparationRequest, scope),
-            (Node::RecursiveForkToolPlan | Node::RecursivePlanPayload, b"preparation") => (Node::TaskAdmissionRecord, scope),
-            (Node::RecursivePlan, b"plan") => (Node::RecursivePlanPayload, gate(0)),
-            (Node::RecursiveInitialPlan, b"plan") => (Node::RecursivePlan, scope),
-            (Node::RecursiveState, b"arguments") => (Node::Value, gate(0)),
-            (Node::RecursiveState, b"intent") => (Node::RecursiveForkSourceIntent, gate(0)),
-            (Node::RecursiveState, b"report") => (Node::ForkReport, gate(1)),
-            (Node::RecursiveState, b"plan") => (Node::RecursivePlan, gate(1)),
-            (Node::RecursiveState, b"receipt") => (Node::ProjectMergeReceipt, gate(1)),
-            (Node::RecursiveState, b"value") => (Node::Value, gate(2)),
-            (Node::RecursiveReceipt, b"value") => (Node::ValueOutcome, scope),
-            (Node::ValueOutcome, b"Succeeded") => (Node::Value, scope),
-            (Node::ProjectMergeReceipt, b"provider_proof") => (Node::ProviderProof, scope),
-            (Node::ProviderProof, b"statement") => (Node::Value, scope),
-            (Node::ProjectSourceAuthorization, b"native_snapshot") => (Node::Value, scope),
-            (Node::ForkRequest | Node::ForkSeed, b"authorized_source") => (Node::ProjectSourceAuthorization, scope),
-            (Node::ForkReport | Node::RecursiveForkSourceIntent, b"request") => (Node::ForkRequest, scope),
-            (Node::RecursiveSourcePin, b"intent") => (Node::RecursiveForkSourceIntent, scope),
-            (Node::ForkPreparationCommandResults, b"commands") => (Node::ForkPreparationCommands, scope),
+            (Node::EntrypointRef, b"result_schema") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::InteractionResponse), b"value") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::RecursiveForkToolPlan) | Node::RecursivePlanPayload, b"request") => (Node::Schema(JsonValueSchema::ResourcePreparationRequest), scope),
+            (Node::Schema(JsonValueSchema::RecursiveForkToolPlan) | Node::RecursivePlanPayload, b"preparation") => (Node::Schema(JsonValueSchema::TaskAdmissionRecord), scope),
+            (Node::Schema(JsonValueSchema::RecursivePlan), b"plan") => (Node::RecursivePlanPayload, gate(0)),
+            (Node::Schema(JsonValueSchema::RecursiveInitialPlan), b"plan") => (Node::Schema(JsonValueSchema::RecursivePlan), scope),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"arguments") => (Node::Schema(JsonValueSchema::Root), gate(0)),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"intent") => (Node::Schema(JsonValueSchema::RecursiveForkSourceIntent), gate(0)),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"report") => (Node::Schema(JsonValueSchema::ForkReport), gate(1)),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"plan") => (Node::Schema(JsonValueSchema::RecursivePlan), gate(1)),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"receipt") => (Node::Schema(JsonValueSchema::ProjectMergeReceipt), gate(1)),
+            (Node::Schema(JsonValueSchema::RecursiveState), b"value") => (Node::Schema(JsonValueSchema::Root), gate(2)),
+            (Node::Schema(JsonValueSchema::RecursiveReceipt), b"value") => (Node::Schema(JsonValueSchema::TaskOutcome), scope),
+            (Node::Schema(JsonValueSchema::TaskOutcome), b"Succeeded") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::ProjectMergeReceipt), b"provider_proof") => (Node::ProviderProof, scope),
+            (Node::ProviderProof, b"statement") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::ProjectSourceAuthorization), b"native_snapshot") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::ForkRequest) | Node::Schema(JsonValueSchema::ForkSeed), b"authorized_source") => (Node::Schema(JsonValueSchema::ProjectSourceAuthorization), scope),
+            (Node::Schema(JsonValueSchema::ForkReport) | Node::Schema(JsonValueSchema::RecursiveForkSourceIntent), b"request") => (Node::Schema(JsonValueSchema::ForkRequest), scope),
+            (Node::Schema(JsonValueSchema::RecursiveSourcePin), b"intent") => (Node::Schema(JsonValueSchema::RecursiveForkSourceIntent), scope),
+            (Node::Schema(JsonValueSchema::ForkPreparationCommandResults), b"commands") => (Node::ForkPreparationCommands, scope),
             (Node::ForkPreparationCommands, _) if !frame.object => (Node::ForkPreparationCommandResult, scope),
             (Node::ForkPreparationCommandResult, b"value") => (Node::ForkReportOutcome, scope),
-            (Node::ForkReportOutcome, b"Succeeded") => (Node::ForkReport, scope),
-            (Node::ConfiguredRecursiveSourceCheckpoint, b"snapshot") => (Node::Snapshot, scope),
-            (Node::ConfiguredRecursiveSourceCheckpoint, b"request") => (Node::ForkRequest, scope),
-            (Node::RecursiveMergeToolPlan, b"authorized_source") => (Node::ProjectSourceAuthorization, scope),
+            (Node::ForkReportOutcome, b"Succeeded") => (Node::Schema(JsonValueSchema::ForkReport), scope),
+            (Node::Schema(JsonValueSchema::ConfiguredRecursiveSourceCheckpoint), b"snapshot") => (Node::Schema(JsonValueSchema::Snapshot), scope),
+            (Node::Schema(JsonValueSchema::ConfiguredRecursiveSourceCheckpoint), b"request") => (Node::Schema(JsonValueSchema::ForkRequest), scope),
+            (Node::Schema(JsonValueSchema::RecursiveMergeToolPlan), b"authorized_source") => (Node::Schema(JsonValueSchema::ProjectSourceAuthorization), scope),
             (Node::RecursivePlanPayload, b"authorized_source") => {
                 let scope = match scope {
                     Scope::Gate(owner, _) => Scope::Gate(owner, 1),
                     _ => Scope::Ignore,
                 };
-                (Node::ProjectSourceAuthorization, scope)
+                (Node::Schema(JsonValueSchema::ProjectSourceAuthorization), scope)
             }
-            (Node::ToolTaskCommand, b"arguments") => (Node::Value, scope),
-            (Node::TaskAdmitCommand, b"input") => (Node::Value, scope),
-            (Node::PreparedTaskAdmitCommand, b"admission") => (Node::TaskAdmissionRecord, scope),
-            (Node::ModelTaskCommand, b"input") => (Node::ModelContent, scope),
-            (Node::ModelTaskCommand, b"selected_context") => (Node::Context, scope),
-            (Node::NativeProcessRequest, b"mcp_stdio") => (Node::McpStdioRequest, scope),
-            (Node::McpStdioRequest, b"params") => (Node::Value, scope),
-            _ => (Node::Ignore, Scope::Ignore),
+            (Node::Schema(JsonValueSchema::ToolTaskCommand), b"arguments") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::TaskAdmitCommand), b"input") => (Node::Schema(JsonValueSchema::Root), scope),
+            (Node::Schema(JsonValueSchema::PreparedTaskAdmitCommand), b"admission") => (Node::Schema(JsonValueSchema::TaskAdmissionRecord), scope),
+            (Node::Schema(JsonValueSchema::ModelTaskCommand), b"input") => (Node::Schema(JsonValueSchema::ModelContent), scope),
+            (Node::Schema(JsonValueSchema::ModelTaskCommand), b"selected_context") => (Node::Schema(JsonValueSchema::Context), scope),
+            (Node::Schema(JsonValueSchema::NativeProcessRequest), b"mcp_stdio") => (Node::McpStdioRequest, scope),
+            (Node::McpStdioRequest, b"params") => (Node::Schema(JsonValueSchema::Root), scope),
+            _ => (Node::Schema(JsonValueSchema::None), Scope::Ignore),
         };
         Selection { node, scope }
     }
@@ -597,7 +537,7 @@ impl ValueInspector {
                         role = Role::Raw;
                         if let Some(stats) = self.stats(scope) { Stats::add(&mut stats.raw_frames, &mut stats.overflow); }
                         if layer + 1 < LAYERS {
-                            self.layers[layer + 1] = Layer { base: self.frame_len, root: Selection { node: Node::Value, scope }, ..Layer::EMPTY };
+                            self.layers[layer + 1] = Layer { base: self.frame_len, root: Selection { node: Node::Schema(JsonValueSchema::Root), scope }, ..Layer::EMPTY };
                             raw_child = true;
                         } else if let Some(stats) = self.stats(scope) { stats.overflow = true; stats.unresolved = true; }
                     }
@@ -612,8 +552,8 @@ impl ValueInspector {
                 self.layers[layer].overflow_depth = 1;
             } else {
                 let object = byte == b'{';
-                let node = if selection.node == Node::ModelContent {
-                    if object { Node::Part } else { Node::Parts }
+                let node = if selection.node == Node::Schema(JsonValueSchema::ModelContent) {
+                    if object { Node::Schema(JsonValueSchema::ModelContentPart) } else { Node::Parts }
                 } else { selection.node };
                 self.frames[self.frame_len] = Frame { object, phase: if object { Phase::Key } else { Phase::Value },
                     selection: Selection { node, ..selection }, ..Frame::EMPTY };
@@ -630,7 +570,7 @@ impl ValueInspector {
     pub(super) fn push<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, byte: u8, charge: &mut F,
     ) -> std::result::Result<(), AdmissionFailure> {
-        if matches!(self.schema, Some(JsonValueSchema::None)) { return Ok(()); }
+        if self.layers[0].root.node == Node::Schema(JsonValueSchema::None) { return Ok(()); }
         self.push_layer(0, byte, charge)
     }
 
@@ -695,14 +635,14 @@ impl ValueInspector {
         }
         match value {
             serde_json::Value::Object(values) => {
-                let node = if selection.node == Node::ModelContent { Node::Part } else { selection.node };
+                let node = if selection.node == Node::Schema(JsonValueSchema::ModelContent) { Node::Schema(JsonValueSchema::ModelContentPart) } else { selection.node };
                 self.frames[self.frame_len] = Frame { object: true, phase: Phase::Key,
                     selection: Selection { node, ..selection }, ..Frame::EMPTY };
                 self.frame_len += 1;
                 Ok(Some(OwnedFrame::Object(values.iter())))
             }
             serde_json::Value::Array(values) => {
-                let node = if selection.node == Node::ModelContent { Node::Parts } else { selection.node };
+                let node = if selection.node == Node::Schema(JsonValueSchema::ModelContent) { Node::Parts } else { selection.node };
                 self.frames[self.frame_len] = Frame { selection: Selection { node, ..selection }, ..Frame::EMPTY };
                 self.frame_len += 1;
                 Ok(Some(OwnedFrame::Array(values.iter())))
@@ -713,7 +653,7 @@ impl ValueInspector {
                     if scope == Scope::Unknown { self.potential_raw = true; }
                     else {
                         if let Some(stats) = self.stats(scope) { Stats::add(&mut stats.raw_frames, &mut stats.overflow); }
-                        self.layers[1] = Layer { base: self.frame_len, root: Selection { node: Node::Value, scope }, ..Layer::EMPTY };
+                        self.layers[1] = Layer { base: self.frame_len, root: Selection { node: Node::Schema(JsonValueSchema::Root), scope }, ..Layer::EMPTY };
                         for &byte in string.as_bytes() { self.push_layer(1, byte, charge)?; }
                         self.close_raw(0, scope);
                     }
@@ -734,7 +674,7 @@ impl ValueInspector {
         }
         Ok(JsonValueShape { input_bytes, lexical_items, virtual_items: stats.items,
             raw_bytes: stats.bytes, raw_frames: stats.raw_frames,
-            unresolved_raw: stats.unresolved || (self.schema.is_none() && self.potential_raw), origin: ShapeOrigin::Slice })
+            unresolved_raw: stats.unresolved || (self.layers[0].root.node == Node::Unknown && self.potential_raw), origin: ShapeOrigin::Slice })
     }
 }
 
