@@ -10439,69 +10439,6 @@ where
         }
     }
 
-    async fn compile_selected_record(
-        &self, checkout: &crate::Checkout<A, O>, path: NamespacePath,
-        record: FileRecord, accounting: &LazyTreapWork<'_>,
-        ) -> Result<(crate::kernel::Mutation, FileId), LazyWorkspaceError> {
-        let cancellation = accounting.cancellation;
-        let bytes = path.retained_bytes();
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => {
-                accounting.release(bytes)?;
-                let compiled = accounting.accept(checkout.compile_copied_record(
-                    path, record, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure|
-                    lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
-                accounting.adopt(bytes)?;
-                Ok(compiled)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, scratch } => {
-                let allocation = accounting.take_native_owned(bytes)?
-                    .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-                let (compiled, mut allocation) = checkout.compile_copied_record_with_native_work(
-                    path, record, allocation, original, cancellation,
-                ).await.map_err(native_filesystem_error)?;
-                let absorbed = scratch.lock().expect("lazy treap scratch lock poisoned")
-                    .absorb(&mut allocation);
-                if let Err(error) = absorbed {
-                    drop(compiled);
-                    drop(allocation);
-                    return Err(error.into());
-                }
-                Ok(compiled)
-            }
-        }
-    }
-
-    async fn mutate_selected(
-        &self, checkout: &mut crate::Checkout<A, O>,
-        operations: Vec<crate::kernel::Mutation>, bytes: u64,
-        accounting: &LazyTreapWork<'_>,
-    ) -> Result<(), LazyWorkspaceError> {
-        let cancellation = accounting.cancellation;
-        if operations.is_empty() {
-            drop(operations);
-            return accounting.release(bytes);
-        }
-        lazy_dispatch!{accounting, {
-                accounting.release(bytes)?;
-                accounting.accept(checkout.mutate(
-                    operations, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure|
-                    lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
-                Ok(())
-            },
-            |original| {
-                let allocation = accounting.take_native_owned(bytes)?
-                    .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-                checkout.mutate_with_native_work(
-                    operations, allocation, original, cancellation,
-                ).await.map_err(native_filesystem_error)
-            }
-        }
-    }
-
     pub(crate) async fn operation_generation(
         &self, key: IdempotencyKey, accounting: &LazyTreapWork<'_>,
     ) -> Result<Option<crate::GenerationId>, LazyWorkspaceError> {
@@ -10537,25 +10474,6 @@ where
                     selector, mode, original, cancellation,
                 ).await.map_err(native_workspace_error)
             }
-        }
-    }
-
-    async fn selected_checkout_metadata(
-        checkout: &mut crate::Checkout<A, O>, path: &NamespacePath,
-        accounting: &LazyTreapWork<'_>,
-    ) -> Result<Option<crate::PathMetadataLookup>, LazyWorkspaceError> {
-        let cancellation = accounting.cancellation;
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                checkout.lookup_no_follow_with_metadata(path, accounting.remaining()?, cancellation).await
-                    .map_err(|failure| lazy_operation_failure(
-                        failure, |error| workspace_error(error.into()),
-                    )),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } =>
-                checkout.lookup_no_follow_with_metadata(path, original, cancellation)
-                    .await.map_err(native_filesystem_error),
         }
     }
 
@@ -10602,11 +10520,15 @@ where
     }
 
     /// Prepares selected namespace replacement in the caller's actual private checkout.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn prepare_selected_import_into_checkout(
         &self, destination: LazySnapshotRef, plan: &SelectedImportPlan,
         checkout: &mut crate::Checkout<A, O>, operation: crate::OperationId,
         accounting: &LazyTreapWork<'_>,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
+        let LazyTreapMeter::NativeOriginal { original, scratch: backing } = &accounting.meter else {
+            return Err(LazyWorkspaceError::NativeLedgerMismatch);
+        };
         let cancellation = accounting.cancellation;
         let scratch = TreapAllocationScope::new(accounting);
         let prepare = || async move {
@@ -10648,7 +10570,7 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
+                let current = checkout.lookup_no_follow(&namespace, original, cancellation).await.map_err(native_filesystem_error)?;
                 drop(namespace);
                 accounting.release(namespace_bytes)?;
                 if current.record.is_none() {
@@ -10661,9 +10583,9 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
+                let before = baseline.lookup_no_follow_with_metadata(&namespace, original, cancellation).await.map_err(native_filesystem_error)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
+                let actual = checkout.lookup_no_follow_with_metadata(&namespace, original, cancellation).await.map_err(native_filesystem_error)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
                 let mut comparable = actual.record;
                 // Normalize link count for aliases outside the selected namespace.
@@ -10702,9 +10624,9 @@ where
                         &entry.path, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let before = Self::selected_checkout_metadata(&mut baseline, &namespace, accounting).await?
+                    let before = baseline.lookup_no_follow_with_metadata(&namespace, original, cancellation).await.map_err(native_filesystem_error)?
                         .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                    let actual = Self::selected_checkout_metadata(checkout, &namespace, accounting).await?
+                    let actual = checkout.lookup_no_follow_with_metadata(&namespace, original, cancellation).await.map_err(native_filesystem_error)?
                         .ok_or(LazyWorkspaceError::StaleIdentity)?;
                     let mut comparable = actual.record;
                     comparable.link_count = before.record.link_count;
@@ -10739,14 +10661,14 @@ where
                         parent, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
+                    let existing = checkout.lookup_no_follow(&namespace, original, cancellation).await.map_err(native_filesystem_error)?;
                     if let Some(record) = existing.record {
                         if record.kind != FileKind::Directory {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
                     } else {
                         stage_selected_lookup!(checkout, current_snapshot, parent, false);
-                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
+                        let staged = checkout.lookup_no_follow(&namespace, original, cancellation).await.map_err(native_filesystem_error)?;
                         if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
@@ -10801,7 +10723,16 @@ where
                     )?;
                     crate::kernel::Mutation::Link { source, destination: namespace }
                 } else {
-                    let compiled = self.compile_selected_record(checkout, namespace, record, accounting).await?;
+                    let allocation = accounting.take_native_owned(namespace.retained_bytes())?
+                        .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
+                    let (compiled, mut allocation) = checkout.compile_copied_record_with_native_work(
+                        namespace, record, allocation, original, cancellation,
+                    ).await.map_err(native_filesystem_error)?;
+                    if let Err(error) = backing.lock().expect("lazy treap scratch lock poisoned").absorb(&mut allocation) {
+                        drop(compiled);
+                        drop(allocation);
+                        return Err(error.into());
+                    }
                     if record.kind != FileKind::Directory {
                         accounting.ensure_vec_push(&mut identities)?;
                         identities.push((record.file_id, entry.path.as_str()));
@@ -10851,7 +10782,15 @@ where
                 }
             }
             let input = plan.input_digest(destination, &accounting)?;
-            self.mutate_selected(checkout, operations, transferred_bytes, accounting).await?;
+            if operations.is_empty() {
+                drop(operations);
+                accounting.release(transferred_bytes)?;
+            } else {
+                let allocation = accounting.take_native_owned(transferred_bytes)?
+                    .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
+                checkout.mutate_with_native_work(operations, allocation, original, cancellation)
+                    .await.map_err(native_filesystem_error)?;
+            }
             let mut logical_owned_bytes = (paths.capacity() as u64)
                 .checked_mul(std::mem::size_of::<String>() as u64)
                 .and_then(|bytes| bytes.checked_add((records.capacity() as u64)
@@ -10875,20 +10814,9 @@ where
                 allocation: None,
             })
         };
-        let mut effects = match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } =>
-                in_heap_lazy::<_, LazyWorkspaceError, _>(accounting, prepare).await?,
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { .. } => prepare().await?,
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(accounting.meter, LazyTreapMeter::NativeOriginal { .. }) {
-            effects.allocation = accounting.take_native_owned(effects.logical_owned_bytes)?;
-        }
+        let mut effects = prepare().await?;
+        effects.allocation = accounting.take_native_owned(effects.logical_owned_bytes)?;
         drop(scratch);
-        if matches!(accounting.meter, LazyTreapMeter::Standalone { .. }) {
-            accounting.adopt(effects.logical_owned_bytes)?;
-        }
         Ok(effects)
     }
 
@@ -14749,7 +14677,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         source.cancel_next_range();
         assert!(matches!(
-            { let stage_cancellation = &cancellation; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
+            { let stage_cancellation = &cancellation; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Cancelled)
         ));
         assert!(cancellation.is_cancelled());
@@ -14836,15 +14764,15 @@ mod tests {
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert!(matches!(
-            { let stage_cancellation = &cancelled; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
+            { let stage_cancellation = &cancelled; let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity)),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Cancelled)
         ));
         assert!(
-            { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+            { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
             .expect("stage source in dirty mount")
         );
         assert!(
-            !{ let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+            !{ let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, "/file.txt", root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
                 .expect("already staged source identity")
         );
         assert_eq!(
@@ -14898,7 +14826,7 @@ mod tests {
                 panic!("expected unresolved source alias");
             };
             assert!(
-                { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, path, root.source_file_id(&node), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
+                { let stage_cancellation = &CancellationToken::new(); let stage_work = LazyTreapWork::new(WorkBudget::UNBOUNDED, stage_cancellation); let result = root.stage_into_checkout(&mut checkout, None, path, root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), u64::MAX, &stage_work).await; stage_work.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }.map(|receipt| receipt.value).map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
                 .expect("stage source alias")
             );
         }
@@ -15053,7 +14981,7 @@ mod tests {
         let LazyLookup::Source(node) = root.lookup("/file.txt").await.expect("source") else {
             panic!("expected source file");
         };
-        root.remove_if("/file.txt", Some(root.source_file_id(&node)))
+        root.remove_if("/file.txt", Some(root.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash")))
             .await
             .expect("source-only tombstone");
         assert_eq!(
@@ -15297,7 +15225,7 @@ mod tests {
         let first = root.workspace().stat("/a", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("first stat");
         let second = root.workspace().stat("/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("second stat");
         assert_eq!(first.file_id, second.file_id);
-        assert_eq!(first.file_id, root.source_file_id(&source.node));
+        assert_eq!(first.file_id, root.source_file_id(&source.node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"));
         assert_eq!(first.link_count, 2);
         assert_eq!(second.link_count, 2);
         assert_eq!(first.metadata.posix_mode, Some(0o100640));
@@ -15349,7 +15277,7 @@ mod tests {
         let first = root.workspace().stat("/a", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("first stat");
         let second = root.workspace().stat("/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("second stat");
         assert_eq!(first.file_id, second.file_id);
-        assert_eq!(first.file_id, root.source_file_id(&source.node));
+        assert_eq!(first.file_id, root.source_file_id(&source.node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"));
         assert_eq!(
             root.read("/b", 64)
                 .await
@@ -15486,7 +15414,7 @@ mod tests {
                 panic!("source lookup expected")
             }
         };
-        assert_eq!(root.source_file_id(&first), root.source_file_id(&second));
+        assert_eq!(root.source_file_id(&first.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"), root.source_file_id(&second.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"));
         assert_eq!(
             root.seek("/first", 2, LazySeekTarget::Data)
                 .await
@@ -15577,7 +15505,7 @@ mod tests {
                 panic!("expected source directory")
             }
         };
-        let source_id = root.source_file_id(&source_node);
+        let source_id = root.source_file_id(&source_node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash");
         #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
         {
             let token = CancellationToken::new();
@@ -15640,7 +15568,7 @@ mod tests {
                 panic!("expected source node")
             }
         };
-        let expected_source = root.source_file_id(&source_node);
+        let expected_source = root.source_file_id(&source_node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash");
         root.write("/file.txt", Bytes::from_static(b"replacement"))
             .await
             .expect("authored replacement");
@@ -15739,7 +15667,7 @@ mod tests {
                     assert_eq!(generation.read(path, 64, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("same physical generation").as_ref(), expected);
                 }
                 assert_eq!(root.workspace().stat("/file.txt", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original source file identity").file_id,
-                    root.source_file_id(&source.node));
+                    root.source_file_id(&source.node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"));
             }
             assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
         }
@@ -15782,7 +15710,7 @@ mod tests {
             assert_eq!((published.source, published.overlay, published.shadows),
                 (basis.source, basis.overlay, basis.shadows));
             assert_eq!(root.workspace().stat("/b", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("published identity").file_id,
-                root.source_file_id(&source.node));
+                root.source_file_id(&source.node.file_identity, &mut crate::kernel::allocation::KernelAccounting::borrowed_standalone(&mut AllocationLedger::default(), &mut WorkCounters::UNCHARGED, WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source identity hash"));
             assert_eq!(root.read_at_snapshot_measured(
                 published, "/b", 64, finite_fixture_budget(), &token,
             ).await.expect("reader consumes actual final proof").value.as_ref(), b"replacement");
