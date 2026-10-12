@@ -123,12 +123,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             parent_private.capability(VolumeOperation::Write)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
-    let resolver = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        64 * 1_024, None,
-    )?);
+    let resolver = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
@@ -137,7 +132,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     .await?
     .with_content_verifier(resolver.clone())
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?));
     aggregate.set_resident_event_limit(1)?;
@@ -169,7 +164,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "request.txt",
             1_024,
             &IdempotencyKey::new("parent-message")?,
-        )
+         None, None)
         .await?;
     let attachment = host
         .put_content(
@@ -181,7 +176,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
-        )
+         None, None)
         .await?;
     let manifest_bytes = serde_json::to_vec(&vec![Attachment {
         file: attachment.clone(),
@@ -198,7 +193,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "manifest.json",
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
-        )
+         None, None)
         .await?;
     aggregate
         .execute(Command {
@@ -357,7 +352,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let mut unclaimed = report.clone().into_seed(&mut None)?;
     unclaimed.operation_id = OperationId::from_bytes([10; 16]);
     assert!(
-        FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?
             .verify(&unclaimed)
             .await
             .is_err()
@@ -368,7 +363,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         .push(AgentId::from_bytes([11; 16]));
     changed_seed.validate()?;
     assert!(matches!(
-        FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
+        FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?
             .verify(&changed_seed)
             .await,
         Err(acyclic_harness::Error::Conflict(_))

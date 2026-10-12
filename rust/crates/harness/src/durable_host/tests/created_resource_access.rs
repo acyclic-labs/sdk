@@ -478,9 +478,7 @@ impl CreationFixture {
             filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
             root_scope.limits().file_bytes, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None)?;
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
             identity: MachineIdentity {
@@ -796,9 +794,7 @@ impl CreationFixture {
             parent_project.capability(VolumeOperation::Read, &mut None)?,
             parent_private.capability(VolumeOperation::Read, &mut None)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
-        let resolver = Arc::new(FilesystemContentVerifier::new(
-            self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None,
-        )?);
+        let resolver = FilesystemContentVerifier::new(self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None)?;
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
             &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;

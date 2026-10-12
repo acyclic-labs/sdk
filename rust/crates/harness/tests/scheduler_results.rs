@@ -152,14 +152,9 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "initial.json",
             1_024,
             &IdempotencyKey::new("scheduler-initial")?,
-        )
+         None, None)
         .await?;
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_024, None,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_024, None)?;
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
         &volume,
@@ -217,7 +212,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         if slot == "a" {
             let corrupt = FileRef::new(
@@ -278,7 +273,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "invalid.json",
                     1_024,
                     &IdempotencyKey::new("invalid-type-upload")?,
-                )
+                 None, None)
                 .await?;
             assert!(
                 coordinator
@@ -331,7 +326,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "forged-join.json",
             1_024,
             &IdempotencyKey::new("forged-join-upload")?,
-        )
+         None, None)
         .await?;
     let expected_revision = coordinator
         .scheduler()
@@ -387,7 +382,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "join did not succeed".into(),
         ));
     };
-    let bytes = host.read_content(result, &read, 1_024).await?;
+    let bytes = host.read_content(result, &read, 1_024, None).await?;
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
@@ -454,7 +449,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         coordinator
             .apply(
@@ -489,7 +484,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     };
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(
-            &host.read_content(quorum_result, &read, 1_024).await?
+            &host.read_content(quorum_result, &read, 1_024, None).await?
         )
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
         serde_json::json!([5, 6])
@@ -560,7 +555,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "child.json",
             1_024,
             &IdempotencyKey::new("reduce-child-upload")?,
-        )
+         None, None)
         .await?;
     coordinator
         .apply(
@@ -597,7 +592,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         ));
     };
     assert_eq!(
-        host.read_content(reduced, &read, 1_024).await?.as_ref(),
+        host.read_content(reduced, &read, 1_024, None).await?.as_ref(),
         b"11"
     );
 

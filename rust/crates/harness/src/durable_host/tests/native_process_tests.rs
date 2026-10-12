@@ -26,13 +26,7 @@ type Files<A = MemoryAuthorityBackend, O = MemoryObjectBackend> = FilesystemHost
 async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let mut authority = fixture.authority();
-    authority.results = Arc::new(FilesystemContentPublisher::new(
-        fixture.files.clone(),
-        &fixture.destination,
-        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        &fixture.scope,
-        65_536, None,
-    )?);
+    authority.results = FilesystemContentPublisher::new(fixture.files.clone(), &fixture.destination, &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, 65_536, None)?;
     assert!(matches!(async {
         Process::new(fixture.owner.clone(), fixture.command, &fixture.plan, fixture.view.clone(),
             fixture.approval(), authority, fixture.view.work())?.await
@@ -81,7 +75,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
             "schema.json",
             128,
             &IdempotencyKey::new("readonly-native-schema")?,
-        )
+         None, None)
         .await?;
     assert!(
         fixture
@@ -970,7 +964,7 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("source-setup")?,
-        )
+         None, None)
         .await?;
     let auxiliary_grant = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -988,7 +982,7 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("auxiliary-setup")?,
-        )
+         None, None)
         .await?;
     let auxiliary_generation = auxiliary_host
         .resolve(&workspace_ref(
@@ -1091,7 +1085,7 @@ where
                 "input.txt",
                 128,
                 &IdempotencyKey::new(format!("extra-source-{index}"))?,
-            )
+             None, None)
             .await?;
         let generation = files
             .resolve(&workspace_ref(
@@ -1260,19 +1254,8 @@ where
             request.argv[3].push_str("; for index in {0..15}; do IFS= read -r value < extra-$index/input.txt; printf '%s|' \"$value\"; done > dst/many.txt");
         }
     }
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &result_volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_000_000, None)?;
     let request_ref = results
         .stage(
             command,
@@ -2210,19 +2193,8 @@ async fn reopen_native(
             .map_err(|error| Error::Storage(error.to_string()))?,
         ProviderRef::new("native-test".into(), "filesystem".into(), "1".into(), &mut None)?,
     )?);
-    let content = Arc::new(FilesystemContentVerifier::new(
-        files.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &seed.scope,
-        1_000_000, None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
-        files.clone(),
-        &seed.result_volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &seed.scope,
-        1_000_000, None,
-    )?);
+    let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
+    let results = FilesystemContentPublisher::new(files.clone(), &seed.result_volume, &issuer.verifier(&mut None).expect("verifier copy"), &seed.scope, 1_000_000, None)?;
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
             .await
@@ -2746,7 +2718,7 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
                 "concurrent.txt",
                 128,
                 &IdempotencyKey::new("concurrent-destination")?,
-            )
+             None, None)
             .await?;
         std::fs::write(root.join("publication-release"), b"release")
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -3449,7 +3421,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     let caller = workspace_ref(fixture.second_destination.provider().clone(), &fixture.second_destination.storage_name()?)?;
     let caller_write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
     fixture.files.put_content(&fixture.second_destination, &caller_write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
-        &IdempotencyKey::new("review-concurrent")?).await?;
+        &IdempotencyKey::new("review-concurrent")?, None, None).await?;
     let review_head = fixture.files.resolve(&destination).await?.generation;
     let review_read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
     let import = fixture.files.prepare_volume_import(&fixture.destination, &review_read, &review_head,
