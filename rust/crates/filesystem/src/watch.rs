@@ -1029,12 +1029,6 @@ impl Drop for NativeWatchHeldRoot {
 }
 
 impl NativeWatch {
-    /// Returns exact guarantees for this watcher's compiled backend.
-    #[must_use]
-    pub const fn capabilities(&self) -> NativeWatchCapabilities {
-        native_watch_capabilities()
-    }
-
     /// Opens the platform-recommended event source.
     pub fn open(
         root: impl AsRef<Path>,

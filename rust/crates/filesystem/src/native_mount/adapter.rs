@@ -17,11 +17,9 @@ use crate::kernel::{
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
-    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched_with_native_work,
+    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
     capture_subtrees_with_native_work,
 };
-#[cfg(test)]
-use crate::native_capture::capture_paths_batched_with_baseline;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
     Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
@@ -7649,7 +7647,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let captured = {
                 let work = native.clone();
                 match scope {
-                    HostCaptureScope::ExactPaths => capture_paths_batched_with_native_work(
+                    HostCaptureScope::ExactPaths => capture_paths_batched(
                         &mut candidate.checkout, paths, options, 64,
                         cancellation, baseline, &work,
                     ).await,
@@ -10050,17 +10048,12 @@ mod tests {
         let mut zero_candidate = source
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
-        let zero_result = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut zero_candidate,
-                std::slice::from_ref(&first),
-                &options,
-                1,
-                WorkBudget::default(),
-                &cancellation,
-                None,
-            )
-        });
+        let zero_result = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
+            .map_err(|(error, work)| OperationFailure::new(crate::CaptureError::from(error), work))
+            .and_then(|work| source.runtime.block_on(|| capture_paths_batched(
+                &mut zero_candidate, std::slice::from_ref(&first), &options, 1,
+                &cancellation, None, &work,
+            )));
         let Err(zero_failure) = zero_result else {
             return Err(std::io::Error::other("zero budget admitted host observation").into());
         };
@@ -10069,17 +10062,12 @@ mod tests {
         let mut candidate = source
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
-        let single = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut candidate,
-                std::slice::from_ref(&first),
-                &options,
-                1,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                None,
-            )
-        })?;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let single = source.runtime.block_on(|| capture_paths_batched(
+            &mut candidate, std::slice::from_ref(&first), &options, 1,
+            &cancellation, None, &original,
+        ))?;
         assert!(single.work.source_bytes_read > 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.source_bytes_read = single.work.source_bytes_read;
@@ -10087,17 +10075,11 @@ mod tests {
             .runtime
             .block_on(|| async { source.checkout.lock().await.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value });
         let paths = [first, second];
-        let result = source.runtime.block_on(|| {
-            capture_paths_batched_with_baseline(
-                &mut candidate,
-                &paths,
-                &options,
-                1,
-                budget,
-                &cancellation,
-                None,
-            )
-        });
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let result = source.runtime.block_on(|| capture_paths_batched(
+            &mut candidate, &paths, &options, 1, &cancellation, None, &original,
+        ));
         let Err(failure) = result else {
             return Err(std::io::Error::other("aggregate source budget was ignored").into());
         };
@@ -13626,9 +13608,10 @@ fn capture_native_name<S: CaptureInputScratch>(
 
 fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
     match error {
-        crate::CaptureError::Work(error) => MountSourceError::Work(error),
-        crate::CaptureError::Allocation(error) => MountSourceError::Allocation(error),
-        crate::CaptureError::NativeKernel(error) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Work(error)
+            | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
+        crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
+        crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
         crate::CaptureError::Cancelled => MountSourceError::Cancelled,
         crate::CaptureError::StaleVersion => MountSourceError::Stale,
