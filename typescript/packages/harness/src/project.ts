@@ -5,7 +5,6 @@ import { NativeContracts } from "./native-contracts.js";
 import type { Authority, OperationId, Scope } from "./index.js";
 import type { ToolJsonValue } from "./model.js";
 
-export type ProjectMergeNotice = ConversationMessage<"merge">;
 const providerOperationBrand: unique symbol = Symbol("harness.provider-operation-id");
 export type ProviderOperationId = readonly number[] & Readonly<{ readonly [providerOperationBrand]: true }>;
 
@@ -35,7 +34,7 @@ export interface ProjectMergeReceipt {
   readonly result_generation: ResourceRef<"generation">;
   readonly provider_operation_id: ProviderOperationId;
   readonly provider_proof: ProviderJoinProof;
-  readonly notice: ProjectMergeNotice;
+  readonly notice: ConversationMessage<"merge">;
 }
 
 /** Opaque exact conflict identity interpreted only by its workspace provider. */
@@ -59,7 +58,7 @@ export interface ProjectJoinPlan {
   readonly sourceGeneration: ResourceRef<"generation">;
   readonly expectedTargetGeneration: ResourceRef<"generation">;
   apply(scope: Scope, operationId: OperationId, child: Authority<"conversation">,
-    notice: ProjectMergeNotice, selections: readonly ProjectConflictSelection[]): Promise<ProjectJoinOutcome>;
+    notice: ConversationMessage<"merge">, selections: readonly ProjectConflictSelection[]): Promise<ProjectJoinOutcome>;
 }
 
 /** Parent-bound project operations; each call rechecks the signed parent scope. */

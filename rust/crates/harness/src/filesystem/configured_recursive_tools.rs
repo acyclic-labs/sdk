@@ -19,7 +19,7 @@ use crate::{
     tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
-use acyclic_stream::{BoxProviderFuture, StreamClient, StreamProvider};
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock, Weak};
@@ -215,7 +215,7 @@ struct BoundProjectSourcePolicy {
 /// Portable source factory using the runtime's actual Filesystem and Stream.
 pub struct ConfiguredRecursiveToolSource<P, A, O> {
     config: ConfiguredRecursiveToolsConfig,
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     filesystem: Arc<FilesystemHost<A, O>>,
     limits: Limits,
     runtime: OnceLock<Weak<FilesystemTaskRuntime<P, A, O>>>,
@@ -225,7 +225,7 @@ pub struct ConfiguredRecursiveToolSource<P, A, O> {
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     /// Validates trusted bindings without publishing, allocating or opening tasks.
-    pub fn new(config: ConfiguredRecursiveToolsConfig, stream: StreamClient<P>,
+    pub fn new(config: ConfiguredRecursiveToolsConfig, stream: Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>, provider: &ProviderRef, limits: Limits,
     ) -> Result<Arc<Self>> {
         if config.callers.len() > 64 || config.forks.len() > 64 || config.merges.len() > 64 || config.original_sources.len() > 64
@@ -236,8 +236,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         for (index, caller) in config.callers.iter().enumerate() {
             verifier(&caller.owner)?;
-            caller.project.validate()?;
-            caller.private_volume.validate()?;
+            caller.project.validate(&mut None)?;
+            caller.private_volume.validate(&mut None)?;
             let agent = caller.owner.scope.agent().ok_or_else(|| Error::Unauthorized("configured caller has no signed agent".into()))?;
             if let Some(native) = &caller.native_snapshot {
                 crate::contract::validate_json_byte_bound(native, limits.file_bytes)?;
@@ -253,8 +253,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         for (index, fork) in config.forks.iter().enumerate() {
             verifier(&fork.child)?;
-            fork.project.validate()?;
-            fork.private_volume.validate()?;
+            fork.project.validate(&mut None)?;
+            fork.private_volume.validate(&mut None)?;
             fork.admission.validate()?;
             let agent = fork.child.scope.agent().ok_or_else(|| Error::Unauthorized("configured child has no signed agent".into()))?;
             if let Some(result) = &fork.result_volume {
@@ -270,7 +270,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         for (index, merge) in config.merges.iter().enumerate() {
-            merge.notice.validate()?;
+            merge.notice.validate(&mut None)?;
             if !config.callers.iter().any(|caller| caller.task == merge.caller)
                 || !config.callers.iter().any(|caller| caller.task == merge.source)
                 || config.merges[..index].iter().any(|previous| previous.caller == merge.caller && previous.source == merge.source) {
@@ -599,8 +599,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
                 .with_invocation_cancellation(cancellation));
             let handle = owner.restore_project_source_authorization(context.task(), authorization).await?;
-            handle.require_selection(context.operation_id(), arguments.source, &project, &generation,
-                source_owner.native_snapshot.as_ref())?;
+            handle.require_selection(context.operation_id(), arguments.source, &project, &generation, source_owner.native_snapshot.as_ref(), None)?;
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
             && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
@@ -1102,7 +1101,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let snapshot = ProjectSourceSnapshot {
                 project: {
                     let mut history = io.history_io();
-                    chosen.project.clone_with_work(&mut Some(&mut history))?
+                    chosen.project.copy(&mut Some(&mut history))?
                 },
                 generation: generation.generation.clone_with_io(&io)?,
                 native_snapshot: match &chosen.native_snapshot {
@@ -1223,7 +1222,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         let generation = original.map_or(&selected.generation, |original| &original.source_generation).clone_with_io(&io)?;
-        let notice = original.map_or(&allocation.notice, |original| &original.notice).clone_with_work(&mut Some(&mut io.history_io()))?;
+        let notice = original.map_or(&allocation.notice, |original| &original.notice).copy(&mut Some(&mut io.history_io()))?;
         let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
             Some(owner.restore_project_source_authorization_with_native_work(
                 context.task(), authorization, work,
@@ -1243,7 +1242,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let snapshot = ProjectSourceSnapshot {
                     project: {
                         let mut history = io.history_io();
-                        selected.volume.clone_with_work(&mut Some(&mut history))?
+                        selected.volume.copy(&mut Some(&mut history))?
                     },
                     generation: generation.clone_with_io(&io)?,
                     native_snapshot: source_owner.native_snapshot.as_ref()
@@ -1257,8 +1256,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         if let Some(handle) = &source_read {
             let authorization = handle.0.authorization();
-            handle.0.require_selection_with_native_work(context.operation_id(), arguments.source,
-                &selected.volume, &generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.0.require_selection(context.operation_id(), arguments.source, &selected.volume, &generation, authorization.native_snapshot.as_ref(), Some(work))?;
         }
         context.read_file_with_native_work(&notice.content, work).await?;
         let destination = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
@@ -1266,9 +1264,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
             (caller.owner.issuer().verifier_with_work(&mut observer)?,
-                caller.owner.scope.clone_with_work(&mut observer)?, caller.project.clone_with_work(&mut observer)?,
+                caller.owner.scope.clone_with_work(&mut observer)?, caller.project.copy(&mut observer)?,
                 observer.as_deref_mut().expect("native merge observer").clone_authority(source_owner.owner.authority())?,
-                selected.volume.clone_with_work(&mut observer)?)
+                selected.volume.copy(&mut observer)?)
         };
         let aggregate = self.native_bind_aggregate(&caller.owner, &scope, destination.0,
             Some(self.native_resolver(context, Arc::clone(&owner), work)?), work)?;
@@ -1616,7 +1614,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 }
 
 fn validate_result_volume(result: &VolumeRef, private: &VolumeRef, agent: crate::AgentId, provider: &ProviderRef) -> Result<()> {
-    result.validate()?;
+    result.validate(&mut None)?;
     if result == private || result.provider() != provider
         || result.owner() != &VolumeOwner::Agent(agent)
         || result.class() != crate::conversation::VolumeClass::AgentPrivate {

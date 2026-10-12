@@ -81,7 +81,7 @@ fn put_metadata(
     ObjectStore::put(
         store,
         object,
-        OwnedBytes::from(encode_file_metadata(metadata)?),
+        OwnedBytes::from(encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -104,7 +104,7 @@ fn put_tree(
     ObjectStore::put(
         store,
         object,
-        OwnedBytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -119,7 +119,7 @@ fn put_table(
     ObjectStore::put(
         store,
         object,
-        OwnedBytes::from(super::super::encode_file_table_page(&page, 8)?),
+        OwnedBytes::from(super::super::encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -129,7 +129,7 @@ fn put_generation(
     store: &MemoryObjectStore,
     generation: &GenerationRoot,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let encoded = super::super::encode_generation_root(generation)?;
+    let encoded = super::super::encode_generation_root(generation, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
@@ -854,10 +854,6 @@ fn one_file_added_on_both_sides_keeps_the_later_times() {
     assert!(merge_added_metadata_fields(timed(30, 0o600), timed(20, 0o644)).is_none());
 }
 
-/// Two siblings each add an entry to one directory. Both bump its
-/// modification time, which is activity rather than authored state: the
-/// merge keeps both entries and the later time, and a driver that resolves
-/// the directory's record supplies metadata without replacing the entries.
 #[test]
 fn sibling_additions_merge_entries_and_reconcile_directory_times()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1076,21 +1072,21 @@ fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
     assert_eq!(root.parents.get(1), Some(&second_parent));
     let KernelOwnedAllocation::NativeOriginal(guard) = allocation else { return Err("native merge lost output custody".into()); };
     assert_eq!(guard.bytes(), (root.parents.capacity() * std::mem::size_of::<GenerationId>()) as u64);
-    let changes = poll_ready(super::super::diff_file_records_async(&store, Some(ours_table), Some(root.file_table),
-        8, DecodeLimits::default(), WorkBudget::UNBOUNDED, &cancellation)).ok_or("merged table diff suspended")??;
+    let changes = poll_ready(super::super::diff_file_records_with_accounting(&store, Some(ours_table), Some(root.file_table),
+        8, DecodeLimits::default(), &mut super::super::allocation::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation), &cancellation)).ok_or("merged table diff suspended")??.0;
     let merged_second = changes.changes.iter().find(|change| change.key == b).and_then(|change| change.after).ok_or("second hardlink delta missing")?;
     assert_eq!(merged_second.link_count, 2);
     let merged_directory = changes.changes.iter().find(|change| change.key == FileId::from_bytes([1; 16]))
         .and_then(|change| change.after).ok_or("merged directory missing")?;
     let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
     let read = ObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
-    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default())?
+    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)?
         else { return Err("small merged directory was not a leaf".into()); };
     assert_eq!(entries.len(), 4);
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"right" && entry.file_id == b));
     let stored = ObjectStore::read(&store, generation_root, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
-    assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default())?, root);
+    assert_eq!(super::super::decode_generation_root(&stored.value.bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, root);
     assert!(original.receipt().page_reads > 0);
     assert!(original.receipt().page_writes > 0);
     drop(root);

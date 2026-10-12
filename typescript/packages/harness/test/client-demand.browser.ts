@@ -120,8 +120,8 @@ try {
   assert(coldMainThreadMs <= Math.max(20, nonSpeculativeMainThreadMs * 5), "cold main-thread work exceeded non-speculative baseline");
   nonSpeculative.dispose();
   const receipt = demand.peek(selected);
-  const baselineCache = new HydrationCache<FileRef, typeof receipt>(2, 4096);
-  baselineCache.set(selected, receipt, receipt!.bytes);
+  const baselineCache = new HydrationCache<FileRef, typeof first>(2, 4096);
+  baselineCache.set(selected, receipt!.value, receipt!.bytes);
   const timing = (read: () => unknown): number => {
     const start = performance.now();
     for (let i = 0; i < 100000; i++) read();

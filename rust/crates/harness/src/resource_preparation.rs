@@ -313,7 +313,7 @@ impl ResourcePreparationRequest {
             crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
-            checkpoint.validate_with_work(work)?;
+            checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {
                 return Err(Self::invalid("source checkpoint exceeds preparation byte bound", work));
             }
@@ -326,7 +326,7 @@ impl ResourcePreparationRequest {
             if let Some(observer) = work.as_deref_mut() {
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: index as u64 + 1 })?;
             }
-            file.validate_with_work(work)?;
+            file.validate(work)?;
             input_bytes = input_bytes.checked_add(file.descriptor().byte_length())
                 .ok_or_else(|| Self::invalid("child input reference byte bound overflow", work))?;
             if input_bytes > self.maximum_bytes || self.input_files[..index].contains(file) {
@@ -334,7 +334,7 @@ impl ResourcePreparationRequest {
             }
         }
         if let Some(authorization) = &self.read_authorization {
-            authorization.validate_with_work(work)?;
+            authorization.validate(work)?;
         }
         if let Some(command) = &self.command {
             command.validate(work)?;
@@ -1043,7 +1043,7 @@ fn created_access_file_capability(
     file: &crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    file.validate_with_work(work)?;
+    file.validate(work)?;
     created_access_canonical_capability(file, "file:read:", work)
 }
 

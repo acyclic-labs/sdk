@@ -1,8 +1,8 @@
 import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { expect, spyOn, test } from "bun:test";
-import { DEFAULT_LIMITS, ExecutionScope, GroupPolicies, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
+import { DEFAULT_LIMITS, ExecutionScope, Harness, IndeterminateModelTurnError, MemoryConversation, NativeContracts, TaskDefinition, TerminalModelTurnError, composeContentBindings,
   defineTool, jsonToolProjection, descriptorFor, type AgentId, type FileRef, type HarnessRuntimeSpawner, type HarnessRuntimeState, type OperationId,
-  type RuntimeTaskId } from "../src/index.js";
+  type TaskId } from "../src/index.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
@@ -124,7 +124,7 @@ test("an attached reader can use a private-root directory grant without a write 
   (delegated.proof as number[])[0] = (delegated.proof[0] ?? 0) ^ 1;
   const task = await TaskDefinition.live<void, string>("read_attached", "1", async context => {
     expect("harness" in context).toBe(false);
-    expect("harness" in context.group(GroupPolicies.collectAll)).toBe(false);
+    expect("harness" in context.group({ kind: "collect-all" })).toBe(false);
     const page = await context.listPrivateDirectory(owner.volume, "", "notes");
     expect(page.entries).toEqual([{ name: "nested", kind: "directory" }]);
     const nested = await context.listPrivateDirectory(owner.volume, "", "notes/nested", page.generation);
@@ -432,7 +432,7 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
     async executeSelectedTurn(operationId, selected) {
       requests.push(`${operationId}:${selected.selection.conversationRevision}`);
       if (requests.length === 1) return { kind: "indeterminate", operationId };
-      return { kind: "succeeded", value: { taskId: "task:recovered" as RuntimeTaskId,
+      return { kind: "succeeded", value: { taskId: "task:recovered" as TaskId,
         text: "recovered answer", receipts: [{ kind: "model-completed", metadata: {} }] } };
     },
     async attach() { throw new Error("unused"); },
@@ -463,7 +463,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
           ? outcome === "failed"
             ? { kind: "failed", error: { message: "provider rejected" } }
             : { kind: "cancelled", receipt: { requested: true } }
-          : { kind: "succeeded", value: { taskId: "task:next" as RuntimeTaskId,
+          : { kind: "succeeded", value: { taskId: "task:next" as TaskId,
             text: "next answer", receipts: [] } };
       },
       async attach() { throw new Error("unused"); },

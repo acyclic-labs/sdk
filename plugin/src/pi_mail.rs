@@ -37,13 +37,9 @@ pub(crate) struct PiMailboxReceive {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PiWaitState { Pending, Completed }
-
-#[derive(Serialize)]
 pub(crate) struct PiWaitObservation {
     pub(crate) task: TaskId,
-    pub(crate) state: PiWaitState,
+    pub(crate) state: &'static str,
     pub(crate) outcome: Option<Outcome<Value>>,
     pub(crate) mail: Option<PiMailboxReceive>,
 }
@@ -201,8 +197,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     let mut mail = receive(runtime, caller, after, 1, work).await?;
     let mut outcome = runtime.task_host().outcome_with_native_work(requested, work).await?;
     let state = match &outcome.0 {
-        None | Some(Outcome::Indeterminate { .. }) => PiWaitState::Pending,
-        Some(_) => PiWaitState::Completed,
+        None | Some(Outcome::Indeterminate { .. }) => "pending",
+        Some(_) => "completed",
     };
     if let Err(cause) = mail.1.absorb(&mut outcome.1) {
         drop(outcome);

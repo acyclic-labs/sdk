@@ -50,7 +50,7 @@ async fn publish_lifecycle(
         reducer.authority(),
         &event,
         crate::wire_codec::encode_event(reducer.authority(), &event)?,
-    )?;
+     &mut None)?;
     publication_with_work(
         client,
         reducer.authority(),

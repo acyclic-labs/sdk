@@ -3,13 +3,13 @@
 use crate::{Error, Result};
 
 /// Shared allocation hooks; ordinary transformations use the same engine.
-pub(super) struct AlgorithmWork {
+pub(crate) struct AlgorithmWork {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl AlgorithmWork {
-    pub(super) fn ordinary() -> Self {
+    pub(crate) fn ordinary() -> Self {
         Self {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             custody: None,
@@ -147,16 +147,7 @@ pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
 }
 
 /// Replaces one unambiguous exact occurrence within finite input/output bounds.
-pub fn exact_replace(
-    source: &str,
-    old_text: &str,
-    new_text: &str,
-    maximum_bytes: u64,
-) -> Result<String> {
-    exact_replace_engine(source, old_text, new_text, maximum_bytes, &mut AlgorithmWork::ordinary())
-}
-
-pub(super) fn exact_replace_engine(
+pub(crate) fn exact_replace(
     source: &str,
     old_text: &str,
     new_text: &str,
@@ -215,33 +206,33 @@ mod tests {
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         assert_eq!(
-            exact_replace("before 🦀 after", "🦀", "日本語", 64)?,
+            exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut AlgorithmWork::ordinary())?,
             "before 日本語 after"
         );
-        assert_eq!(exact_replace("a\r\nb\n", "\r\n", "\n", 8)?, "a\nb\n");
+        assert_eq!(exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut AlgorithmWork::ordinary())?, "a\nb\n");
         assert!(matches!(
-            exact_replace("aaa", "aa", "b", 8),
+            exact_replace("aaa", "aa", "b", 8, &mut AlgorithmWork::ordinary()),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            exact_replace("ééé", "éé", "b", 8),
+            exact_replace("ééé", "éé", "b", 8, &mut AlgorithmWork::ordinary()),
             Err(Error::Conflict(_))
         ));
-        assert!(exact_replace("one one", "one", "two", 8).is_err());
-        assert!(exact_replace("one", "missing", "two", 8).is_err());
-        assert!(exact_replace("one", "", "two", 8).is_err());
+        assert!(exact_replace("one one", "one", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("one", "missing", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("one", "", "two", 8, &mut AlgorithmWork::ordinary()).is_err());
         Ok(())
     }
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
-        assert_eq!(exact_replace("abc", "b", "", 3)?, "ac");
-        assert_eq!(exact_replace("abc", "abc", "xyz", 3)?, "xyz");
-        assert!(exact_replace("abc", "b", "long", 4).is_err());
-        assert!(exact_replace("abc", "abc", "a", 2).is_err());
-        assert!(exact_replace("abc", "a", "a", 0).is_err());
-        assert!(exact_replace("abc", "a", "a", u64::MAX).is_err());
-        assert!(exact_replace("é", "é", "🦀", 3).is_err());
+        assert_eq!(exact_replace("abc", "b", "", 3, &mut AlgorithmWork::ordinary())?, "ac");
+        assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut AlgorithmWork::ordinary())?, "xyz");
+        assert!(exact_replace("abc", "b", "long", 4, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("abc", "abc", "a", 2, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("abc", "a", "a", 0, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("abc", "a", "a", u64::MAX, &mut AlgorithmWork::ordinary()).is_err());
+        assert!(exact_replace("é", "é", "🦀", 3, &mut AlgorithmWork::ordinary()).is_err());
         Ok(())
     }
 
@@ -266,7 +257,7 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = exact_replace(&source, &needle, "X", 64);
+                            let result = exact_replace(&source, &needle, "X", 64, &mut AlgorithmWork::ordinary());
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {

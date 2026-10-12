@@ -1,4 +1,4 @@
-import { BrowserAggregate, BrowserHistoryReader, Harness, NativeContracts } from "../dist/index.js";
+import { openBrowserAggregate, openBrowserHistoryReader, Harness, NativeContracts } from "../dist/index.js";
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 
 export async function exerciseBrowserHistory() {
@@ -18,9 +18,9 @@ export async function exerciseBrowserHistory() {
   const first = command("61616161-6161-6161-6161-616161616161", 0n, "active");
   let aggregate, reader, cold, wrong, competing;
   try {
-    aggregate = await BrowserAggregate.open(options);
+    aggregate = await openBrowserAggregate(options);
     reader = aggregate.historyReader();
-    const empty = await reader.pin();
+    const empty = await reader.pin(0n);
     const limits = { maximum_events: 1, maximum_bytes: 65536n };
     if (empty.through_revision !== 0n || (await reader.readPage(empty, limits)).events.length !== 0) {
       throw new Error("fresh archival reader did not expose an empty terminal cursor");
@@ -28,7 +28,7 @@ export async function exerciseBrowserHistory() {
     if ((await aggregate.execute(first)).result !== "applied") throw new Error("fresh indexed publication replayed");
     if ((await reader.readPage(empty, limits)).events.length !== 0) throw new Error("empty pinned history included its first later publication");
     const snapshot = aggregate.snapshot();
-    const cursor = await reader.pin();
+    const cursor = await reader.pin(0n);
     await aggregate.execute(command("62626262-6262-6262-6262-626262626262", 1n, "waiting"));
     const page = await reader.readPage(cursor, limits);
     if (page.events.length !== 1 || page.events[0].operation_id !== first.operation_id
@@ -38,7 +38,7 @@ export async function exerciseBrowserHistory() {
     if ((await reader.readPage(page.cursor, limits)).events.length !== 0) throw new Error("terminal page is not empty");
     aggregate.free(); aggregate = undefined;
     reader.free(); reader = undefined;
-    aggregate = await BrowserAggregate.open(options, snapshot);
+    aggregate = await openBrowserAggregate(options, snapshot);
     if (aggregate.head()[1] !== 2n || (await aggregate.execute(first)).result !== "replayed"
         || aggregate.head()[1] !== 2n) throw new Error("reopened old operation republished");
     if ((await aggregate.reconcile(first))?.event.revision !== 1n) throw new Error("exact reconciliation changed the original event");
@@ -46,7 +46,7 @@ export async function exerciseBrowserHistory() {
     try { await aggregate.execute({ ...first, idempotency_key: `${first.idempotency_key}:changed` }); }
     catch (error) { changedRejected = error.code === ErrorCode.CONFLICT; }
     if (!changedRejected) throw new Error("changed retry identity accepted");
-    competing = await BrowserAggregate.open(options, snapshot);
+    competing = await openBrowserAggregate(options, snapshot);
     await aggregate.execute(command("64646464-6464-6464-6464-646464646464", 2n, "active"));
     let staleRejected = false;
     try { await competing.execute(command("65656565-6565-6565-6565-656565656565", 2n, "active")); }
@@ -57,8 +57,8 @@ export async function exerciseBrowserHistory() {
     }
     await competing.execute(command("66666666-6666-6666-6666-666666666666", 3n, "waiting"));
     competing.free(); competing = undefined;
-    cold = await BrowserHistoryReader.open(options);
-    const pinned = await cold.pin();
+    cold = await openBrowserHistoryReader(options);
+    const pinned = await cold.pin(0n);
     const old = await cold.operationEvent(first.operation_id);
     if (old?.revision !== 1n || (await cold.operationEvent("63636363-6363-6363-6363-636363636363")) !== null) {
       throw new Error("cold operation lookup did not use the committed archive");
@@ -77,7 +77,7 @@ export async function exerciseBrowserHistory() {
     if (!boundRejected || !contracts.canonicalEqual(pinned, { ...pinned, after_revision: 0n })) {
       throw new Error("failed page advanced the supplied cursor");
     }
-    wrong = await BrowserHistoryReader.open({ ...options, issuerKey: new Uint8Array(32).fill(32) });
+    wrong = await openBrowserHistoryReader({ ...options, issuerKey: new Uint8Array(32).fill(32) });
     let ownerRejected = false;
     try { await wrong.readPage(pinned, limits); }
     catch (error) { ownerRejected = error.code === ErrorCode.UNAUTHORIZED; }
@@ -96,7 +96,7 @@ async function exerciseConversationHead() {
   const issuer = await Harness.create(options);
   let aggregate, reader, cold, wrong;
   try {
-    aggregate = await BrowserAggregate.open(options);
+    aggregate = await openBrowserAggregate(options);
     reader = aggregate.historyReader();
     if ((await reader.latestConversationMessage(65536n)) !== null) throw new Error("fresh message head is not empty");
     const scope = issuer.issueScopeForAgent(agent, "bind-head", ["conversation:bind"]);
@@ -110,9 +110,9 @@ async function exerciseConversationHead() {
     if (!boundRejected) throw new Error("zero message-head byte bound accepted");
     reader.free(); reader = undefined;
     aggregate.free(); aggregate = undefined;
-    cold = await BrowserHistoryReader.open(options);
+    cold = await openBrowserHistoryReader(options);
     if ((await cold.latestConversationMessage(65536n)) !== null) throw new Error("reopened binding marker changed");
-    wrong = await BrowserHistoryReader.open({ ...options, issuerKey: new Uint8Array(32).fill(42) });
+    wrong = await openBrowserHistoryReader({ ...options, issuerKey: new Uint8Array(32).fill(42) });
     let ownerRejected = false;
     try { await wrong.latestConversationMessage(65536n); }
     catch (error) { ownerRejected = error.code === ErrorCode.UNAUTHORIZED; }

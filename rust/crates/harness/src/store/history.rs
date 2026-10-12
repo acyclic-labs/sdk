@@ -332,10 +332,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 crate::store::operations::stream_error_with_work(error, quota.work()))
         })();
         drop(path);
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(error) => return Err(error),
-        };
+        let stream = stream?;
         if let Err(error) = quota.relinquish(temporary_bytes) {
             drop(stream);
             return Err(error);
@@ -362,21 +359,11 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::fork::PreparedForkHistory> {
         self.verifier.verify_audience_with_work(parent.authority(), work)?;
-        let source = parent.conversation().ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork archive parent is unbound" };
-            }
-            Error::Invalid("fork archive parent is unbound".into())
-        })?;
+        let source = parent.conversation().ok_or_else(|| super::guarded_boundary(
+            work, crate::wire::ErrorCode::Invalid, "fork archive parent is unbound"))?;
         if through_sequence > source.logical_revision() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork archive exceeds the logical parent cut" });
-            }
-            return Err(Error::Invalid("fork archive exceeds the logical parent cut".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork archive exceeds the logical parent cut"));
         }
         let cursor_authority = match work.as_deref_mut() {
             Some(work) => work.clone_authority(parent.authority())?,
@@ -397,24 +384,20 @@ impl<P: StreamProvider> HistoryReader<P> {
             if messages.is_ok() { released?; }
         }
         let (mut conversation, _) =
-            crate::conversation::ConversationState::selected_view_with_work(messages?, work)?;
+            crate::conversation::ConversationState::selected_view(messages?, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
-            && conversation.history_prefix_digest_with_work(through_sequence, work)?
-                != source.history_prefix_digest_with_work(through_sequence, work)?
+            && conversation.history_prefix_digest(through_sequence, work)?
+                != source.history_prefix_digest(through_sequence, work)?
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "fork archive differs from the authenticated parent prefix" });
-            }
-            return Err(Error::Storage("fork archive differs from the authenticated parent prefix".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "fork archive differs from the authenticated parent prefix"));
         }
         #[cfg(feature = "filesystem")]
         {
             let proof = self.verifier.fork_history_selection_proof_with_work(
                 parent.revision(), through_sequence, conversation.agent,
-                conversation.history_prefix_digest_with_work(through_sequence, work)?, work,
+                conversation.history_prefix_digest(through_sequence, work)?, work,
             )?;
             let authority = match work.as_deref_mut() {
                 Some(work) => work.clone_authority(parent.authority())?,
@@ -465,9 +448,9 @@ impl<P: StreamProvider> HistoryReader<P> {
             .summary
             .as_ref()
             .ok_or_else(|| Error::Invalid("fork has no Summary projection".into()))?;
-        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits)?;
+        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits, None)?;
         for file in capture.inherited_files().chain(&capture.references) {
-            limits.validate_file(file)?;
+            limits.validate_file(file, &mut None)?;
             crate::conversation::ContentGrant::verify_read(&self.verifier, scope, file)?;
         }
         self.verify_published_child_with_work(parent, seed, history_limits, &mut None).await?;
@@ -729,7 +712,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 Error::Storage("selected history message is missing at its pinned cutoff".into())
             })?);
         }
-        let view = crate::conversation::ConversationState::selected_view_with_work(messages, &mut None).map(|(state, _)| state)?;
+        let view = crate::conversation::ConversationState::selected_view(messages, &mut None).map(|(state, _)| state)?;
         crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
         Ok(view)
     }
@@ -825,7 +808,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self, cursor: &HistoryCursor, effect: crate::EffectId,
         limits: HistoryReadLimits, mut work: Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(crate::core::EffectState, u64)>> {
-        let (events, event_owned) = super::effects::read(
+        let (events, event_owned) = super::effects::effect_events(
             &self.client, &self.verifier, cursor, effect, limits, &mut work,
         ).await?;
         if events.is_empty() {
@@ -1010,7 +993,7 @@ pub(crate) fn verify_history_record_with_retained_quota(
             "history record position or byte bound is invalid"));
     }
     let ((record_authority, event), owned_event) =
-        crate::wire_codec::decode_event_with_work_and_custody(&record.value, work)?;
+        crate::wire_codec::decode_event(&record.value, work)?;
     let verification = (|| {
         let revision = sequence.checked_add(1)
             .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage, "history event revision overflows"))?;

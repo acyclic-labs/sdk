@@ -12,17 +12,9 @@ pub mod client;
 pub mod contract;
 
 /// Native gRPC client for the canonical Actors v1 service.
-///
-/// The client applies bearer authentication and TLS configuration to every
-/// generated RPC. Browser bindings use the Rust-owned gRPC-Web transport through
-/// [`client::Client`]; this adapter is unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 /// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
-///
-/// The client exposes the same nine operations with bounded responses and
-/// bearer authentication. Browser bindings use the Rust-owned gRPC-Web transport
-/// through [`client::Client`]; this adapter is unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 
@@ -46,11 +38,9 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 pub const MAX_BINDINGS: usize = 64;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
-/// header parsers additionally reject control characters such as CR, LF, and NUL.
+/// Bearer credentials must be nonblank, bounded and header-safe.
 pub(crate) fn valid_token(token: &str) -> bool {
     !token.trim().is_empty()
         && token.len() <= MAX_BEARER_TOKEN_BYTES
@@ -162,7 +152,6 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 }
 
 /// Validates a full compare-and-replace Actor configuration mutation.
-/// The service checks checkpoint compatibility or migration before activation.
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !domain::valid_code_sha256(&request.code_sha256)
@@ -191,7 +180,6 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
 }
 
 /// Validates a terminal Actor deletion. Identity and idempotency rules match
-/// [`validate_update`]; an exact retry with the same key succeeds again.
 pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
         return Err(ContractError::InvalidArgument);

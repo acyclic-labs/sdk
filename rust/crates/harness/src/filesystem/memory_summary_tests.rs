@@ -12,6 +12,7 @@ use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
+use acyclic_stream::StreamProvider as _;
 use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
 use crate::durable_host::CoordinatorTaskHost;
 use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
@@ -167,8 +168,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_provider(Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?))?);
+    })?.with_resource_creation_providers(vec![Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -724,7 +725,7 @@ async fn assert_summary_child_import(
             .await
             .is_err()
     );
-    let other_stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let other_stream = Arc::new(MemoryStream::default());
     let mut unrelated = StreamAggregate::open(
         &other_stream,
         seed.child.clone(),
@@ -779,13 +780,15 @@ async fn assert_summary_child_import(
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
-        storage.stream.clone(),
-        storage.host.clone(),
-        seed.child_private_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        scope,
-        262_144,
-    )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &seed.child_private_volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
+                262_144,
+                None,
+            )?
     .with_input_verifier(reader);
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -817,7 +820,7 @@ async fn assert_summary_child_import(
 }
 
 struct ColdSummaryStream {
-    client: StreamClient<MemoryStream>,
+    client: Arc<MemoryStream>,
     reads: std::sync::atomic::AtomicUsize,
     maximum: std::sync::atomic::AtomicU32,
     fail_read: std::sync::atomic::AtomicUsize,
@@ -838,13 +841,13 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, acyclic_stream::StreamError> {
-        self.client.stream(path.as_str())?.tail().await
+        self.client.tail(path).await
     }
     async fn bounds(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        self.client.bounds(path.as_str()).await
+        self.client.bounds(path).await
     }
     async fn read(
         &self,
@@ -856,16 +859,13 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         if number == self.fail_read.load(Ordering::SeqCst) {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        self.client
-            .stream(request.path.as_str())?
-            .read(request.from, request.limit)
-            .await
+        self.client.read(request).await
     }
     async fn read_commit(
         &self,
         commit: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.client.provider.read_commit(commit).await
+        self.client.read_commit(commit).await
     }
     async fn append(
         &self,
@@ -1001,7 +1001,7 @@ async fn assert_cold_summary_reads(
             maximum: 0.into(),
             fail_read: 0.into(),
         });
-        let client = StreamClient::new(observed.clone());
+        let client = observed.clone();
         let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
         let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier())?;
         if later_messages == 0 {
@@ -1163,13 +1163,15 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if index == TURNS - 3 {
             storage.journal = Arc::new(
                 FilesystemExecutionJournal::new(
-                    storage.stream.clone(),
-                    storage.host.clone(),
-                    storage.volume.clone(),
-                    storage.verifier(), crate::core::SchemaRegistry::new(),
-                    storage.scope.clone(),
-                    storage.maximum_file_bytes,
-                )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &storage.volume,
+                &storage.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &storage.scope,
+                storage.maximum_file_bytes,
+                None,
+            )?
                 .with_input_verifier(storage.content_verifier.clone()),
             );
             bundle = build_bundle(&storage)?;

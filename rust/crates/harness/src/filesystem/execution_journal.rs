@@ -25,7 +25,7 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -158,28 +158,16 @@ impl ExecutionSummary {
                 "execution journal sequence or retry identity is invalid"));
         }
         let tool_key = self.require_next(&record.event, io)?;
-        let digest = match io {
-            Some(io) => {
-                let encoded_hold;
-                let encoded = io.encode(&record.event, io.remaining()?.bytes_encoded, true)?;
-                encoded_hold = io.guard_bytes(&encoded)?;
-                let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
-                io.preflight(work)?;
-                let digest = *blake3::hash(&encoded).as_bytes();
-                io.charge(work)?;
-                drop(encoded);
-                drop(encoded_hold);
-                let extra = match &record.event {
-                    ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
-                    ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<((u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>)>(),
-                    ExecutionEvent::ToolStarted { .. } => std::mem::size_of::<((u32, [u8; 32]), bool)>(),
-                    _ => 0,
-                };
-                io.claim((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
-                digest
-            }
-            None => crate::contract::canonical_json_digest(&record.event)?,
-        };
+        let digest = super::task_runtime::observed::digest(&record.event, io, u64::MAX)?;
+        if let Some(io) = io {
+            let extra = match &record.event {
+                ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
+                ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<((u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>)>(),
+                ExecutionEvent::ToolStarted { .. } => std::mem::size_of::<((u32, [u8; 32]), bool)>(),
+                _ => 0,
+            };
+            io.claim((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
+        }
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.contexts.insert(*step, false);
@@ -278,7 +266,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -320,31 +308,19 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     && owner.original_host_binding_matches(host))
     }
 
-    /// Binds one execution to the task's exact lease and coordinator provider.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "task, execution, original turn and storage bindings are explicit"
-    )]
+    /// Binds the execution to the task's exact lease and coordinator provider.
+    #[allow(clippy::too_many_arguments)]
     pub fn for_task(
-        owner: TaskJournalOwner<P>,
-        operation_id: OperationId,
-        turn_operation: OperationId,
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        maximum_payload_bytes: u64,
-    ) -> Result<Self>
-    {
-        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
-        let mut journal = Self::new(
-            owner.stream(),
-            host,
-            volume,
-            verifier, SchemaRegistry::new(),
-            scope,
-            maximum_payload_bytes,
-        )?;
+        owner: TaskJournalOwner<P>, operation_id: OperationId, turn_operation: OperationId,
+        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, scope: &Scope, maximum_payload_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
+        let mut journal = Self::new(owner.stream(), host, volume, verifier,
+            &SchemaRegistry::new(), scope, maximum_payload_bytes, io)?;
         journal.owner = Some((owner, operation_id));
         journal.execution = Some((operation_id, turn_operation));
         Ok(journal)
@@ -360,33 +336,6 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         self.execution
             .as_ref()
             .map_or(operation, |identity| identity.1)
-    }
-
-    /// Binds the original task owner while admitting newly owned metadata.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn for_task_with_native_work(
-        owner: TaskJournalOwner<P>, operation_id: OperationId, turn_operation: OperationId,
-        host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
-        verifier: &AuthorityVerifier, scope: &Scope, maximum_payload_bytes: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self>
-    {
-        let io = PreparationIo::from_native_work(work)?;
-        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        let stream = owner.stream();
-        Self::validate_configuration(&host, volume, verifier, scope, maximum_payload_bytes, Some(&io))?;
-        let volume = volume.clone_with_io(&io)?;
-        let mut observer = io.history_io();
-        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
-        let mut journal = Self::assemble_validated_configuration(
-            stream, host, volume, verifier, SchemaRegistry::new(), scope,
-            maximum_payload_bytes, Some(&io),
-        )?;
-        journal.owner = Some((owner, operation_id));
-        journal.execution = Some((operation_id, turn_operation));
-        Ok(journal)
     }
 
     /// Admits the SDK Arc attempt while keeping metadata custody intrinsic.
@@ -540,60 +489,41 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         owner.release_quiescent_execution_with_native_work(*operation, tail, &pending, work).await
     }
 
-    /// Releases a passive workflow command only after this task-bound journal proves every started model and tool dispatch settled.
+    /// Suspends only after the task-bound journal proves every dispatch settled.
     pub async fn suspend_workflow_command_if_quiescent(
-        &self,
-        revision: u64,
-        command: OperationId,
-    ) -> Result<()>
-    {
-        let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
-        traced(span, self.suspend_untraced(revision, command)).await
-    }
-
-    /// Publishes the same suspension CAS under the caller's original work.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn suspend_workflow_command_if_quiescent_with_native_work(
-        &self, revision: u64, command: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()>
-    {
-        let io = PreparationIo::from_native_work(work)?;
+        &self, revision: u64, command: OperationId, io: Option<&PreparationIo>,
+    ) -> Result<()> {
         let span = obs_span!("acyclic.harness.journal.suspend", rev = revision);
         traced(span, async {
-            let mut summary = ExecutionSummary::default();
-            self.suspend_with_summary(revision, command, &mut summary, Some(&io)).await
+            let mut shared = if io.is_none() { Some(self.verified.lock().await) } else { None };
+            let mut transient = ExecutionSummary::default();
+            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            let result = async {
+                let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if io.is_some_and(|io| io.original_native_work().is_some()) {
+                        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                            reason: "quiescence requires a task-owned execution journal" };
+                    }
+                    Error::Unsupported("quiescence requires a task-owned execution journal".into())
+                })?;
+                self.refresh_summary(*operation, summary, io).await?;
+                if !summary.quiescent(io)? {
+                    return Err(Error::Indeterminate(*operation));
+                }
+                let mut borrowed = io.map(PreparationIo::history_io);
+                owner.suspend_quiescent_execution_with_work(
+                    *operation, summary.tail, revision, command,
+                    &mut borrowed.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                ).await
+            }.await;
+            let summary_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("execution summary custody underflow"))?)).transpose()?;
+            drop(transient);
+            drop(summary_hold);
+            result
         }).await
-    }
-
-    async fn suspend_untraced(&self, revision: u64, command: OperationId) -> Result<()>
-    {
-        let mut summary = self.verified.lock().await;
-        self.suspend_with_summary(revision, command, &mut summary, None).await
-    }
-
-    async fn suspend_with_summary(
-        &self, revision: u64, command: OperationId,
-        summary: &mut ExecutionSummary, io: Option<&PreparationIo>,
-    ) -> Result<()>
-    {
-        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some_and(|io| io.original_native_work().is_some()) {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                    reason: "quiescence requires a task-owned execution journal" };
-            }
-            Error::Unsupported("quiescence requires a task-owned execution journal".into())
-        })?;
-        self.refresh_summary(*operation, summary, io).await?;
-        if !summary.quiescent(io)? {
-            return Err(Error::Indeterminate(*operation));
-        }
-        let mut borrowed = io.map(PreparationIo::history_io);
-        owner.suspend_quiescent_execution_with_work(
-            *operation, summary.tail, revision, command,
-            &mut borrowed.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo),
-        ).await
     }
 
     async fn append_validated(
@@ -679,19 +609,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let retry_hashing = acyclic_fs::WorkCounters { bytes_hashed: 64, ..Default::default() };
         if let Some(io) = io { io.preflight(retry_hashing)?; io.charge(retry_hashing)?; }
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = match io {
-            Some(io) => {
-                let hold;
-                let encoded = io.encode(event, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-                hold = io.guard_bytes(&encoded)?;
-                let hashing = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
-                io.preflight(hashing)?; io.charge(hashing)?;
-                let digest = *blake3::hash(&encoded).as_bytes();
-                drop(encoded); drop(hold);
-                digest
-            }
-            None => crate::contract::canonical_json_digest(event)?,
-        };
+        let event_digest = super::task_runtime::observed::digest(
+            event, io, acyclic_stream::MAX_RECORD_BYTES as u64,
+        )?;
         let mut shared = if io.is_none() { Some(self.verified.lock().await) } else { None };
         let mut transient = ExecutionSummary::default();
         let summary = shared.as_deref_mut().unwrap_or(&mut transient);
@@ -751,7 +671,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
-        crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
+        crate::context::validate_projected_context(&projection.context, limits, io)?;
         let Some(reference) = &projection.checkpoint else {
             if projection.canonical.is_some() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
@@ -788,7 +708,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &self,
         limits: Limits,
     ) -> Result<crate::store::HistoryReadLimits> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         Ok(if let Some(limits) = self.history_read_limits {
             limits
         } else {
@@ -1017,9 +937,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(tail), key, operation_id,
-                    "execution journal retry identity", &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(tail), key, operation_id, &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(tail), Some(key)).await
@@ -1069,83 +988,15 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
 
-    /// Binds the exact pinned extension registry used by the conversation reducer.
+    /// Binds the pinned extension registry with optional original preparation IO.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: StreamClient<P>,
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        scope: Scope,
-        maximum_payload_bytes: u64,
-    ) -> Result<Self>
-    {
-        Self::validate_configuration(
-            &host, &volume, &verifier, &scope, maximum_payload_bytes, None,
-        )?;
-        Self::assemble_validated_configuration(
-            stream, host, volume, verifier, schemas, scope, maximum_payload_bytes, None,
-        )
-    }
-
-    fn assemble_validated_configuration(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef, verifier: AuthorityVerifier, schemas: SchemaRegistry,
-        scope: Scope, maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self>
-    {
-        let interactions = match verifier.audience().kind {
-            crate::core::AggregateKind::Conversation => {
-                let mut observer = io.map(PreparationIo::history_io);
-                let mut work = observer.as_mut()
-                    .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-                let authority = match work.as_deref_mut() {
-                    Some(work) => work.clone_authority(verifier.audience())?,
-                    None => verifier.audience().clone(),
-                };
-                let interaction_verifier = verifier.clone_with_work(&mut work)?;
-                let interaction_scope = scope.clone_with_work(&mut work)?;
-                let interaction_volume = match io {
-                    Some(io) => volume.clone_with_io(io)?,
-                    None => volume.clone(),
-                };
-                Some(FilesystemInteractionHost::new_with_io(
-                    stream.clone(), Arc::clone(&host), authority, interaction_verifier,
-                    schemas.clone(), interaction_scope, interaction_volume,
-                    maximum_payload_bytes, io,
-                )?)
-            }
-            crate::core::AggregateKind::Task => None,
-            _ => unreachable!("execution authority validated before assembly"),
-        };
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        verifier: &AuthorityVerifier, schemas: &SchemaRegistry, scope: &Scope,
+        maximum_payload_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io.filter(|io| io.uses_native_work())
-            .map(|io| io.take_native_custody(io.owned_bytes()?)).transpose()?;
-        Ok(Self {
-            stream,
-            host,
-            volume,
-            verifier,
-            scope,
-            schemas,
-            maximum_payload_bytes,
-            input_verifier: None,
-            interactions,
-            owner: None,
-            execution: None,
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
-            conversation_projection: tokio::sync::Mutex::new(None),
-            history_read_limits: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata,
-        })
-    }
-
-    fn validate_configuration(
-        host: &FilesystemHost<A, O>, volume: &VolumeRef,
-        verifier: &AuthorityVerifier, scope: &Scope, maximum_payload_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<()> {
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let invalid = |reason: &'static str| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.is_some_and(|io| io.original_native_work().is_some()) {
@@ -1173,58 +1024,60 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         {
             return Err(invalid("execution journal requires a task or conversation authority"));
         }
-        Ok(())
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        let volume = volume.clone_with_work(&mut work)?;
+        let verifier = verifier.clone_with_work(&mut work)?;
+        let schemas = schemas.clone_with_work(&mut work)?;
+        let scope = scope.clone_with_work(&mut work)?;
+        let interactions = match verifier.audience().kind {
+            crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
+                stream.clone(), Arc::clone(&host), verifier.audience(), &verifier,
+                &schemas, &scope, &volume, maximum_payload_bytes, io,
+            )?),
+            crate::core::AggregateKind::Task => None,
+            _ => unreachable!("execution authority validated before assembly"),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = io.filter(|io| io.uses_native_work())
+            .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
+        Ok(Self {
+            stream,
+            host,
+            volume,
+            verifier,
+            scope,
+            schemas,
+            maximum_payload_bytes,
+            input_verifier: None,
+            interactions,
+            owner: None,
+            execution: None,
+            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            conversation_projection: tokio::sync::Mutex::new(None),
+            history_read_limits: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            _native_metadata,
+        })
     }
 
-    /// Binds approval/question tickets to an existing conversation owner on the same Stream and Filesystem providers.
+    /// Binds tickets to the conversation owner with optional original preparation IO.
     pub fn with_interaction_owner(
-        mut self,
-        verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        scope: Scope,
-        private_volume: VolumeRef,
-    ) -> Result<Self>
-    {
-        self.require_interaction_owner_with_io(None)?;
-        self.bind_interaction_owner_with_io(verifier, schemas, scope, private_volume, None)?;
-        Ok(self)
-    }
-
-    /// Binds the same configured owner while retaining its original native-ledger metadata.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn with_interaction_owner_with_native_work(
         mut self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
-        scope: &Scope, private_volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self>
-    {
-        let guard = self._native_metadata.as_mut().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "native interaction binding requires original journal custody",
-        })?;
-        let io = PreparationIo::from_native_work(work)?;
-        let mut identity = io.take_native_custody(0)?;
-        guard.absorb(&mut identity).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(identity),
-        })?;
-        self.require_interaction_owner_with_io(Some(&io))?;
-        let (verifier, custody) = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let (scope, custody) = scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let private_volume = private_volume.clone_with_io(&io)?;
-        self.bind_interaction_owner_with_io(
-            verifier, schemas.clone(), scope, private_volume, Some(&io))?;
-        let retained = io.owned_bytes()?;
-        let mut custody = io.into_native_custody(retained)?;
-        self._native_metadata.as_mut().expect("original journal custody")
-            .absorb(&mut custody).map_err(|cause| Error::NativeWork {
-                cause, custody: Some(custody),
+        scope: &Scope, private_volume: &VolumeRef, io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io.filter(|io| io.uses_native_work()) {
+            let guard = self._native_metadata.as_mut().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native interaction binding requires original journal custody",
             })?;
-        Ok(self)
-    }
-
-    fn require_interaction_owner_with_io(&self, io: Option<&PreparationIo>) -> Result<()>
-    {
+            let mut identity = io.take_native_custody(0)?;
+            guard.absorb(&mut identity).map_err(|cause| Error::NativeWork {
+                cause, custody: Some(identity),
+            })?;
+        }
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
@@ -1235,26 +1088,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 io, crate::wire::ErrorCode::Unauthorized,
                 "task interaction binding requires an admitted journal owner"));
         }
-        Ok(())
-    }
-
-    fn bind_interaction_owner_with_io(
-        &mut self, verifier: AuthorityVerifier, schemas: SchemaRegistry,
-        scope: Scope, private_volume: VolumeRef, io: Option<&PreparationIo>,
-    ) -> Result<()>
-    {
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed.as_mut().map(
-            |work| work as &mut dyn crate::store::history::HistoryIo);
-        let authority = match work.as_deref_mut() {
-            Some(work) => work.clone_authority(verifier.audience())?,
-            None => verifier.audience().clone(),
-        };
-        self.interactions = Some(FilesystemInteractionHost::new_with_io(
-            self.stream.clone(), Arc::clone(&self.host), authority, verifier,
+        self.interactions = Some(FilesystemInteractionHost::new(
+            self.stream.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
-        Ok(())
+        Ok(self)
     }
 
     /// Sets a separate finite work/byte allowance for cold canonical deltas.
@@ -1286,8 +1124,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream
-            .stream(crate::distributed::execution_path(operation_id, &mut None)?.as_str())
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+            crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1303,9 +1141,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 owner.require_interaction_grant(&mut None)?;
                 owner.verify(true, &mut None).await?;
             }
-            let (ticket, prior) = host.read_with_io(id, None).await?
+            let (ticket, prior) = host.read(id, None).await?
                 .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-            let request = host.read_request_with_io(id, None).await?
+            let request = host.read_request(id, None).await?
                 .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
             request.validate_response_with_work(&response, &mut None)?;
             if let Some(previous) = &prior && previous.outcome.is_terminal() {
@@ -1338,13 +1176,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             bytes.copy_from_slice(&digest.as_bytes()[..16]);
             let operation = OperationId::from_bytes(bytes);
             if let Some((owner, _)) = &self.owner { owner.verify(true, &mut None).await?; }
-            let staged = host.stage_answer_with_io(id, expected_version, operation, &response, None).await?;
+            let staged = host.stage_answer(id, expected_version, operation, &response, None).await?;
             let (outcome, detail) = match response {
                 InteractionResponse::Approval { approved: true, .. } => (InteractionOutcome::Approved, Some(staged)),
                 InteractionResponse::Approval { approved: false, .. } => (InteractionOutcome::Declined, Some(staged)),
                 _ => (InteractionOutcome::Answered { answer: Box::new(staged) }, None),
             };
-            host.resolve_with_io(operation, responder, InteractionResolution {
+            host.resolve(operation, responder, InteractionResolution {
                 id: ticket.id, expected_version, outcome, detail,
             }, None).await?;
             if let Some((owner, _)) = &self.owner { owner.verify(true, &mut None).await?; }
@@ -1358,7 +1196,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         limits: Limits,
     ) -> Result<tokio::sync::MappedMutexGuard<'_, StreamAggregate<P>>>
     {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let verifier = self.input_verifier.as_ref().ok_or_else(|| {
             Error::Unsupported("conversation content verifier is not bound".into())
         })?;
@@ -1521,7 +1359,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1752,7 +1590,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         if let Some(io) = io {
             super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
@@ -2284,7 +2122,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        limits.validate_with_work(&mut work)?;
+        limits.validate(&mut work)?;
         if selected.selection.message_ids.len() > limits.context_messages {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Invalid, "selected history exceeds context message limit"));
@@ -2321,7 +2159,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view_with_work(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2385,7 +2223,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             owner.validate_input_file(file, io)
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
-            file.validate_with_work(&mut borrowed.as_mut().map(
+            file.validate(&mut borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo))
         }
     }
@@ -2406,7 +2244,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         {
             let request_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let original = host.read_request_with_io(id, io).await?;
+            let original = host.read_request(id, io).await?;
             request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                     crate::wire::ErrorCode::Invalid, "interaction request custody underflows"))?)).transpose()?;
@@ -2427,18 +2265,18 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         ticket_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                 crate::wire::ErrorCode::Invalid, "interaction ticket custody underflows"))?)).transpose()?;
-        let publication = host.open_request_with_io(
-            operation, &ticket, self.owner.as_ref().map(|(owner, _)| owner), io).await;
+        let publication = host.open(
+            operation, None, &ticket, self.owner.as_ref().map(|(owner, _)| owner), io).await;
         drop(ticket);
         drop(ticket_hold);
         if let Some((owner, _)) = &self.owner { owner.verify(false, &mut work).await?; }
         let result = match publication {
-            Ok(()) => Ok(()),
+            Ok(_) => Ok(()),
             Err(error) if matches!(error.code(),
                 crate::wire::ErrorCode::Conflict | crate::wire::ErrorCode::Indeterminate) => {
                 let request_hold;
                 let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                let original = host.read_request_with_io(id, io).await?;
+                let original = host.read_request(id, io).await?;
                 request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
                         crate::wire::ErrorCode::Invalid, "interaction request custody underflows"))?)).transpose()?;
@@ -2677,7 +2515,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
+    let (history, _) = crate::conversation::ConversationState::selected_view(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
     let mut message_ids = Vec::new();
@@ -2748,15 +2586,17 @@ mod tests {
                 volume.capability(VolumeOperation::Write)?,
             ]),
         );
-        let stream = StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default()));
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 host.clone(),
-                volume.clone(),
-                issuer.verifier(), crate::core::SchemaRegistry::new(),
-                scope.clone(),
+                &volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
                 4096,
+                None,
             )
             .map(|journal| journal.with_turn(operation, turn))
         };
@@ -2862,7 +2702,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<
             acyclic_stream::MemoryStream,
         >::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
@@ -3079,11 +2919,12 @@ mod tests {
             FilesystemExecutionJournal::new(
                 client.clone(),
                 host.clone(),
-                volume.clone(),
-                issuer.verifier(),
-                SchemaRegistry::new(),
-                scope.clone(),
+                &volume,
+                &issuer.verifier(),
+                &SchemaRegistry::new(),
+                &scope,
                 4096,
+                None,
             )
             .map(|journal| journal.with_input_verifier(content.clone()))
         };

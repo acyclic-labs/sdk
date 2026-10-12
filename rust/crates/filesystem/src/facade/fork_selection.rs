@@ -4,7 +4,7 @@ use super::*;
 use crate::kernel::{
     FileTableMutation, FileTablePage, TreeEntry, TreeMutation, Owned,
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
-    encode_file_table_page_with_accounting, encode_tree_page_with_accounting,
+    encode_file_table_page, encode_tree_page,
     list_tree_entries_async_with_accounting, lookup_file_record_async_with_accounting,
 };
 use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
@@ -319,10 +319,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 directory.retire(accounting)?;
                 plan.children.retire(accounting)?;
-                let encoded = encode_tree_page_with_accounting(
-                    &TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, accounting,
-                    cancellation,
-                )?;
+                let encoded = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| { cancellation.check()?; encode_tree_page(&TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, observe, crate::FsError::EncodedAllocationFailed) })?;
                 let empty = self.put_encoded_with_accounting(
                     ObjectKind::TreePage, encoded, accounting, cancellation,
                 ).await?;
@@ -479,7 +476,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         records.retire(accounting)?;
         links.retire(accounting)?;
-        let encoded = encode_file_table_page_with_accounting(&FileTablePage::Leaf(Vec::new()), limits.maximum_page_items, accounting)?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| encode_file_table_page(&FileTablePage::Leaf(Vec::new()), limits.maximum_page_items, observe, reserve))?;
         let empty = self.put_encoded_with_accounting(
             ObjectKind::FileTablePage, encoded, accounting, cancellation,
         ).await?;
