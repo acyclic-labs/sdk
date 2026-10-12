@@ -27,7 +27,6 @@ mod obs;
 pub use grpc::Tls;
 
 /// Generated revision-one public transport. Service implementations consume this module;
-/// customer applications should use the checked types and handles in this crate.
 #[doc(hidden)]
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the documented public schema")]
@@ -49,7 +48,6 @@ pub const PROTOCOL_MINOR: u32 = 1;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
@@ -83,7 +81,6 @@ macro_rules! uuid_identity {
             }
 
             /// Derives a deterministic, never-nil identity from a domain-separated
-            /// SHA-256 digest: its first 16 bytes stamped as a version-5 UUID.
             #[must_use]
             pub fn from_digest(digest: [u8; 32]) -> Self {
                 let mut bytes = [0_u8; 16];
@@ -222,10 +219,6 @@ pub enum Capability {
     SuspendResume,
     LiveMovement,
     /// [`MachinesProvider::fork_machine`] copies a running machine's persistent disk, but not
-    /// its memory or processes. Which paths are persistent is provider-defined: a provider whose
-    /// machines boot from an immutable image may copy only its declared data directory, the
-    /// rest being the image both boot from. [`Capability::LiveFork`] is the memory-and-disk form and takes precedence
-    /// when a contract declares both.
     DiskFork,
 }
 
@@ -235,15 +228,11 @@ pub enum ForkFidelity {
     /// Children resume from the source's memory, processes, and disk at the fork instant.
     MemoryAndDisk,
     /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
-    /// [`Capability::DiskFork`]) taken at one consistent instant. No process or memory state is
-    /// inherited; the caller restarts its workload in each child, for example from durable
-    /// history.
     DiskOnly,
 }
 
 impl ForkFidelity {
     /// The fidelity a machine with `capabilities` forks at, or `None` when it cannot be
-    /// forked live at all and the caller must fall back to checkpoint fork or a restart.
     #[must_use]
     pub fn for_capabilities(capabilities: &BTreeSet<Capability>) -> Option<Self> {
         if capabilities.contains(&Capability::LiveFork) {
@@ -353,7 +342,6 @@ pub struct MachineContract {
 
 impl MachineContract {
     /// The fidelity [`MachinesProvider::fork_machine`] offers for a machine under this
-    /// contract; `None` means live fork is unsupported for it.
     #[must_use]
     pub fn fork_fidelity(&self) -> Option<ForkFidelity> {
         ForkFidelity::for_capabilities(&self.capabilities)
@@ -464,7 +452,6 @@ pub struct UsageReceipt {
     pub private_resident_byte_seconds: u64,
     pub durable_private_bytes: u64,
     /// Commitment to the separately signed account-lineage storage receipt.
-    /// Zero is permitted only for process-local simulation.
     pub lineage_receipt_sha256: [u8; 32],
     pub egress_bytes: u64,
     /// Provider-authenticated canonical receipt bytes; empty only for the in-memory provider.
@@ -489,7 +476,6 @@ pub enum MutationOutcome {
     Checkpointed(CheckpointObservation),
     Forked(Vec<MachineObservation>),
     /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the
-    /// children were forked at, and the children in index order.
     MachineForked {
         source: MachineId,
         fidelity: ForkFidelity,
@@ -599,63 +585,6 @@ pub trait MachinesProvider: Send + Sync {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
     /// Forks a running machine into `count` fresh children without an intermediate
-    /// checkpoint, idempotently under `key`. The call may happen at any point in the source's
-    /// life; nothing has to be prepared in advance.
-    ///
-    /// # Admission
-    ///
-    /// The source must be [`MachineState::Running`] (otherwise [`ProviderError::Conflict`])
-    /// and its contract must declare [`Capability::LiveFork`] or [`Capability::DiskFork`]
-    /// (otherwise [`ProviderError::Unsupported`], which is also this method's default). Check
-    /// [`MachineContract::fork_fidelity`] before calling; on `Unsupported`, fall back to
-    /// [`MachinesProvider::checkpoint`] plus [`MachinesProvider::fork`], or to a restart.
-    /// `count` above [`MAX_FORK_CHILDREN`] is [`ProviderError::Invalid`].
-    ///
-    /// # What a child inherits
-    ///
-    /// - [`ForkFidelity::MemoryAndDisk`] (declared by `LiveFork`): the source's memory,
-    ///   running processes, and disk at one instant. [`ForkFidelity::DiskOnly`] (declared by
-    ///   `DiskFork`): a copy of the source's persistent disk only (see
-    ///   [`Capability::DiskFork`]); the child boots fresh and the caller
-    ///   restarts its workload. The outcome reports which one ran; it always equals the
-    ///   source contract's [`MachineContract::fork_fidelity`].
-    /// - The source's exact [`MachineContract`] (image, capabilities, policies,
-    ///   budgets). `last_checkpoint` is `None`: no checkpoint was taken.
-    /// - Anything in memory or on disk, including credentials and environment. A child that
-    ///   needs its own identity must be re-provisioned after the fork.
-    /// - A provider may fan out by forking earlier children of the same call (for example
-    ///   when a machine can run only one fork at a time). A child forked from an earlier child
-    ///   inherits whatever that child executed after its own fork, so the children are
-    ///   memory-identical only if the workload does not advance while the fork is in progress,
-    ///   for example because it waits for a signal after the fork point. Every child is still
-    ///   reported as a child of `machine`.
-    ///
-    /// # Identity
-    ///
-    /// Children get fresh [`MachineId`]s distinct from the source and from each other, their
-    /// own endpoints, and independent lifetimes. Replaying `key` with the same source and count
-    /// returns the identical outcome; reusing it for another intent is
-    /// [`ProviderError::Conflict`].
-    ///
-    /// # Network
-    ///
-    /// Open network connections are never guaranteed to survive in a child: a child may
-    /// have a different address, and peers see at most one of the copies. Children must treat
-    /// every socket open at the fork instant as broken and reconnect. The source keeps its
-    /// connections, though it may be briefly quiesced while the fork is taken.
-    ///
-    /// # Joining
-    ///
-    /// Destroy children before their source. A provider may refuse to destroy a source while
-    /// any of its live-fork children is not yet [`MachineState::Destroyed`]; it then returns
-    /// [`ProviderError::Conflict`] without side effects, and the call may be retried once the
-    /// children are gone. Providers that allow it leave the children running.
-    ///
-    /// # Partial failure
-    ///
-    /// Forking `count > 1` children is not atomic. A failed or indeterminate attempt may
-    /// leave some children; replay `key` to finish it, or [`MachinesProvider::cancel`] its
-    /// operation to remove them.
     async fn fork_machine(
         &self,
         machine: MachineId,
@@ -836,7 +765,6 @@ impl Machine {
         }
     }
     /// Forks this running machine into `count` fresh children; see
-    /// [`MachinesProvider::fork_machine`] for the exact semantics.
     pub async fn fork(
         &self,
         count: NonZeroU32,
@@ -1033,10 +961,6 @@ impl Default for MemoryState {
 }
 
 /// Deterministic bounded process-local state-machine provider.
-///
-/// It refuses to destroy a live-fork source while any of its children is not destroyed, the
-/// strictest ordering [`MachinesProvider::fork_machine`] allows, so callers tested against it
-/// join correctly on every provider.
 #[derive(Clone)]
 pub struct SimulatedMachines {
     state: Arc<Mutex<MemoryState>>,
@@ -1060,8 +984,6 @@ impl Default for SimulatedMachines {
 
 impl SimulatedMachines {
     /// Simulates a provider that qualifies images with exactly `capabilities`, for example
-    /// without [`Capability::LiveFork`] to exercise a caller's fallback path. Only admission
-    /// and fork fidelity follow the set; other operations are simulated regardless.
     #[must_use]
     pub fn with_capabilities(capabilities: BTreeSet<Capability>) -> Self {
         Self {
@@ -1148,9 +1070,6 @@ fn derived_digest(domain: &[u8], key: IdempotencyKey, index: u32) -> [u8; 32] {
 }
 
 /// Canonical digest of a mutation intent, binding an idempotency key to it.
-///
-/// # Errors
-/// Returns [`ProviderError::Invalid`] when the intent cannot be encoded.
 pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError> {
     let encoded = serde_json::to_vec(intent)
         .map_err(|error| ProviderError::Invalid(format!("intent cannot be encoded: {error}")))?;

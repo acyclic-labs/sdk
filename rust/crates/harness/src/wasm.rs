@@ -546,14 +546,6 @@ pub struct WasmWorkflowAdmissionWire {
     initial: crate::workflow::MachineCheckpoint,
 }
 
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push_str(&format!("{byte:02x}"));
-    }
-    output
-}
-
 fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
     Ok(Limits {
         file_bytes: input.file_bytes,
@@ -906,7 +898,7 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
     ) -> BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
-            decode_attachment_manifest(manifest, &bytes, item_count)
+            decode_attachment_manifest(manifest, &bytes, Some(item_count), None)
         })
     }
 
@@ -1106,8 +1098,8 @@ pub fn admit_batch_request_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmBatchAdmissionInput")] value: JsValue,
 ) -> Result<JsValue, JsValue> {
     let input: WasmBatchAdmissionInput = from_js(value)?;
-    let implementation_digest = hex_bytes(&input.machine_digest);
     let request = durable_batch_request_from_input(input)?;
+    let implementation_digest = blake3::Hash::from_bytes(request.machine.digest).to_hex().to_string();
     let canonical = request.canonical_value();
     let members = (0..request.inputs.len())
         .map(|index| {
@@ -1822,7 +1814,7 @@ pub fn decode_attachment_manifest_bytes(
     item_count: u32,
 ) -> Result<JsValue, JsValue> {
     let manifest: FileRef = from_js(manifest)?;
-    to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, item_count).map_err(js_error)?)
+    to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, Some(item_count), None).map_err(js_error)?)
 }
 
 /// Runs the canonical Rust conversation projection over bytes captured by the owner.

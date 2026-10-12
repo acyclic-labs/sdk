@@ -46,17 +46,6 @@ struct VerifiedSummary {
     terminal: bool,
 }
 
-impl VerifiedSummary {
-    fn advance(&mut self, record: &WorkflowRecord) {
-        for identity in record.operation_ids() {
-            self.reserved.insert(identity);
-        }
-        self.keys.insert(record.idempotency_key.clone());
-        self.checkpoint = record.next.clone();
-        self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
-    }
-}
-
 struct WorkflowIdentities<'a> {
     io: Option<&'a PreparationIo>,
     owned: u64,
@@ -206,7 +195,7 @@ where
         io.absorb_native_custody(verifier_custody)?;
         let (scope, scope_custody) = scope.clone_with_native_work(work)?;
         io.absorb_native_custody(scope_custody)?;
-        let volume = volume.clone_with_io(&io)?;
+        let volume = volume.copy(&io)?;
         let identity_io = PreparationIo::from_native_work(work)?;
         let _identity;
         let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
@@ -590,7 +579,7 @@ where
         match io {
             Some(io) => {
                 if !io.uses_native_work() {
-                    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+                    reference.validate(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
@@ -750,7 +739,10 @@ where
             && summary.admission == *admission
             && summary.checkpoint.revision == record.prior.revision
         {
-            summary.advance(record);
+            summary.reserved.extend(record.operation_ids());
+            summary.keys.insert(record.idempotency_key.clone());
+            summary.checkpoint = record.next.clone();
+            summary.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         }
     }
 

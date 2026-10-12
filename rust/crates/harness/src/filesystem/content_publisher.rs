@@ -45,7 +45,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "content publisher custody underflows"))?)?)
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "content publisher custody underflows"))?)?)
             }
             None => None,
         };
@@ -248,7 +248,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             source.validate_with_native_work(work)?;
         } else {
-            source.validate()?;
+            source.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         source.validate()?;
@@ -274,7 +274,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         #[cfg(not(target_arch = "wasm32"))]
         let root_generation = root_allocation
-            .map(|allocation| allocation.source_generation_for_file_with_io(source, io))
+            .map(|allocation| allocation.source_generation(Some(source), io))
             .transpose()?.flatten();
         #[cfg(target_arch = "wasm32")]
         let root_generation = { let _ = root_allocation; None };
@@ -309,7 +309,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let expected_generation = root_allocation
-            .map(|allocation| allocation.source_generation_with_io(io))
+            .map(|allocation| allocation.source_generation(None, io))
             .transpose()?.flatten();
         #[cfg(target_arch = "wasm32")]
         let expected_generation = { let _ = root_allocation; None };

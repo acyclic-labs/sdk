@@ -1312,8 +1312,8 @@ mod tests {
                         parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                         IdempotencyKey::new(),
                     ),
-                )
-                .await
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("child");
             let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
             let lease = coordinator
@@ -1417,8 +1417,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         child
             .write_text("/child", "local")
@@ -1482,8 +1482,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
@@ -1523,8 +1523,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         parent
             .write_text("/parent", "unobserved")
@@ -1570,8 +1570,8 @@ mod tests {
                     parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
-            )
-            .await
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("child");
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator

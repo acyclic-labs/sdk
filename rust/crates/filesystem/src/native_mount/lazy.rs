@@ -21,7 +21,7 @@ use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
-use crate::lazy_workspace::logical_child_path;
+use crate::lazy_workspace::{logical_child_path, InspectBasis, LazyReadonlyNode, LazyTreapWork};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
     LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkBudget, WorkspaceMetadata,
@@ -483,7 +483,6 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
 fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::Demand(error) => mount_demand_error(error),
-        LazyWorkspaceError::NativeCustody(error) => super::adapter::native_custody_error(error),
         LazyWorkspaceError::NotRegularFile => MountSourceError::NativeStaticText {
             kind: super::NativeSourceTextKind::Invalid, text: "path is not a regular file",
         },
@@ -493,10 +492,6 @@ fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeStaticText {
             kind: super::NativeSourceTextKind::Unsupported,
             text: "source node cannot be represented by the authored workspace",
-        },
-        LazyWorkspaceError::UnresolvedHardLinks => MountSourceError::NativeStaticText {
-            kind: super::NativeSourceTextKind::Unsupported,
-            text: "source hard-link aliases must be promoted before removing the final authored binding",
         },
         LazyWorkspaceError::TooLarge => MountSourceError::NativeStaticText {
             kind: super::NativeSourceTextKind::Engine, text: "file exceeds the requested read bound",
@@ -1021,32 +1016,42 @@ where
             None => {
                 let cancellation = scratch.carrier.cancellation();
                 if let Some(original) = scratch.carrier.original_native_work() {
-                    match lazy.inspect_unauthored_with_native_work(text, None, &original, &cancellation).await {
-                        Ok(((lookup, _), allocation)) => {
+                    match lazy.inspect_unauthored(text, InspectBasis::default(),
+                        &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await {
+                        Ok(LazyReadonlyNode::Native(owned)) => {
+                            let ((lookup, _), allocation) = owned.into_parts();
                             let lookup = MountOwnedBuffer { value: lookup, legacy_bytes: 0, allocation: Some(allocation) };
-                            let file_id = lazy.stable_file_id_for_lookup_with_native_work(
-                                text, &lookup.value, &original, &cancellation,
+                            let file_id = lazy.stable_file_id_for_lookup(
+                                text, &lookup.value, &mut crate::lazy_workspace::LazyReadonlyAccounting::Native { original: &original, cancellation: &cancellation },
                             ).await.map_err(native_lazy_error)?;
                             Some(mount_lookup_ref(&lookup.value, file_id))
                         }
+                        Ok(_) => unreachable!("native inspection retains native funding"),
                         Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) => None,
                         Err(error) => return Err(native_lazy_error(error)),
                     }
                 } else {
                     let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                    let result = lazy.inspect_unauthored_measured(text, None, budget, &cancellation).await;
+                    let accounting = LazyTreapWork::new(budget, &cancellation);
+                    let result = lazy.inspect_unauthored(text, InspectBasis::default(), &accounting).await;
+                    let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
                     match scratch.carrier.with_work(|work| mount_accept(work, result, lazy_error)) {
-                        Ok((lookup, _)) => {
+                        Ok(LazyReadonlyNode::Portable((lookup, _))) => {
                             let owned = lookup.logical_owned_bytes();
                             scratch.track(owned)?;
                             scratch.carrier.with_work(|work| work.record_adoption(owned, &None)).map_err(mount_demand_error)?;
                             let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                            let result = lazy.stable_file_id_for_lookup_measured(text, &lookup, budget, &cancellation).await;
+                            let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
+                                work: crate::WorkCounters::UNCHARGED, budget, cancellation: &cancellation,
+                            };
+                            let result = lazy.stable_file_id_for_lookup(text, &lookup, &mut accounting).await;
+                            let result = accounting.finish_measured(result).map_err(LazyWorkspaceError::into_measured_failure);
                             let file_id = scratch.carrier.with_work(|work| mount_accept(work, result, lazy_error));
                             let projected = file_id.map(|file_id| mount_lookup(lookup, file_id));
                             scratch.release(owned)?;
                             Some(projected?)
                         }
+                        Ok(_) => unreachable!("ordinary inspection uses ordinary funding"),
                         Err(MountSourceError::NotFound) => None,
                         Err(error) => return Err(error),
                     }
@@ -1273,12 +1278,9 @@ fn directory_removal_bytes(names: &Vec<String>) -> Result<u64, MountSourceError>
 }
 
 fn directory_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
-    match error {
-        LazyWorkspaceError::NativeCustody(error) => super::adapter::native_custody_error(error),
-        error => match error.semantic_error() {
-            LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
-            _ => lazy_error(error),
-        },
+    match error.semantic_error() {
+        LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
+        _ => lazy_error(error),
     }
 }
 
@@ -2311,7 +2313,7 @@ where
                         )?);
                     }
                     SourceChange::Node(identity) => effect.nodes.push(
-                        lazy.source_file_id_of_with_native_work(identity, work, work.cancellation())
+                        lazy.source_file_id(identity, &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()))
                             .map_err(|error| recorder_projection_error(lazy_error(error)))?,
                     ),
                     SourceChange::Everything => effect.everything = true,
@@ -3058,10 +3060,12 @@ where
         }
         let file_id = self.wait(|| async {
             let lookup = self.lazy.lookup(&text).await.map_err(lazy_error)?;
-            self.lazy
-                .stable_file_id_for_lookup(&text, &lookup)
-                .await
-                .map_err(lazy_error)
+            let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
+                work: crate::WorkCounters::UNCHARGED, budget: crate::WorkBudget::UNBOUNDED,
+                cancellation: &crate::CancellationToken::new(),
+            };
+            let result = self.lazy.stable_file_id_for_lookup(&text, &lookup, &mut accounting).await;
+            accounting.finish_measured(result).map(|receipt| receipt.value).map_err(lazy_error)
         })?;
         self.detached_by_id(file_id)
     }
@@ -3563,7 +3567,8 @@ where
                     qualified = Some(publication);
                     snapshot
                 } else {
-                    self.lazy.snapshot_with_native_work(&original)
+                    self.lazy.snapshot(&LazyTreapWork::native_with_work(&original, original.cancellation())
+                        .map_err(native_lazy_error)?)
                         .await.map_err(native_lazy_error)?
                 }
             } else {
@@ -3573,9 +3578,9 @@ where
                     ));
                 }
                 let prior_live = work.with_work(|meter| meter.live_allocation_bytes());
-                let receipt = self.lazy.snapshot_measured(
-                    work.remaining().map_err(mount_demand_error)?, cancellation,
-                ).await;
+                let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, cancellation);
+                let result = self.lazy.snapshot(&accounting).await;
+                let receipt = accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure());
                 work.meter.accept_with_prior_live(receipt, prior_live, lazy_error)?
             };
             let checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
@@ -3851,8 +3856,10 @@ where
             let proof = SelectedImportProof {
                 checkpoint: input.destination, source: input.plan.source,
                 source_config: input.plan.source_config,
-                input: input.plan.input_digest_with_work(
-                    input.destination, input.original, cancellation,
+                input: input.plan.input_digest(
+                    input.destination, &LazyTreapWork::native_with_work(
+                        input.original, cancellation,
+                    ).map_err(native_lazy_error)?,
                 ).map_err(native_lazy_error)?,
             };
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
@@ -4315,7 +4322,9 @@ where
         self.source_view.begin_transition();
         let result = async {
             self.authored.advance_to_head_async().await?;
-            self.lazy.rebind_source().await.map_err(lazy_error)?;
+            self.lazy.rebind_source(&crate::lazy_workspace::LazyTreapWork::new(
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+            )).await.map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
             self.authored
                 .record_projection_change(&ViewChange::Everything);
@@ -4522,8 +4531,8 @@ where
     ) -> Result<FileId, MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
             let caller = carrier.cancellation();
-            return self.lazy.stable_file_id_for_lookup_with_native_work(
-                text, lookup, &original, &caller,
+            return self.lazy.stable_file_id_for_lookup(
+                text, lookup, &mut crate::lazy_workspace::LazyReadonlyAccounting::Native { original: &original, cancellation: &caller },
             ).await.map_err(native_lazy_error);
         }
         let (budget, caller) = carrier.with_work(|work| {
@@ -4531,7 +4540,11 @@ where
                 work.remaining().map_err(mount_demand_error)?, work.cancellation().clone(),
             ))
         })?;
-        let result = self.lazy.stable_file_id_for_lookup_measured(text, lookup, budget, &caller).await;
+        let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
+            work: crate::WorkCounters::UNCHARGED, budget, cancellation: &caller,
+        };
+        let result = self.lazy.stable_file_id_for_lookup(text, lookup, &mut accounting).await;
+        let result = accounting.finish_measured(result).map_err(LazyWorkspaceError::into_measured_failure);
         carrier.with_work(|work| mount_accept(work, result, lazy_error))
     }
 
@@ -5320,18 +5333,25 @@ where
         }
         let caller = carrier.cancellation();
         if let Some(original) = carrier.original_native_work() {
-            match self.lazy.inspect_unauthored_with_native_work(text, None, &original, &caller).await {
-                Ok(((lookup, source), allocation)) =>
-                    Ok(Resolution::Unauthored(lookup, source, Some(allocation))),
+            match self.lazy.inspect_unauthored(text, InspectBasis::default(),
+                &LazyTreapWork::native_with_work(&original, &caller).map_err(lazy_error)?).await {
+                Ok(LazyReadonlyNode::Native(owned)) => {
+                    let ((lookup, source), allocation) = owned.into_parts();
+                    Ok(Resolution::Unauthored(lookup, source, Some(allocation)))
+                }
+                Ok(_) => unreachable!("native inspection retains native funding"),
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) =>
                     Ok(Resolution::Absent),
                 Err(error) => Err(lazy_error(error)),
             }
         } else {
             let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-            let result = self.lazy.inspect_unauthored_measured(text, None, budget, &caller).await;
+            let accounting = LazyTreapWork::new(budget, &caller);
+            let result = self.lazy.inspect_unauthored(text, InspectBasis::default(), &accounting).await;
+            let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
             match carrier.with_work(|work| mount_accept(work, result, lazy_error)) {
-                Ok((lookup, source)) => Ok(Resolution::Unauthored(lookup, source, None)),
+                Ok(LazyReadonlyNode::Portable((lookup, source))) => Ok(Resolution::Unauthored(lookup, source, None)),
+                Ok(_) => unreachable!("ordinary inspection uses ordinary funding"),
                 Err(MountSourceError::NotFound) => Ok(Resolution::Absent),
                 Err(error) => Err(error),
             }
@@ -5351,7 +5371,8 @@ where
     {
         in_heap(move || async move {
             if let Some(deferral) = self.resolutions.get(path) {
-                let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node));
+                let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node.file_identity,
+                    &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))).transpose().map_err(lazy_error)?;
                 if deferral.source == self.lazy.source_reference()
                     && self.unchanged_since(path, file_id, deferral.stamp)
                 {
@@ -5598,14 +5619,21 @@ where
             scratch.track(child.legacy_owned_bytes())?;
             let (lookup, pin) = if let Some(node) = entry.source {
                 let (lookup, source, allocation) = if let Some(original) = &original {
-                    let ((lookup, source), allocation) = self.lazy.inspect_listed_with_native_work(
-                        &state.value, &child, node, entry.unobserved, original, &caller,
+                    let phase = self.lazy.inspect_unauthored(&child,
+                        InspectBasis { state: Some(&state.value), listed: Some(node), unobserved: entry.unobserved, ..InspectBasis::default() },
+                        &LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?,
                     ).await.map_err(directory_lazy_error)?;
+                    let LazyReadonlyNode::Native(owned) = phase else { unreachable!("native inspection retains native funding") };
+                    let ((lookup, source), allocation) = owned.into_parts();
                     (lookup, source, Some(allocation))
                 } else {
                     let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                    let result = self.lazy.inspect_listed_measured(&state.value, &child, node, entry.unobserved, budget, &caller).await;
-                    let (lookup, source) = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
+                    let accounting = LazyTreapWork::new(budget, &caller);
+                    let result = self.lazy.inspect_unauthored(&child,
+                        InspectBasis { state: Some(&state.value), listed: Some(node), unobserved: entry.unobserved, ..InspectBasis::default() }, &accounting).await;
+                    let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
+                    let phase = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
+                    let LazyReadonlyNode::Portable((lookup, source)) = phase else { unreachable!("ordinary inspection uses ordinary funding") };
                     if self.source_view.is_stable() && let (LazyLookup::Source(node), Some(source)) = (&lookup, source) {
                         self.resolutions.remember(&mounted_child, Deferral { stamp, source, node: Some(*node) });
                     }
@@ -5627,14 +5655,20 @@ where
                 (self.project_authored(authored, scratch.carrier).await?, None)
             } else {
                 let (lookup, source, allocation) = if let Some(original) = &original {
-                    let ((lookup, source), allocation) = self.lazy.inspect_unauthored_with_native_work(
-                        &child, Some(&state.value), original, &caller,
+                    let phase = self.lazy.inspect_unauthored(&child,
+                        InspectBasis { state: Some(&state.value), ..InspectBasis::default() },
+                        &LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?,
                     ).await.map_err(directory_lazy_error)?;
+                    let LazyReadonlyNode::Native(owned) = phase else { unreachable!("native inspection retains native funding") };
+                    let ((lookup, source), allocation) = owned.into_parts();
                     (lookup, source, Some(allocation))
                 } else {
                     let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                    let result = self.lazy.inspect_unauthored_measured(&child, Some(&state.value), budget, &caller).await;
-                    let (lookup, source) = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
+                    let accounting = LazyTreapWork::new(budget, &caller);
+                    let result = self.lazy.inspect_unauthored(&child, InspectBasis { state: Some(&state.value), ..InspectBasis::default() }, &accounting).await;
+                    let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
+                    let phase = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
+                    let LazyReadonlyNode::Portable((lookup, source)) = phase else { unreachable!("ordinary inspection uses ordinary funding") };
                     (lookup, source, None)
                 };
                 self.project_unauthored(&child, lookup, source, allocation, scratch.carrier).await?
@@ -6472,7 +6506,11 @@ where
             if let Some(file) = file { return file.lookup_with_meter(work); }
             let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
             let caller = carrier.cancellation();
-            let result = self.lazy.source_file_id_of_measured(&node.file_identity, budget, &caller);
+            let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, &caller);
+            let result = self.lazy.source_file_id(&node.file_identity, &mut accounting);
+            let spent = accounting.spent();
+            let result = result.map(|value| crate::OperationReceipt { value, work: spent })
+                .map_err(|error| crate::OperationFailure::new(error, spent));
             let id = carrier.with_work(|work| mount_accept(work, result, lazy_error))?;
             Ok(mount_lookup(LazyLookup::Source(node), id))
         })
@@ -6640,7 +6678,8 @@ where
             .unwrap_or(self.source_node);
         Ok(mount_lookup(
             LazyLookup::Source(node),
-            self.lazy.source_file_id(&node),
+            self.lazy.source_file_id(&node.file_identity, &mut crate::kernel::allocation::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).map_err(lazy_error)?,
         ))
     }
 
@@ -7477,11 +7516,12 @@ where
             }
             let file_id = self.wait(|| async {
                 let lookup = self.lazy.lookup(&text).await.map_err(lazy_error)?;
-                let actual = self
-                    .lazy
-                    .stable_file_id_for_lookup(&text, &lookup)
-                    .await
-                    .map_err(lazy_error)?;
+                let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
+                    work: crate::WorkCounters::UNCHARGED, budget: crate::WorkBudget::UNBOUNDED,
+                    cancellation: &crate::CancellationToken::new(),
+                };
+                let result = self.lazy.stable_file_id_for_lookup(&text, &lookup, &mut accounting).await;
+                let actual = accounting.finish_measured(result).map_err(lazy_error)?.value;
                 if expected.is_some_and(|expected| expected != actual) {
                     return Err(MountSourceError::Stale);
                 }
@@ -7745,7 +7785,8 @@ where
                 match &lookup.value {
                     LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
                         let source_file = source.and(source_file).ok_or(MountSourceError::Stale)?;
-                        let expected_source = self.lazy.source_file_id(node);
+                        let expected_source = self.lazy.source_file_id(&node.file_identity,
+                            &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).map_err(lazy_error)?;
                         let (mount_path, mut mount_allocation, _) = mount_components_with_carrier(
                             path.components(), None, &mut carrier,
                         )?.into_parts();
@@ -7836,8 +7877,9 @@ where
             if self.is_removed(&text)? {
                 return Err(MountSourceError::NotFound);
             }
-            match self.lazy.inspect_unauthored(&text, None).await {
-                Ok((LazyLookup::Source(_), _)) => Ok(true),
+            match self.lazy.inspect_unauthored(&text, InspectBasis::default(),
+                &LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await {
+                Ok(LazyReadonlyNode::Portable((LazyLookup::Source(_), _))) => Ok(true),
                 Ok(_) => Err(MountSourceError::Unsupported(
                     "named attributes of an unpromoted shadow are not projected".to_owned(),
                 )),
@@ -8055,15 +8097,18 @@ where
                             Resolution::Unauthored(lookup, source, _) => {
                                 let caller = carrier.cancellation();
                                 if let Some(original) = carrier.original_native_work() {
-                                    let read = self.lazy.read_unauthored_range_owned_with_native_work(
-                                        lookup, *source, text, next, u64::from(wanted), &original, &caller,
+                                    let read = self.lazy.read_unauthored(
+                                        lookup, *source, text, Some(crate::ByteRange { offset: next, length: u64::from(wanted) }),
+                                        u64::MAX, &LazyTreapWork::native_with_work(&original, &caller).map_err(native_lazy_error)?,
                                     ).await;
                                     accept_native_content(read)?
                                 } else {
                                     let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                                    let read = self.lazy.read_unauthored_range_owned_measured(
-                                        lookup, *source, text, next, u64::from(wanted), budget, &caller,
-                                    ).await;
+                                    let accounting = LazyTreapWork::new(budget, &caller);
+                                    let read = self.lazy.read_unauthored(lookup, *source, text,
+                                        Some(crate::ByteRange { offset: next, length: u64::from(wanted) }),
+                                        u64::MAX, &accounting).await.map_err(|(error, _)| error);
+                                    let read = accounting.measured(read, |error, work| error.with_prior_work(work).into_measured_failure());
                                     let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                                     let retained = output.logical_owned_bytes;
                                     if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
@@ -8127,13 +8172,17 @@ where
                         let caller = carrier.cancellation();
                         if let Some(original) = carrier.original_native_work() {
                             let maximum = original.remaining().map_err(MountSourceError::NativeWork)?.output_bytes;
-                            let read = self.lazy.read_unauthored_link_owned_with_native_work(
-                                &lookup.value, source, &text, maximum, &original, &caller,
+                            let read = self.lazy.read_unauthored(
+                                &lookup.value, source, &text, None, maximum,
+                                &LazyTreapWork::native_with_work(&original, &caller).map_err(native_lazy_error)?,
                             ).await;
                             return accept_native_content(read);
                         }
                         let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                        let read = self.lazy.read_unauthored_link_owned_measured(&lookup.value, source, &text, budget, &caller).await;
+                        let accounting = LazyTreapWork::new(budget, &caller);
+                        let read = self.lazy.read_unauthored(&lookup.value, source, &text, None,
+                            u64::MAX, &accounting).await.map_err(|(error, _)| error);
+                        let read = accounting.measured(read, |error, work| error.with_prior_work(work).into_measured_failure());
                         let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                         let retained = output.logical_owned_bytes;
                         if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
@@ -8406,7 +8455,7 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {
             MountSourceError::Invalid(error.to_string())
         }
-        LazyWorkspaceError::UnsupportedNode | LazyWorkspaceError::UnresolvedHardLinks => {
+        LazyWorkspaceError::UnsupportedNode => {
             MountSourceError::Unsupported(error.to_string())
         }
         // A held source file that changed since it opened is a stale handle.
@@ -10515,7 +10564,7 @@ mod tests {
                 config,
             )?);
             let view = { CallbackRuntime::create()?; let cancellation = authored.cancellation().clone(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); LazyMountSource::new(Arc::clone(&lazy), authored, "/".to_owned(), super::adapter::NativeDemandCarrier::Borrowed(&mut work), None) }?;
-            let basis = lazy.snapshot().await?;
+            let basis = lazy.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await?;
             let before = store.load_lazy_workspace(lazy.workspace().id()).await?
                 .ok_or("missing original companion")?;
             let caller = crate::CancellationToken::new();

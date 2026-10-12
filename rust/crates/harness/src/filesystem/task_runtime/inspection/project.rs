@@ -24,7 +24,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let authorization = handle.authorization();
         Self::require_directory_with_io(&host, &handle, "", &io)?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
@@ -81,10 +81,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
-            selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
-        )?;
+        self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
         Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
@@ -160,7 +157,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn file(&self, file: &FileRef) -> Result<()> {
-        self.limits.validate_file(file)?;
+        self.limits.validate_file(file, &mut None)?;
         self.handle.grant().require_file_read(file)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
@@ -205,7 +202,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn read_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         generation: &GenerationRef) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.path(volume, prefix, path, generation)?;
-        crate::conversation::validate_content_path(path)?;
+        crate::conversation::validate_content_path(path, &mut None)?;
         if self.authorization().native_snapshot.is_some() {
             return Err(Error::Invalid("native selection requires its actual lazy snapshot reader".into()));
         }
@@ -242,7 +239,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if staged.volume() != volume || staged.path() != path || staged.version() != "pending" {
                 return Err(Error::Storage("selected file metadata does not match immutable data".into()));
             }
-            staged.descriptor().verify(&bytes)?;
+            staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())
         } else {

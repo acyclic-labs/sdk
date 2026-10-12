@@ -307,10 +307,6 @@ pub enum AuthorityStoreError {
     /// Canonical SDK failure without a formatted diagnostic allocation.
     #[error(transparent)]
     NativeStream(#[from] acyclic_stream::StreamError),
-    /// Native provider failure retains its original payload allocation custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error(transparent)]
-    NativeStreamFailure(#[from] acyclic_stream::NativeStreamFailure),
     /// Canonical durable record validation preserves its actual typed cause.
     #[error(transparent)]
     DurableCodec(#[from] crate::streams_record::StreamsAuthorityRecordError),

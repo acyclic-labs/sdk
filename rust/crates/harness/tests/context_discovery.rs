@@ -289,7 +289,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         Arc::new(live.stage(ContextPlacement::Prepend)?)
             as Arc<dyn acyclic_harness::context::ContextStage>,
     ]))?;
-    assert_ne!(old.contracts(), new.contracts());
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
     let input = ContextInput {
         input: ModelContent::Text("inspect".into()),
         selected_context: None,

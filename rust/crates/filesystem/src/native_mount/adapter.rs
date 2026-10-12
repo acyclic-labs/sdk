@@ -5383,7 +5383,7 @@ where
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
             let cancellation = meter.lock().cancellation().clone();
-            let original = work.native_materialization_work();
+            let original = work.clone();
             let mut carrier = NativeDemandCarrier::Native(work);
             let (mut candidate, epoch, stamp) = self.checkout.prepare_native_phase_with_carrier(
                 &mut carrier, &cancellation, Some(&self.cancellation),
@@ -5805,7 +5805,7 @@ fn native_attribute_page_with_carrier(
                         text: "POSIX mount encountered a non-POSIX named attribute",
                     }, scratch.work));
                 }
-                let name = entry.name.into_bytes();
+                let name = entry.name.bytes;
                 let bytes = name.capacity() as u64;
                 *remaining_source_bytes = remaining_source_bytes.checked_sub(bytes)
                     .expect("transferred attribute name belongs to this listing");
@@ -5871,7 +5871,7 @@ fn native_attribute_page_with_native_work(
                 text: "POSIX mount encountered a non-POSIX named attribute",
             });
         }
-        let name = entry.name.into_bytes();
+        let name = entry.name.bytes;
         scratch.absorb(source_allocation.split_off(name.capacity() as u64)
             .map_err(MountSourceError::NativeWork)?);
         names.push(name);
@@ -7075,7 +7075,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut input = NativeCarrierOwned { value: Some(namespace), carrier, bytes };
         let (namespace, carrier) = input.parts();
         if let Some(pending) = carrier.with_work(|work| {
-            self.checkout.pending_lookup_with_meter(namespace, work)
+            self.checkout.pending_lookup_with_work(namespace, work)
         })? {
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             return Ok(Some(pending));
@@ -8424,7 +8424,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             let worker_native = native.clone();
             let worker_request = Arc::clone(&request);
             let runtime_meter = native.runtime_meter_owner();
-            let mut worker = acyclic_native_runtime::run_blocking_io_measured(
+            let mut worker = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let worker_meter = worker_native.native_read_meter();
@@ -8448,7 +8448,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     drop(resources);
                     result
                 }),
-                runtime_meter,
+                Some((runtime_meter, false)),
             ).map_err(|error| MountSourceError::NativeWork(native.runtime_error(error)))?;
             let cancelled = std::future::poll_fn(|context| {
                 let mut wait = wait.lock().unwrap_or_else(PoisonError::into_inner);
@@ -11537,11 +11537,11 @@ mod tests {
         let job = incoming.with_source_io_lease(lease)?;
         assert!(job.shares_ledger(&root));
         assert!(job.shares_resource_allowance(&volume));
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())
+        let native_file = NativeRuntimeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(job.runtime_meter_owner())))
             .map_err(|(error, file)| { drop(file); error })?;
         let before = root.receipt();
         let first = borrowed.runtime.block_on(|| {
-            native_file.read_bounded_async(0, 8, job.runtime_meter_owner())
+            native_file.read_bounded_async(0, 8, job.runtime_meter_owner(), false)
                 .expect("first read submission")
         })?;
         assert_eq!(first.bytes.as_ref(), b"original");
@@ -11550,7 +11550,7 @@ mod tests {
         assert_eq!(prefix.source_bytes_read, before.source_bytes_read + 8);
         assert_eq!(volume.remaining()?.backend_read_operations, 0);
         assert!(root.remaining()?.backend_read_operations > 0, "global spare cannot replenish the Source");
-        let second = native_file.read_bounded_async(0, 8, job.runtime_meter_owner())
+        let second = native_file.read_bounded_async(0, 8, job.runtime_meter_owner(), false)
             .and_then(|completion| borrowed.runtime.block_on(|| completion))
             .err().expect("second read must fail under the original volume ceiling");
         assert!(matches!(job.runtime_error(second), crate::NativeTreeMaterializationError::Work(_)));
@@ -11584,11 +11584,11 @@ mod tests {
         let source = native_source_io_control(&borrowed, &volume)?;
         let (incoming, local_stop) = root.invocation_view()?;
         let job = incoming.with_source_io_lease(source.native_source_io_lease()?)?;
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, job.runtime_meter_owner())
+        let native_file = NativeRuntimeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(job.runtime_meter_owner())))
             .map_err(|(error, file)| { drop(file); error })?;
         local_stop.cancel();
         let prefix = root.receipt();
-        let error = native_file.read_bounded_async(0, 8, job.runtime_meter_owner())
+        let error = native_file.read_bounded_async(0, 8, job.runtime_meter_owner(), false)
             .err().expect("the current invocation stop rejects the native Source job");
         assert!(matches!(job.runtime_error(error), crate::NativeTreeMaterializationError::Cancelled));
         assert_eq!(root.receipt(), prefix, "local refusal precedes request allocation and IO");
@@ -11638,10 +11638,10 @@ mod tests {
         assert!(original_work.source_execution_view().is_none());
         assert!(original_work.shares_ledger(&root));
         assert!(original_work.shares_resource_allowance(&volume));
-        let native_file = NativeRuntimeFile::from_file_measured_owned(file, meter.clone())
+        let native_file = NativeRuntimeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter.clone())))
             .map_err(|(error, file)| { drop(file); error })?;
         let result = borrowed.runtime.block_on(|| {
-            native_file.read_bounded_async(0, 8, meter.clone()).expect("actual read submission")
+            native_file.read_bounded_async(0, 8, meter.clone(), false).expect("actual read submission")
         })?;
         assert_eq!(result.bytes.as_ref(), b"original");
         drop(native_file);
@@ -12776,7 +12776,7 @@ mod tests {
         )), config)?;
         let attempts = objects.metadata_attempts.load(Ordering::Acquire);
         objects.refuse_metadata.store(true, Ordering::Release);
-        let encoded_bytes = crate::kernel::encode_file_metadata(metadata())?.len() as u64;
+        let encoded_bytes = crate::kernel::encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len() as u64;
         let (first_reply, first) = tokio::sync::oneshot::channel();
         let (second_reply, second) = tokio::sync::oneshot::channel();
         let first_target = native_test_path("grouped-refused-first");

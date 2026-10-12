@@ -15,7 +15,7 @@ const maximumObjectKeyBytes = ObjectsLimit.MAX_KEY_BYTES;
 export interface ObjectContentOptions {
   readonly objects: ObjectsV1Provider;
   readonly bucket: Bucket;
-  readonly volume: ObjectVolumeRef;
+  readonly volume: VolumeRef<VolumeClass, "objects">;
   readonly expectedProvider: ProviderRef<"objects">;
   /** Harness issuer for the bucket's owning provider. */
   readonly authority: Harness;
@@ -25,9 +25,6 @@ export interface ObjectContentOptions {
   readonly scope: Scope;
   readonly maximumBytes: number;
 }
-
-/** An Objects adapter cannot accidentally be configured with a Filesystem or Stream volume. */
-export type ObjectVolumeRef = VolumeRef<VolumeClass, "objects">;
 
 /** One bucket/volume binding; the original owner is the only private writer. */
 export class ObjectContentStore {

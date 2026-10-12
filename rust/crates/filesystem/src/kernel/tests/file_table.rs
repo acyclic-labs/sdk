@@ -1,3 +1,4 @@
+use crate::kernel::EncodeError;
 use super::*;
 use crate::foundation::Digest;
 #[cfg(feature = "memory")]
@@ -18,7 +19,7 @@ fn put_memory_page(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_file_table_page(page, 8)?),
+        OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -69,10 +70,10 @@ fn kind_payload_mismatches_fail_before_identity() {
         },
         payload: FilePayload::Empty,
     };
-    assert!(encode_file_table_page(&FileTablePage::Leaf(vec![record]), 8).is_err());
-    let failure = encode_file_record_measured(record, WorkBudget::UNBOUNDED, &CancellationToken::new())
+    assert!(encode_file_table_page(&FileTablePage::Leaf(vec![record]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
+    let failure = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| encode_file_record(record, observe, crate::kernel::EncodeError::AllocationFailed))
         .expect_err("invalid record must reject without allocation");
-    assert!(matches!(failure.error, FileTableEncodeError::Canonical(_)));
+    assert!(matches!(failure.error, EncodeError::Canonical(_)));
     assert_eq!(failure.work.items_examined, 1);
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.bytes_encoded, 0);
@@ -212,9 +213,9 @@ fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
             },
         },
     }]);
-    let encoded = encode_file_table_page(&page, 8)?;
+    let encoded = encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default())?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
         page
     );
     Ok(())
@@ -239,9 +240,9 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
         },
         payload: FilePayload::InlineRegular(data),
     }]);
-    let encoded = encode_file_table_page(&page, 1)?;
+    let encoded = encode_file_table_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default())?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
         page
     );
     assert_eq!(encoded.len(), 78);
@@ -386,8 +387,8 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
     ];
     for record in &records {
         assert!(file_record_encoded_length(*record)? > 0);
-        let receipt = encode_file_record_measured(*record, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-        assert_eq!(receipt.value, encode_file_record(*record)?);
+        let receipt = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| encode_file_record(*record, observe, crate::kernel::EncodeError::AllocationFailed))?;
+        assert_eq!(receipt.value, encode_file_record(*record, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?);
         assert_eq!(decode_file_record(&receipt.value)?, *record);
         assert_eq!(receipt.work.bytes_encoded, usize_to_u64(receipt.value.len()));
         assert_eq!(receipt.work.bytes_copied, record_copied_bytes(*record));
@@ -396,13 +397,13 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         assert_eq!(receipt.work.peak_allocation_bytes, usize_to_u64(receipt.value.capacity()));
     }
     let page = FileTablePage::Leaf(records);
-    let encoded = encode_file_table_page(&page, 8)?;
+    let encoded = encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let shape = file_table_page_decode_shape(&encoded, DecodeLimits::default())?;
     assert_eq!(shape.kind, DecodedPageKind::Leaf);
     assert_eq!(shape.items, 7);
     assert_eq!(shape.nested_bytes, 0);
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default())?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
         page
     );
 
@@ -411,12 +412,12 @@ fn every_payload_shape_round_trips_through_full_and_shape_decoders()
         page: typed(ObjectKind::FileTablePage, 25),
     };
     let internal = FileTablePage::Internal(vec![child]);
-    let encoded = encode_file_table_page(&internal, 8)?;
+    let encoded = encode_file_table_page(&internal, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let shape = file_table_page_decode_shape(&encoded, DecodeLimits::default())?;
     assert_eq!(shape.kind, DecodedPageKind::Internal);
     assert_eq!(shape.items, 1);
     assert_eq!(
-        decode_file_table_page(&encoded, DecodeLimits::default())?,
+        decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)?,
         internal
     );
     Ok(())
@@ -451,18 +452,18 @@ fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
         ]),
     ];
     for page in invalid {
-        assert!(encode_file_table_page(&page, 8).is_err());
+        assert!(encode_file_table_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
         assert!(file_table_page_id(&page, 8).is_err());
         assert!(page.validate(8).is_err());
     }
     let oversized_leaf = FileTablePage::Leaf(vec![record(1)]);
-    assert!(encode_file_table_page(&oversized_leaf, 0).is_err());
+    assert!(encode_file_table_page(&oversized_leaf, 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     assert_eq!(
         oversized_leaf.validate(0),
         Err(FileTableError::TooManyItems)
     );
     let oversized_internal = FileTablePage::Internal(vec![child(1, ObjectKind::FileTablePage)]);
-    assert!(encode_file_table_page(&oversized_internal, 0).is_err());
+    assert!(encode_file_table_page(&oversized_internal, 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
     assert_eq!(
         oversized_internal.validate(0),
         Err(FileTableError::TooManyItems)
@@ -484,13 +485,13 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
         },
         payload: FilePayload::InlineRegular(InlineFileData::new(b"x")?),
     }]);
-    let encoded = encode_file_table_page(&page, 1)?;
+    let encoded = encode_file_table_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     for version in [0_u16, 2, u16::MAX] {
         let mut obsolete = encoded.clone();
         obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
         for result in [
             file_table_page_decode_shape(&obsolete, DecodeLimits::default()).map(|_| ()),
-            decode_file_table_page(&obsolete, DecodeLimits::default()).map(|_| ()),
+            decode_file_table_page(&obsolete, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
         ] {
             assert!(
                 matches!(result, Err(CanonicalDecodeError::UnsupportedVersion(actual)) if actual == version)
@@ -503,7 +504,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     };
     for result in [
         file_table_page_decode_shape(&encoded, tight).map(|_| ()),
-        decode_file_table_page(&encoded, tight).map(|_| ()),
+        decode_file_table_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -518,7 +519,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     unknown_page[DOMAIN.len() + 2] = 9;
     for result in [
         file_table_page_decode_shape(&unknown_page, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&unknown_page, DecodeLimits::default()).map(|_| ()),
+        decode_file_table_page(&unknown_page, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -533,7 +534,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     unknown_payload[RECORD_PAYLOAD_OFFSET] = 9;
     for result in [
         file_table_page_decode_shape(&unknown_payload, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&unknown_payload, DecodeLimits::default()).map(|_| ()),
+        decode_file_table_page(&unknown_payload, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -548,7 +549,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
     oversized_inline[RECORD_PAYLOAD_OFFSET + 1] = u8::try_from(MAXIMUM_INLINE_FILE_BYTES + 1)?;
     for result in [
         file_table_page_decode_shape(&oversized_inline, DecodeLimits::default()).map(|_| ()),
-        decode_file_table_page(&oversized_inline, DecodeLimits::default()).map(|_| ()),
+        decode_file_table_page(&oversized_inline, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id).map(|_| ()),
     ] {
         assert!(matches!(
             result,
@@ -654,8 +655,6 @@ fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
     assert_eq!(owner.pending_data_work(), WorkCounters::default());
     Ok(())
 }
-
-
 
 #[cfg(feature = "memory")]
 #[test]
@@ -802,7 +801,7 @@ fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
 #[test]
 fn canonical_buffer_reserve_failure_keeps_its_native_primary_source() {
     let mut observed_reserve = false;
-    let error = Encoder::with_exact_capacity_with_steps(
+    let error = Encoder::with_exact_capacity(
         DOMAIN, VERSION, usize::MAX,
         |step| {
             match step {
@@ -814,10 +813,10 @@ fn canonical_buffer_reserve_failure_keeps_its_native_primary_source() {
             }
             Ok(())
         },
-        FileTableEncodeError::AllocationFailed,
+        EncodeError::AllocationFailed,
     ).err().expect("impossible capacity must fail at the actual reservation");
     assert!(observed_reserve);
-    let error = file_table_encode_error(error, true);
+    let error = error.into_fs_error(true);
     assert!(matches!(
         error,
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(_)),
@@ -825,6 +824,6 @@ fn canonical_buffer_reserve_failure_keeps_its_native_primary_source() {
 
     let source = Vec::<u8>::new().try_reserve_exact(usize::MAX)
         .expect_err("impossible capacity must produce an actual reserve source");
-    let error = file_table_encode_error(FileTableEncodeError::AllocationFailed(source), false);
+    let error = EncodeError::AllocationFailed(source).into_fs_error(false);
     assert!(matches!(error, crate::FsError::Decode(CanonicalDecodeError::AllocationFailed)));
 }
