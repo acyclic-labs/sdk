@@ -2207,8 +2207,8 @@ mod tests {
             .lock()
             .map_err(|_| Error::Storage("head race lock".into()))? = Some(
             publication
-                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?)
-                .await?,
+                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?, &mut None)
+                .await?.0,
         );
         assert!(reader.latest_conversation_message(65_536).await?.is_none());
         assert_eq!(
@@ -3443,7 +3443,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("migrated extension state".into()))?;
         assert_eq!(migrated.content.volume(), &publisher.volume);
         assert_eq!(
-            files.read(&migrated.content).await?.as_slice(),
+            files.read(&migrated.content, migrated.content.descriptor().byte_length(), None)?.await?.as_ref(),
             EXTENSION_BYTES
         );
         Ok(())
@@ -3542,7 +3542,7 @@ mod tests {
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
-            "interactions/request.json", &published, "application/json", "request.json").await?;
+            "interactions/request.json", &published, "application/json", "request.json", None)?.await?.0;
         let ticket = InteractionTicket {
             id: uuid::Uuid::from_bytes([96; 16]), kind: InteractionKind::Question,
             request: reference.clone(), deadline_unix_ms: None, approval: None,

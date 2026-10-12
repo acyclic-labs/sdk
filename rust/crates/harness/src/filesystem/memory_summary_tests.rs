@@ -368,7 +368,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
      &mut None).await?;
     let preparer = FilesystemForkPreparer::new(
         storage.host.clone(),
-        aggregate.reducer().clone(),
+        aggregate.reducer().copy(&mut None)?,
         storage.verifier(),
         scope.clone(),
         project.clone(),
@@ -542,7 +542,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             2 => { changed.attached_agents.push(AgentId::new()); }
             _ => { changed.inherited_through_sequence -= 1; }
         }
-        let mut reducer = aggregate.reducer().clone();
+        let mut reducer = aggregate.reducer().copy(&mut None)?;
         assert!(reducer.apply(Command {
             operation_id: changed.operation_id,
             idempotency_key: IdempotencyKey::new(format!("summary-witness-mutation-{mutation}"))?,
@@ -1210,7 +1210,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
             .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read, &mut None)?])), Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
-    let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
+    let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().copy(&mut None)?,
         storage.verifier(), scope.clone(), project.clone(), stream_provider.clone(),
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,

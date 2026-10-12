@@ -4548,8 +4548,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -4559,16 +4559,16 @@ mod tests {
                 kind: PrivateDirectoryEntryKind::File,
             }]
         );
-        let (portable_ref, portable_bytes) = erased
+        let (portable_ref, portable_bytes, _portable_hold) = erased
             .read_private_path(
                 &volume,
                 "messages",
                 "messages/first.txt",
-                Some(&listed_generation),
-            )
+                Some(&listed_generation), 16, None,
+            )?
             .await?;
         assert_eq!(portable_ref, second);
-        assert_eq!(portable_bytes, b"two");
+        assert_eq!(portable_bytes.as_ref(), b"two");
         let (pinned, delegated_bytes) = delegated_reader
             .read_private_path(
                 &volume,
@@ -4597,8 +4597,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(old_generation, listed_generation);
         assert_eq!(old_page.entries, page.entries);
@@ -4625,7 +4625,7 @@ mod tests {
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)?
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());

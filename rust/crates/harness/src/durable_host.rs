@@ -5779,7 +5779,7 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::runtime::DurableTaskHost;
+    use crate::runtime::{DurableTaskHost, TaskSpawner};
     use crate::{
         AgentId, Capabilities, GroupId,
         conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -5877,7 +5877,7 @@ pub(crate) mod tests {
             .succeeded_result_with_native_work(fixture.root, &work).await?
             .expect("actual protected terminal result");
         assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         drop(bytes);
         drop(reference);
         drop(metadata_guard);
@@ -6603,7 +6603,7 @@ pub(crate) mod tests {
                                         assert!(
                                             host.send_mail(task, &fence, task, message, fixture
                                                     .payloads
-                                                    .stage(message, "changed", b"8")
+                                                    .stage(message, "changed", b"8", None)?
                                                     .await?, None)
                                             .await
                                             .is_err()

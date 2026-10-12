@@ -262,7 +262,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let child_authority = Authority { kind: AggregateKind::Conversation, id: "restore-new-conversation".into() };
     let child_project = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::Project, project.owner().clone(), &mut None)?;
     let child_private = VolumeRef::new(project.provider().clone(), "restore-child".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?;
-    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().clone(), issuer.verifier(), signed.clone(),
+    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().copy(&mut None)?, issuer.verifier(), signed.clone(),
         project.clone(), stream_provider.clone(), reader,
         None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;

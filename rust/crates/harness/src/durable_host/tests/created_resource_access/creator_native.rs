@@ -197,7 +197,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     assert!(inherited.content.iter().all(|binding| !binding.default_writer && !binding.artifact_writer));
     assert!(inherited.current_content(&mut None)?.is_none(), "inherited allocation is not the current scratch origin");
     let private_resource = workspace_ref(
-        fixture.filesystem_provider.clone(), &created.private.storage_name()?,
+        fixture.filesystem_provider.clone(), &created.private.storage_name(&mut None)?,
     )?;
     let private_proof = created.request.child.resource_proofs.iter()
         .find(|proof| &proof.resource == private_resource.as_resource())

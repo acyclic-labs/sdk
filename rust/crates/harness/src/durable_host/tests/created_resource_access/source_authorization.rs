@@ -19,7 +19,7 @@ impl RootProjectSourceProvider for MeasuredRootPolicy {
             {
                 return Err(Error::Unauthorized("explicit source policy or genuine bootstrap differs".into()));
             }
-            let workspace = workspace_ref(snapshot.project.provider().clone(), &snapshot.project.storage_name()?)?;
+            let workspace = workspace_ref(snapshot.project.provider().clone(), &snapshot.project.storage_name(&mut None)?)?;
             let actual = self.filesystem.resolve(&workspace).await?;
             if actual.generation != snapshot.generation {
                 return Err(Error::Unauthorized("selected filesystem generation is not authentic".into()));
@@ -30,8 +30,8 @@ impl RootProjectSourceProvider for MeasuredRootPolicy {
 }
 
 async fn runtime(fixture: &CreationFixture) -> Result<FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>> {
-    let volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([80; 16])))?;
+    let volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(AgentId::from_bytes([80; 16])), &mut None)?;
     FilesystemTaskRuntime::open_with_creation_providers(
         fixture.host.stream.clone(), fixture.filesystem.clone(), volume,
         fixture.host.verifier.clone(), fixture.host.owner_scope.clone(), fixture.root_scope.clone(),
@@ -55,15 +55,15 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes([84; 16]);
     let project = created.project;
-    let workspace = workspace_ref(fixture.filesystem_provider.clone(), &project.storage_name()?)?;
+    let workspace = workspace_ref(fixture.filesystem_provider.clone(), &project.storage_name(&mut None)?)?;
     let initial_generation = fixture.filesystem.resolve(&workspace).await?.generation;
     let generation = fixture.filesystem.apply(&workspace, Some(&initial_generation), &[
         crate::filesystem::WorkspaceMutation::PutFile { path:"/selected.txt".into(), bytes:b"frozen selected".to_vec() },
         crate::filesystem::WorkspaceMutation::PutFile { path:"/second.txt".into(), bytes:b"second".to_vec() },
     ], &IdempotencyKey::new("source-inspection-files")?).await?;
-    let parent_project = VolumeRef::new(fixture.filesystem_provider.clone(), "parent-project", VolumeClass::Project,
-        VolumeOwner::Project("created-project".into()))?;
-    let parent_workspace = workspace_ref(fixture.filesystem_provider.clone(), &parent_project.storage_name()?)?;
+    let parent_project = VolumeRef::new(fixture.filesystem_provider.clone(), "parent-project".into(), VolumeClass::Project,
+        VolumeOwner::Project("created-project".into()), &mut None)?;
+    let parent_workspace = workspace_ref(fixture.filesystem_provider.clone(), &parent_project.storage_name(&mut None)?)?;
     let policy = MeasuredRootPolicy { filesystem:fixture.filesystem.clone(), root:fixture.root,
         bootstrap:ProjectSourceSnapshot { project:parent_project,
             generation:fixture.filesystem.resolve(&parent_workspace).await?.generation, native_snapshot:None } };
@@ -75,7 +75,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let issuer = AuthorityIssuer::new("created-owner", [80;32], fixture.host.verifier.audience().clone());
     let operation = OperationId::from_bytes([120;16]);
     let original = context.scope().grants().clone();
-    assert!(!original.contains(&project.capability(VolumeOperation::Read)?));
+    assert!(!original.contains(&project.capability(VolumeOperation::Read, &mut None)?));
     let handle = owner.authorize_project_source(&context, &issuer, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
         1_000_000, 128 * 1_024 * 1_024).await?;
@@ -83,11 +83,11 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     handle.require_selection(operation, child, &project, &generation, None, None)?;
     let attestation = &handle.authorization().policy_scope;
     assert_eq!(attestation.capabilities(), &Capabilities::new([attestation.id()]));
-    assert!(!attestation.capabilities().contains(&project.capability(VolumeOperation::Read)?));
-    handle.grant().require(&project, VolumeOperation::Read)?;
-    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Read).is_err());
-    assert!(handle.grant().require(&project, VolumeOperation::Write).is_err());
-    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Write).is_err());
+    assert!(!attestation.capabilities().contains(&project.capability(VolumeOperation::Read, &mut None)?));
+    handle.grant().require(&project, VolumeOperation::Read, &mut None)?;
+    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Read, &mut None).is_err());
+    assert!(handle.grant().require(&project, VolumeOperation::Write, &mut None).is_err());
+    assert!(handle.grant().require(&policy.bootstrap.project, VolumeOperation::Write, &mut None).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -114,7 +114,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     ).is_err());
     let mut other_purpose = restored_record.clone();
     other_purpose.policy_scope = issuer.issue("harness.other-purpose.v1", &Capabilities::new(["harness.other-purpose.v1"]), None, None, &mut None).expect("scope proof");
-    fixture.host.verifier.verify(&other_purpose.policy_scope)?;
+    fixture.host.verifier.verify(&other_purpose.policy_scope, &mut None)?;
     assert!(other_purpose.verify_scope(&fixture.host.verifier).is_err());
     let budget = acyclic_fs::performance::work_budget(1_000_000, 1_000_000);
     let snapshot = ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None };
@@ -299,7 +299,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let mut descendant = created.request.child.clone();
     descendant.operation_id = OperationId::from_bytes([123;16]);
     descendant.parent = Some(child);
-    descendant.grants = Capabilities::new([project.capability(VolumeOperation::Read)?]);
+    descendant.grants = Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]);
     fixture.host.admit_owned(descendant, (&child_lease.reservation).into()).await?;
     fixture.start_next(TaskId::from_bytes([123;16])).await?;
     owner.authorize_project_source(&context, &issuer, &policy, TaskId::from_bytes([123;16]), operation,
@@ -336,7 +336,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let helper_owner = Arc::new(fixture.host.journal_owner(TaskId::from_bytes([130;16]), (&helper_lease.reservation).into()).await?
         .with_invocation_cancellation(&helper_guard));
     let prepared = helper_owner.resource_preparation(prepared_request.clone(), &mut None).await?;
-    assert!(!prepared.grants().contains(&project.capability(VolumeOperation::Read)?));
+    assert!(!prepared.grants().contains(&project.capability(VolumeOperation::Read, &mut None)?));
     assert_eq!(prepared.project_source().map(|handle|handle.authorization()), Some(handle.authorization()));
     let mut altered = prepared_request.clone();
     altered.read_authorization.as_mut().ok_or_else(||Error::Invalid("source control omitted".into()))?.operation_id = OperationId::from_bytes([132;16]);

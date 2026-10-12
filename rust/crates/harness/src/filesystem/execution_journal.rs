@@ -2666,9 +2666,9 @@ mod tests {
                     &format!("messages/{sequence}.txt"),
                     format!("canonical-{sequence}").as_bytes(),
                     "text/plain",
-                    "message.txt",
-                )
-                .await?;
+                    "message.txt", None,
+                )?
+                .await?.0;
             let id = uuid::Uuid::new_v4();
             let reply_to = if kind == MessageKind::Assistant {
                 ids.first().copied()

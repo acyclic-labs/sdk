@@ -168,8 +168,8 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let parent_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], created.seed.child.clone());
     let parent_scope = parent_issuer.issue("measured-fork-parent", &Capabilities::new([
         "conversation:bind".into(), "fork:publish".into(),
-        created.private.capability(VolumeOperation::Read)?,
-        created.project.capability(VolumeOperation::Read)?,
+        created.private.capability(VolumeOperation::Read, &mut None)?,
+        created.project.capability(VolumeOperation::Read, &mut None)?,
     ]), Some(created.seed.child_agent), None, &mut None).expect("scope proof");
     let mut parent = StreamAggregate::open(
         &fixture.stream, created.seed.child.clone(), parent_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_fork_verifier(verifier);
@@ -208,7 +208,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let resolver = Arc::new(FilesystemContentVerifier::new(
         fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
     )?);
-    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().clone(),
+    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().copy(&mut None)?,
         parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver,
         Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;

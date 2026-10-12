@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::DurableTaskHost as _;
+use crate::runtime::TaskSpawner as _;
 use crate::resource_preparation::ResourcePreparationRequest;
 use crate::resources::{ResourceKind, ResourceRef};
 

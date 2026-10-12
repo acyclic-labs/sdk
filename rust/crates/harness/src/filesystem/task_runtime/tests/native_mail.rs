@@ -92,7 +92,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     assert_eq!(retry, ack);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     assert!(fixture.runtime.task_host().reconcile_sent_mail(fixture.tasks[0].0, &fixture.tasks[0].1,
-        fixture.tasks[1].0, operation, fixture.payload.clone_with_io(&io)?, Some(&io)).await?);
+        fixture.tasks[1].0, operation, crate::executor::with_history_io(Some(&io), |work| fixture.payload.copy(work))?, Some(&io)).await?);
     assert_eq!(fixture.sdk.io_snapshot().records, committed);
     let rejected = fixture.send(2, operation, &io).await;
     assert!(matches!(rejected, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, .. })));
@@ -117,7 +117,7 @@ async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Re
     let original = work(BUDGET, &cancellation)?;
     fixture.sdk.native_only.store(true, Ordering::SeqCst);
     let io = PreparationIo::from_native_work(&original)?;
-    let payload = fixture.payload.clone_with_io(&io)?;
+    let payload = crate::executor::with_history_io(Some(&io), |work| fixture.payload.copy(work))?;
     cancellation.cancel();
     fixture.sdk.reset_io();
     let before = original.receipt();

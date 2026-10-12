@@ -975,8 +975,8 @@ mod tests {
             task, created.request.child.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
-        let read = created.private.capability(crate::conversation::VolumeOperation::Read)?;
-        let write = created.private.capability(crate::conversation::VolumeOperation::Write)?;
+        let read = created.private.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+        let write = created.private.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
         assert!(shared.context().scope().grants().contains(&write));
         let limits = shared.context().scope().limits();
         let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?
