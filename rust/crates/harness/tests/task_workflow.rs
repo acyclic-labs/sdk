@@ -6,6 +6,7 @@
 )]
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::context::ContextPipeline;
 use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
@@ -464,8 +465,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -779,7 +779,7 @@ async fn worker_restart_with_options(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("worker-restart", "filesystem", "2")?;
+    let provider = ProviderRef::new("worker-restart".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([21; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -955,8 +955,7 @@ async fn worker_restart_with_options(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(),
-                    )
+                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1125,9 +1124,9 @@ async fn worker_restart_with_options(
         }
         Ok::<_, Error>(())
         }).await?;
-        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
+        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
             .await?
-            .with_payload_store(payloads.clone());
+            ;
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task, None).await?);
@@ -1176,7 +1175,7 @@ async fn worker_restart_with_options(
             }
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
-                runtime.task_host().cancel(task).await?;
+                runtime.task_host().cancel(task, None).await?;
                 assert!(!runtime.poll_task_wake(task, None).await?);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
@@ -1259,12 +1258,7 @@ async fn worker_restart_with_options(
             assert!(
                 runtime
                     .task_host()
-                    .resume_workflow(
-                        task,
-                        2,
-                        input.clone(),
-                        IdempotencyKey::new("wrong-revision")?
-                    )
+                    .resume_workflow(task, 2, input.clone(), IdempotencyKey::new("wrong-revision")?, None)
                     .await
                     .is_err()
             );
@@ -1289,7 +1283,7 @@ async fn worker_restart_with_options(
                         runtime.run_task(first_wake, &runtime.commands(), 2).await?,
                         TaskWorkerOutcome::Suspended { revision: 1, .. }
                     ));
-                    let next_wait = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                    let next_wait = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                     assert_eq!(
                         next_wait
                             .scheduler()
@@ -1307,7 +1301,7 @@ async fn worker_restart_with_options(
                     assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                     assert!(!runtime.poll_task_wake(task, None).await?);
                 }
-                let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                let wake_projection = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                 let woken = wake_projection
                     .scheduler()
                     .operation(operation)
@@ -1327,11 +1321,11 @@ async fn worker_restart_with_options(
             } else {
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?, None)
                     .await?;
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?, None)
                     .await?;
             }
         }
@@ -1421,7 +1415,7 @@ async fn worker_restart_with_options(
                         .is_err()
                 );
                 assert_eq!(model.generated.load(Ordering::SeqCst), 0);
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 let retained = coordinator
                     .scheduler()
                     .operation(operation)
@@ -1537,7 +1531,7 @@ async fn worker_restart_with_options(
                             .tail,
                         72
                     );
-                    coordinator.refresh().await?;
+                    coordinator.refresh(&mut None).await?;
                     assert_eq!(
                         coordinator
                             .scheduler()
@@ -1554,7 +1548,7 @@ async fn worker_restart_with_options(
                     let (stock, legacy) = tokio::join!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), probe, 1),
+                            .poll_timer(task, &fence, probe, 1, None),
                         runtime.task_host().wait_until(task, probe, 1)
                     );
                     assert!(stock?);
@@ -1566,7 +1560,7 @@ async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), probe, 0)
+                            .poll_timer(task, &fence, probe, 0, None)
                             .await,
                         Err(Error::Invalid(_))
                     ));
@@ -1574,12 +1568,7 @@ async fn worker_restart_with_options(
                         assert!(
                             !runtime
                                 .task_host()
-                                .poll_timer(
-                                    task,
-                                    fence.clone(),
-                                    OperationId::from_bytes([index; 16]),
-                                    200
-                                )
+                                .poll_timer(task, &fence, OperationId::from_bytes([index; 16]), 200, None)
                                 .await?
                         );
                     }
@@ -1587,19 +1576,19 @@ async fn worker_restart_with_options(
                     assert!(
                         !runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .poll_timer(task, &fence, timer_operation, 200, None)
                             .await?
                     );
                     assert!(
                         !runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .poll_timer(task, &fence, timer_operation, 200, None)
                             .await?
                     );
                     assert!(matches!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence, timer_operation, 201)
+                            .poll_timer(task, &fence, timer_operation, 201, None)
                             .await,
                         Err(Error::Conflict(_))
                     ));
@@ -1747,7 +1736,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             assert_eq!(
                 coordinator
                     .scheduler()
@@ -1771,7 +1760,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -1872,12 +1861,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .poll_timer(
-                            task,
-                            LeaseFence::from(&old.reservation),
-                            OperationId::from_bytes([26; 16]),
-                            200
-                        )
+                        .poll_timer(task, &LeaseFence::from(&old.reservation), OperationId::from_bytes([26; 16]), 200, None)
                         .await
                         .is_err()
                 );
@@ -1983,7 +1967,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("custom-merge", "filesystem", "2")?;
+    let provider = ProviderRef::new("custom-merge".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([141; 16]);
     let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project("review".into()))?;
     let source = VolumeRef::new(provider.clone(), "source", VolumeClass::Project, project.owner().clone())?;
@@ -2127,7 +2111,7 @@ async fn stock_restart_with_publication_fault(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("task-restart", "filesystem", "2")?;
+    let provider = ProviderRef::new("task-restart".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -2224,21 +2208,8 @@ async fn stock_restart_with_publication_fault(
             &signed,
             65_536, None,
         )?);
-        let host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
-                .await?
-                .with_payload_store(payloads.clone()),
-            stream.clone(),
-            payloads.clone(),
-            reader.clone(),
-            authority.clone(),
-            signed.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            Arc::new(SystemUnixMillisClock),
-        )?
+        let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
+                .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
         .with_session_limits(if reopened {
             SessionLimits {
                 model_steps: session_limits.model_steps + 1,
@@ -2292,9 +2263,9 @@ async fn stock_restart_with_publication_fault(
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        let mut coordinator = DistributedCoordinator::open(&stream, reader)
+        let mut coordinator = DistributedCoordinator::open(&stream, reader, Some(payloads), &mut None)
             .await?
-            .with_payload_store(payloads);
+            ;
         assert_eq!(
             coordinator.scheduler().session_limits(operation, &mut None)?,
             session_limits
@@ -2335,7 +2306,7 @@ async fn stock_restart_with_publication_fault(
                     SchedulerEvent::Started {
                         operation_id: operation,
                         fence: fence.clone(),
-                    },
+                    }, &mut None,
                 )
                 .await?;
         }
@@ -2467,7 +2438,7 @@ async fn stock_restart_with_publication_fault(
             if cancel_after_failure {
                 assert!(matches!(rejected, Err(Error::Conflict(message))
                     if message == "cancelled task cannot publish new execution work"));
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(coordinator.scheduler(), &before_fresh_attempt);
             } else {
                 assert!(rejected.is_err());
@@ -2519,7 +2490,7 @@ async fn stock_restart_with_publication_fault(
             );
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -2536,7 +2507,7 @@ async fn stock_restart_with_publication_fault(
                 let old = previous_lease
                     .as_ref()
                     .ok_or_else(|| Error::NotFound("cancelled task lease".into()))?;
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(
                     coordinator
                         .scheduler()
@@ -2576,7 +2547,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2664,7 +2635,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(
@@ -2705,7 +2676,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("stock-mail", "filesystem", "2")?;
+    let provider = ProviderRef::new("stock-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });
@@ -2742,7 +2713,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
-            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
+            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
         let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),

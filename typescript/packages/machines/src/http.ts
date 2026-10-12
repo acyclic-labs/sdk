@@ -14,6 +14,7 @@ export interface HttpMachinesOptions { readonly endpoint: string; readonly token
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
   readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
+  static fromEnv(environment?: Partial<Pick<HttpMachinesOptions, "endpoint" | "token">>): HttpMachinesProvider { return new HttpMachinesProvider({ endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_MACHINES_ENDPOINT"), token: environment?.token ?? environmentValue("ACYCLIC_MACHINES_TOKEN") }); }
   constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; try { validateTransportOptions(options.token, maximum); } catch (error) { const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined; const code = details?.code; const message = typeof details?.message === "string" ? details.message : "invalid Machines transport option"; if (code === "invalid-token") throw new TypeError(message); if (code === "invalid-maximum") throw new RangeError(message); throw error; } this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; this.#observer = resolveObserver(options.observer); }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
@@ -78,3 +79,5 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;
 }
+
+function environmentValue(name: string): string { const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<Record<string, string | undefined>> } }; const value = runtime.process?.env?.[name]; if (!value?.trim()) throw new TypeError(`${name} is required`); return value; }

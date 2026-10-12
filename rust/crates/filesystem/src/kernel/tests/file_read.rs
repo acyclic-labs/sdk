@@ -238,8 +238,8 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
+#[tokio::test]
+async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = build_blob(
@@ -252,7 +252,8 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             maximum_blob_bytes: 10,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let extents = ExtentPage::Leaf(vec![
         Extent {
             offset: 0,
@@ -381,16 +382,12 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
     let mut bytes = Vec::<u8>::new();
     let result = (|| -> Result<(), FsError> {
-        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
-        observed.observe(ReadAllocationStep::BeforeCopy(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))?;
+        observed.observe(ReadAllocationStep::BeforeCopy(4))?;
         bytes.extend_from_slice(b"data");
         cancellation.cancel();
-        observed.observe(ReadAllocationStep::Copied(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        observed.observe(ReadAllocationStep::Copied(4))?;
         observed.observe(ReadAllocationStep::BeforeItem)
-            .map_err(ReadDecodeError::into_original_fs_error)
     })();
     drop(bytes);
     observed.release_failed()?;
@@ -408,7 +405,7 @@ fn late_backend_retention_refusal_releases_only_returned_backing()
     let budget = WorkBudget { peak_allocation_bytes: 4, ..WorkBudget::UNBOUNDED };
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
@@ -434,7 +431,7 @@ fn backend_merge_failure_does_not_release_unregistered_returned_backing()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
     accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },

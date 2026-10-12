@@ -1,6 +1,7 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner},
@@ -147,7 +148,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?);
+            let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
             drop(encoded_hold);
             command
@@ -186,7 +187,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("deadline-control", "filesystem", "2")?;
+        let provider = ProviderRef::new("deadline-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([101; 16]);
         let volume = VolumeRef::new(provider, "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
@@ -293,9 +294,14 @@ impl Fixture {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         let operation = self.admit_only(runtime, kind, command).await?;
-        let pulled = runtime.task_host().pull_operation_with_native_work(&Worker {
+        let pulled = {
+            let mut operation_io = crate::store::native_work_io(work)?;
+            crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let output = runtime.task_host().pull_operation(&Worker {
             id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
-        }, operation, work).await?;
+        }, operation, &mut Some(&mut operation_io)).await?;
+            (output, operation_io.into_custody())
+        };
         match pulled {
             (WorkPull::Claimed(lease), custody) => Ok((lease, custody)),
             (other, custody) => {
@@ -1018,7 +1024,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     assert!(matches!(read_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert!(matches!(read_tool.validate_native_mcp_reconciliation_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     fixture.clock.0.store(20, Ordering::SeqCst);
-    runtime.task_host().expire_task_deadline_with_native_work(task, Some(fence.clone()), &work).await?;
+    runtime.task_host().expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::native_work_io(&work)?)).await?;
     let settlement = runtime.task_context_for_original_owner_with_native_work(task, &fence, true, &work).await?;
     let settlement_tool = ToolContext::new_with_native_work(settlement, operation, "settlement-context-control", &work)?;
     assert!(matches!(settlement_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));

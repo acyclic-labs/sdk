@@ -100,7 +100,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     )
     .await?;
     let exact = tokio::spawn(async move {
-        lazy.exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
+        (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = lazy.exactify("/hot", acyclic_fs::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
     })
     .await??;
@@ -429,8 +429,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     .await?;
     let started = Instant::now();
     let phase_exact = tokio::spawn(async move {
-        phase_lazy
-            .exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
+        (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = phase_lazy.exactify("/hot", acyclic_fs::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
     })
     .await??;

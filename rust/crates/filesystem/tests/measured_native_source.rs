@@ -365,7 +365,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
     assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-    assert_eq!(recovered.value.0.snapshot().await?.source, advanced);
+    assert_eq!(recovered.value.0.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await?.source, advanced);
     assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
 
     let foreign_source = Arc::new(NativeDemandSource::open(

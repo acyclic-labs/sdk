@@ -15,7 +15,7 @@ use indexed_db_futures::{
 use prost::Message;
 use std::{
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -51,25 +51,6 @@ impl UnixMillisClock for BrowserClock {
         js_sys::Date::now().to_string().parse().unwrap_or(u64::MAX)
     }
 }
-#[derive(Default)]
-struct ReplayClock(Mutex<u64>);
-impl UnixMillisClock for ReplayClock {
-    fn now_unix_millis(&self) -> u64 {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-impl ReplayClock {
-    fn set(&self, value: u64) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
-    }
-}
-
 struct Cache {
     provider: MemoryStream,
     cursor: u64,
@@ -78,7 +59,6 @@ struct Cache {
 struct Inner {
     database: Database,
     cache: tokio::sync::Mutex<Cache>,
-    clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
 }
 
@@ -115,8 +95,7 @@ impl BrowserStream {
             })
             .await
             .map_err(backend)?;
-        let clock = Arc::new(ReplayClock::default());
-        let provider = memory(limits.memory, Arc::clone(&clock));
+        let provider = MemoryStream::new_with_clock(limits.memory, Arc::new(BrowserClock));
         Ok(Self {
             inner: Rc::new(Inner {
                 database,
@@ -125,7 +104,6 @@ impl BrowserStream {
                     cursor: 0,
                     valid: true,
                 }),
-                clock,
                 limits,
             }),
         })
@@ -149,7 +127,7 @@ impl BrowserStream {
         cache: &mut Cache,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
-            cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
+            cache.provider = MemoryStream::new_with_clock(self.inner.limits.memory, Arc::new(BrowserClock));
             cache.cursor = 0;
         }
         cache.valid = false;
@@ -196,8 +174,7 @@ impl BrowserStream {
             let frame = bounded_buffer(value, 8, MAX_COMMAND_BYTES + 8)?;
             let (time, encoded) = frame.split_at(8);
             let millis = u64::from_le_bytes(time.try_into().map_err(backend)?);
-            self.inner.clock.set(millis);
-            replay(&cache.provider, decode_command(encoded)?).await?;
+            replay(&cache.provider, decode_command(encoded)?, millis).await?;
             cache.cursor += 1;
         }
         cache.valid = true;
@@ -249,15 +226,13 @@ impl BrowserStream {
             None => false,
         };
         let millis = BrowserClock.now_unix_millis();
-        self.inner.clock.set(millis);
         cache.valid = false;
         let outcome = match command {
-            Command::Append(request) => IdempotencyOutcome::Append(cache.provider.append(request).await?),
+            Command::Append(request) => IdempotencyOutcome::Append(
+                memory::provider_result(cache.provider.apply_append(&request, None, Some(millis)).await)?.0.value,
+            ),
             Command::Fork(request) => IdempotencyOutcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => IdempotencyOutcome::Commit(match deadline {
-                Some(deadline) => cache.provider.commit_before(request, deadline).await?,
-                None => cache.provider.commit(request).await?,
-            }),
+            Command::Commit(request) => IdempotencyOutcome::Commit(cache.provider.commit_value(request, deadline, Some(millis)).await?),
         };
         if existing
             || matches!(outcome, IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
@@ -305,9 +280,6 @@ impl BrowserStream {
     }
 }
 
-fn memory(limits: MemoryLimits, clock: Arc<ReplayClock>) -> MemoryStream {
-    MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock)
-}
 impl BrowserStreamLimits {
     fn words(self) -> [u64; 8] {
         [

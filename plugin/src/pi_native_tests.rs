@@ -26,7 +26,7 @@ fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
 }
 
 fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
-    let provider = ProviderRef::new("pi-native-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-native-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([31; 16]);
     let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
     let generation = GenerationRef::new(provider.clone(), [32; 32], None).unwrap();
@@ -197,10 +197,10 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let raw = PiNativeHostRuntime { version: input.version.clone(), executable: input.executable.clone(),
         executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
         provider_extension: input.provider_extension.clone(), environment };
-    assert!(raw.validate().is_err());
-    assert!(matches!(raw.validate_with_native_work(&work),
+    assert!(raw.validate(&work).is_err());
+    assert!(matches!(raw.validate(&work),
         Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, .. })));
-    let host = raw.sanitize().unwrap();
+    let host = raw.sanitize(&work).unwrap();
     assert!(host.environment.contains_key("ACYCLIC_PI_PROVIDER_EXTENSION"));
     assert!(!host.environment.keys().any(|key| is_caller_environment(key)));
     let baseline = work.live_allocation_bytes();

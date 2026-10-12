@@ -8,7 +8,7 @@ use acyclic_harness::{
 fn preparing_state(path: PathBuf) -> AdapterState {
     let root_id = [61; 16];
     let key = root_key(WorkspaceRootId::from_bytes(root_id));
-    let provider = ProviderRef::new("pi-root-intent-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-root-intent-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([62; 16]);
     AdapterState {
         version: ADAPTER_STATE_VERSION,

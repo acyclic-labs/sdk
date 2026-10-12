@@ -278,10 +278,10 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         created.write_range(0, Bytes::from_static(b"written"))
     })?;
     measurements.measure("mkdir", || {
-        view.create_directory(&path("made"), FileMetadata::default())
+        view.create_directory(&path("made"), FileMetadata::default(), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("rename", || {
-        view.rename(&path("created.txt"), &path("made/created.txt"), false)
+        view.rename(&path("created.txt"), &path("made/created.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("write-existing", || {
         view.open_file(&path("write.txt"))?
@@ -293,18 +293,18 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         .ok_or(MountSourceError::NotFound)?
         .metadata;
     measurements.measure("setattr-existing", || {
-        view.set_attributes(&attributes, metadata, Some(1))
+        view.set_attributes(&attributes, metadata, Some(1), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
     measurements.measure("rename-existing", || {
-        view.rename(&path("rename.txt"), &path("renamed.txt"), false)
+        view.rename(&path("rename.txt"), &path("renamed.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
     })?;
-    measurements.measure("remove-existing", || view.remove(&path("remove.txt"), None))?;
+    measurements.measure("remove-existing", || view.remove(&path("remove.txt"), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
     measurements.measure("lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
     measurements.measure("write-deep", || {
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measurements.measure("flush", || view.flush())?;
+    measurements.measure("flush", || view.flush(&crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
     Ok(())
 }
 
@@ -375,7 +375,7 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
         for component in parent.components() {
             directory = directory.child(component.clone());
             if authored.lookup(&directory)?.is_none() {
-                authored.create_directory(&directory, FileMetadata::default())?;
+                super::adapter::boundary(authored.cancellation(), |work| authored.create_directory(&directory, FileMetadata::default(), work))?;
             }
         }
         authored.create_file(&file, FileMetadata::default())?;
