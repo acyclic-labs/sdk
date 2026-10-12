@@ -99,7 +99,7 @@ export function createSourceInspector(root, read = path => {
       : family === "workers"
       ? semanticOperation && workersBinding.includes("function loadNative()") &&
         workersBinding.includes("module.WorkersClient.connectResult(config,") &&
-        client.includes("export const createWorkersGrpcClient =") && client.includes("=> new WorkersClient(options)") && exported(grpcPath, "./client.js")
+        client.includes("export class WorkersClient") && exported(grpcPath, "./client.js")
       : factory(grpcPath, objects ? "createObjectsV1GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
     // Unified clients use gRPC-Web in browsers; their compatibility aliases do
     // not expose the retired raw HTTP implementation. Inventory both honestly.

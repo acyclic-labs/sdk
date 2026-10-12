@@ -1,6 +1,6 @@
 # @acyclic-labs/harness
 
-TypeScript facade for the Rust-first Harness v2 runtime. It includes typed aggregate handles, reconnect/cursors, bounded hydration, an offline outbox, embedded/JSONL/WebSocket/HTTP-SSE/gRPC transports, explicit conversation selection, and native OpenAI-compatible model projection.
+TypeScript bindings for the Rust Harness v2 runtime.
 
 ```sh
 npm install @acyclic-labs/harness

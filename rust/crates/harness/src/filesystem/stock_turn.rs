@@ -92,7 +92,7 @@ impl ResumableMachine for StockTurnMachine {
                 .map_err(|error| Error::Invalid(format!("invalid stock turn result: {error}")))?;
             transition.status = match outcome {
                 Outcome::Succeeded(output) => {
-                    for attachment in &output.attachments { attachment.validate()?; }
+                    for attachment in &output.attachments { attachment.validate(&mut None)?; }
                     MachineStatus::Completed { value: serde_json::to_value(output)
                         .map_err(|error| Error::Invalid(error.to_string()))? }
                 }

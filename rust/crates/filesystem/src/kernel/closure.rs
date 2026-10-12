@@ -10,7 +10,7 @@ use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
-use crate::{CancellationToken, async_storage};
+use crate::CancellationToken;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -58,20 +58,7 @@ pub struct GenerationProof {
 pub type GenerationProofFailure = OperationFailure<ClosureError>;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
-pub fn prove_generation_closure<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation_root: ObjectId,
-    limits: ClosureLimits,
-    budget: WorkBudget,
-) -> Result<GenerationProof, GenerationProofFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(prove_generation_closure_async(
-        store, generation_root, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously proves a complete immutable generation closure.
-pub async fn prove_generation_closure_async<S: crate::AsyncObjectStore>(
+pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     store: &S,
     generation_root: ObjectId,
     limits: ClosureLimits,

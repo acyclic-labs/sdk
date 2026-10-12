@@ -57,26 +57,26 @@ export class EmbeddedWireTransport implements WireTransport {
   constructor(readonly api: EmbeddedWireApi, readonly negotiation: HandshakeRequest) {}
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
-    resume = withResumeProtocol(resume, this.negotiation);
+    resume = create(ResumeRequestSchema, { ...resume, protocol: this.negotiation.protocol });
     await validateResume(resume);
     await validateHandshake(this.negotiation, await this.api.handshake(this.negotiation));
     const deliveries = this.api.replay(resume, signal);
     return {
       send: async command => {
-        command = withProtocol(command, this.negotiation);
+        command = create(CommandEnvelopeSchema, { ...command, protocol: this.negotiation.protocol });
         await validateCommand(command);
         return this.api.submit(command);
       },
       observe: async request => {
-        request = withObserveProtocol(request, this.negotiation);
+        request = create(ObserveRequestSchema, { ...request, protocol: this.negotiation.protocol });
         await validateObserve(request);
-        return validateStatus(request, this.negotiation, await this.api.observe(request));
+        return validateStatus(request, await this.api.observe(request));
       },
       cancel: async request => {
-        request = withCancelProtocol(request, this.negotiation);
+        request = create(CancelRequestSchema, { ...request, protocol: this.negotiation.protocol });
         await validateCancel(request);
         const response = await this.api.cancel(request);
-        await validateCancelIdentity(request, this.negotiation, response);
+        await validateCancelIdentity(request, response);
         return response;
       },
       close() {},
@@ -97,7 +97,7 @@ export class JsonlWireTransport implements WireTransport {
   ) {}
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
-    resume = withResumeProtocol(resume, this.negotiation);
+    resume = create(ResumeRequestSchema, { ...resume, protocol: this.negotiation.protocol });
     await validateResume(resume);
     const channel = await this.open(signal);
     const source = channel[Symbol.asyncIterator]();
@@ -131,7 +131,7 @@ export class WebSocketWireTransport implements WireTransport {
   }
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
-    resume = withResumeProtocol(resume, this.negotiation);
+    resume = create(ResumeRequestSchema, { ...resume, protocol: this.negotiation.protocol });
     await validateResume(resume);
     const socket = this.factory(this.url, ["acyclic.harness.v2"]);
     const incoming = new AsyncQueue<string>();
@@ -190,7 +190,7 @@ export class HttpSseWireTransport implements WireTransport {
   }
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
-    resume = withResumeProtocol(resume, this.negotiation);
+    resume = create(ResumeRequestSchema, { ...resume, protocol: this.negotiation.protocol });
     await validateResume(resume);
     const maximum = this.maximumMessageBytes;
     const post = (path: string, body: string, accept?: string) => this.fetcher(new URL(path, this.#endpoint), {
@@ -209,7 +209,7 @@ export class HttpSseWireTransport implements WireTransport {
     const negotiation = this.negotiation;
     return {
       async send(command) {
-        command = withProtocol(command, negotiation);
+        command = create(CommandEnvelopeSchema, { ...command, protocol: negotiation.protocol });
         await validateCommand(command);
         const submitted = await post("v2/harness/commands", toJsonString(CommandEnvelopeSchema, command));
         if (!submitted.ok) {
@@ -237,19 +237,19 @@ export class HttpSseWireTransport implements WireTransport {
         }
       },
       async observe(request) {
-        request = withObserveProtocol(request, negotiation);
+        request = create(ObserveRequestSchema, { ...request, protocol: negotiation.protocol });
         await validateObserve(request);
         const observed = await post("v2/harness/operations/observe", toJsonString(ObserveRequestSchema, request));
         if (!observed.ok) throw await httpWireError(observed, "observe", maximum);
-        return validateStatus(request, negotiation, fromJsonString(OperationStatusSchema, await boundedText(observed, maximum)));
+        return validateStatus(request, fromJsonString(OperationStatusSchema, await boundedText(observed, maximum)));
       },
       async cancel(request) {
-        request = withCancelProtocol(request, negotiation);
+        request = create(CancelRequestSchema, { ...request, protocol: negotiation.protocol });
         await validateCancel(request);
         const cancelled = await post("v2/harness/operations/cancel", toJsonString(CancelRequestSchema, request));
         if (!cancelled.ok) throw await httpWireError(cancelled, "cancel", maximum);
         const response = fromJsonString(CancelResponseSchema, await boundedText(cancelled, maximum));
-        await validateCancelIdentity(request, negotiation, response);
+        await validateCancelIdentity(request, response);
         return response;
       },
       async close() {},
@@ -273,26 +273,26 @@ export class GrpcWireTransport implements WireTransport {
     readonly connectGrpc: WireTransport["connect"],
   ) {}
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
-    resume = withResumeProtocol(resume, this.negotiation);
+    resume = create(ResumeRequestSchema, { ...resume, protocol: this.negotiation.protocol });
     await validateResume(resume);
     await validateHandshake(this.negotiation, await this.handshakeGrpc(this.negotiation));
     const connection = await this.connectGrpc(resume, signal);
     return {
       send: async command => {
-        command = withProtocol(command, this.negotiation);
+        command = create(CommandEnvelopeSchema, { ...command, protocol: this.negotiation.protocol });
         await validateCommand(command);
         return connection.send(command);
       },
       observe: async request => {
-        request = withObserveProtocol(request, this.negotiation);
+        request = create(ObserveRequestSchema, { ...request, protocol: this.negotiation.protocol });
         await validateObserve(request);
-        return validateStatus(request, this.negotiation, await connection.observe(request));
+        return validateStatus(request, await connection.observe(request));
       },
       cancel: async request => {
-        request = withCancelProtocol(request, this.negotiation);
+        request = create(CancelRequestSchema, { ...request, protocol: this.negotiation.protocol });
         await validateCancel(request);
         const response = await connection.cancel(request);
-        await validateCancelIdentity(request, this.negotiation, response);
+        await validateCancelIdentity(request, response);
         return response;
       },
       close: () => connection.close(),
@@ -335,7 +335,7 @@ class FramedConnection implements WireConnection {
   }
 
   async send(command: CommandEnvelope): Promise<void> {
-    command = withProtocol(command, this.negotiation);
+    command = create(CommandEnvelopeSchema, { ...command, protocol: this.negotiation.protocol });
     await validateCommand(command);
     this.#assertOpen();
     const operationId = command.operation?.operationId;
@@ -355,7 +355,7 @@ class FramedConnection implements WireConnection {
   }
 
   async observe(request: ObserveRequest): Promise<OperationStatus> {
-    request = withObserveProtocol(request, this.negotiation);
+    request = create(ObserveRequestSchema, { ...request, protocol: this.negotiation.protocol });
     const operationId = request.operationId;
     if (!operationId) throw new TypeError("observe operation identity is missing");
     if (this.#controls.has(operationId)) {
@@ -384,7 +384,7 @@ class FramedConnection implements WireConnection {
   }
 
   async cancel(request: CancelRequest): Promise<CancelResponse> {
-    request = withCancelProtocol(request, this.negotiation);
+    request = create(CancelRequestSchema, { ...request, protocol: this.negotiation.protocol });
     const operationId = request.operationId;
     const idempotencyKey = request.idempotencyKey;
     if (!operationId || !idempotencyKey) throw new TypeError("cancel operation identity is missing");
@@ -468,7 +468,7 @@ class FramedConnection implements WireConnection {
           const operationId = frame.frame.value.operation?.operationId ?? "";
           const pending = this.#observations.get(operationId);
           if (!pending) throw new Error("operation status has no matching observation");
-          const status = await validateStatus(pending.request, this.negotiation, frame.frame.value);
+          const status = await validateStatus(pending.request, frame.frame.value);
           this.#observations.delete(operationId);
           this.#controls.delete(operationId);
           pending.resolve(status);
@@ -479,7 +479,7 @@ class FramedConnection implements WireConnection {
           this.#cancellations.delete(operationId!);
           this.#controls.delete(operationId!);
           try {
-            await validateCancelIdentity(pending.request, this.negotiation, frame.frame.value);
+            await validateCancelIdentity(pending.request, frame.frame.value);
             pending.resolve(frame.frame.value);
           } catch (error) {
             pending.reject(error);
@@ -513,22 +513,6 @@ class FramedConnection implements WireConnection {
     this.#controls.clear();
     this.#deliveries.fail(error);
   }
-}
-
-function withProtocol(command: CommandEnvelope, negotiation: HandshakeRequest): CommandEnvelope {
-  return create(CommandEnvelopeSchema, { ...command, protocol: negotiation.protocol });
-}
-
-function withResumeProtocol(resume: ResumeRequest, negotiation: HandshakeRequest): ResumeRequest {
-  return create(ResumeRequestSchema, { ...resume, protocol: negotiation.protocol });
-}
-
-function withObserveProtocol(request: ObserveRequest, negotiation: HandshakeRequest): ObserveRequest {
-  return create(ObserveRequestSchema, { ...request, protocol: negotiation.protocol });
-}
-
-function withCancelProtocol(request: CancelRequest, negotiation: HandshakeRequest): CancelRequest {
-  return create(CancelRequestSchema, { ...request, protocol: negotiation.protocol });
 }
 
 class AsyncQueue<T> implements AsyncIterable<T> {
@@ -572,7 +556,6 @@ function clientFrameJson(frameValue: Exclude<ClientFrame["frame"], { case: undef
 
 async function validateStatus(
   request: ObserveRequest,
-  _negotiation: HandshakeRequest,
   status: OperationStatus,
 ): Promise<OperationStatus> {
   const contracts = await NativeContracts.create();
@@ -586,7 +569,6 @@ async function validateStatus(
 
 async function validateCancelIdentity(
   request: CancelRequest,
-  _negotiation: HandshakeRequest,
   response: CancelResponse,
 ): Promise<void> {
   const contracts = await NativeContracts.create();
@@ -718,8 +700,7 @@ function assertMessageBound(maximum: number): void {
 }
 
 const utf8 = new TextEncoder();
-// A UTF-16 unit encodes to one to three UTF-8 bytes, so only re-encode text
-// whose length alone cannot decide the bound.
+// Only encode text when UTF-16 length cannot decide the UTF-8 bound.
 function utf8Exceeds(text: string, maximum: number): boolean {
   return text.length > maximum ||
     (text.length * 3 > maximum && utf8.encode(text).byteLength > maximum);

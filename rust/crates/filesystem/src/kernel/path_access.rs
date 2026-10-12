@@ -12,7 +12,7 @@ use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError};
+    ObjectReadRetention, ObjectResult, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -309,7 +309,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|()| crate::OperationReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 
     async fn historical_generation_evidence(
@@ -339,7 +339,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -378,7 +378,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -408,7 +408,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work })
+        result.map(|()| crate::OperationReceipt { value: (), work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -461,7 +461,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             Ok::<_, crate::FsError>(value)
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
@@ -507,7 +507,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 }
 
@@ -701,26 +701,7 @@ pub(super) fn path_error(error: crate::FsError) -> PathLookupError {
 }
 
 /// Resolves one exact path without following terminal or intermediate links.
-pub fn lookup_path<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_path_async(
-        store,
-        generation,
-        path,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves one exact no-follow path through authenticated frontiers.
-pub async fn lookup_path_async<S: AsyncObjectStore>(
+pub async fn lookup_path<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     path: &NamespacePath,
@@ -757,26 +738,7 @@ pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
 }
 
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
-pub fn lookup_paths<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_paths_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves a non-empty no-follow path batch with shared work.
-pub async fn lookup_paths_async<S: AsyncObjectStore>(
+pub async fn lookup_paths<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[NamespacePath],
@@ -837,7 +799,7 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
 }
 
 /// Resolves borrowed paths without first cloning their names into an owned batch.
-pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
+pub async fn lookup_path_refs<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[&NamespacePath],
@@ -858,24 +820,6 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
     )
     .await
     .map(|observed| observed.lookup)
-}
-
-/// Synchronously resolves borrowed paths without constructing owned path copies.
-pub fn lookup_path_refs<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[&NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    async_storage::poll_immediate(lookup_path_refs_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &CancellationToken::new(),
-    ))
 }
 
 #[derive(Clone, Copy)]

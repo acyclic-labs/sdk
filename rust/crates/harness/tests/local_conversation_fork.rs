@@ -34,8 +34,8 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("local-fork-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("local-fork-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("local-fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),
@@ -110,8 +110,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             &stream,
             parent.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(reader.clone())
         .with_fork_verifier(forks)
@@ -360,8 +359,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     assert_eq!(restored.reducer().revision(), 4);
     assert!(restored.reducer().fork(&child).is_some());
@@ -370,7 +368,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
     assert_eq!(conversation.messages().len(), 2);
-    let history = HistoryReader::new(&stream, &parent, issuer.verifier(&mut None).expect("verifier copy"))?;
+    let history = HistoryReader::new(&stream, &parent, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let cut = HistoryCursor {
         authority: parent.clone(),
         after_revision: 0,

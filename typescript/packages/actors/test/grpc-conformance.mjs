@@ -13,10 +13,9 @@ import { WorkersService } from "../../workers/generated/proto/workers/v1/workers
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
-import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
+import { WorkersClient } from "../../workers/dist/index.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
-import { HttpWorkersClient } from "../../workers/dist/http.js";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
@@ -92,7 +91,7 @@ if (process.argv.includes("--client")) {
   const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
   const workerOptions = { endpoint: options.endpoint, token: options.token, caCertificate: options.caCertificate };
-  const clients = [actors, createWorkersGrpcClient(workerOptions), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
+  const clients = [actors, new WorkersClient(workerOptions), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
@@ -154,7 +153,7 @@ if (process.argv.includes("--client")) {
       count++;
       if (index === 1) {
         // The compatibility alias uses the canonical Rust-selected transport.
-        const http = new HttpWorkersClient(workerOptions);
+        const http = new WorkersClient(workerOptions);
         inspectResponse(method, await http[method.localName](request));
       }
     }

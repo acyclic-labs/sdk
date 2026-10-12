@@ -1,5 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
@@ -276,8 +277,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     let conversation = aggregate
@@ -312,7 +312,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert_eq!(retired.resident_after_sequence(), 4);
     assert!(retired.messages().is_empty());
 
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier(&mut None).expect("verifier copy"))?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let cursor = history.pin(0, None).await?;
     let original_scope = RuntimeScope::new(storage.scope.capabilities().clone(), limits)?;
     let prepared = prepare_summary_fork_context(
@@ -364,7 +364,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     );
     let scope = storage
         .issuer.issue("summary-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
-    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let archived = history.fork_history(
         aggregate.reducer(), 4,
         HistoryReadLimits { maximum_events: 4, maximum_bytes: 2_097_152 },
@@ -628,8 +628,7 @@ async fn assert_summary_child_import(
         &storage.stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let parent_history = parent.history_reader()?;
     let child_history = child.history_reader()?;
@@ -711,8 +710,7 @@ async fn assert_summary_child_import(
         &other_stream,
         seed.child.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     unrelated
         .execute(Command {
@@ -757,7 +755,7 @@ async fn assert_summary_child_import(
         Model::new("synthetic", "summary-child", "1", Value::Null)?,
         model.clone(),
         ContextPipeline::new([stage as Arc<dyn ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
@@ -897,8 +895,7 @@ async fn append_later_summary_parent_messages(
         &storage.stream,
         storage.conversation.clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
     for index in 0..count {
@@ -949,7 +946,7 @@ async fn assert_cold_summary_reads(
 ) -> Result<crate::context::PinnedContextStage> {
     use std::sync::atomic::Ordering;
     let parent_history = parent.history_reader()?;
-    let child_history = HistoryReader::new(&storage.stream, &seed.child, issuer.verifier(&mut None).expect("verifier copy"))?;
+    let child_history = HistoryReader::new(&storage.stream, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let binding = child_history
         .read_page(
             &child_history.pin(0, None).await?,
@@ -983,8 +980,8 @@ async fn assert_cold_summary_reads(
             fail_read: 0.into(),
         });
         let client = observed.clone();
-        let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
-        let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier(&mut None).expect("verifier copy"))?;
+        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier()), &mut None)?;
+        let cold_child = HistoryReader::new(&client, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
         if later_messages == 0 {
             for allowance in [
                 HistoryReadLimits {
@@ -1047,8 +1044,8 @@ async fn assert_cold_summary_reads(
             observed.reads.store(0, Ordering::SeqCst);
             observed.fail_read.store(0, Ordering::SeqCst);
         }
-        let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier(&mut None).expect("verifier copy"))?;
-        let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier(&mut None).expect("verifier copy"))?;
+        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+        let cold_child = HistoryReader::new(&client, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
         stage = Some(
             cold_child
                 .summary_fork_stage(
@@ -1207,7 +1204,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
     assert!(conversation.resident_after_sequence() > 0);
     assert_eq!(conversation.logical_revision(), 12);
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, storage.verifier(&mut None).expect("verifier copy"))?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
     assert!(history.fork_history(parent.reducer(), 12,
         HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }, &mut None).await.is_err());
     let archived = history.fork_history(parent.reducer(), 12,
@@ -1218,7 +1215,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let project_head = storage.host.create_volume(&project).await?;
     let scope = storage.issuer.issue("full-parent", &Capabilities::new(storage.scope.capabilities().iter().map(str::to_owned)
             .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read)?])), Some(agent), None, &mut None).expect("scope proof");
-    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
         storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
         storage.content_verifier.clone(),

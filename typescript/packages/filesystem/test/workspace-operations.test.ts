@@ -1,31 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import type { FsGeneration, MergeConflictSelection, WorkspaceRebaseResult } from "../src/contracts.js";
-import { adaptJoinPlanBase, adaptResolvableJoinPlan, workspaceOperations } from "../src/workspace-operations.js";
+import type { MergeConflictSelection, WasmRawWorkspace } from "../src/contracts.js";
+import { adaptJoinPlan } from "../src/workspace-operations.js";
+import { createFilesystemAdapter } from "../src/filesystem-adapter.js";
 
 describe("shared workspace operations", () => {
   test("join plan copies binding heads and checks fenced apply inputs", async () => {
     const targetHead = Buffer.alloc(32, 1);
     const commonAncestor = Buffer.alloc(32, 2);
-    let applies = 0;
-    let parses = 0;
     const raw = {
       targetHead, commonAncestor,
-      async apply() { applies += 1; return { status: "applied", generationId: Buffer.alloc(32, 3), conflicts: [], truncated: false }; },
+      async apply() { return { status: "applied", generationId: Buffer.alloc(32, 3), conflicts: [], truncated: false }; },
     };
-    const plan = adaptJoinPlanBase(raw, (value) => {
-      parses += 1;
-      return { status: "applied", generationId: value.generationId, conflicts: [], truncated: false };
-    });
+    const plan = adaptJoinPlan(raw);
 
     plan.targetHead[0] = 9;
     plan.commonAncestor[0] = 9;
     expect(targetHead[0]).toBe(1);
     expect(commonAncestor[0]).toBe(2);
-    expect(applies).toBe(0);
     const applied = await plan.apply(new Uint8Array(32), new Uint8Array(16));
     expect(applied.status).toBe("applied");
     expect(applied.generationId?.[0]).toBe(3);
-    expect([applies, parses]).toEqual([1, 1]);
   });
 
   test("native conflict-side selections are copied before forwarding", async () => {
@@ -41,10 +35,8 @@ describe("shared workspace operations", () => {
         return { status: "applied", generationId: Buffer.alloc(32, 4), conflicts: [], truncated: false };
       },
     };
-    const plan = adaptResolvableJoinPlan(raw, (value) => ({
-      status: "applied", generationId: value.generationId, conflicts: [], truncated: false,
-    }));
-    const result = await plan.applySides(new Uint8Array(32), [
+    const plan = adaptJoinPlan(raw);
+    const result = await plan.applySides!(new Uint8Array(32), [
       { kind: "file", fileId, side: "ours" },
       { kind: "binding", directoryId, name: { encoding: "posix-bytes", bytes: name }, side: "theirs" },
     ]);
@@ -69,12 +61,8 @@ describe("shared workspace operations", () => {
       async read() { reads += 1; return Buffer.from([3]); },
       async write() { return { status: "committed", generationId: committed }; },
       async delete() { return "deleted"; },
-    } as unknown as Parameters<typeof workspaceOperations>[0];
-    const operations = workspaceOperations(
-      raw,
-      (generation) => generation as unknown as FsGeneration,
-      (value) => value as unknown as WorkspaceRebaseResult,
-    );
+    } as unknown as WasmRawWorkspace;
+    const operations = createFilesystemAdapter().adaptWorkspace(raw, undefined);
 
     await expect(operations.read("/item", 0n)).rejects.toThrow("maximum read bytes");
     expect(reads).toBe(0);

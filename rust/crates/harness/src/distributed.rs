@@ -425,7 +425,7 @@ fn coordinator_stream<P: StreamProvider>(
         work.admit_allocation(path.len() as u64)?;
         work.copy_bytes(path.len() as u64)?;
     }
-    let stream = operations::stream_text_with_work(client, path, work)?;
+    let stream = operations::stream(client, path, work)?;
     if portable {
         work.as_deref_mut().expect("portable observer").retain_owned(path.len() as u64)?;
     }
@@ -1503,10 +1503,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let available_bytes = if custody.work().is_some() { available.logical_owned_bytes()? } else { 0 };
         custody.adopt(available_bytes)?;
         let selected = match target {
-            Some(target) => self
-                .scheduler
-                .operation_ready_for(target, &available, &worker.labels, owner)
-                .then_some(target),
+            Some(target) => self.scheduler.operation(target)
+                .filter(|operation| self.scheduler.is_ready(operation, &available, &worker.labels, owner))
+                .map(|_| target),
             None => self
                 .scheduler
                 .ready(&available, &worker.labels, owner).next(),
@@ -3007,7 +3006,7 @@ mod tests {
 
     fn state_ref() -> Result<FileRef> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "project",
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
@@ -5437,7 +5436,7 @@ mod tests {
             )
             .await?;
         let checkpoint = crate::resources::CheckpointRef::new(
-            crate::resources::ProviderRef::new("example", "machines", "1")?,
+            crate::resources::ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
             vec![1],
             Some("checkpoint-1".into()),
         )?;

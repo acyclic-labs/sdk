@@ -10,7 +10,6 @@ import {
 } from "@acyclic-labs/objects/v1";
 
 const encoder = new TextEncoder();
-const maximumObjectKeyBytes = ObjectsLimit.MAX_KEY_BYTES;
 
 export interface ObjectContentOptions {
   readonly objects: ObjectsV1Provider;
@@ -32,7 +31,7 @@ export class ObjectContentStore {
   readonly #writable: boolean;
   readonly #objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">;
 
-  private constructor(readonly options: ObjectContentOptions, namespace: string, writable: boolean,
+  private constructor(private readonly options: Pick<ObjectContentOptions, "bucket" | "scope" | "volume" | "authority" | "maximumBytes">, namespace: string, writable: boolean,
     objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">) {
     this.#namespace = namespace;
     this.#writable = writable;
@@ -76,8 +75,7 @@ export class ObjectContentStore {
     const writeGrant = authority.volumeCapability(volume, "write");
     const writable = scope.capabilities.includes(writeGrant);
     if (writable) authority.verifyContentWrite(scope, volume);
-    return new ObjectContentStore(Object.freeze({ ...options, bucket, expectedProvider,
-      maximumBytes, ownerScope, scope, volume, authority }),
+    return new ObjectContentStore(Object.freeze({ bucket, maximumBytes, scope, volume, authority }),
       authority.volumeStorageName(volume), writable, objects);
   }
 
@@ -132,8 +130,7 @@ export class ObjectContentStore {
         throw new Error("Objects publication returned inconsistent metadata");
       }
     } catch (error) {
-      // Another operation may already have placed this exact content. Verify
-      // the selected current bytes below; a retry receipt alone is not residency.
+      // Existing content still requires an exact read; retry receipts do not prove residency.
       if (!(error instanceof ObjectsV1Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
     await this.#readContent(reference);
@@ -211,7 +208,7 @@ export class ObjectContentStore {
   #key(path: string, content: string): string {
     if (!/^[0-9a-f]{64}$/.test(content)) throw new TypeError("Objects content identity is invalid");
     const key = `${this.#namespace}/${path}/@content/${content}`;
-    if (encoder.encode(key).byteLength > maximumObjectKeyBytes) {
+    if (encoder.encode(key).byteLength > ObjectsLimit.MAX_KEY_BYTES) {
       throw new TypeError("Objects content key exceeds provider limit");
     }
     return key;

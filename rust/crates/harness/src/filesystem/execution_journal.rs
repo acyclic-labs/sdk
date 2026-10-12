@@ -22,7 +22,7 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
+use super::fork_preparer_io::{PreparationIo, PreparationRecord};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
@@ -265,7 +265,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: acyclic_stream::StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -767,12 +767,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 crate::store::HistoryReadLimits { maximum_events, maximum_bytes }
             };
             let mut borrowed = io.map(PreparationIo::history_io);
-            let reader = match borrowed.as_mut() {
-                Some(work) => crate::store::HistoryReader::new_with_work(
-                    &self.stream, self.verifier.audience(), &self.verifier, Some(work))?,
-                None => crate::store::HistoryReader::new(
-                    &self.stream, self.verifier.audience(), self.verifier.clone())?,
-            };
+            let reader = crate::store::HistoryReader::new(&self.stream, self.verifier.audience(), &self.verifier, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo))?;
             let event = match borrowed.as_mut() {
                 Some(work) => crate::store::operations::find_operation_bounded_with_work(
                     &self.stream, self.verifier.audience(), &self.verifier, self.turn_operation(envelope.operation_id),
@@ -1011,12 +1006,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(invalid("execution journal requires a private volume and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            match io {
-                Some(io) => ContentGrant::authorize_volume(
-                    verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
-                )?,
-                None => { ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None)?; }
-            }
+            let maximum = io.map(|io| io.remaining().map(|budget| budget.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+            crate::executor::with_history_io(io, |work|
+                ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work))?;
         }
         if !matches!(verifier.audience().kind,
             crate::core::AggregateKind::Conversation | crate::core::AggregateKind::Task)
@@ -1042,7 +1034,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
-            stream: acyclic_stream::StreamClient::new(stream),
+            stream,
             host,
             volume,
             verifier,
@@ -1088,7 +1080,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            Arc::clone(&self.stream), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1123,7 +1115,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream.stream(
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1144,7 +1136,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
             let request = host.read_request(id, None).await?
                 .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
-            request.validate_response_with_work(&response, &mut None)?;
+            request.validate_response(&response, &mut None)?;
             if let Some(previous) = &prior && previous.outcome.is_terminal() {
                 let stored = match (&previous.outcome, &response) {
                     (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
@@ -1206,8 +1198,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream,
                     self.verifier.audience().clone(),
                     self.verifier.clone(),
-                    self.schemas.clone(),
-                )
+                    self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::clone(verifier)),
             );
@@ -1223,8 +1214,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 &self.stream,
                 self.verifier.audience().clone(),
                 self.verifier.clone(),
-                self.schemas.clone(),
-            )
+                self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::clone(verifier));
             aggregate.set_limits(limits)?;
@@ -1298,17 +1288,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "journal content belongs to another private volume"));
         }
-        match io {
-            Some(io) => {
-                ContentGrant::authorize_volume(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
-                self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
-            }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
-                self.host.read_content(reference, &grant, self.maximum_payload_bytes).await
-            }
-        }
+        let maximum = io.map(|io| io.remaining().map(|budget| budget.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+        crate::executor::with_history_io(io, |work|
+            ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume,
+                VolumeOperation::Read, maximum, work))?;
+        if io.is_none() { reference.validate(&mut None)?; }
+        let bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, io).await?;
+        if io.is_none() { self.host.retain_file_generation(reference).await?; }
+        Ok(bytes)
     }
 
     fn journal_read_stream_error(
@@ -1358,7 +1345,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1407,7 +1394,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Observation>, &record.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1506,21 +1493,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "journal event refers to another private volume"));
             }
             let _bytes_hold;
-            let native_bytes;
-            let ordinary_bytes;
-            let bytes = if let Some(io) = io {
-                super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::authorize_volume(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
-                native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
-                _bytes_hold = io.guard_bytes(&native_bytes)?;
-                native_bytes.as_ref()
-            } else {
-                _bytes_hold = None;
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
-                ordinary_bytes = self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
-                ordinary_bytes.as_ref()
-            };
+            super::fork_preparer_io::item(io, 0)?;
+            let owned_bytes = self.load_content(reference, io).await?;
+            _bytes_hold = io.map(|io| io.guard_bytes(&owned_bytes)).transpose()?.flatten();
+            let bytes = owned_bytes.as_ref();
             if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
                 let limits = self
                     .owner
@@ -1549,7 +1525,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let parsed = io.decode(std::marker::PhantomData::<ModelEvent>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
@@ -1559,7 +1535,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
                 });
             }
         }
@@ -1600,8 +1576,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::authorize_volume(
-                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
+                crate::executor::with_history_io(Some(io), |work|
+                    ContentGrant::authorize_volume(&self.verifier, &self.scope, reference.volume(),
+                        VolumeOperation::Read, io.remaining()?.bytes_encoded, work))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;
@@ -2221,7 +2198,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        interaction.validate_with_work(&mut work)?;
+        interaction.validate(&mut work)?;
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
@@ -2484,7 +2461,7 @@ mod tests {
     )]
     async fn observation_reopen_preserves_original_turn_and_rejects_header_substitution()
     -> Result<()> {
-        let provider = ProviderRef::new("observation-identity", "filesystem", "2")?;
+        let provider = ProviderRef::new("observation-identity".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             provider.clone(),
@@ -2524,7 +2501,7 @@ mod tests {
             .map(|journal| journal.with_turn(operation, turn))
         };
         let turn = OperationId::new();
-        let operation = super::super::task_runtime::execution_operation(crate::TaskId::new(), turn);
+        let operation = super::super::task_runtime::execution_operation(crate::TaskId::new(), turn, None)?;
         assert_ne!(operation, turn);
         let event = ExecutionEvent::Started {
             request_digest: [9; 32],
@@ -2626,7 +2603,7 @@ mod tests {
             acyclic_stream::MemoryStream,
         >::default());
         let client = provider.clone();
-        let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
+        let fs_provider = ProviderRef::new("cold-canonical-source".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             fs_provider.clone(),
@@ -2668,8 +2645,7 @@ mod tests {
             &client,
             authority.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(content.clone())
         .with_resident_event_limit(1)?;
@@ -2853,8 +2829,8 @@ mod tests {
         })?;
         let execution_operation = super::super::task_runtime::execution_operation(
             crate::TaskId::new(),
-            complete_operation,
-        );
+            complete_operation, None,
+        )?;
         assert_ne!(execution_operation, complete_operation);
         let bound = new_journal()?
             .with_turn(execution_operation, complete_operation)

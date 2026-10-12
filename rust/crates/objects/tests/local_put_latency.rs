@@ -44,7 +44,7 @@ async fn local_put_latency_receipt() -> Result<(), Box<dyn std::error::Error>> {
     for size in sizes {
         let root = tempfile::tempdir()?;
         let limits = LocalObjectsLimits::default();
-        let provider = LocalObjects::open(root.path(), limits).await?;
+        let provider = LocalObjects::open(root.path(), limits, None).await?;
         let bucket = provider
             .create_bucket(wire::CreateBucketRequest {
                 name: "latency".into(),
@@ -76,7 +76,7 @@ async fn local_put_latency_receipt() -> Result<(), Box<dyn std::error::Error>> {
         }
         drop(provider);
         let reopen_started = Instant::now();
-        drop(LocalObjects::open(root.path(), limits).await?);
+        drop(LocalObjects::open(root.path(), limits, None).await?);
         let reopen = reopen_started.elapsed();
         samples.sort_unstable();
         let mean = micros(samples.iter().sum::<Duration>() / u32::try_from(samples.len())?);

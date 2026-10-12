@@ -4,6 +4,7 @@ use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
     wasm_limits, wasm_run_limits,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
@@ -514,7 +515,7 @@ impl WasmTaskRegistry {
     #[wasm_bindgen(js_name = registerTool)]
     pub fn register_tool(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelToolDefinitionWire")] definition: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ToolDefinition")] definition: JsValue,
         execute: Function,
         reconcile: Function,
         project: Function,
@@ -696,7 +697,7 @@ impl WasmTaskRuntime {
         ).map_err(js_error)?;
         let mut tools = registry.tools.clone();
         let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
-        for definition in defaults.tools.definitions().map_err(js_error)? {
+        for definition in defaults.tools.definitions(None).map_err(js_error)? {
             if tools.get(&definition.name).is_none() {
                 tools.register(defaults.tools.get(&definition.name).expect("registered default").clone())
                     .map_err(js_error)?;
@@ -754,17 +755,17 @@ impl WasmTaskRuntime {
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelWire")] model: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Model")] model: JsValue,
         #[wasm_bindgen(
-            unchecked_param_type = "(request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>"
+            unchecked_param_type = "(request: Uint8Array, dispatch: ModelDispatch, signal: AbortSignal) => AsyncIterator<ModelEvent>"
         )]
         generate: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "(attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>"
+            unchecked_param_type = "(attempt: ModelDispatch & { observed: ModelEvent[] }) => ModelEvent[] | null | Promise<ModelEvent[] | null>"
         )]
         reconcile: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "((model: WasmModelWire) => ModelContextCapacity) | undefined"
+            unchecked_param_type = "((model: Model) => ModelContextCapacity) | undefined"
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(
@@ -1031,7 +1032,8 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<JsValue, JsValue> {
         let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(
             from_js::<Value>(admission)?,
-        ).map_err(js_error)?;
+            &mut None,
+        ).map_err(js_error)?.0;
         let fence: crate::scheduler::LeaseFence = from_js(parent_fence)?;
         let admission = match self.runtime.task_host().admit_owned(admission, fence).await.map_err(js_error)? {
             Admission::Accepted(task) => WasmBrowserAdmission::Accepted { task_id: task.to_string() },
@@ -1062,7 +1064,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         self.runtime
             .task_host()
-            .cancel(task)
+            .cancel(task, None)
             .await
             .map_err(js_error)
     }

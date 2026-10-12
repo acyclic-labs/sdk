@@ -74,8 +74,8 @@ impl ForkCaptureProvider for LostCaptureReply {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
-    let provider = ProviderRef::new("fork-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("fork-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let parent = Authority {
         kind: AggregateKind::Conversation,
@@ -133,8 +133,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
@@ -414,7 +413,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             .await
             .is_err()
     );
-    let objects_provider = ProviderRef::new("fork-e2e", "objects", "2")?;
+    let objects_provider = ProviderRef::new("fork-e2e".into(), "objects".into(), "2".into(), &mut None)?;
     let lost_reply = Arc::new(LostCaptureReply {
         provider: objects_provider.clone(),
         capture_calls: AtomicUsize::new(0),
