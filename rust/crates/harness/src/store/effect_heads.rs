@@ -205,14 +205,6 @@ fn node_path_with_work(
         authority, "harness/v2/effect-heads/", Some((&format_args!("nodes/{suffix}"), 70)), work)
 }
 
-fn release_after_drop<T>(result: Result<T>, owned: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {
-    let release = match work.as_deref_mut() {
-        Some(observer) => observer.release_owned(owned),
-        None => Ok(()),
-    };
-    match result { Err(error) => Err(error), Ok(value) => release.map(|()| value) }
-}
-
 fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
     *used = used
         .checked_add(amount)
@@ -236,7 +228,7 @@ async fn root_at<P: StreamProvider>(
     let (path, path_owned) = certificate_path_with_work(authority, work)?;
     let record = operations::one_record(client, &path, revision - 1, work).await;
     drop(path);
-    let record = release_after_drop(record, path_owned, work)?
+    let record = operations::release_owned_after_drop(record, path_owned, work)?
         .ok_or_else(|| Error::Unsupported(
             "effect history requires its original complete cut certificate".into()))?;
     let result = async {
@@ -293,22 +285,22 @@ async fn root_at<P: StreamProvider>(
     let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
     drop(canonical);
     let release = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(canonical_bytes),
+        Some(observer) => observer.release_owned(canonical_bytes),
         None => Ok(()),
     };
     match checked { Err(error) => Err(error), Ok(root) => release.map(|()| root) }
     }.await;
     drop(source_path);
-    release_after_drop(result, source_owned, work)
+    operations::release_owned_after_drop(result, source_owned, work)
     }.await;
     drop(certificate);
-    let result = release_after_drop(result, certificate_owned, work);
+    let result = operations::release_owned_after_drop(result, certificate_owned, work);
     result
     }.await;
     let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
     let release = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(record_bytes),
+        Some(observer) => observer.release_owned(record_bytes),
         None => Ok(()),
     };
     match result { Err(error) => Err(error), Ok(root) => release.map(|()| root) }
@@ -354,13 +346,13 @@ async fn load_node<P: StreamProvider>(
     let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
     let release = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(record_bytes),
+        Some(observer) => observer.release_owned(record_bytes),
         None => Ok(()),
     };
     match node { Err(error) => Err(error), Ok(node) => release.map(|()| node) }
     }.await;
     drop(path);
-    release_after_drop(result, path_owned, work)
+    operations::release_owned_after_drop(result, path_owned, work)
 }
 
 async fn walk<P: StreamProvider>(
@@ -455,7 +447,7 @@ async fn stage_node<P: StreamProvider>(
         Err(error) => {
             let capacity = bytes.capacity() as u64;
             drop(bytes);
-            return release_after_drop(Err(error), capacity, work);
+            return operations::release_owned_after_drop(Err(error), capacity, work);
         }
     };
     checkpoints::stage_immutable_vec_with_work(client, path, Ok(bytes), work).await?;
@@ -569,7 +561,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     let (canonical_path, canonical_owned) = operations::publication_path_with_work(authority, "harness/v2/", None, work)?;
     let canonical_matches = publication.path.as_str() == canonical_path.as_str();
     drop(canonical_path);
-    release_after_drop(Ok(()), canonical_owned, work)?;
+    operations::release_owned_after_drop(Ok(()), canonical_owned, work)?;
     if !canonical_matches
         || publication.expected_tail != previous_revision
         || publication.operation_id != event.operation_id
@@ -584,7 +576,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     })();
     drop(encoded_event);
     drop(encoded_authority);
-    release_after_drop(admitted, decoded_owned, work)?;
+    operations::release_owned_after_drop(admitted, decoded_owned, work)?;
     let (mut previous_hash, mut previous_consumed) = root_at(
         client,
         authority,
@@ -633,7 +625,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         Ok(authority) => authority,
         Err(error) => {
             drop(canonical_path);
-            return release_after_drop(Err(error), path_owned, work);
+            return operations::release_owned_after_drop(Err(error), path_owned, work);
         }
     };
     let certificate = Certificate {
@@ -654,7 +646,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         Err(error) => Err(error),
     };
     drop(certificate);
-    release_after_drop(result, owned, work)
+    operations::release_owned_after_drop(result, owned, work)
 }
 
 

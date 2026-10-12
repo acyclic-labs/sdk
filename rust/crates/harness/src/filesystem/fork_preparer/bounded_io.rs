@@ -1780,7 +1780,6 @@ impl crate::store::history::HistoryIo for &PreparationIo {
         self.remaining()?;
         self.retain_owned(bytes)
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { PreparationIo::retain_owned(self, bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;

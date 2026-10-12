@@ -641,7 +641,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         };
         let publication = checkpoints::publication_with_work(&client, aggregate.reducer(), &event, &mut None).await?;
         let mut request = publication.request(
-            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?).await?;
+            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?, &mut None).await?.0;
         let canonical_path = authority().stream_path(&mut None)?;
         let suffix = canonical_path.strip_prefix("harness/v2/").expect("original canonical authority prefix");
         let head = format!("harness/v3/projection-checkpoints/{suffix}");

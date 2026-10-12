@@ -263,7 +263,7 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
         .is_some_and(operations::original_native_decode_mode)
     { 0 } else { COORDINATOR_PATH.len() as u64 };
     custody.adopt(path_bytes)?;
-    let tail = operations::tail_with_work(client, stream.stream.path(), custody.work()).await?;
+    let tail = operations::tail_with_work(client, stream.0.path(), custody.work()).await?;
     if tail < declaration_revision {
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
             "declaration lies beyond coordinator source"));
@@ -273,7 +273,7 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
     let mut last_time = None;
     while next < tail {
         let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
-        let (records, retained) = read_records_with_work(client, &stream.stream, next, maximum, custody.work()).await?
+        let (records, retained) = read_records_with_work(client, &stream.0, next, maximum, custody.work()).await?
             .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
                 "historical coordinator prefix is absent"))?;
         custody.adopt(retained)?;
@@ -417,7 +417,7 @@ fn coordinator_boundary(
 
 fn coordinator_stream<P: StreamProvider>(
     client: &std::sync::Arc<P>, work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<operations::ObservedStream<P>> {
+) -> Result<(acyclic_stream::Stream<P>, Option<crate::runtime::NativeCustody>)> {
     let path = COORDINATOR_PATH;
     let portable = work.is_some()
         && !work.as_deref().is_some_and(operations::original_native_decode_mode);
@@ -426,7 +426,7 @@ fn coordinator_stream<P: StreamProvider>(
         work.admit_allocation(path.len() as u64)?;
         work.copy_bytes(path.len() as u64)?;
     }
-    let stream = operations::stream_text_with_work(client, path, work)?;
+    let stream = operations::stream_with_work(client, path, work)?;
     if portable {
         work.as_deref_mut().expect("portable observer").retain_owned(path.len() as u64)?;
     }
@@ -497,7 +497,7 @@ async fn read_intent<P: StreamProvider>(
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     client: std::sync::Arc<P>,
-    stream: operations::ObservedStream<P>,
+    stream: (acyclic_stream::Stream<P>, Option<crate::runtime::NativeCustody>),
     scheduler: Scheduler,
     revision: u64,
     last_committed_at_ms: u64,
@@ -550,7 +550,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .require_model_claim(operation_id, attempt_id, step, &request_digest, &mut None)?;
         }
         Ok(acyclic_stream::CommitCondition::Tail {
-            path: self.stream.stream.path().clone(),
+            path: self.stream.0.path().clone(),
             expected: self.revision,
         })
     }
@@ -578,7 +578,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<()> {
         loop {
             let mut page_custody = CodecQuota::new(work, 0)?;
-            let (page, retained) = read_records_with_work(&self.client, &self.stream.stream, self.revision, READ_PAGE_SIZE, page_custody.work())
+            let (page, retained) = read_records_with_work(&self.client, &self.stream.0, self.revision, READ_PAGE_SIZE, page_custody.work())
                 .await?.unwrap_or_default();
             page_custody.adopt(retained)?;
             if page.is_empty() { break; }
@@ -1123,7 +1123,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         request.transfer();
         let mut key_custody = CodecQuota::from_retained(request.work(), key_held);
         let appended = append(
-            (&self.stream.stream, &self.client), records, retained_request, Some(self.revision),
+            (&self.stream.0, &self.client), records, retained_request, Some(self.revision),
             stream_key, operation_id, key_custody.work(),
         ).await;
         drop(key_custody);
@@ -1290,12 +1290,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         custody.adopt(retained)?;
         let appended = if let Some((execution, expected_tail)) = idle_execution {
             append_if_execution_idle_with_work(
-                &self.client, &self.stream.stream, record, self.revision, stream_key,
+                &self.client, &self.stream.0, record, self.revision, stream_key,
                 operation_id, execution, expected_tail, workflow_guard, custody.work(),
             ).await
         } else {
             append(
-                (&self.stream.stream, &self.client), [record], 0, Some(self.revision),
+                (&self.stream.0, &self.client), [record], 0, Some(self.revision),
                 stream_key, operation_id, custody.work(),
             ).await
         };
@@ -2939,7 +2939,7 @@ mod tests {
             .await.expect("original empty coordinator");
         let raw = OwnedBytes::from(encode(1, OperationId::from_bytes([16; 16]), "native-invalid-schema", *blake3::hash(b"{}").as_bytes(), b"{}".to_vec(), 1, &mut None).expect("original envelope producer"));
         let raw_length = raw.len() as u64;
-        coordinator.stream.stream.append_batch(vec![raw], Some(0), None)
+        coordinator.stream.0.append_batch(vec![raw], Some(0), None)
             .await.expect("original physical envelope");
         let cancellation = acyclic_fs::CancellationToken::new();
         let mut budget = keyed_append_native_budget();
@@ -5454,7 +5454,7 @@ mod tests {
             "a delayed committed response cannot bypass cancellation"
         );
         let conflict = delayed
-            .stream.stream
+            .stream.0
             .append_batch(vec![OwnedBytes::from_static(b"not committed")], Some(0), None)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;

@@ -147,9 +147,9 @@ pub(super) async fn read<P: StreamProvider>(
     };
     check(work)?;
     if !(1..=2).contains(&bounds.tail) { return Err(receipt_error("invalid native receipt length")); }
-    let stream = crate::store::operations::stream_with_work(&client, path, &mut observer)?;
+    let stream = crate::store::operations::stream_with_work(&client, path.as_str(), &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
-        &client, &stream.stream, 0, bounds.tail as u32, &mut observer,
+        &client, &stream.0, 0, bounds.tail as u32, &mut observer,
     ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     check(work)?;
     let first = records.next(&mut observer).await?.ok_or(receipt_error("missing native launch receipt"))?;

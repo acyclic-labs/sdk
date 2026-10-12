@@ -4431,9 +4431,9 @@ pub(crate) fn validate_child_page<'a>(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type NativeCustody = acyclic_fs::NativeAllocation;
+pub(crate) type NativeCustody = acyclic_fs::NativeAllocation;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type NativeCustody = ();
+pub(crate) type NativeCustody = ();
 
 enum ContextSource<'a> {
     Ordinary(std::marker::PhantomData<&'a ()>),

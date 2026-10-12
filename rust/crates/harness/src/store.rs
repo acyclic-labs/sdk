@@ -866,7 +866,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(cursor_bytes)?; }
         if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
@@ -876,7 +876,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
         let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
         drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(page_cursor_bytes)?; }
         for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
@@ -901,12 +901,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
             drop(event);
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
-            work.release_bytes(event_bytes)?;
-            work.release_bytes(record_capacity)?;
+            work.release_owned(event_bytes)?;
+            work.release_owned(record_capacity)?;
             work.check_cancellation()?;
         }
         Ok(())
@@ -1365,7 +1365,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
                 .await?;
             let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-            let request = publication.request(&self.client, idempotency_key).await?;
+            let request = publication.request(&self.client, idempotency_key, &mut None).await?.0;
             let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
                 let verifier = self
                     .fork_verifier
@@ -1415,7 +1415,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             };
             let result = match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    if publication.verify(&envelope).is_err() {
+                    if publication.verify(&envelope, &mut None).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
                     match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
@@ -1853,8 +1853,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = match operations::stream_text_with_work(&self.client, &path, work) {
-            Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
+        let read = match operations::stream_with_work(&self.client, &path, work) {
+            Ok(stream) => operations::one_record(&self.client, stream.0.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
         };
@@ -1870,7 +1870,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(raw), None => Ok(()),
+            Some(observer) => observer.release_owned(raw), None => Ok(()),
         };
         let ((authority, event), event_retained) = match decoded {
             Ok(decoded) => { released_record?; decoded },

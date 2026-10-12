@@ -1794,7 +1794,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 work,
             )
             .await?;
-        publication.add_index_with_work(&mut request)?;
+        publication.add_index(&mut request)?;
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
@@ -1803,7 +1803,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
-                publication.verify_with_work(envelope, received.work())
+                publication.verify(envelope, received.work())
                     .map(|()| true)
                     .map_err(|error| {
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5195,7 +5195,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         .map_err(|error| Error::Storage(error.to_string()))?,
                 };
                 drop(record);
-                if let Some(io) = work.as_deref_mut() { io.release_record(length)?; }
+                if let Some(io) = work.as_deref_mut() { io.release_owned(length)?; }
                 if event.task_id != task || event.deadline_unix_ms == 0 {
                     return Err(admission_boundary(work, crate::wire::ErrorCode::Conflict,
                         "timer history belongs to another task"));

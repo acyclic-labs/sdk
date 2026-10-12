@@ -123,8 +123,6 @@ pub trait HistoryIo: Send {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(())
     }
-    /// Release record.
-    fn release_record(&mut self, bytes: u64) -> Result<()>;
     /// Retain owned.
     fn retain_owned(&mut self, bytes: u64) -> Result<()>;
     /// Admit owned.
@@ -157,8 +155,6 @@ pub trait HistoryIo: Send {
     fn admit_copy(&self, bytes: u64) -> Result<()>;
     /// Copy bytes.
     fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
-    /// Release bytes.
-    fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
     /// Encoded bytes.
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
     /// Admit encoding.
@@ -885,7 +881,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 retained_records.push(record);
             } else {
                 drop(record);
-                if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+                if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
             }
         }
         if events.is_empty() {
