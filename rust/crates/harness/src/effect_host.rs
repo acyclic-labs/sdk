@@ -317,7 +317,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         if let Some(work) = work {
             host.require_native_metadata(work)?;
             host.providers.require_native_metadata(work)?;
-            let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+            let mut slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             host.native_metadata.as_mut().expect("validated native host")
                 .absorb(&mut slot)

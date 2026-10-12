@@ -21,7 +21,6 @@ use std::{collections::BTreeMap, sync::Arc};
 /// One signed parent binding.
 pub struct FilesystemProjectWorkspaces<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    parent: Authority,
     project: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
@@ -31,7 +30,6 @@ impl<A, O> Clone for FilesystemProjectWorkspaces<A, O> {
     fn clone(&self) -> Self {
         Self {
             host: Arc::clone(&self.host),
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
@@ -52,7 +50,6 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
             ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
-            parent: controller.parent,
             project: controller.project,
             verifier: controller.verifier,
             scope: controller.scope,
@@ -62,7 +59,6 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
     fn controller(&self) -> ParentProjectController<'_, A, O> {
         ParentProjectController {
             host: &self.host,
-            parent: self.parent.clone(),
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
@@ -122,7 +118,7 @@ where
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
         Box::pin(async move {
             self.require_scope(scope)?;
-            if destination.authority() != &self.parent
+            if destination.authority() != self.verifier.audience()
                 || destination.conversation().and_then(|state| state.agent) != scope.agent()
                 || source.kind != crate::core::AggregateKind::Conversation
             {

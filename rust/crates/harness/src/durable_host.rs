@@ -1147,7 +1147,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             self.operation_id(), &mut Some(&mut io),
         )?;
         if operation.phase != crate::scheduler::OperationPhase::Terminal {
-            return Ok((None, work.retain_owned(0)?));
+            return Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
         }
         let outcome = operation.outcome.as_ref()
             .ok_or_else(|| Error::Invalid("terminal original task lacks its outcome".into()))?;
@@ -2494,7 +2494,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream_text_with_work(&owner.stream(), &path, &mut work)?;
+        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
         let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
@@ -2557,7 +2557,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let event: MailEvent = mail::decode(&record.value, io)?;
         let mut message = [0; 36];
         let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
-        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
+        if record.sequence.checked_add(1) != Some(item.sequence) || &*message != item.message_id || event.payload != item.payload
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
             return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "parcel differs from its retained mailbox item"));
@@ -3478,10 +3478,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(crate) async fn readonly_journal_owner_with_native_work(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn readonly_journal_owner(
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskJournalOwner<P>> {
+        #[cfg(not(feature = "native-execution"))]
+        {
+            let _ = task;
+            work.remaining()?;
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "protected native preparation requires native-execution" });
+        }
+        #[cfg(feature = "native-execution")]
+        {
         let witness = self.task_admission_readonly_witness_with_native_work(task, work).await?;
         let observation = crate::filesystem::observe_preparation(&witness, work)?.await?;
         let Some(recorded) = observation else {
@@ -3501,6 +3510,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             task, std::borrow::Cow::Borrowed(&recorded.original_fence),
             Some(original), &mut Some(&mut io),
         ).await
+        }
     }
 
     #[cfg(feature = "filesystem")]
@@ -3610,7 +3620,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let root_binding = if input_is_root {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = &native {
-                let slot = native.claim(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?;
+                let slot = native.claim(std::mem::size_of::<RootBootstrapBindingWitness>() as u64, u64::from((std::mem::size_of::<RootBootstrapBindingWitness>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
                 work.as_deref_mut().expect("original native observer").absorb_native_custody(slot)?;
             }
             Some(Arc::new(RootBootstrapBindingWitness {
@@ -6388,7 +6398,7 @@ pub(crate) mod tests {
                 .or_else(|| input.as_u64().map(serde_json::Number::from))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native fixture requires a fixed-width integer input" })?;
-            let custody = work.retain_owned(0)?;
+            let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             Ok((Value::Number(number), custody))
         }
         fn transition(&self, state: &Value, _input: &Value) -> Result<MachineTransition> {
@@ -6411,7 +6421,7 @@ pub(crate) mod tests {
                 .or_else(|| state.as_u64().map(serde_json::Number::from))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native fixture requires a fixed-width integer state" })?;
-            let custody = work.retain_owned(0)?;
+            let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             Ok((MachineTransition {
                 state: Value::Number(number), commands: Vec::new(), status: MachineStatus::Suspended,
             }, custody))

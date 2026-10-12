@@ -147,7 +147,7 @@ pub(crate) struct PreparedPiFork {
 
 impl PreparedPiFork {
     pub(crate) fn into_native_shared(mut self) -> Result<Arc<Self>> {
-        let mut slot = self._metadata_custody.work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = { let claim_bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64; self._metadata_custody.work().claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self._metadata_custody.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(self))
@@ -483,8 +483,8 @@ impl PiForkCoordinator {
         let preparation = prepared_admission.0;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-            + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let container = { let claim_bytes = (std::mem::size_of::<acyclic_fs::NativeAllocation>()
+            + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }.map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan { original, commit, preparation, request,
             source: snapshot, frozen, history_limits, project_creation,
@@ -520,8 +520,8 @@ impl PiForkCoordinator {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi original plan locator changed" }); }
         { let work = &self.work;
-            let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-                + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let container = { let claim_bytes = (std::mem::size_of::<acyclic_fs::NativeAllocation>()
+                + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }.map_err(|cause| Error::NativeWork { cause, custody: None })?;
             drop(reference.0);
             decoded.0._input_allocations = Some(Arc::new(container));
             let allocations = Arc::get_mut(decoded.0._input_allocations.as_mut().expect("loaded plan custody")).expect("unshared loaded plan");

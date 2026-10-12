@@ -677,7 +677,7 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let cancellation = crate::CancellationToken::new();
     let work = NativeMaterializationWork::new(native_object_budget(), &cancellation).map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
-    let mut allocation = work.claim(4)?;
+    let mut allocation = work.claim(4, 1, crate::WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(4)?;
     allocation.resize_retained(bytes.capacity() as u64)?;

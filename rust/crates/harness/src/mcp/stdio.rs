@@ -290,7 +290,7 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 fn native_custody(work: NativeWork<'_>) -> Result<NativeCustody> {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = work { return work.retain_owned(0).map(Some).map_err(native_error); }
+    if let Some(work) = work { return work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map(Some).map_err(native_error); }
     Ok(None)
 }
 
@@ -374,10 +374,10 @@ fn codec_charge(
 fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) -> Result<(Vec<u8>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        let mut diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes()
-            .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
-        let mut custody = work.retain_owned(0).map_err(native_error)?;
-        let mut quota = work.retain_owned(0).map_err(native_error)?;
+        let mut diagnostic = work.claim(crate::contract::sdk_json_diagnostic_bytes()
+            .max(crate::contract::lexical_json_diagnostic_bytes()), 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let mut quota = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let encoded = crate::json_bytes_bounded(value, bounds(maximum.saturating_sub(1)),
             None, &mut |event| codec_charge(work, &mut custody, &mut quota, event));
         let bytes = match encoded {
@@ -419,7 +419,7 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
             .ok_or_else(|| rejection(Some(work), "MCP frame quota overflows"))?;
         if let Some(guard) = custody.as_mut() { guard.resize_retained(quota).map_err(native_error)?; }
         // Per-byte original cancellation and item admission before any serde.
-        let mut diagnostic = work.retain_owned(crate::contract::lexical_json_diagnostic_bytes()).map_err(native_error)?;
+        let mut diagnostic = work.claim(crate::contract::lexical_json_diagnostic_bytes(), 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let scanned = crate::contract::admit_json(body, bounds(maximum), &mut |event| match event {
             crate::JsonCodecCharge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
                 source_bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
@@ -757,7 +757,7 @@ mod tests {
             let request = McpStdioRequest { initialization, operation, method, params, maximum_bytes: 4096 };
             let work = native_work();
             let baseline = work.live_allocation_bytes();
-            let probe = work.retain_owned(0).unwrap();
+            let probe = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
             let (mut ordinary, ordinary_first, _) = request.exchange(None).unwrap();
             let (mut native, first, first_guard) = request.exchange(Some(&work)).unwrap();
             assert_eq!(first, ordinary_first);
