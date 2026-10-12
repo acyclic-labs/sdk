@@ -2952,7 +2952,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "payload staging requires the original native work observer",
             })?;
             let (reference, custody) = self.payloads
-                .stage_with_native_work(operation, key, bytes, original).await?;
+                .stage_with_native_work(operation, key, bytes, original)?.await?;
             io.absorb_native_custody(custody)?;
             Ok(reference)
         }
@@ -6915,7 +6915,7 @@ pub(crate) mod tests {
         for _ in 0..2 {
             let (input, input_guard) = fixture.host.payloads.stage_with_native_work(
                 operation, "native-existing-resume-input", br#"{"resume":true}"#, &work,
-            ).await?;
+            )?.await?;
             let mut key_io = crate::store::history::native_work_io(&work)?;
             let identity = host_digest_with_work(
                 &input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut key_io),

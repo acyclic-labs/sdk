@@ -244,8 +244,9 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
         _idempotency_key: &'a str,
         _bytes: &'a [u8],
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> BoxFuture<'a,Result<(FileRef,acyclic_fs::NativeAllocation)>> {
-        Box::pin(async { Err(Error::Unsupported("scheduler payload store has no native work observer".into())) })
+    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary { code: wire::ErrorCode::Unsupported,
+            reason: "scheduler payload store has no native work observer" })
     }
 }
 
@@ -309,94 +310,32 @@ pub struct CommittedSchedulerEvent {
     pub event: SchedulerEvent,
 }
 
-/// Reads one bounded page of verified coordinator events without replaying the complete scheduler.
+/// Reads one bounded page of verified coordinator events.
 pub async fn read_coordinator_event_page<P: StreamProvider>(
-    client: &StreamClient<P>,
-    after_revision: u64,
-    limit: u32,
-) -> Result<Vec<CommittedSchedulerEvent>> {
-    read_coordinator_event_page_with_work(client, after_revision, limit, &mut None).await
-}
-
-/// Reads at most sixteen original coordinator records on the caller's native ledger.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub async fn read_coordinator_event_page_with_native_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    after_revision: u64,
-    limit: u32,
-    native: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Vec<CommittedSchedulerEvent>, acyclic_fs::NativeAllocation)> {
-    if limit == 0 || limit > 16 {
-        return Err(Error::NativeBoundary { code: wire::ErrorCode::Invalid,
-            reason: "coordinator native page limit is out of bounds" });
-    }
-    let mut io = crate::store::history::native_work_io(native)?;
-    let events = read_coordinator_event_page_with_work(
-        client, after_revision, limit, &mut Some(&mut io),
-    ).await?;
-    Ok((events, io.into_custody()))
-}
-
-async fn read_coordinator_event_page_with_work<P: StreamProvider>(
     client: &StreamClient<P>, after_revision: u64, limit: u32,
-    work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Vec<CommittedSchedulerEvent>> {
     if limit == 0 {
-        return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
-            "coordinator page limit is out of bounds"));
+        return Err(Error::Invalid("coordinator page limit is out of bounds".into()));
     }
-    let mut custody = CodecQuota::new(work, 0)?;
-    let stream = coordinator_source_stream_with_work(client, custody.work())?;
-    let path_bytes = if custody.work().is_some()
-        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
-    { COORDINATOR_PATH.len() as u64 } else { 0 };
-    custody.adopt(path_bytes)?;
-    let page = read_records_with_work(
-        client, &stream.stream, after_revision, limit.min(READ_PAGE_SIZE), custody.work(),
-    ).await?.unwrap_or_default();
-    if custody.work().is_some() {
-        let received = received_page_bytes(&page, custody.work())?;
-        custody.adopt(received)?;
-    }
-    let page_slots = if custody.work().is_some() {
-        (page.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64
-    } else { 0 };
+    let stream = client.stream(COORDINATOR_PATH)?;
+    let page = read_records_with_work(client, &stream, after_revision,
+        limit.min(READ_PAGE_SIZE), &mut None).await?.unwrap_or_default();
     let mut expected = after_revision;
-    let mut events = crate::core::reserve_copy_vector::<CommittedSchedulerEvent>(
-        page.len(), &mut custody,
-    )?;
+    let mut events = Vec::with_capacity(page.len());
     for record in page {
-        if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
         if record.sequence != expected {
-            return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
-                "coordinator event page has a cursor gap"));
+            return Err(Error::Storage("coordinator event page has a cursor gap".into()));
         }
-        let (revision, operation_id, key, event_digest, committed_at_ms, event) =
-            decode_with_work(&record.value, custody.work())?;
-        if custody.work().is_some() {
-            custody.adopt(event.logical_owned_bytes()? + key.capacity() as u64)?;
-        }
+        let (revision, operation_id, _, event_digest, committed_at_ms, event) =
+            decode_with_work(&record.value, &mut None)?;
         if revision != expected.saturating_add(1) || event.operation_id() != operation_id {
-            return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
-                "coordinator event page has invalid identity"));
+            return Err(Error::Storage("coordinator event page has invalid identity".into()));
         }
-        let key_bytes = if custody.work().is_some() { key.capacity() as u64 } else { 0 };
-        drop(key);
-        custody.relinquish(key_bytes)?;
         events.push(CommittedSchedulerEvent {
             revision, operation_id, event_digest, committed_at_ms, event,
         });
         expected = revision;
-        let raw_bytes = if custody.work().is_some()
-            && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
-        { record.value.len() as u64 } else { 0 };
-        drop(record);
-        custody.relinquish(raw_bytes)?;
     }
-    custody.relinquish(page_slots)?;
-    drop(stream);
-    custody.relinquish(path_bytes)?;
-    custody.transfer();
     Ok(events)
 }
 
@@ -795,7 +734,7 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     client: StreamClient<P>,
-    stream: Stream<P>,
+    stream: operations::ObservedStream<P>,
     scheduler: Scheduler,
     revision: u64,
     last_committed_at_ms: u64,
@@ -850,27 +789,38 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .require_model_claim(operation_id, attempt_id, step, &request_digest)?;
         }
         Ok(acyclic_stream::CommitCondition::Tail {
-            path: self.stream.path().clone(),
+            path: self.stream.stream.path().clone(),
             expected: self.revision,
         })
     }
 
-    /// Opens and replays the owner-proof coordinator history (version 3).
+    /// Opens and replays the coordinator history.
     pub async fn open(
-        client: &StreamClient<P>,
-        content_verifier: Arc<dyn ContentResidencyVerifier>,
+        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
     ) -> Result<Self> {
-        let stream = client.stream(COORDINATOR_PATH)?;
+        Self::open_with_work(client, content_verifier, &mut None).await
+    }
+
+    /// Opens and replays the coordinator on the caller's native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub async fn open_with_native_work(
+        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Self> {
+        let mut io = crate::store::history::native_work_io(work)?;
+        Self::open_with_work(client, content_verifier, &mut Some(&mut io)).await
+    }
+
+    async fn open_with_work(
+        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
+        let stream = coordinator_source_stream_with_work(client, work)?;
         let mut value = Self {
-            client: client.clone(),
-            stream,
-            scheduler: Scheduler::new(),
-            revision: 0,
-            last_committed_at_ms: 0,
-            content_verifier,
-            payload_store: None,
+            client: client.clone(), stream, scheduler: Scheduler::new(), revision: 0,
+            last_committed_at_ms: 0, content_verifier, payload_store: None,
         };
-        value.refresh().await?;
+        value.refresh_with_work(work).await?;
         Ok(value)
     }
 
@@ -885,7 +835,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let mut next = self.revision;
         loop {
             let mut page_custody = CodecQuota::new(work, 0)?;
-            let page = read_records_with_work(&self.client, &self.stream, next, READ_PAGE_SIZE, page_custody.work())
+            let page = read_records_with_work(&self.client, &self.stream.stream, next, READ_PAGE_SIZE, page_custody.work())
                 .await?.unwrap_or_default();
             if page_custody.work().is_some() {
                 let received_bytes = received_page_bytes(&page, page_custody.work())?;
@@ -1699,7 +1649,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         request.transfer();
         let mut key_custody = CodecQuota::from_retained(request.work(), key_held);
         let appended = append_records_keyed_with_work(
-            (&self.stream, &self.client), records, retained_request, Some(self.revision),
+            (&self.stream.stream, &self.client), records, retained_request, Some(self.revision),
             stream_key, operation_id, "session retry", key_custody.work(),
         ).await?;
         drop(key_custody);
@@ -1882,12 +1832,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             key_held = retained;
             let appended = if let Some((execution, expected_tail)) = idle_execution {
                 append_if_execution_idle_with_work(
-                    &self.client, &self.stream, record, self.revision, stream_key,
+                    &self.client, &self.stream.stream, record, self.revision, stream_key,
                     operation_id, execution, expected_tail, workflow_guard, work,
                 ).await
             } else {
                 append_keyed(
-                    (&self.stream, &self.client), record, Some(self.revision),
+                    (&self.stream.stream, &self.client), record, Some(self.revision),
                     stream_key, operation_id, "coordinator retry identity", work,
                 ).await
             };
@@ -4016,7 +3966,7 @@ mod tests {
             .await.expect("original empty coordinator");
         let raw = OwnedBytes::from(encode(1, OperationId::from_bytes([16; 16]), "native-invalid-schema", *blake3::hash(b"{}").as_bytes(), b"{}".to_vec(), 1, &mut None).expect("original envelope producer"));
         let raw_length = raw.len() as u64;
-        coordinator.stream.append_batch(vec![raw], Some(0), None)
+        coordinator.stream.stream.append_batch(vec![raw], Some(0), None)
             .await.expect("original physical envelope");
         let reads = provider.io.reads.load(Ordering::SeqCst);
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -5647,32 +5597,6 @@ mod tests {
         assert!(last[0].committed_at_ms > next[0].committed_at_ms);
         assert!(read_coordinator_event_page(&client, 3, 1).await?.is_empty());
         assert!(read_coordinator_event_page(&client, 0, 0).await.is_err());
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let mut budget = keyed_append_native_budget();
-            budget.authority_bytes_read = 1_048_576;
-            let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-                .expect("original projector work");
-            let baseline = native.live_allocation_bytes();
-            let (native_page, custody) =
-                read_coordinator_event_page_with_native_work(&client, 1, 1, &native).await?;
-            assert_eq!(native_page, next);
-            assert!(custody.bytes() >= std::mem::size_of::<CommittedSchedulerEvent>() as u64);
-            assert_eq!(native.live_allocation_bytes(), baseline + custody.bytes());
-            drop(native_page);
-            drop(custody);
-            assert_eq!(native.live_allocation_bytes(), baseline);
-            let prefix = native.receipt().backend_read_operations;
-            assert!(matches!(read_coordinator_event_page_with_native_work(
-                &client, 0, 17, &native,
-            ).await, Err(Error::NativeBoundary { code: wire::ErrorCode::Invalid, .. })));
-            assert_eq!(native.receipt().backend_read_operations, prefix);
-            cancellation.cancel();
-            assert!(read_coordinator_event_page_with_native_work(&client, 0, 1, &native).await.is_err());
-            assert_eq!(native.receipt().backend_read_operations, prefix);
-            assert_eq!(native.live_allocation_bytes(), baseline);
-        }
         Ok(())
     }
 
@@ -7139,7 +7063,7 @@ mod tests {
             "a delayed committed response cannot bypass cancellation"
         );
         let conflict = delayed
-            .stream
+            .stream.stream
             .append_batch(vec![OwnedBytes::from_static(b"not committed")], Some(0), None)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
