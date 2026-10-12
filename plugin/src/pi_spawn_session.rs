@@ -725,7 +725,9 @@ impl PiSession {
         let outcome = outcome;
         let state = if outcome.as_ref().is_some_and(Outcome::is_terminal) { "completed" }
             else if created { "pending" } else { "preparing" };
-        let native_effect = acyclic_harness::effect_host::task_effect_id(commit.child.task_id, operations.native)?;
+        let native_effect = acyclic_harness::effect_host::task_effect_id(commit.child.task_id, operations.native,
+            &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation, state, uncertain,
             child: SpawnObservedChild { id: &commit.alias, task: commit.child.task_id,

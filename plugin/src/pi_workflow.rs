@@ -122,8 +122,9 @@ impl<'a> PiWorkflowHost<'a> {
         let Some(provider) = self.root_provider.lock().await.clone() else { return Ok(None); };
         let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.resources.private_state_root, self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
-        let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task, work)?, work,
+        let effect = acyclic_harness::effect_host::task_effect_id(
+            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task, work)?, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?),
         )?;
         provider.observe_allocation_with_native_work(
             acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), work,

@@ -1466,8 +1466,9 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     }
 
     fn effect_id_with_native_work(&self, work: &NativeMaterializationWork) -> Result<EffectId> {
-        acyclic_harness::effect_host::task_effect_id_with_native_work(
-            self.owner.policy().root_task, self.preparation.command.operation_id, work)
+        acyclic_harness::effect_host::task_effect_id(
+            self.owner.policy().root_task, self.preparation.command.operation_id, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))
     }
 
     fn maximum(&self) -> u64 { self.owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) }

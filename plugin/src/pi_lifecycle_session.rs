@@ -494,9 +494,10 @@ async fn original_native_first_dispatch_pending(
     let history = acyclic_harness::store::HistoryReader::new_with_native_work(
         stream, &conversation.0.0, &verifier.0, work)?;
     let pin = history.0.pin_with_native_work(0, work).await?;
-    let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-        task, pi_fork::derived(plan.original, "native-effect", &work)?, work,
-    )?;
+    let effect = acyclic_harness::effect_host::task_effect_id(
+        task, pi_fork::derived(plan.original, "native-effect", &work)?, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?),
+        )?;
     let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
     Ok(observed.0.is_none())
 }

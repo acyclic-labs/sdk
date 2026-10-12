@@ -1144,8 +1144,9 @@ impl PiNativeCommandHost {
         let verifier = conversation.0.1.verifier_with_native_work(work)?;
         let history = HistoryReader::new_with_native_work(&self.stream, &conversation.0.0, &verifier.0, work)?;
         let cursor = history.0.pin_with_native_work(0, work).await?;
-        let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-            input.binding.task_id, command, work,
+        let effect = acyclic_harness::effect_host::task_effect_id(
+            input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?),
         )?;
         history.0.effect_with_native_work(&cursor.0, effect, history_limits(context)?, work).await
     }
