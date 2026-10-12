@@ -557,9 +557,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 &work,
                 work.cancellation(),
                 Some(&self.cancellation),
-                self.native_callback_guard.clone(),
+                &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                None,
+                &mut None,
             )
-            .await
+            .await.map_err(|(cause, _)| cause)
     }
 
     /// Safely advances a clean mounted checkout to the workspace head.

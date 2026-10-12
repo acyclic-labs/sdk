@@ -205,9 +205,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     &work,
                     cancellation,
                     Some(&self.cancellation),
-                    self.native_callback_guard.clone(),
+                    &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                    None,
+                    &mut None,
                 )
-                .await?;
+                .await.map_err(|(cause, _)| cause)?;
         }
         Ok(true)
     }
