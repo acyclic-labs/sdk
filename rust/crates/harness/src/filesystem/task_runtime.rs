@@ -422,6 +422,7 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
+        let client = acyclic_stream::StreamClient::new(stream.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -435,10 +436,10 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open_with_native_work(
-                &stream, reader.clone(), work,
+                &client, reader.clone(), work,
             ).await?.with_payload_store(payloads.clone());
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, stream.clone(), payloads, reader.clone(),
+                coordinator, client.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -475,10 +476,10 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
+            DistributedCoordinator::open(&client, reader.clone())
                 .await?
                 .with_payload_store(payloads.clone()),
-            stream.clone(),
+            client.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),

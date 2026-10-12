@@ -275,7 +275,6 @@ where
         &self, reference: &FileRef, verify_payloads: bool, verify_machine: bool,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
-        self.require_machine_io(verify_machine, io)?;
         let _prefix;
         let prefix = crate::contract::preparation_format(
             format_args!(".system/workflows/{}/", self.id()), io,
@@ -313,8 +312,8 @@ where
         Ok(record)
     }
 
-    fn require_machine_io(&self, verify_machine: bool, io: Option<&PreparationIo>) -> Result<()> {
-        if verify_machine && io.is_some() {
+    fn require_machine_io(&self, io: Option<&PreparationIo>) -> Result<()> {
+        if io.is_some() {
             #[cfg(not(target_arch = "wasm32"))]
             if io.and_then(PreparationIo::original_native_work).is_some() {
                 return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
@@ -329,7 +328,7 @@ where
         &self, after: u64, maximum: u32, verify_payloads: bool,
         verify_machine: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<WorkflowRecord>> {
-        self.require_machine_io(verify_machine, io)?;
+        if verify_machine { self.require_machine_io(io)?; }
         if maximum == 0 {
             return Err(observation_boundary(io, crate::wire::ErrorCode::Invalid,
                 "workflow page bounds are invalid"));
@@ -594,7 +593,6 @@ where
         let mut previous: Option<WorkflowRecord> = None;
         let mut matched = None;
         let mut revision = 0;
-        let mut terminal = false;
         loop {
             let before_page = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let page = self.replay_records(
@@ -609,6 +607,7 @@ where
             if page.is_empty() { break; }
             for record in page {
                 let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+                let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
                 validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, &record, io)
                     .map_err(|error| match error {
                         Error::NativeWork { .. } => error,
@@ -616,7 +615,6 @@ where
                     })?;
                 identities.advance(&record)?;
                 revision = record.next.revision;
-                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
                 if let Some(prior) = previous.take() {
                     if prior.operation_id == operation_id {
                         matched = Some(prior);
@@ -649,6 +647,7 @@ where
         }
         if require_next && revision == candidate.prior.revision {
             let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+            let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
             validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, candidate, io)?;
         }
         if let Some(prior) = previous
@@ -926,7 +925,7 @@ where
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowCommitOutcome> {
-        self.require_machine_io(true, io)?;
+        self.require_machine_io(io)?;
         if let Some(io) = io { io.check_cancellation()?; }
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);

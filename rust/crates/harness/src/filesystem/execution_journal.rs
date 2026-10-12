@@ -265,7 +265,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: Arc<P>,
+    stream: acyclic_stream::StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -1042,7 +1042,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
-            stream,
+            stream: acyclic_stream::StreamClient::new(stream),
             host,
             volume,
             verifier,
@@ -1088,7 +1088,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1123,7 +1123,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+        self.stream.stream(
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1358,7 +1358,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
+        let stream = self.stream.stream(&path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
