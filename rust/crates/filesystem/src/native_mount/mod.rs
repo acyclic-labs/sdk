@@ -3182,7 +3182,7 @@ impl NativeMountSession {
             if let Some(owner) = self.startup_source_watch.as_mut() {
                 let stopped = if owner.is_stopped() { Ok(false) } else {
                     match &work {
-                        NativeSessionStopWork::Meter(meter) => owner.stop_with_meter(meter),
+                        NativeSessionStopWork::Meter(meter) => owner.stop(&mut adapter::NativeDemandCarrier::Native(meter)).map_err(NativeMountError::from),
                         NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait).map_err(NativeMountError::from),
                     }
                 };

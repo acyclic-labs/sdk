@@ -5836,7 +5836,7 @@ where
                 LazyReadonlyNode::Native(self.state_with_native_work(original, cancellation).await?),
         };
         let state = phase.as_state();
-        if self.tombstoned_with_accounting(state.overlay, path, accounting).await? {
+        if self.tombstoned(state.overlay, path, accounting).await? {
             return Err(LazyWorkspaceError::NotFound);
         }
         let (source, node) = match accounting {
@@ -6112,7 +6112,7 @@ where
             let fact = if basis.unobserved && basis.listed.is_some() {
                 None
             } else {
-                self.overlay_fact_with_accounting(state.overlay, path, accounting).await?
+                self.overlay_fact(state.overlay, path, accounting).await?
             };
             let observed = match fact {
                 Some(LazyOverlayChange::Tombstone { .. }) => return Err(LazyWorkspaceError::NotFound),
@@ -6179,7 +6179,7 @@ where
                 (state.source, node.ok_or(LazyWorkspaceError::NotFound)?)
             };
             if basis.listed.is_none()
-                && self.tombstoned_with_accounting(state.overlay, path, accounting).await?
+                && self.tombstoned(state.overlay, path, accounting).await?
             {
                 return Err(LazyWorkspaceError::NotFound);
             }
@@ -6392,7 +6392,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<Option<LazyLookup>, LazyWorkspaceError> {
         let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
-        let Some((record, metadata)) = self.shadow_record_with_accounting(
+        let Some((record, metadata)) = self.shadow_record(
             state.shadows, file_id, &mut accounting,
         ).await? else { return Ok(None); };
         let actual_metadata = context.reader.read_record_metadata(
@@ -6621,7 +6621,7 @@ where
                         LazyReadonlyNode::Native(state)
                     }
                 };
-                let fact = self.overlay_fact_with_accounting(phase.as_state().overlay, path, accounting).await?;
+                let fact = self.overlay_fact(phase.as_state().overlay, path, accounting).await?;
                 match fact {
                     Some(LazyOverlayChange::Observe { node, .. }) if node.kind == SourceNodeKind::Directory =>
                         self.source_file_id_with_readonly_accounting(&node, accounting),
@@ -6710,14 +6710,7 @@ where
                     work,
                 });
             }
-            let shadow = self
-                .shadow_record_measured(
-                    state.shadows,
-                    file_id,
-                    remaining_work(work, budget, 0)?,
-                    cancellation,
-                )
-                .await?;
+            let shadow = { let mut accounting = LazyReadonlyAccounting::Portable { work: WorkCounters::UNCHARGED, budget: remaining_work(work, budget, 0)?, cancellation }; let result = self.shadow_record(state.shadows, file_id, &mut accounting).await; accounting.finish_measured(result) }?;
             work = account_work(work, shadow.work, budget)?;
             let Some((record, metadata)) = shadow.value else {
                 return Ok(OperationReceipt { value: None, work });
@@ -8755,11 +8748,14 @@ where
     ) -> Result<bool, LazyWorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
-            return self.tombstoned_with_accounting(root, path,
+            return self.tombstoned(root, path,
                 &mut LazyReadonlyAccounting::Native { original, cancellation }).await;
         }
-        let result = self.tombstoned_measured(root, path, projection.remaining()?, cancellation).await;
-        projection.accept(result)
+        let mut accounting = LazyReadonlyAccounting::Portable {
+            work: WorkCounters::UNCHARGED, budget: projection.remaining()?, cancellation,
+        };
+        let result = self.tombstoned(root, path, &mut accounting).await;
+        projection.accept(accounting.finish_measured(result))
     }
 
     async fn directory_has_overlay_beneath(
@@ -8768,11 +8764,14 @@ where
     ) -> Result<bool, LazyWorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
-            return self.overlay_has_beneath_with_accounting(root, path,
+            return self.overlay_has_beneath(root, path,
                 &mut LazyReadonlyAccounting::Native { original, cancellation }).await;
         }
-        let result = self.overlay_has_beneath(root, path, projection.remaining()?, cancellation).await;
-        projection.accept(result)
+        let mut accounting = LazyReadonlyAccounting::Portable {
+            work: WorkCounters::UNCHARGED, budget: projection.remaining()?, cancellation,
+        };
+        let result = self.overlay_has_beneath(root, path, &mut accounting).await;
+        projection.accept(accounting.finish_measured(result))
     }
 
     async fn directory_overlay_fact(
@@ -8783,12 +8782,15 @@ where
         if let Some(original) = projection.native_original() {
             let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
             accounting.validate_path(path, self.workspace.limits())?;
-            return self.overlay_fact_with_accounting(root, path, &mut accounting).await;
+            return self.overlay_fact(root, path, &mut accounting).await;
         }
         PortablePath::validate(path, self.workspace.limits())
             .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))?;
-        let result = self.overlay_fact_measured(root, path, projection.remaining()?, cancellation).await;
-        projection.accept(result)
+        let mut accounting = LazyReadonlyAccounting::Portable {
+            work: WorkCounters::UNCHARGED, budget: projection.remaining()?, cancellation,
+        };
+        let result = self.overlay_fact(root, path, &mut accounting).await;
+        projection.accept(accounting.finish_measured(result))
     }
 
     async fn directory_mounted_record(
@@ -11201,13 +11203,17 @@ where
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                 let path = work.canonical_path_owned(path, self.workspace.limits())?;
                 let fact = match &work.meter {
-                    LazyTreapMeter::Standalone { .. } => work.accept(self.overlay_fact_measured(
-                        state.overlay, &path, work.remaining()?, cancellation,
-                    ).await)?,
+                    LazyTreapMeter::Standalone { .. } => {
+                        let mut readonly = LazyReadonlyAccounting::Portable {
+                            work: WorkCounters::UNCHARGED, budget: work.remaining()?, cancellation,
+                        };
+                        let result = self.overlay_fact(state.overlay, &path, &mut readonly).await;
+                        work.accept(readonly.finish_measured(result))?
+                    },
                     #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, .. } => {
                         let mut readonly = LazyReadonlyAccounting::Native { original, cancellation };
-                        self.overlay_fact_with_accounting(state.overlay, &path, &mut readonly).await?
+                        self.overlay_fact(state.overlay, &path, &mut readonly).await?
                     }
                 };
                 let removed = match fact {
@@ -11476,7 +11482,12 @@ where
         state: &LazyWorkspaceState,
         path: &str,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        match self.overlay_fact(state.overlay, path).await? {
+        let cancellation = CancellationToken::new();
+        let mut accounting = LazyReadonlyAccounting::Portable {
+            work: WorkCounters::UNCHARGED, budget: WorkBudget::UNBOUNDED, cancellation: &cancellation,
+        };
+        let result = self.overlay_fact(state.overlay, path, &mut accounting).await;
+        match accounting.finish_measured(result)?.value {
             Some(LazyOverlayChange::Observe { node, .. }) => return Ok(Some(node.version)),
             Some(LazyOverlayChange::Tombstone { removed }) => return Ok(removed),
             None => {}
@@ -11778,16 +11789,20 @@ where
         let _scope = TreapAllocationScope::new(work);
         let path = work.canonical_path_owned(path, self.workspace.limits())?;
         let fact = match &work.meter {
-            LazyTreapMeter::Standalone { .. } => work.accept(self.overlay_fact_measured(
-                state.overlay, &path, work.remaining()?, cancellation,
-            ).await)?,
+            LazyTreapMeter::Standalone { .. } => {
+                let mut accounting = LazyReadonlyAccounting::Portable {
+                    work: WorkCounters::UNCHARGED, budget: work.remaining()?, cancellation,
+                };
+                let result = self.overlay_fact(state.overlay, &path, &mut accounting).await;
+                work.accept(accounting.finish_measured(result))?
+            },
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
                 if self.source.reference() != state.source {
                     return Err(LazyWorkspaceError::StaleSource);
                 }
                 let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
-                self.overlay_fact_with_accounting(state.overlay, &path, &mut accounting).await?
+                self.overlay_fact(state.overlay, &path, &mut accounting).await?
             }
         };
         match fact {
@@ -11906,28 +11921,6 @@ where
         })
     }
 
-    async fn overlay_fact(
-        &self,
-        root: LazyOverlayId,
-        path: &str,
-    ) -> Result<Option<LazyOverlayChange>, LazyWorkspaceError> {
-        immutable_treap_value(&OverlayTreap(&self.store, None), root, &path.to_owned()).await
-    }
-
-    async fn overlay_fact_measured(
-        &self,
-        root: LazyOverlayId,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<LazyOverlayChange>>, LazyWorkspaceError> {
-        let mut accounting = LazyReadonlyAccounting::Portable {
-            work: WorkCounters::UNCHARGED, budget, cancellation,
-        };
-        let result = self.overlay_fact_with_accounting(root, path, &mut accounting).await;
-        accounting.finish_measured(result)
-    }
-
     async fn load_overlay_with_readonly_accounting(
         &self, root: LazyOverlayId, accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<Option<LazyReadonlyNode<LazyOverlay>>, LazyWorkspaceError> {
@@ -11949,7 +11942,7 @@ where
         }
     }
 
-    async fn overlay_fact_with_accounting(
+    async fn overlay_fact(
         &self, mut root: LazyOverlayId, path: &str,
         accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<Option<LazyOverlayChange>, LazyWorkspaceError> {
@@ -11967,22 +11960,7 @@ where
         }
     }
 
-    /// Whether the overlay records a fact for any path strictly beneath `directory`: such paths are exactly those after `directory/` in the overlay's order that start with it, so one descent to the first of them decides.
     async fn overlay_has_beneath(
-        &self,
-        root: LazyOverlayId,
-        directory: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
-        let mut accounting = LazyReadonlyAccounting::Portable {
-            work: WorkCounters::UNCHARGED, budget, cancellation,
-        };
-        let result = self.overlay_has_beneath_with_accounting(root, directory, &mut accounting).await;
-        accounting.finish_measured(result)
-    }
-
-    async fn overlay_has_beneath_with_accounting(
         &self, mut root: LazyOverlayId, directory: &str,
         accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
@@ -12006,20 +11984,6 @@ where
         Ok(first_after)
     }
 
-    async fn shadow_record_measured(
-        &self,
-        root: LazyShadowId,
-        file_id: FileId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<Option<(FileRecord, crate::WorkspaceMetadata)>>, LazyWorkspaceError> {
-        let mut accounting = LazyReadonlyAccounting::Portable {
-            work: WorkCounters::UNCHARGED, budget, cancellation,
-        };
-        let result = self.shadow_record_with_accounting(root, file_id, &mut accounting).await;
-        accounting.finish_measured(result)
-    }
-
     async fn load_shadow_with_readonly_accounting(
         &self, root: LazyShadowId, accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<Option<LazyReadonlyNode<LazyShadow>>, LazyWorkspaceError> {
@@ -12041,7 +12005,7 @@ where
         }
     }
 
-    async fn shadow_record_with_accounting(
+    async fn shadow_record(
         &self, mut root: LazyShadowId, file_id: FileId,
         accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<Option<(FileRecord, crate::WorkspaceMetadata)>, LazyWorkspaceError> {
@@ -12093,33 +12057,19 @@ where
         })
     }
 
-    async fn tombstoned_measured(
-        &self,
-        overlay_id: LazyOverlayId,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<OperationReceipt<bool>, LazyWorkspaceError> {
-        let mut accounting = LazyReadonlyAccounting::Portable {
-            work: WorkCounters::UNCHARGED, budget, cancellation,
-        };
-        let result = self.tombstoned_with_accounting(overlay_id, path, &mut accounting).await;
-        accounting.finish_measured(result)
-    }
-
-    async fn tombstoned_with_accounting(
+    async fn tombstoned(
         &self, overlay_id: LazyOverlayId, path: &str,
         accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<bool, LazyWorkspaceError> {
         accounting.validate_path(path, self.workspace.limits())?;
-        let root = self.overlay_fact_with_accounting(overlay_id, "/", accounting).await?;
+        let root = self.overlay_fact(overlay_id, "/", accounting).await?;
         if matches!(root, Some(LazyOverlayChange::Tombstone { .. })) {
             return Ok(true);
         }
         for end in path.match_indices('/').map(|(index, _)| index).skip(1)
             .chain(std::iter::once(path.len())).filter(|end| *end > 1)
         {
-            let fact = self.overlay_fact_with_accounting(overlay_id, &path[..end], accounting).await?;
+            let fact = self.overlay_fact(overlay_id, &path[..end], accounting).await?;
             if matches!(fact, Some(LazyOverlayChange::Tombstone { .. })) {
                 return Ok(true);
             }
@@ -15120,7 +15070,7 @@ fn reserve_exactify_slot<T>(
     Ok(())
 }
 
-fn retained_directory_page_bytes<T>(
+pub(crate) fn retained_directory_page_bytes<T>(
     entries: &Vec<T>,
     mut names: impl Iterator<Item = usize>,
 ) -> Result<u64, LazyWorkspaceError> {
@@ -15221,7 +15171,7 @@ enum DirectoryPublicationReservation {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeLazyDirectoryPage {
     pub(crate) page: LazyDirectoryPage,
-    allocation: crate::materializer::NativeAllocation,
+    pub(crate) allocation: crate::materializer::NativeAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -17506,17 +17456,7 @@ mod tests {
         .await
         .expect("reopen lazy");
         let state = reopened.state().await.expect("state");
-        let shadow = reopened
-            .shadow_record_measured(
-                state.shadows,
-                shadowed.file_id,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("shadow lookup")
-            .value
-            .expect("the removed identity stays shadowed");
+        let shadow = { let mut accounting = LazyReadonlyAccounting::Portable { work: WorkCounters::UNCHARGED, budget: WorkBudget::UNBOUNDED, cancellation: &cancellation }; let result = reopened.shadow_record(state.shadows, shadowed.file_id, &mut accounting).await; accounting.finish_measured(result) }.expect("shadow lookup").value.expect("the removed identity stays shadowed");
         let read = reopened
             .workspace()
             .detached_record(shadow.0).read_range(crate::ByteRange {
