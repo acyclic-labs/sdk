@@ -1540,7 +1540,7 @@ fn validate_child_binding(actual: &PiTaskBinding, admitted: &PiTaskBinding) -> R
 fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<GenerationRef> {
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest).map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider().clone(), digest, None)
+    GenerationRef::new(file.volume().provider().clone(), digest.into(), None)
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {

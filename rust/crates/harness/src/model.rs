@@ -403,15 +403,15 @@ pub struct Model {
 impl Model {
     /// Creates a validated immutable model value.
     pub fn new(
-        provider: impl Into<String>,
-        name: impl Into<String>,
-        revision: impl Into<String>,
+        provider: String,
+        name: String,
+        revision: String,
         options: Value,
     ) -> Result<Self> {
         let value = Self {
-            provider: provider.into(),
-            name: name.into(),
-            revision: revision.into(),
+            provider,
+            name,
+            revision,
             options,
         };
         value.validate()?;
@@ -1991,7 +1991,7 @@ mod tests {
 
     fn request() -> Result<ModelRequest> {
         Ok(ModelRequest {
-            model: Model::new("mock", "exact", "pinned", json!({}))?,
+            model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("é\0🦀\r\n".into()),

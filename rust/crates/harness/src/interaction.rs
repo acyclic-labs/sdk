@@ -562,9 +562,9 @@ impl Interaction {
     }
 
     /// Creates a validated free-form question.
-    pub fn question(prompt: impl Into<String>, response_schema: Value) -> Result<Self> {
+    pub fn question(prompt: String, response_schema: Value) -> Result<Self> {
         let value = Self::Question {
-            prompt: prompt.into(),
+            prompt,
             response_schema,
         };
         value.validate(&mut None)?;
@@ -572,9 +572,9 @@ impl Interaction {
     }
 
     /// Creates a validated single-choice interaction.
-    pub fn choice(prompt: impl Into<String>, options: Vec<ChoiceOption>) -> Result<Self> {
+    pub fn choice(prompt: String, options: Vec<ChoiceOption>) -> Result<Self> {
         let value = Self::Choice {
-            prompt: prompt.into(),
+            prompt,
             options,
             min_selections: 1,
             max_selections: 1,
@@ -584,9 +584,9 @@ impl Interaction {
     }
 
     /// Creates a validated structured form.
-    pub fn form(title: impl Into<String>, schema: Value) -> Result<Self> {
+    pub fn form(title: String, schema: Value) -> Result<Self> {
         let value = Self::Form {
-            title: title.into(),
+            title,
             schema,
         };
         value.validate(&mut None)?;
@@ -595,12 +595,12 @@ impl Interaction {
 
     /// Creates an approval bound to one exact action digest.
     pub fn approval(
-        prompt: impl Into<String>,
+        prompt: String,
         operation_id: OperationId,
         action_digest: [u8; 32],
     ) -> Result<Self> {
         let value = Self::Approval {
-            prompt: prompt.into(),
+            prompt,
             operation_id,
             action_digest,
         };
@@ -1180,7 +1180,7 @@ mod tests {
     fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let operation_id = OperationId::from_bytes([4; 16]);
-        let request = Interaction::approval("Proceed?", operation_id, [5; 32])?;
+        let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
         let request_bytes = serde_json::to_vec(&request)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let ticket = InteractionTicket {
@@ -1216,7 +1216,7 @@ mod tests {
     #[test]
     fn staged_question_and_answer_are_schema_validated_before_ref_publication() -> Result<()> {
         let request = Interaction::question(
-            "Choose a positive number",
+            "Choose a positive number".into(),
             json!({"type": "integer", "minimum": 1}),
         )?;
         let request_bytes =
@@ -1268,7 +1268,7 @@ mod tests {
     #[test]
     fn approval_binding_cannot_change_with_display_json() -> Result<()> {
         let operation_id = OperationId::from_bytes([4; 16]);
-        let request = Interaction::approval("Proceed?", operation_id, [5; 32])?;
+        let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let mut ticket = InteractionTicket {

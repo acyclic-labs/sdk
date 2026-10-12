@@ -1692,7 +1692,7 @@ async fn worker_restart_with_options(
                 .resume_task(
                     lease.clone(),
                     &runtime.commands().with_model(
-                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
                         acyclic_harness::context::CompactionPolicy::default(),
@@ -1722,7 +1722,7 @@ async fn worker_restart_with_options(
                 .resume_task(
                     lease.clone(),
                     &runtime.commands().with_model(
-                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(),
                         acyclic_harness::context::CompactionPolicy::default(),
@@ -2368,7 +2368,7 @@ async fn stock_restart_with_publication_fault(
                 task,
                 fence.clone(),
                 OperationId::from_bytes([8; 16]),
-                Model::new("test", "interrupted", "1", Value::Null)?,
+                Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(), None,
             )
@@ -2409,7 +2409,7 @@ async fn stock_restart_with_publication_fault(
                         task,
                         fence.clone(),
                         OperationId::from_bytes([8; 16]),
-                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                         model.clone(),
                         ContextPipeline::default(), None,
                     )
@@ -2443,7 +2443,7 @@ async fn stock_restart_with_publication_fault(
                     task,
                     fence.clone(),
                     OperationId::from_bytes([10; 16]),
-                    Model::new("test", "interrupted", "1", Value::Null)?,
+                    Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
                     ContextPipeline::default(), None,
                 )
@@ -2475,7 +2475,7 @@ async fn stock_restart_with_publication_fault(
             let interrupted = if direct_executor {
                 let admitted_context = harness.durable_context(task, operation).await?;
                 let previous = StockExecutor::new(
-                    Model::new("test", "interrupted", "1", Value::Null)?,
+                    Model::new("test".into(), "interrupted".into(), "1".into(), Value::Null)?,
                     model.clone(),
                     ContextPipeline::default(),
                     ToolRegistry::default(),
@@ -2721,7 +2721,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let task = TaskId::from_bytes(operation.into_bytes());
     let receive_operation = OperationId::new();
     let model_operation = OperationId::new();
-    let model = Model::new("fixture", "stock-mail", "1", Value::Null)?;
+    let model = Model::new("fixture".into(), "stock-mail".into(), "1".into(), Value::Null)?;
     let provider_model = Arc::new(InterruptedModel {
         requests: Mutex::new(Vec::new()), approval_tool: false, observed_events: 1,
         output_tokens: AtomicU64::new(0), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),

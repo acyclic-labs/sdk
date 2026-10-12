@@ -5294,12 +5294,7 @@ impl AgentHarness {
         model: Model,
         provider: Arc<dyn ModelProvider>,
     ) -> Result<Arc<Self>> {
-        Model::new(
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-            model.options.clone(),
-        )?;
+        model.validate()?;
         let mut bound = self.as_ref().clone();
         bound.model = Some(ModelBinding { model, provider });
         Ok(Arc::new(bound))
@@ -7876,20 +7871,6 @@ impl TaskContext {
         Ok((paid.0, paid.1))
     }
 
-    /// Opens a schema-constrained question by stable identity.
-    pub async fn ask(
-        &self,
-        operation_id: OperationId,
-        prompt: impl Into<String>,
-        response_schema: Value,
-    ) -> Result<InteractionOutcome> {
-        self.interact(
-            operation_id,
-            Interaction::question(prompt, response_schema)?,
-        )
-        .await
-    }
-
     /// Sends a donor-authorized parcel under the retained owner fence and route.
     pub async fn send(
         &self,
@@ -9617,7 +9598,7 @@ mod tests {
             None,
         )?
         .bind_model(
-            Model::new("root", "model", "1", Value::Null)?,
+            Model::new("root".into(), "model".into(), "1".into(), Value::Null)?,
             root_provider.clone(),
         )?;
         let context = TaskContext {
@@ -9647,7 +9628,7 @@ mod tests {
         let child = context.scoped_model(
             Capabilities::new(["model:generate"]),
             Limits::default(),
-            Model::new("child", "model", "2", Value::Null)?,
+            Model::new("child".into(), "model".into(), "2".into(), Value::Null)?,
             child_provider.clone(),
         )?;
         child.model_events(vec![message.clone()], None).await?;

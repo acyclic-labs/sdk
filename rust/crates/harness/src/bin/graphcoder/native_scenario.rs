@@ -220,7 +220,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
         planned_commands, cancellation: cancellation.clone() };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
-        imported_generation.id().digest().into_bytes(), None)?;
+        imported_generation.id().digest().into_bytes().into(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
         &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
     let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),
@@ -401,7 +401,7 @@ impl Producer {
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
             "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?).await?;
         let digest = request.approval_digest(caller.task, operation)?;
-        let interaction = Interaction::approval("Run the exact native qualification command", operation, digest)?;
+        let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;

@@ -194,7 +194,7 @@ async fn fixture() -> Result<Fixture> {
     covered.messages.truncate(2);
     covered.current_input_index = None;
     let summary = StockExecutor::new(
-        Model::new("synthetic", "summary", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "summary".into(), "1".into(), serde_json::json!({}))?,
         Arc::new(SummaryModel::default()),
         ContextPipeline::default(),
         ToolRegistry::default(),
@@ -320,7 +320,7 @@ async fn retained_summary_composes_into_later_admissions_and_exact_recovery() ->
     let provider = Arc::new(provider);
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
-        Model::new("synthetic", "continuing", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "continuing".into(), "1".into(), serde_json::json!({}))?,
         model.clone(),
         ContextPipeline::new([Arc::new(SourceStage::new(
             "memory",
@@ -496,7 +496,7 @@ async fn large_context_payload_preserves_instruction_and_typed_tool_exchange() -
     assert_eq!(reader.revision(1).await?.context, source);
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("synthetic", "typed-payload", "1", serde_json::json!({}))?,
+            model: Model::new("synthetic".into(), "typed-payload".into(), "1".into(), serde_json::json!({}))?,
             messages: reader.latest().await?.messages,
             tools: vec![ToolDefinition {
                 name: "echo".into(),
@@ -689,7 +689,7 @@ async fn default_canonical_continuation_keeps_stages_fresh_beyond_history_bound(
         context_messages: 8,
         ..Limits::default()
     };
-    let model = Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?;
+    let model = Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?;
     let mut pipeline = ContextPipeline::new([Arc::new(InputDependentStage {
         revision: 1,
         calls: calls.clone(),
@@ -1133,9 +1133,9 @@ async fn assert_checkpoint_tail_source(
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
         Model::new(
-            "synthetic",
-            "checkpoint-and-tail",
-            "1",
+            "synthetic".into(),
+            "checkpoint-and-tail".into(),
+            "1".into(),
             serde_json::json!({}),
         )?,
         model.clone(),
@@ -1288,7 +1288,7 @@ async fn assert_scoped_checkpoint_source(
 
     let model = Arc::new(SummaryModel::default());
     let executor = StockExecutor::new(
-        Model::new("synthetic", "checkpoint-import", "1", serde_json::json!({}))?,
+        Model::new("synthetic".into(), "checkpoint-import".into(), "1".into(), serde_json::json!({}))?,
         model.clone(),
         ContextPipeline::new([Arc::new(SourceStage::new(
             "published-summary",
@@ -1573,9 +1573,9 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
 
     let model = Arc::new(SummaryModel::default());
     let snapshot_model = Model::new(
-        "synthetic",
-        "snapshot-admission",
-        "1",
+        "synthetic".into(),
+        "snapshot-admission".into(),
+        "1".into(),
         serde_json::json!({}),
     )?;
     let build = |pipeline| {
@@ -1824,7 +1824,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         .journal(journal.clone())
         .grant("model:generate")
         .model(
-            Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?,
             provider.clone(),
         )
         .context(ContextPipeline::new([Arc::new(InputDependentStage {
@@ -2001,7 +2001,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
     );
     let request = PreparedModelRequest::prepare(
         ModelRequest {
-            model: Model::new("synthetic", "journal-test", "1", serde_json::json!({}))?,
+            model: Model::new("synthetic".into(), "journal-test".into(), "1".into(), serde_json::json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("source".into()),
@@ -2234,7 +2234,7 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
             .journal(journal)
             .grant("model:generate")
             .model(
-                Model::new("synthetic", "byte-counter", "1", serde_json::json!({}))?,
+                Model::new("synthetic".into(), "byte-counter".into(), "1".into(), serde_json::json!({}))?,
                 provider.clone(),
             )
             .build()?;

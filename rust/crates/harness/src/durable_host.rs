@@ -7451,9 +7451,9 @@ pub(crate) mod tests {
         let prepared_request = crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
                 model: crate::model::Model::new(
-                    "synthetic",
-                    "journal-test",
-                    "1",
+                    "synthetic".into(),
+                    "journal-test".into(),
+                    "1".into(),
                     serde_json::json!({}),
                 )?,
                 messages: vec![crate::model::ModelMessage {
@@ -8022,14 +8022,14 @@ pub(crate) mod tests {
                 "a task storage owner is not a retained task lease"
             );
             let id = crate::InteractionId::from_bytes([91; 16]);
-            let request = Interaction::approval("approve exact action", attempt, [5; 32])?;
+            let request = Interaction::approval("approve exact action".into(), attempt, [5; 32])?;
             journal.open_interaction(id, request.clone()).await?;
             journal.open_interaction(id, request.clone()).await?;
             assert_eq!(journal.interaction_outcome(id).await?, None);
             assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path(&mut None)?)?.tail().await?, 2);
             assert!(matches!(
                 journal
-                    .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
+                    .open_interaction(id, Interaction::approval("changed".into(), attempt, [6; 32])?)
                     .await,
                 Err(Error::Conflict(_))
             ));
