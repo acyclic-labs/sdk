@@ -6854,11 +6854,12 @@ where
                 let operations = std::mem::take(pending);
                 *pending_bytes = 0;
                 let bytes = paid.bytes();
+                let input = crate::kernel::Owned::new(
+                    operations, crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(paid), bytes,
+                );
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
                 transaction.checkout.apply_authored_bulk_transaction_with_accounting(
-                    crate::kernel::Owned::new(operations,
-                        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(paid), bytes),
-                    &mut accounting, cancellation,
+                    input, &mut accounting, cancellation,
                 ).await.map_err(|error| native_workspace_error(WorkspaceError::from(error)))
             }).await?;
             return Ok(work);
