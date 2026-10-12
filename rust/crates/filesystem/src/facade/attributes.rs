@@ -13,7 +13,6 @@ pub enum NamedAttributeWriteMode {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
-
     /// Reads ordered named attributes, retaining original names/vector custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn read_named_attributes_with_native_work(
@@ -58,7 +57,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         }
         Ok((attributes.value, native_pinned_allocation(attributes.allocation)?))
     }
-
 
     /// Reads every named attribute under one metadata attribute root, in
     pub async fn read_named_attributes(
@@ -173,7 +171,6 @@ pub(super) async fn list_named_attributes_to_file_root_with_accounting<A: AsyncA
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Reads one exact attribute while preserving its producer allocation custody.
     pub async fn read_named_attribute_by_id<W: FsWork>(
         &mut self, file_id: FileId, name: &AttributeName,
@@ -187,7 +184,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     /// Lists one bounded page of named attributes by stable file identity.
     pub async fn list_named_attributes_by_id(
@@ -204,7 +200,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }).map_err(|error| OperationFailure::new(error, work))
     }
 
-
     pub(crate) async fn list_named_attributes_by_id_with_accounting(
         &mut self, file_id: FileId, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -212,7 +207,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let metadata = self.read_metadata_by_id_with_accounting(file_id, accounting, cancellation).await?;
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
-
 
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute_by_id<W: FsWork>(
@@ -232,7 +226,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn change_named_attribute_metadata_with_accounting(
         volume: &Volume<A, O>, mut metadata: FileMetadata, name: &AttributeName,
@@ -315,7 +308,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(metadata)
     }
 
-
     /// Reads the same exact named attribute, preserving its producer's actual
     pub async fn read_named_attribute<W: FsWork>(
         &mut self, path: &NamespacePath, name: &AttributeName,
@@ -330,7 +322,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     /// Lists one bounded page of exact named-attribute identities without
     pub async fn list_named_attributes(
         &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
@@ -344,7 +335,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }).map_err(|error| OperationFailure::new(error, work))
     }
 
-
     pub(crate) async fn list_named_attributes_with_accounting(
         &mut self, path: &NamespacePath, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -352,7 +342,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let metadata = self.read_metadata_with_accounting(path, accounting, cancellation).await?;
         list_named_attributes_to_file_root_with_accounting(&self.volume, metadata, after, maximum_entries, accounting, cancellation).await
     }
-
 
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute(
@@ -377,7 +366,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
 
-
     /// Reads one exact detached attribute with its producer allocation custody.
     pub async fn read_named_attribute<W: FsWork>(
         &self,
@@ -398,7 +386,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     /// Lists one bounded page of detached named-attribute identities.
     pub async fn list_named_attributes(
         &self,
@@ -416,7 +403,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-
     pub(crate) async fn list_named_attributes_with_accounting(
         &self, after: Option<&AttributeName>, maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -429,7 +415,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             &self.volume, metadata, after, maximum_entries, accounting, cancellation,
         ).await
     }
-
 
     /// Changes one exact named attribute atomically.
     pub async fn change_named_attribute<W: FsWork>(

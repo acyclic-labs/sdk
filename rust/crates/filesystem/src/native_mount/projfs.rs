@@ -12,10 +12,10 @@ use super::{
     ViewObserver, ViewOrigin, ViewStamp,
 };
 use crate::FileId;
-use crate::kernel::{FileMetadata, MetadataField};
-use crate::native_host::{HostRoot, NativeOwned, native_buffer};
 use crate::demand::DemandWork;
+use crate::kernel::{FileMetadata, MetadataField};
 use crate::native_host::NativeHostWork as _;
+use crate::native_host::{HostRoot, NativeOwned, native_buffer};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
@@ -718,10 +718,11 @@ impl PhysicalEntry {
 
     fn identify(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         let file = lock_recover(&self.file);
-        let file = file.as_ref().expect("installed original creation capability");
-        let (identity, _) = crate::native_host::file_identity_and_length_with_work(
-            file, &mut { work },
-        ).map_err(detach_work_error)?;
+        let file = file
+            .as_ref()
+            .expect("installed original creation capability");
+        let (identity, _) = crate::native_host::file_identity_and_length(file, &mut { work })
+            .map_err(detach_work_error)?;
         *lock_recover(&self.identity) = Some(identity);
         Ok(())
     }
@@ -1390,15 +1391,18 @@ struct Projector {
     _allocation: crate::NativeAllocation,
 }
 
-pub(super) struct ProjectionWorkScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     runtime: Arc<NativeOwned<Runtime>>,
     meter: crate::NativeMaterializationWork,
     projector_generation: u64,
     runtime_generation: u64,
 }
 
-impl ProjectionWorkScope {
-    pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+impl NativeMountWorkScope {
+    /// Retains the original callback meter for accepted native I/O.
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         let (projector_generation, runtime_generation) =
             enter_projection_work(&self.runtime.projector, &self.runtime, &self.meter)?;
         Ok(Self {
@@ -1468,7 +1472,7 @@ impl Drop for ProjectionWorkLease<'_> {
     }
 }
 
-impl Drop for ProjectionWorkScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         leave_projection_work(&self.runtime.projector, &self.runtime, &self.meter,
             self.projector_generation, self.runtime_generation);
@@ -1980,12 +1984,18 @@ impl Projector {
                 let through = loop {
                     if state.stopping { return; }
                     let notified = *lock_recover(&self.notification);
-                    if state.processed < notified || state.retry || !state.stale.is_empty() { break notified; }
+                    if state.processed < notified || state.retry || !state.stale.is_empty() {
+                        break notified;
+                    }
                     let retry = !state.pending.is_empty() || !state.vacated.is_empty();
-                    let (next, waited) = self.changed.wait_timeout(state, HELD_RETRY)
+                    let (next, waited) = self
+                        .changed
+                        .wait_timeout(state, HELD_RETRY)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state = next;
-                    if retry && waited.timed_out() { break notified; }
+                    if retry && waited.timed_out() {
+                        break notified;
+                    }
                 };
                 state.retry = false;
                 state.relisting = true;
@@ -2323,17 +2333,19 @@ fn with_projection_parent<T>(
     let (leaf, parents) = path.components().split_last()
         .ok_or(NativeMountError::Demand(crate::DemandError::InvalidRequest))?;
     let mut host_work = work;
-    let (mut parent, observed) = crate::native_host::open_root_directory_identity_with_work(
-        root, &mut host_work,
-    ).map_err(detach_work_error)?;
+    let (mut parent, observed) =
+        crate::native_host::open_root_directory(root, &mut host_work).map_err(detach_work_error)?;
     if observed != root_identity {
         return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
     }
     for component in parents {
         let component = projection_component(component, work)?;
-        parent = crate::native_host::open_owned_child_directory_with_work(
-            &parent, component.data.as_slice(), &mut host_work,
-        ).map_err(detach_work_error)?;
+        parent = crate::native_host::open_owned_child_directory(
+            &parent,
+            component.data.as_slice(),
+            &mut host_work,
+        )
+        .map_err(detach_work_error)?;
     }
     let leaf = projection_component(leaf, work)?;
     operation(&parent, leaf.data.as_slice())
@@ -2345,18 +2357,26 @@ fn write_entry(
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
     if entry.facts.lookup.node.kind == MountNodeKind::Directory {
-        let result = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-            let owner = PhysicalEntry::prepare(projection.work, true)?;
-            let owned = Owned::Directory(owner.clone());
-            record(&owned)?;
-            let mut work = projection.work;
-            let file = crate::native_host::create_windows_new_directory_with_work(parent, leaf, &mut work)
+        let result = with_projection_parent(
+            projection.root,
+            projection.root_identity,
+            path,
+            projection.work,
+            |parent, leaf| {
+                let owner = PhysicalEntry::prepare(projection.work, true)?;
+                let owned = Owned::Directory(owner.clone());
+                record(&owned)?;
+                let mut work = projection.work;
+                let file = crate::native_host::create_windows_wide_at(
+                    parent, leaf, true, false, false, false, &mut work,
+                )
                 .map_err(detach_work_error)?;
-            owner.install(file);
-            *placed = Some(owned.clone());
-            owner.identify(projection.work)?;
-            Ok(Placed::Owned(owned))
-        });
+                owner.install(file);
+                *placed = Some(owned.clone());
+                owner.identify(projection.work)?;
+                Ok(Placed::Owned(owned))
+            },
+        );
         return match result {
             Err(NativeMountError::Io(error)) if matches!(error.kind(),
                 std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
@@ -2443,33 +2463,61 @@ fn write_link(
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
     let target = target.strip_suffix(&[0]).unwrap_or(target);
-    with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        let owner = PhysicalEntry::prepare(projection.work, false)?;
-        let owned = Owned::PhysicalLink(digest, owner.clone());
-        record(&owned)?;
-        let mut capability = lock_recover(&owner.file);
-        let result = crate::native_host::create_windows_symbolic_link_with_work(
-            parent, leaf, target, directory, &mut capability,
-            || {
-                owner.delete_on_close.store(true, std::sync::atomic::Ordering::Release);
-                *placed = Some(owned.clone());
-            },
-            || { owner.expected_reparse.store(
-                windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK,
-                std::sync::atomic::Ordering::Release,
-            ); },
-            &mut { projection.work },
-        ).map_err(detach_work_error);
-        drop(capability);
-        if result.is_ok() { owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release); }
-        if placed.is_some() && result.is_ok() { owner.identify(projection.work)?; }
-        match result {
-            Ok(()) => Ok(Placed::Owned(owned)),
-            Err(NativeMountError::Io(error)) if placed.is_none() && matches!(error.kind(),
-                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound) => Ok(Placed::Nothing),
-            Err(error) => Err(error),
-        }
-    })
+    with_projection_parent(
+        projection.root,
+        projection.root_identity,
+        path,
+        projection.work,
+        |parent, leaf| {
+            let owner = PhysicalEntry::prepare(projection.work, false)?;
+            let owned = Owned::PhysicalLink(digest, owner.clone());
+            record(&owned)?;
+            let mut capability = lock_recover(&owner.file);
+            let result = crate::native_host::create_windows_symbolic_link(
+                parent,
+                leaf,
+                target,
+                directory,
+                &mut capability,
+                || {
+                    owner
+                        .delete_on_close
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    *placed = Some(owned.clone());
+                },
+                || {
+                    owner.expected_reparse.store(
+                        windows::Win32::System::SystemServices::IO_REPARSE_TAG_SYMLINK,
+                        std::sync::atomic::Ordering::Release,
+                    );
+                },
+                &mut { projection.work },
+            )
+            .map_err(detach_work_error);
+            drop(capability);
+            if result.is_ok() {
+                owner
+                    .delete_on_close
+                    .store(false, std::sync::atomic::Ordering::Release);
+            }
+            if placed.is_some() && result.is_ok() {
+                owner.identify(projection.work)?;
+            }
+            match result {
+                Ok(()) => Ok(Placed::Owned(owned)),
+                Err(NativeMountError::Io(error))
+                    if placed.is_none()
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+                        ) =>
+                {
+                    Ok(Placed::Nothing)
+                }
+                Err(error) => Err(error),
+            }
+        },
+    )
 }
 
 fn link_digest_measured(
@@ -2629,15 +2677,22 @@ fn prj_delete(
     })
 }
 
-fn remove_vacated(
-    projection: Projection<'_>, path: &MountPath,
-) -> Result<(), NativeMountError> {
-    if path.components().is_empty() { return Ok(()); }
-    let result = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        crate::native_host::remove_windows_leaf_with_work(
-            parent, leaf, true, &mut { projection.work },
-        ).map_err(detach_work_error)
-    });
+fn remove_vacated(projection: Projection<'_>, path: &MountPath) -> Result<(), NativeMountError> {
+    if path.components().is_empty() {
+        return Ok(());
+    }
+    let result = with_projection_parent(
+        projection.root,
+        projection.root_identity,
+        path,
+        projection.work,
+        |parent, leaf| {
+            crate::native_host::remove_windows_leaf(parent, leaf, true, None, &mut {
+                projection.work
+            })
+            .map_err(detach_work_error)
+        },
+    );
     match result {
         Err(NativeMountError::Io(error)) if matches!(error.kind(),
             std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty) => Ok(()),
@@ -2655,101 +2710,6 @@ fn write_ordinary(
         if projection.starting && replacing.is_none() {
             return write_directly(projection, path, parent, leaf, entry, placed, record);
         }
-        // No source allocation, staging allocation or native writer is made for an existing user name.
-        if replacing.is_none() {
-            match crate::native_host::stat_windows_leaf_with_work(
-                parent, leaf, &mut { projection.work },
-            ) {
-                Ok(_) => return Ok(Placed::Nothing),
-                Err(crate::NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(detach_work_error(error)),
-            }
-        }
-        static NEXT_STAGING_NAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let sequence = NEXT_STAGING_NAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let process = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
-        let mut name = [0_u16; 37];
-        let encoded = crate::WorkCounters { bytes_encoded: 74, ..crate::WorkCounters::UNCHARGED };
-        let mut host_work = projection.work;
-        host_work.admit(encoded).map_err(detach_work_error)?;
-        for (slot, byte) in name.iter_mut().zip(b".acyclic-copy-") { *slot = u16::from(*byte); }
-        for index in 0..8 {
-            name[13 + index] = u16::from(b"0123456789abcdef"[((process >> ((7 - index) * 4)) & 15) as usize]);
-        }
-        for index in 0..16 {
-            name[21 + index] = u16::from(b"0123456789abcdef"[((sequence >> ((15 - index) * 4)) & 15) as usize]);
-        }
-        host_work.record(encoded).map_err(detach_work_error)?;
-        let mut writer = ProjectedNativeWriter::create(projection.work,
-            |owner| record(&Owned::ProvisionalFile(owner.clone())),
-            || with_staging_directory(projection.root, projection.work, projection.root_identity, projection.staging_custody,
-                |staging| crate::native_host::create_windows_provisional_overlapped_file_with_work(
-                    staging, &name, &mut { projection.work },
-                ).map_err(detach_work_error)))?;
-        let written = (|| {
-            let file = writer.file();
-            if !write_listed_content(projection, path, entry, file)? { return Ok(Placed::Retry); }
-            finish_projected_file(file, entry, projection.work)?;
-            let held = match replacing {
-                Some((expected, original)) => {
-                    if has_pending_capture(projection.captures, path, projection)? { return Ok(Placed::Retry); }
-                    original.retain_metadata_control(projection.work)?;
-                    match held_original_while(original, expected, projection.work)? {
-                        Some(held) => Some((held, original)),
-                        None => return Ok(Placed::Nothing),
-                    }
-                }
-                None => None,
-            };
-            verify_projection_namespace_work(projection)?;
-            if let Some((_, original)) = held.as_ref() {
-                // A genuine SDK placeholder is deleted through its live namespace with flags NONE.
-                let sdk = with_projection_relative_name(path, projection.work, |relative|
-                    prj_delete(projection, relative, PRJ_UPDATE_TYPES(0)));
-                match sdk {
-                    Ok(()) => {}
-                    Err(error) if native_mount_error_code(&error).is_some_and(|code|
-                        [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_VIRTUALIZATION_INVALID_OPERATION].contains(&code)) => {}
-                    Err(error) if native_mount_error_code(&error) == Some(HR_SHARING_VIOLATION) =>
-                        return Ok(Placed::Retry),
-                    Err(error) => return Err(error),
-                }
-                if has_pending_capture(projection.captures, path, projection)? { return Ok(Placed::Retry); }
-                retire_physical_entry(original, projection.work,
-                    Some(projection.work.cancellation()))?;
-            }
-            crate::native_host::keep_windows_created_file_with_work(
-                file.as_file(), &mut { projection.work },
-            ).map_err(detach_work_error)?;
-            writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-            let published = publish_projected_file(file, parent, leaf, projection.work);
-            match published {
-                Ok(()) => {
-                    writer.retire()?;
-                    writer.owner.retain_metadata_control(projection.work)?;
-                    let owned = Owned::File(writer.owner.final_state(projection.work)?, writer.owner.clone());
-                    record(&owned)?;
-                    *placed = Some(owned.clone());
-                    crate::native_host::sync_directory_held(
-                        parent, &mut { projection.work },
-                    ).map_err(detach_work_error)?;
-                    Ok(Placed::Owned(owned))
-                }
-                Err(NativeMountError::Io(error)) if matches!(error.kind(),
-                    std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound) => Ok(Placed::Nothing),
-                Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(SHARING_VIOLATION) => Ok(Placed::Retry),
-                Err(error) => Err(error),
-            }
-        })();
-        let retired = writer.retire();
-        match written {
-            Err(error) => Err(error),
-            Ok(placed) => retired.map(|()| placed),
-        }
-    });
-    match result {
-        Err(NativeMountError::Io(error)) if placed.is_none() && matches!(error.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(Placed::Nothing),
         result => result,
     }
 }
@@ -3018,24 +2978,48 @@ fn write_directly(
     leaf: &[u16], entry: &ProjectedEntry, placed: &mut Option<Owned>,
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
-    let mut writer = match ProjectedNativeWriter::create(projection.work,
+    let mut writer = match ProjectedNativeWriter::create(
+        projection.work,
         |owner| record(&Owned::ProvisionalFile(owner.clone())),
-        || crate::native_host::create_windows_provisional_overlapped_file_with_work(
-            parent, leaf, &mut { projection.work },
-        ).map_err(detach_work_error)) {
+        || {
+            crate::native_host::create_windows_wide_at(
+                parent,
+                leaf,
+                false,
+                true,
+                false,
+                true,
+                &mut { projection.work },
+            )
+            .map_err(detach_work_error)
+        },
+    ) {
         Ok(writer) => writer,
-        Err(NativeMountError::Io(error)) if matches!(error.kind(),
-            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
-                | std::io::ErrorKind::NotADirectory) => return Ok(Placed::Nothing),
+        Err(NativeMountError::Io(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AlreadyExists
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(Placed::Nothing);
+        }
         Err(error) => return Err(error),
     };
     let written = (|| {
-        if !write_listed_content(projection, path, entry, writer.file())? { return Ok(Placed::Retry); }
+        if !write_listed_content(projection, path, entry, writer.file())? {
+            return Ok(Placed::Retry);
+        }
         finish_projected_file(writer.file(), entry, projection.work)?;
-        crate::native_host::keep_windows_created_file_with_work(
-            writer.file().as_file(), &mut { projection.work },
-        ).map_err(detach_work_error)?;
-        writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
+        crate::native_host::keep_windows_created_file(writer.file().as_file(), &mut {
+            projection.work
+        })
+        .map_err(detach_work_error)?;
+        writer
+            .owner
+            .delete_on_close
+            .store(false, std::sync::atomic::Ordering::Release);
         writer.retire()?;
         writer.owner.retain_metadata_control(projection.work)?;
         let owned = Owned::File(writer.owner.final_state(projection.work)?, writer.owner.clone());
@@ -3098,15 +3082,17 @@ fn with_staging_directory<T>(
             return operation(directory);
         }
     }
-    let (_root_directory, root_identity) = crate::native_host::open_root_directory_identity_with_work(
-        root, &mut host_work,
-    ).map_err(detach_work_error)?;
+    let (_root_directory, root_identity) =
+        crate::native_host::open_root_directory(root, &mut host_work).map_err(detach_work_error)?;
     if root_identity != expected_root {
         return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
     }
-    let parent = crate::native_host::open_root_directory_with_work(
-        destination_parent(root).map_err(detach_work_error)?, &mut host_work,
-    ).map_err(detach_work_error)?;
+    let parent = crate::native_host::open_root_directory(
+        destination_parent(root).map_err(detach_work_error)?,
+        &mut host_work,
+    )
+    .map(|(directory, _)| directory)
+    .map_err(detach_work_error)?;
     let leaf = root.file_name().unwrap_or_default();
     let mut units = 1_usize + ".acyclic-staging".len();
     for scalar in char::decode_utf16(leaf.encode_wide()) {
@@ -3128,20 +3114,39 @@ fn with_staging_directory<T>(
     host_work.record(delta).map_err(detach_work_error)?;
     let mut owned = lock_recover(custody);
     if owned.is_none() {
-        let cleanup = work.allocation_work().reserve_work(crate::WorkCounters {
-            backend_read_operations: 3,
-            backend_write_operations: 2,
-            ..crate::WorkCounters::UNCHARGED
-        }).map_err(detach_work_error)?;
-        let temporary_close = work.allocation_work().reserve_work(crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(detach_work_error)?;
-        let original_close = work.allocation_work().reserve_work(crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(detach_work_error)?;
+        let cleanup = work
+            .allocation_work()
+            .reserve_work(crate::WorkCounters {
+                backend_read_operations: 3,
+                backend_write_operations: 2,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(detach_work_error)?;
+        let temporary_close = work
+            .allocation_work()
+            .reserve_work(crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(detach_work_error)?;
+        let original_close = work
+            .allocation_work()
+            .reserve_work(crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(detach_work_error)?;
         let directory = cap_std::fs::Dir::from_std_file(
-            crate::native_host::create_windows_new_directory_with_work(&parent, name.data.as_slice(), &mut host_work)
-                .map_err(detach_work_error)?,
+            crate::native_host::create_windows_wide_at(
+                &parent,
+                name.data.as_slice(),
+                true,
+                false,
+                false,
+                false,
+                &mut host_work,
+            )
+            .map_err(detach_work_error)?,
         );
         // Publish the real capability before any fallible identity admission.
         *owned = Some(StagingDirectoryCustody { directory: Some(directory), _name: name, identity: None, cleanup, temporary_close, original_close });
@@ -3664,7 +3669,8 @@ impl ProjFsSession {
         let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).map_err(super::NativeMountStartupAdmissionError::from).map_err(detach_work_error)?;
         let callback_gate = CallbackGate::new(work)?;
         let metadata_root = retained_arc(
-            HostRoot::open(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
+            HostRoot::open(&request.destination, &mut host_work).map_err(detach_work_error)?,
+            meter,
         )?;
         let root = clone_host_path_with_work(&request.destination, &custody, meter)?;
         let projector = Arc::new(Projector::new(&custody, meter)?);
@@ -3728,10 +3734,13 @@ impl ProjFsSession {
         let mut startup = WindowsStartupAbort { ingress: &ingress, projector: &projector_control, armed: true };
         if let Some(packet) = session.retirement.as_mut() { prepare(packet)?; }
         let entered = (|| {
-            let runtime = session.runtime.as_ref().expect("stable admitted callback runtime");
-            let (name, name_allocation) = crate::native_host::normalize_root_wide_with_work(
-                &request.destination, &mut host_work,
-            ).map_err(detach_work_error)?;
+            let runtime = session
+                .runtime
+                .as_ref()
+                .expect("stable admitted callback runtime");
+            let (name, name_allocation) =
+                crate::native_host::normalize_root_wide(&request.destination, &mut host_work)
+                    .map_err(detach_work_error)?;
             let result = (|| {
                 let _gate = lock_with_meter(&runtime.projector.scope_gate, meter, HELD_RETRY)?;
                 let _scope = ProjectionWorkLease::enter(&runtime.projector, runtime, meter)?;
@@ -3739,9 +3748,9 @@ impl ProjFsSession {
                 verify_callback_work(runtime, meter, false)?;
                 let root_ptr = PCWSTR::from_raw(name.as_ptr());
                 let guid = guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes()));
-                let (marked_root, identity) = crate::native_host::open_root_directory_identity_with_work(
-                    &runtime.root, &mut { meter },
-                ).map_err(detach_work_error)?;
+                let (marked_root, identity) =
+                    crate::native_host::open_root_directory(&runtime.root, &mut { meter })
+                        .map_err(detach_work_error)?;
                 if identity != runtime.metadata_root.identity() {
                     return Err(crate::DemandError::StaleSource.into());
                 }
@@ -3785,9 +3794,9 @@ impl ProjFsSession {
                     options.NotificationMappingsCount = 1;
                 }
                 let context_ptr = std::ptr::from_ref(&***runtime).cast::<c_void>();
-                let (_started_root, identity) = crate::native_host::open_root_directory_identity_with_work(
-                    &runtime.root, &mut { meter },
-                ).map_err(detach_work_error)?;
+                let (_started_root, identity) =
+                    crate::native_host::open_root_directory(&runtime.root, &mut { meter })
+                        .map_err(detach_work_error)?;
                 if identity != runtime.metadata_root.identity() {
                     return Err(crate::DemandError::StaleSource.into());
                 }
@@ -4107,11 +4116,11 @@ impl ProjFsSession {
 
     pub(super) fn begin_original_work(
         &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<ProjectionWorkScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         let (runtime, _) = self.live()?;
         let (projector_generation, runtime_generation) =
             enter_projection_work(&runtime.projector, &runtime, work)?;
-        Ok(ProjectionWorkScope {
+        Ok(NativeMountWorkScope {
             runtime: runtime.clone(), meter: work.clone(),
             projector_generation, runtime_generation,
         })
@@ -4273,11 +4282,16 @@ fn capture_callbacks(
             let result = (|| {
                 exact.try_reserve_exact(paths.len()).map_err(NativeMountError::Allocation)?;
                 for (path, _, subtree) in paths {
-                    meter.charge(crate::WorkCounters {
-                        items_examined: 1, ..crate::WorkCounters::UNCHARGED
-                    }).map_err(detach_work_error)?;
+                    meter
+                        .charge(crate::WorkCounters {
+                            items_examined: 1,
+                            ..crate::WorkCounters::UNCHARGED
+                        })
+                        .map_err(detach_work_error)?;
                     let kind = match with_mount_wide_path_on_meter(path, meter, |name, meter| {
-                        runtime.metadata_root.stat_wide_with_work(name, &mut { meter })
+                        runtime
+                            .metadata_root
+                            .stat_wide(name, &mut { meter })
                             .map_err(detach_work_error)
                     }) {
                         Ok(_) => {
@@ -4374,12 +4388,6 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => HR_NOT_SUPPORTED,
-        MountSourceError::NativeText { kind, .. } =>
-            match kind {
-                super::NativeSourceTextKind::Engine => HR_IO_DEVICE,
-                super::NativeSourceTextKind::Invalid => HR_INVALID_DATA,
-                super::NativeSourceTextKind::Unsupported => HR_NOT_SUPPORTED,
-            },
         MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
         MountSourceError::NativeWork(error) => materialization_hresult(error),
         MountSourceError::WorkspaceCause(error) => workspace_hresult(error),
@@ -4513,14 +4521,25 @@ impl ProjFsRecoveryControl {
         }
         let retained = self.directory.is_some();
         if !retained {
-            let parent = crate::native_host::open_root_directory_with_work(
-                destination_parent(destination).map_err(detach_work_error)?, work,
-            ).map_err(detach_work_error)?;
-            let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
-            let file = crate::native_host::with_wide_path_with_work(
-                std::path::Path::new(leaf), work, |name, work| {
-                    crate::native_host::open_windows_leaf_handle_with_work(
-                        &parent, name, FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
+            let parent = crate::native_host::open_root_directory(
+                destination_parent(destination).map_err(detach_work_error)?,
+                work,
+            )
+            .map(|(directory, _)| directory)
+            .map_err(detach_work_error)?;
+            let leaf = destination
+                .file_name()
+                .ok_or(NativeMountError::InvalidDestination)?;
+            let file = crate::native_host::with_wide_path(
+                std::path::Path::new(leaf),
+                work,
+                |name, work| {
+                    crate::native_host::open_windows_leaf_handle(
+                        &parent,
+                        name,
+                        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                        Some(true),
+                        work,
                     )
                 },
             ).map_err(detach_work_error)?;
@@ -4537,10 +4556,14 @@ impl ProjFsRecoveryControl {
             self.identity = Some(observed);
             observed
         } else {
-            self.identity.expect("retained capability has its original identity")
+            self.identity
+                .expect("retained capability has its original identity")
         };
-        if retained && crate::native_host::open_root_directory_identity_with_work(destination, work)
-            .map_err(detach_work_error)?.1 != identity
+        if retained
+            && crate::native_host::open_root_directory(destination, work)
+                .map_err(detach_work_error)?
+                .1
+                != identity
         {
             return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
         }
@@ -4758,10 +4781,12 @@ where NativeMountError: From<W::Error> {
 fn physical_attributes_measured<W: crate::native_host::NativeHostWork>(
     path: &std::path::Path, work: &mut W,
 ) -> Result<Option<u32>, NativeMountError>
-where NativeMountError: From<W::Error> {
+where
+    NativeMountError: From<W::Error>,
+{
     use windows::Win32::Storage::FileSystem::{GetFileAttributesW, INVALID_FILE_ATTRIBUTES};
-    let (name, allocation) = crate::native_host::normalize_root_wide_with_work(path, work)
-        .map_err(detach_work_error)?;
+    let (name, allocation) =
+        crate::native_host::normalize_root_wide(path, work).map_err(detach_work_error)?;
     let result = detach_attempt(work, None, false, || {
         // SAFETY: this exact native spelling includes its final NUL.
         let attributes = unsafe { GetFileAttributesW(PCWSTR::from_raw(name.as_ptr())) };
@@ -4793,14 +4818,23 @@ where NativeMountError: From<W::Error> {
         Some(_) => return Err(NativeMountError::InvalidDestination),
     }
     let expected = expected.ok_or(NativeMountError::Demand(crate::DemandError::StaleSource))?;
-    let parent = crate::native_host::open_root_directory_with_work(
-        destination_parent(destination).map_err(detach_work_error)?, work,
-    ).map_err(detach_work_error)?;
-    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
-    let file = crate::native_host::with_wide_path_with_work(
-        std::path::Path::new(leaf), work, |name, work| {
-            crate::native_host::open_windows_leaf_handle_with_work(
-                &parent, name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
+    let parent = crate::native_host::open_root_directory(
+        destination_parent(destination).map_err(detach_work_error)?,
+        work,
+    )
+    .map(|(directory, _)| directory)
+    .map_err(detach_work_error)?;
+    let leaf = destination
+        .file_name()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let file =
+        crate::native_host::with_wide_path(std::path::Path::new(leaf), work, |name, work| {
+            crate::native_host::open_windows_leaf_handle(
+                &parent,
+                name,
+                DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                Some(true),
+                work,
             )
         },
     ).map_err(detach_work_error)?;
@@ -4999,12 +5033,18 @@ fn path_from(
     if pointer.is_null() { return Ok(Some(path)); }
     let mut length = 0_usize;
     loop {
-        projection.work.charge(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(detach_work_error)?;
+        projection
+            .work
+            .charge(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(detach_work_error)?;
         // SAFETY: ProjFS owns this NUL-terminated callback spelling through handler completion; denial precedes even the next borrowed unit.
         let unit = unsafe { *pointer.0.add(length) };
-        if unit == 0 { break; }
+        if unit == 0 {
+            break;
+        }
         length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
     }
     // SAFETY: the preceding admitted scan found this exact terminal NUL.
@@ -5079,19 +5119,27 @@ struct OpenMetadataState {
 fn host_windows_metadata(
     path: &MountPath, projection: Projection<'_>,
 ) -> Result<HostWindowsMetadata, NativeMountError> {
-    with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        let metadata = crate::native_host::stat_windows_leaf_with_work(
-            parent, leaf, &mut { projection.work },
-        ).map_err(detach_work_error)?;
-        Ok(HostWindowsMetadata {
-            identity: metadata.identity().map_err(NativeMountError::Demand)?,
-            links: metadata.number_of_links(),
-            size: metadata.len(),
-            attributes: metadata.file_attributes(),
-            created: i64::try_from(metadata.creation_time()).map_err(|_| crate::WorkError::Overflow)?,
-            modified: i64::try_from(metadata.last_write_time()).map_err(|_| crate::WorkError::Overflow)?,
-        })
-    })
+    with_projection_parent(
+        projection.root,
+        projection.root_identity,
+        path,
+        projection.work,
+        |parent, leaf| {
+            let metadata =
+                crate::native_host::stat_windows_leaf(parent, leaf, &mut { projection.work })
+                    .map_err(detach_work_error)?;
+            Ok(HostWindowsMetadata {
+                identity: metadata.identity().map_err(NativeMountError::Demand)?,
+                links: metadata.number_of_links(),
+                size: metadata.len(),
+                attributes: metadata.file_attributes(),
+                created: i64::try_from(metadata.creation_time())
+                    .map_err(|_| crate::WorkError::Overflow)?,
+                modified: i64::try_from(metadata.last_write_time())
+                    .map_err(|_| crate::WorkError::Overflow)?,
+            })
+        },
+    )
 }
 
 fn with_mount_wide_path_on_meter<T>(
@@ -5655,8 +5703,17 @@ fn resolves_to_directory(
                 Err(error) => return Err(detach_source_error(error)),
             };
             let next = RetainedBuffer::source_chunk(next, projection)?;
-            if !source_path_pop(projection, &mut path)? { return Ok(false); }
-            let Some(target) = source_utf16(projection, &next.value.as_ref().expect("live link packet").bytes, false)? else { return Ok(false); };
+            if !source_path_pop(projection, &mut path)? {
+                return Ok(false);
+            }
+            let Some(target) = source_utf16(
+                projection,
+                &next.value.as_ref().expect("live link packet").bytes,
+                false,
+            )?
+            else {
+                return Ok(false);
+            };
             resolves_to_directory(projection, &path, &target, hops + 1)
         }
         _ => Ok(false),
@@ -5717,15 +5774,29 @@ fn source_listing(
         {
             let mut drain = page_entries.drain(..);
             while drain.len() != 0 {
-                projection.work.charge(crate::WorkCounters {
-                    bytes_copied: size_of::<super::MountDirectoryEntry>() as u64,
-                    items_examined: 1, ..crate::WorkCounters::UNCHARGED
-                }).map_err(detach_work_error)?;
+                projection
+                    .work
+                    .charge(crate::WorkCounters {
+                        bytes_copied: size_of::<super::MountDirectoryEntry>() as u64,
+                        items_examined: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    })
+                    .map_err(detach_work_error)?;
                 let entry = drain.next().expect("nonempty source page");
-                let lookup = MountLookup { node: entry.node, metadata: entry.metadata };
-                let ownership = ownership.split_owned_payload(entry.name.capacity() as u64).map_err(detach_work_error)?;
-                let component = RetainedBuffer::source_owned(entry.name, ownership, projection.custody.clone());
-                let Some(projected) = projected_entry(projection, path, component, lookup, entry.pin)? else { continue; };
+                let lookup = MountLookup {
+                    node: entry.node,
+                    metadata: entry.metadata,
+                };
+                let ownership = ownership
+                    .split_owned_payload(entry.name.capacity() as u64)
+                    .map_err(detach_work_error)?;
+                let component =
+                    RetainedBuffer::source_owned(entry.name, ownership, projection.custody.clone());
+                let Some(projected) =
+                    projected_entry(projection, path, component, lookup, entry.pin)?
+                else {
+                    continue;
+                };
                 let mut low = 0;
                 let mut high = entries.len();
                 let mut collision = false;
@@ -5747,18 +5818,30 @@ fn source_listing(
                 if !collision { source_insert(projection, &mut entries, low, projected)?; }
             }
         }
-        let Some(next) = next_cursor.take() else { break; };
-        let ownership = ownership.split_owned_payload(next.capacity() as u64).map_err(detach_work_error)?;
+        let Some(next) = next_cursor.take() else {
+            break;
+        };
+        let ownership = ownership
+            .split_owned_payload(next.capacity() as u64)
+            .map_err(detach_work_error)?;
         let next = RetainedBuffer::source_owned(next, ownership, projection.custody.clone());
         let mut low = 0;
         let mut high = seen_cursors.len();
         while low < high {
-            projection.work.charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            }).map_err(detach_work_error)?;
+            projection
+                .work
+                .charge(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                })
+                .map_err(detach_work_error)?;
             let middle = low + (high - low) / 2;
             match seen_cursors[middle].as_slice().cmp(next.as_slice()) {
-                std::cmp::Ordering::Equal => return Err(NativeMountError::Lifecycle("source directory listing repeated a cursor")),
+                std::cmp::Ordering::Equal => {
+                    return Err(NativeMountError::Lifecycle(
+                        "source directory listing repeated a cursor",
+                    ));
+                }
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
             }
@@ -5796,7 +5879,9 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
             MountSourceError::NativeCallbackDenied { .. } => true,
             MountSourceError::NativeWorkspaceCause(cause) => !workspace_failure_is_fatal(&cause.source),
             MountSourceError::Filesystem(cause) => !filesystem_failure_is_fatal(cause),
-            MountSourceError::NativeText { .. } => true,
+            MountSourceError::Engine(std::borrow::Cow::Borrowed(_))
+            | MountSourceError::Invalid(std::borrow::Cow::Borrowed(_))
+            | MountSourceError::Unsupported(std::borrow::Cow::Borrowed(_)) => true,
             #[cfg(feature = "native-watch")]
             MountSourceError::NativeWatchOriginalIo(_) | MountSourceError::NativeWatchOriginalBackend(_) => true,
             _ => false,
@@ -6301,12 +6386,35 @@ mod tests {
         let parent = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let cancellation = CancellationToken::new();
         let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let mut writer = super::ProjectedNativeWriter::create(&meter, |_| Ok(()), ||
-            crate::native_host::create_windows_provisional_overlapped_file_with_work(
-                &parent, &[102], &mut &meter,
-            ).map_err(super::detach_work_error))?;
+        let mut writer = super::ProjectedNativeWriter::create(
+            &meter,
+            |_| Ok(()),
+            || {
+                crate::native_host::create_windows_wide_at(
+                    &parent,
+                    &[102],
+                    false,
+                    true,
+                    false,
+                    true,
+                    &mut &meter,
+                )
+                .map_err(super::detach_work_error)
+            },
+        )?;
         let native_meter = meter.runtime_meter();
-        super::wait_native_unit_measured(writer.file().write_async(0, Bytes::from_static(b"physical"), Arc::clone(&native_meter), ()).map_err(super::projection_io_error)?, &meter)?;
+        super::wait_native_unit_measured(
+            writer
+                .file()
+                .write_async(
+                    0,
+                    Bytes::from_static(b"physical"),
+                    Arc::clone(&native_meter),
+                    (),
+                )
+                .map_err(super::projection_io_error)?,
+            &meter,
+        )?;
         cancellation.cancel();
         let error = match writer.file().write_async(8, Bytes::from_static(b"not written"), native_meter, ()) {
             Err(error) => super::projection_io_error(error),
@@ -6562,11 +6670,24 @@ mod tests {
         old.stop()?;
         assert!(old.cleanup_state().cleanup_complete());
         let refused = crate::native_mount::prepare_native_mount_start(&meter)?
-            .restart_with_meter(old, source.clone(), &meter).err().expect("old permanently retired capture gate is denied");
-        let crate::NativeMountError::StartupFailed(refused) = refused else { panic!("original preborn failure custody"); };
-        assert!(refused.retired_owner().expect("complete original outcome").cleanup_state().cleanup_complete());
+            .restart_with_meter(old, source.clone(), &meter)
+            .err()
+            .expect("old permanently retired capture gate is denied");
+        let crate::NativeMountError::StartupFailed(refused) = refused else {
+            panic!("original preborn failure custody");
+        };
+        assert!(
+            refused
+                .retired_owner()
+                .expect("complete original outcome")
+                .cleanup_state()
+                .cleanup_complete()
+        );
         let (_, next, old) = refused.into_parts();
-        assert!(next.destination().as_os_str().is_empty(), "no adopted warm path before admission");
+        assert!(
+            next.destination().as_os_str().is_empty(),
+            "no adopted warm path before admission"
+        );
         assert!(next.cleanup_state().source_retained);
         drop(next);
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
@@ -7049,7 +7170,7 @@ mod tests {
             $h.Close()";
         let ready = root.path().join("ready");
         let go = root.path().join("go");
-        let mut editor = acyclic_native_runtime::spawn_process_tree(
+        let mut editor = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", script])
                 .env("ACYCLIC_FS_TEST_FILE", &file)
@@ -7060,13 +7181,13 @@ mod tests {
             assert!(editor.try_wait(None)?.is_none(), "editor exited early");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         std::fs::write(&go, b"")?;
         assert!(
             editor.wait(std::time::Duration::from_secs(30))?.success(),
             "metadata edit failed"
         );
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let captured = source
             .lookup(&windows_path("late.txt"))?
             .ok_or("late.txt was not captured")?;
@@ -7102,7 +7223,7 @@ mod tests {
             8 * 1024 * 1024,
         )?;
         assert!(output.status.success(), "external edit failed: {output:?}");
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&seed)?.is_none());
         let moved = windows_path("moved.txt");
         assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
@@ -7122,28 +7243,28 @@ mod tests {
             let path = windows_path(name);
             let length = source.lookup(&path)?.ok_or(MountSourceError::NotFound)?;
             let length = u32::try_from(length.node.logical_bytes)
-                .map_err(|_| MountSourceError::Invalid("test file too large".to_owned()))?;
+                .map_err(|_| MountSourceError::Invalid(std::borrow::Cow::Owned("test file too large".to_owned())))?;
             Ok(source.read_range(&path, 0, length)?.to_vec())
         };
 
         external("echo first> created.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("created.txt")?, b"first\r\n");
         external("echo second> created.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("created.txt")?, b"second\r\n");
         external("ren created.txt renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         external("echo third> renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("renamed.txt")?, b"third\r\n");
         external("mklink /H linked.txt renamed.txt > nul && del renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&windows_path("created.txt"))?.is_none());
         assert!(source.lookup(&windows_path("renamed.txt"))?.is_none());
         assert_eq!(content("linked.txt")?, b"third\r\n");
         external("del linked.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
         session.stop()?;
         Ok(())
@@ -7159,12 +7280,12 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("b.txt"), FileMetadata::default(), None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
         external_edit(&destination, "echo c> c.txt && del b.txt")?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
         assert!(source.lookup(&windows_path("b.txt"))?.is_none());
         assert!(source.lookup(&windows_path("c.txt"))?.is_some());
@@ -7187,21 +7308,21 @@ mod tests {
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
         boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(target("second.txt").into(), 0), FileMetadata::default(), work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["link"]);
         assert_eq!(
             std::fs::read_link(destination.join("link"))?,
             std::path::Path::new("second.txt")
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(sorted_names(&destination)?.is_empty());
         session.stop()?;
         Ok(())
     }
 
     fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
-        acyclic_native_runtime::spawn_process_tree(
+        acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new("powershell.exe").args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -7262,8 +7383,8 @@ mod tests {
         ))?;
         succeeded(editor)?;
         succeeded(reader)?;
-        session.flush_callbacks()?;
-        session.revalidate()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let wanted = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut lost = Vec::new();
         for index in 0..FILES {
@@ -7299,9 +7420,9 @@ mod tests {
             projected.display()
         ))?)?;
         assert_eq!(super::reparse_tag(&projected)?.0, None, "a placeholder");
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(std::fs::read(&projected)?, b"after!");
         session.stop()?;
         Ok(())
@@ -7320,8 +7441,8 @@ mod tests {
             "[IO.File]::AppendAllText('{}', ' and user')",
             projected.display()
         ))?)?;
-        session.flush_callbacks()?;
-        session.revalidate()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(std::fs::read(&projected)?, b"source and user");
         assert_eq!(
             source.read_range(&kept, 0, 15)?.as_ref(),
@@ -7386,7 +7507,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 drop(held);
             });
-            session.revalidate()?;
+            session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
             closer.join().map_err(|_| "closer panicked")?;
             if directory {
                 assert!(std::fs::symlink_metadata(&projected)?.is_dir());
@@ -7414,7 +7535,7 @@ mod tests {
         std::fs::remove_file(&projected)?;
         std::fs::create_dir(&projected)?;
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(std::fs::symlink_metadata(&projected)?.is_dir());
         session.stop()?;
         Ok(())
@@ -7439,7 +7560,7 @@ mod tests {
             0,
             Bytes::from_static(b"listed"),
         )?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
         assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
 
@@ -7449,7 +7570,7 @@ mod tests {
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("invalidated.txt"), FileMetadata::default(), None, work))?;
         session.invalidate(b"/invalidated.txt")?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(
             std::fs::metadata(destination.join("invalidated.txt"))?.len(),
             0
@@ -7699,9 +7820,9 @@ mod tests {
         let statuses = [
             MountSourceError::NotFound,
             MountSourceError::AlreadyExists,
-            MountSourceError::Invalid(String::new()),
-            MountSourceError::Unsupported(String::new()),
-            MountSourceError::Engine(String::new()),
+            MountSourceError::Invalid(std::borrow::Cow::Owned(String::new())),
+            MountSourceError::Unsupported(std::borrow::Cow::Owned(String::new())),
+            MountSourceError::Engine(std::borrow::Cow::Owned(String::new())),
             MountSourceError::Stale,
         ]
         .iter()

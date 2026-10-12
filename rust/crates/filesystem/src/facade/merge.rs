@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn apply_workspace_join(
         &self, request: WorkspaceJoinRequest<'_, A, O>,
     ) -> Result<WorkspaceJoinOutcome, WorkspaceError> {
@@ -13,7 +12,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await?;
         Ok(output.value)
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn apply_workspace_join_guarded_with_native_work<'original, F, Fut, E>(
@@ -35,7 +33,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 unreachable!("native join retains original output custody"),
         }
     }
-
 
     pub(super) async fn apply_workspace_join_with_accounting<R, P>(
         &self, request: WorkspaceJoinRequest<'_, A, O, R>, accounting: &mut KernelAccounting<'_>,
@@ -157,7 +154,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-
     pub(super) async fn read_join_root_with_accounting(
         &self, object: ObjectId, config: VolumeConfig, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<Owned<GenerationRoot>, FsError> {
@@ -169,7 +165,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(root)
     }
 
-
     pub(super) async fn flush_join_parent_with_accounting(
         &self, parent: ObjectId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
@@ -177,9 +172,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let scope = crate::PublicationScope::Closure { objects: &objects, proven_at: self.inner.objects.collection_sweeps() };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self.inner.objects.flush_before_publish_with_native_work(scope, original, cancellation).await.map_err(Into::into);
+            return ({ let __object_args = (scope, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result }).map_err(Into::into);
         }
-        let flushed = self.inner.objects.flush_before_publish(scope, accounting.remaining()?, cancellation).await;
+        let flushed = ({ let __object_args = (scope, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) });
         let spent = match &flushed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_creation_backend_work(accounting, spent)?;
         flushed.map(|receipt| receipt.value).map_err(|failure| failure.error.into())

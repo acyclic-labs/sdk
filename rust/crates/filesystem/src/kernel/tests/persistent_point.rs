@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_btree::Child;
@@ -9,7 +9,7 @@ use crate::kernel::{
     TreeEntry, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, };
+use crate::storage::ObjectKind;
 use acyclic_stream::OwnedBytes;
 
 fn record(byte: u8) -> FileRecord {
@@ -30,11 +30,17 @@ async fn put(
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    AsyncObjectStore::put(
-        store,
-        id,
+    {
+        let __object_args = (
+            id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 

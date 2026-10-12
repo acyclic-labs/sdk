@@ -9,18 +9,25 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 impl ConfiguredRecursiveAuthorityBinding {
     /// Retains the signer and scope for configured-source validation.
     #[must_use]
-    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self { Self { issuer, scope } }
+    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self {
+        Self { issuer, scope }
+    }
 
     #[must_use]
-    pub fn authority(&self) -> &Authority { self.issuer.audience() }
+    pub fn authority(&self) -> &Authority {
+        self.issuer.audience()
+    }
 
     #[must_use]
-    pub const fn issuer(&self) -> &AuthorityIssuer { &self.issuer }
+    pub const fn issuer(&self) -> &AuthorityIssuer {
+        &self.issuer
+    }
 }
 
 impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D)
-        -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct WireBinding {
@@ -30,7 +37,10 @@ impl<'de> Deserialize<'de> for ConfiguredRecursiveAuthorityBinding {
             scope: Scope,
         }
         let wire = WireBinding::deserialize(deserializer)?;
-        Ok(Self { issuer: AuthorityIssuer::new(wire.issuer, wire.key, wire.authority), scope: wire.scope })
+        Ok(Self {
+            issuer: AuthorityIssuer::new(wire.issuer, wire.key, wire.authority),
+            scope: wire.scope,
+        })
     }
 }
 
@@ -70,16 +80,22 @@ pub struct ConfiguredRecursiveFork {
     pub limits: ForkPreparationLimits,
 }
 
-fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
-    -> std::result::Result<TaskAdmissionRecord, D::Error> {
-    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None).map(|(admission, _)| admission)
+fn canonical_admission<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<TaskAdmissionRecord, D::Error> {
+    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None)
+        .map(|(admission, _)| admission)
         .map_err(serde::de::Error::custom)
 }
 
 /// An explicit read-only Project import and the caller-owned canonical notice.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfiguredRecursiveMerge { pub caller: TaskId, pub source: TaskId, pub notice: ConversationMessage }
+pub struct ConfiguredRecursiveMerge {
+    pub caller: TaskId,
+    pub source: TaskId,
+    pub notice: ConversationMessage,
+}
 
 /// Existing trusted host-retained original cut, never a model-provided ledger.
 #[derive(Deserialize)]
@@ -112,7 +128,12 @@ pub struct ConfiguredRecursiveToolsConfig {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SourceCheckpoint { pub(super) snapshot: Snapshot, pub(super) request: ForkRequest, pub(super) caller: TaskId, pub(super) arguments: ForkToolArguments }
+pub(super) struct SourceCheckpoint {
+    pub(super) snapshot: Snapshot,
+    pub(super) request: ForkRequest,
+    pub(super) caller: TaskId,
+    pub(super) arguments: ForkToolArguments,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::filesystem::PreparationRecord for SourceCheckpoint {
@@ -125,7 +146,10 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
             std::mem::size_of::<crate::source_authorization::ProjectSourceAuthorization>() as u64,
             std::mem::size_of::<crate::core::Scope>() as u64,
             std::mem::size_of::<crate::conversation::FileRef>() as u64,
-        ].into_iter().max().unwrap_or(0)
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0)
     }
 
     fn diagnostic_label_bytes() -> u64 {
@@ -151,26 +175,36 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
     }
 
     fn decode_owned_allowance(
-        shape: crate::contract::JsonValueShape, codec_scratch: u64, input_bytes: u64,
+        shape: crate::contract::JsonValueShape,
+        codec_scratch: u64,
+        input_bytes: u64,
         native_code: Option<crate::wire::ErrorCode>,
     ) -> Result<u64> {
         let overflow = || match native_code {
-            Some(code) => Error::NativeBoundary { code,
-                reason: "configured source checkpoint ownership overflows" },
+            Some(code) => Error::NativeBoundary {
+                code,
+                reason: "configured source checkpoint ownership overflows",
+            },
             None => Error::Invalid("configured source checkpoint ownership overflows".into()),
         };
-        let snapshot = crate::contract::json_decode_owned_bytes(
-            shape, true, native_code,
-        )?;
-        let outer = shape.lexical_items().checked_mul(10)
+        let snapshot = crate::contract::json_decode_owned_bytes(shape, true, native_code)?;
+        let outer = shape
+            .lexical_items()
+            .checked_mul(10)
             .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
-            .and_then(|bytes| input_bytes.checked_mul(4).and_then(|strings| bytes.checked_add(strings)))
+            .and_then(|bytes| {
+                input_bytes
+                    .checked_mul(4)
+                    .and_then(|strings| bytes.checked_add(strings))
+            })
             .and_then(|bytes| bytes.checked_add(codec_scratch.max(input_bytes)))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(overflow)?;
-        snapshot.0.checked_sub(snapshot.1)
+        snapshot
+            .0
+            .checked_sub(snapshot.1)
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
-            .and_then(|bytes| bytes.checked_add(outer)).ok_or_else(overflow)
+            .and_then(|bytes| bytes.checked_add(outer))
+            .ok_or_else(overflow)
     }
 }
-

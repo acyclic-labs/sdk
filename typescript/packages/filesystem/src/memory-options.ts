@@ -1,5 +1,6 @@
 import { resolveObserver } from "@acyclic-labs/actors/observe";
-import type { FsVolumeEngine, MemoryFsOptions, WasmRawFs } from "./contracts.js";
+import type { FsVolumeEngine, MemoryFsOptions } from "./contracts.js";
+import type { WasmRawFs } from "./binding-types.js";
 import { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
 import { adaptFs } from "./filesystem-adapter.js";
 

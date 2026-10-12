@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn workspace_conflict_record(
         &self,
         workspace: &Volume<A, O>,
@@ -36,7 +35,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let _ = work;
         Ok(lookup.value)
     }
-
 
     pub(crate) async fn workspace_conflict_bytes(
         &self,
@@ -72,7 +70,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Some(read.bytes))
     }
 
-
     /// Whether two single-link records hold one file state: the same kind,
     pub(crate) async fn same_file_state(
         &self,
@@ -92,16 +89,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let mut metadata = Vec::with_capacity(2);
         for object in [left.metadata, right.metadata] {
-            let read = self
+            let read = ({ let __object_args = (object, workspace.config.limits.maximum_object_bytes, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
                 .inner
-                .objects
-                .read(
-                    object,
-                    workspace.config.limits.maximum_object_bytes,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
+                .objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
                 .map_err(WorkspaceError::engine)?;
             metadata.push(
                 crate::kernel::decode_file_metadata(&read.value.bytes, DecodeLimits::for_volume(workspace.config), &mut |_| Ok::<_, FsError>(()))
@@ -111,7 +101,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         Ok(metadata.first() == metadata.get(1))
     }
-
 
     pub(crate) async fn stage_merge_regular_record(
         &self,

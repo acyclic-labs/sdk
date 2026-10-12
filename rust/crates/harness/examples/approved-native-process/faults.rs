@@ -249,7 +249,7 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut host = acyclic_native_runtime::spawn_process_tree(&mut command)?;
+    let mut host = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
     let ready = host_ready(&mut host, storage.path()).await;
     let status = host.terminate_after(Duration::from_millis(250))?;
     if status.success() || !host.is_reaped() {

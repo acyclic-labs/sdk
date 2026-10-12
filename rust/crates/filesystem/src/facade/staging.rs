@@ -19,13 +19,11 @@ impl StagedContent {
         }
     }
 
-
     /// Authenticated immutable blob-root identity created by this SDK.
     #[must_use]
     pub const fn root(&self) -> ObjectId {
         self.root
     }
-
 
     /// Exact staged logical byte length authenticated by the blob build.
     #[must_use]
@@ -35,7 +33,6 @@ impl StagedContent {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
 
     pub(crate) async fn make_records_durable(
         &self,
@@ -47,13 +44,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (closure, work) = prove_record_closure_async(
             &self.inner.objects, records, closure_limits(config), budget, cancellation,
         ).await.map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::from))?;
-        let flushed = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &closure, proven_at }, remaining(work, budget)?, cancellation,
-        ).await.map_err(|failure| failure.map_with_prior_work(work, FsError::from))?;
+        let flushed = ({ let __object_args = (crate::PublicationScope::Closure { objects: &closure, proven_at }, remaining(work, budget)?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).map_err(|failure| failure.map_with_prior_work(work, FsError::from))?;
         let total = work.checked_add(flushed.work).map_err(|error| OperationFailure::new(FsError::from(error), work))?;
         Ok(FsReceipt { value: flushed.value, work: total })
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn make_records_durable_with_native_work(
@@ -67,11 +61,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects, records, closure_limits(config), original, cancellation,
         ).await?;
         let closure = (value, allocation);
-        self.inner.objects.flush_before_publish_with_native_work(
-            crate::PublicationScope::Closure { objects: &closure.0, proven_at }, original, cancellation,
-        ).await.map_err(FsError::from)
+        ({ let __object_args = (crate::PublicationScope::Closure { objects: &closure.0, proven_at }, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result }).map_err(FsError::from)
     }
-
 
     /// Holds the actual generation closure across an external durable publication.
     pub(crate) async fn make_generation_durable(
@@ -90,17 +81,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         drop(proof.root);
         let live = (proof.objects.capacity() as u64).checked_mul(size_of::<ObjectId>() as u64)
             .ok_or_else(|| OperationFailure::new(WorkspaceError::Work(WorkError::Overflow), work))?;
-        let flushed = self.inner.objects.flush_before_publish(
-            crate::PublicationScope::Closure { objects: &proof.objects, proven_at },
-            remaining_owned(work, budget, live).map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?,
-            cancellation,
-        ).await.map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, FsError::Object(failure.error))
+        let flushed = ({ let __object_args = (crate::PublicationScope::Closure { objects: &proof.objects, proven_at }, remaining_owned(work, budget, live).map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, FsError::Object(failure.error))
             .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
         let work = merge_simultaneous_work(work, flushed.work, live, budget)
             .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
         Ok(FsReceipt { value: flushed.value, work })
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn make_generation_durable_with_native_work(
@@ -113,17 +99,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let publication = self.retention_publication_with_accounting(
                 volume, ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() }, &mut accounting, cancellation,
             ).await?;
-            let held = self.inner.objects.flush_before_publish_with_native_work(
-                crate::PublicationScope::Closure {
+            let held = ({ let __object_args = (crate::PublicationScope::Closure {
                     objects: &publication.value.objects, proven_at: publication.value.proven_at,
-                }, original, cancellation,
-            ).await.map_err(FsError::from)?;
+                }, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.flush_before_publish(__object_args.0, &mut __object_work).await; __object_result }).map_err(FsError::from)?;
             publication.retire(&mut accounting)?;
             Ok(held)
         }.await;
         result.map_err(|error| (error, None))
     }
-
 
     pub(crate) async fn restore_workspace_generation(
         &self,
@@ -213,7 +196,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     /// Executes one active local-residency prediction through this filesystem's
     pub async fn execute_residency(
         &self,
@@ -232,7 +214,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await
     }
 
-
     pub(super) async fn put_encoded_with_accounting(
         &self, kind: ObjectKind, mut encoded: (Vec<u8>, KernelOwnedAllocation), accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -245,7 +226,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             };
             let hashed = HashedObject::from_native_vec(kind, &mut encoded.0, allocation, original, cancellation)?;
             let object = hashed.object_id();
-            self.inner.objects.put_hashed_with_native_work(hashed, original, cancellation).await?;
+            ({ let __object_args = (hashed, original, cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = self.inner.objects.put_hashed(__object_args.0, &mut __object_work).await; __object_result })?;
             return Ok(object);
         }
         let capacity = encoded.0.capacity() as u64;
@@ -265,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
         let object = hashed.object_id();
-        let receipt = self.inner.objects.put_hashed(hashed, accounting.remaining()?, cancellation).await;
+        let receipt = ({ let __object_args = (hashed, accounting.remaining()?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self.inner.objects.put_hashed(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) });
         let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work, };
         let (allocations, work, budget, _) = accounting.standalone_parts().ok_or(FsError::HandleAllocationFailed)?;
         *work = work.with_backend(spent, allocations.live_bytes())?;
@@ -274,7 +255,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         receipt.map_err(|failure| FsError::from(failure.error))?;
         Ok(object)
     }
-
 
     /// Includes retained caller buffers across both canonical encoding and storage.
     pub(super) async fn put_generation_root(
@@ -292,7 +272,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await.map_err(|failure| merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error))?;
         Ok((object, merge_simultaneous_work(work, child_work, live_owned_bytes, budget)?))
     }
-
 
     pub(super) async fn put_encoded(
         &self,
@@ -320,11 +299,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed = HashedObject::new(kind, encoded.value.into());
         let object = hashed.object_id();
         let backend_budget = remaining_owned(prospective, budget, live_bytes)?;
-        let receipt = self
+        let receipt = ({ let __object_args = (hashed, backend_budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self
             .inner
-            .objects
-            .put_hashed(hashed, backend_budget, cancellation)
-            .await
+            .objects.put_hashed(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
             .map_err(|failure| {
                 merge_simultaneous_failure(
                     prospective,
@@ -355,7 +332,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     pub(super) async fn stage_authored_blob_with_accounting(
         &self,
         content: acyclic_stream::OwnedBytes,
@@ -374,7 +350,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
     /// Streams caller content into immutable authenticated chunks without
     pub async fn stage_content<R: AsyncBlobSource>(
         &self,
@@ -391,7 +366,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             measured(result, &accounting)
         }).await
     }
-
 
     pub(crate) async fn stage_content_with_accounting<R: AsyncBlobSource>(
         &self,

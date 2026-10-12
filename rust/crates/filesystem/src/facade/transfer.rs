@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Reads one exact immutable object for resumable manifest transfer.
     pub async fn export_object(
         &self,
@@ -11,18 +10,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::storage::ObjectRead> {
-        let receipt = self
+        let receipt = ({ let __object_args = (object_id, maximum_bytes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
             .inner
-            .objects
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
+            .objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
             .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(FsReceipt {
             value: receipt.value,
             work: receipt.work,
         })
     }
-
 
     /// Idempotently imports one immutable object under its canonical identity.
     pub async fn import_object(
@@ -32,18 +28,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        let receipt = self
+        let receipt = ({ let __object_args = (object_id, bytes.into(), budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
             .inner
-            .objects
-            .put(object_id, bytes.into(), budget, cancellation)
-            .await
+            .objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
             .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(FsReceipt {
             value: (),
             work: receipt.work,
         })
     }
-
 
     /// Reads one ordered resumable page from a canonical generation manifest.
     pub async fn export_generation_batch(
@@ -80,7 +73,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(|failure| OperationFailure::new(map_transfer_error(failure.error), *failure.work));
         result.observe_on(&span, "export_generation_batch")
     }
-
 
     /// Idempotently imports one manifest-aligned page of immutable bodies.
     pub async fn import_generation_batch(
@@ -120,7 +112,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Builds a deterministic complete manifest for the current immutable or
     pub async fn export_manifest(

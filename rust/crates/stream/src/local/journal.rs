@@ -28,7 +28,9 @@ impl Drop for Journal {
 }
 
 /// The blocking worker waits without releasing ownership; replay never authorizes truncation or restart after a rejected semantic prefix.
-pub(super) fn validate_recovery(recovered: &mpsc::Sender<Recovered>) -> Result<bool, LocalStreamError> {
+pub(super) fn validate_recovery(
+    recovered: &mpsc::Sender<Recovered>,
+) -> Result<bool, LocalStreamError> {
     let (complete, validation) = tokio::sync::oneshot::channel();
     recovered
         .blocking_send(Recovered::Validate(complete))
@@ -221,30 +223,60 @@ impl Journal {
             let encoded = encode_snapshot(self.limits, epoch, state, meter)?;
             let header = encode_header(self.limits, epoch)?;
             // Admit fixed boundaries before create; admit data retries separately.
-            let mut controls = meter.map(|meter| NativeOperationReservation::new(
-                Arc::clone(meter), NativeOperationKind::Write, 3,
-            )).transpose()?;
-            let mut seeks = meter.map(|meter| NativeOperationReservation::new(
-                Arc::clone(meter), NativeOperationKind::Read, 1,
-            )).transpose()?;
-            let mut durability = meter.map(|meter| NativeOperationReservation::new(
-                Arc::clone(meter), NativeOperationKind::Durability, 3,
-            )).transpose()?;
-            let mut snapshot_write = meter.map(|meter| AdmittedFrameWrite::new(meter, encoded.value.len()))
+            let mut controls = meter
+                .map(|meter| {
+                    NativeOperationReservation::new(
+                        Arc::clone(meter),
+                        NativeOperationKind::Write,
+                        3,
+                    )
+                })
                 .transpose()?;
-            let mut header_write = meter.map(|meter| AdmittedFrameWrite::new(meter, header.len()))
+            let mut seeks = meter
+                .map(|meter| {
+                    NativeOperationReservation::new(Arc::clone(meter), NativeOperationKind::Read, 1)
+                })
+                .transpose()?;
+            let mut durability = meter
+                .map(|meter| {
+                    NativeOperationReservation::new(
+                        Arc::clone(meter),
+                        NativeOperationKind::Durability,
+                        3,
+                    )
+                })
+                .transpose()?;
+            let mut snapshot_write = meter
+                .map(|meter| AdmittedFrameWrite::new(meter, encoded.value.len()))
+                .transpose()?;
+            let mut header_write = meter
+                .map(|meter| AdmittedFrameWrite::new(meter, header.len()))
                 .transpose()?;
             let mut file = SnapshotFile::create(
-                &temporary.value, meter, &mut controls, &mut observed, &mut started,
+                &temporary.value,
+                meter,
+                &mut controls,
+                &mut observed,
+                &mut started,
             )?;
-            let handle = file.file.as_mut().expect("successful create retains its held file");
+            let handle = file
+                .file
+                .as_mut()
+                .expect("successful create retains its held file");
             let (written, recorded) = match &mut snapshot_write {
                 Some(admission) => admission.write_all(handle, &encoded.value),
-                None => (handle.write_all(&encoded.value).map_err(LocalStreamError::Io), Ok(())),
+                None => (
+                    handle
+                        .write_all(&encoded.value)
+                        .map_err(LocalStreamError::Io),
+                    Ok(()),
+                ),
             };
             keep_observation(&mut observed, recorded);
             written?;
-            let (synced, recorded) = attempt_control(&mut durability, || sync_file(handle, self.limits.durability));
+            let (synced, recorded) = attempt_control(&mut durability, || {
+                sync_file(handle, self.limits.durability)
+            });
             keep_observation(&mut observed, recorded);
             synced?;
             keep_observation(&mut observed, file.close());
@@ -261,16 +293,22 @@ impl Journal {
             let (truncated, recorded) = attempt_control(&mut controls, || self.file.set_len(0));
             keep_observation(&mut observed, recorded);
             truncated?;
-            let (seeked, recorded) = attempt_control(&mut seeks, || self.file.seek(SeekFrom::Start(0)));
+            let (seeked, recorded) =
+                attempt_control(&mut seeks, || self.file.seek(SeekFrom::Start(0)));
             keep_observation(&mut observed, recorded);
             seeked?;
             let (written, recorded) = match &mut header_write {
                 Some(admission) => admission.write_all(&mut self.file, &header),
-                None => (self.file.write_all(&header).map_err(LocalStreamError::Io), Ok(())),
+                None => (
+                    self.file.write_all(&header).map_err(LocalStreamError::Io),
+                    Ok(()),
+                ),
             };
             keep_observation(&mut observed, recorded);
             written?;
-            let (synced, recorded) = attempt_control(&mut durability, || sync_file(&self.file, self.limits.durability));
+            let (synced, recorded) = attempt_control(&mut durability, || {
+                sync_file(&self.file, self.limits.durability)
+            });
             keep_observation(&mut observed, recorded);
             synced?;
             self.epoch = epoch;
@@ -303,7 +341,10 @@ impl Journal {
     ) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
         let (written, observed) = match admission {
             Some(admission) => admission.write_all(&mut self.file, frame),
-            None => (self.file.write_all(frame).map_err(LocalStreamError::Io), Ok(())),
+            None => (
+                self.file.write_all(frame).map_err(LocalStreamError::Io),
+                Ok(()),
+            ),
         };
         if let Err(error) = written {
             return (Err(error.into()), observed);

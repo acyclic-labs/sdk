@@ -58,7 +58,6 @@ pub struct PathMetadataLookup {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
-
     /// Returns an exact cursor page and its original-owned names/vector claim.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn list_directory_records_with_native_work(
@@ -72,7 +71,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         ).await?;
         Ok((page, native_pinned_allocation(allocation)?))
     }
-
 
     /// Resolves one bounded directory page into generation-scoped child
     pub async fn resolve_directory_page(
@@ -133,13 +131,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let metadata = if metadata_requests.is_empty() {
             Vec::new()
         } else {
-            let receipt = self
+            let receipt = ({ let __object_args = (&metadata_requests, remaining(work, budget)?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self
                 .volume
                 .fs
                 .inner
-                .objects
-                .read_many(&metadata_requests, remaining(work, budget)?, cancellation)
-                .await
+                .objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
             work = add(work, receipt.work)?;
             receipt.value
@@ -292,7 +288,6 @@ pub(super) async fn attach_directory_records_to_file_root_with_accounting<A: Asy
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Returns one directory page with all child records fetched in one shared
     pub async fn list_directory_records(
         &mut self,
@@ -312,7 +307,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FsReceipt { value, work }
         }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(crate) async fn list_directory_records_with_accounting(
         &mut self, path: &NamespacePath, after: std::ops::Bound<&LogicalName>,
@@ -351,7 +345,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         readonly_cleanup_standalone(accounting, before, retained)?;
         result
     }
-
 
     /// Lists one directory page and child records on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]

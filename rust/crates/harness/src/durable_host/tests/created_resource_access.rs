@@ -478,9 +478,7 @@ impl CreationFixture {
             filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
             root_scope.limits().file_bytes, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, root_scope.limits().file_bytes, None)?;
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
             identity: MachineIdentity {
@@ -506,7 +504,7 @@ impl CreationFixture {
         };
         #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
-        let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream, payloads, reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
+        let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?, stream, payloads, reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
         }, None)?.with_resource_creation_providers(&[creator.clone(), fs_creator.clone()], None)?);
         let mut bindings = Bindings::local();
@@ -796,9 +794,7 @@ impl CreationFixture {
             parent_project.capability(VolumeOperation::Read, &mut None)?,
             parent_private.capability(VolumeOperation::Read, &mut None)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
-        let resolver = Arc::new(FilesystemContentVerifier::new(
-            self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None,
-        )?);
+        let resolver = FilesystemContentVerifier::new(self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None)?;
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
             &fork_stream, parent.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
