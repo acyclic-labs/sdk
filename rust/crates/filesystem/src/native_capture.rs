@@ -42,7 +42,7 @@ impl NativeViewBaseline {
         read_only: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>, crate::NativeTreeMaterializationError> {
-        let allocation = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(std::sync::Arc::new(Self {
             root_identity, read_only, _allocation: allocation,
         }))
@@ -245,45 +245,38 @@ mod capture_policy_tests {
     }
 
     #[tokio::test]
-    async fn watch_hint_observes_only_missing_ancestors_of_a_nested_file()
+    async fn nested_hints_hydrate_missing_or_stale_ancestors_without_expanding_siblings()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("sub"))?;
-        std::fs::write(temporary.path().join("sub/changed.txt"), b"changed")?;
-        std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let changed = path("/sub/changed.txt")?;
-        capture_watch_batch(
-            &mut checkout,
-            batch(vec![WatchChange::Modified(changed.clone())]),
-            &options(temporary.path(), 2)?,
-            &crate::CapturePolicy::default(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let token = CancellationToken::new();
-        let parent = checkout
-            .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert_eq!(
-            parent.value.record.map(|record| record.kind),
-            Some(FileKind::Directory)
-        );
-        let file = checkout
-            .lookup_no_follow(&changed, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert_eq!(
-            file.value.record.map(|record| record.kind),
-            Some(FileKind::Regular)
-        );
-        let unrelated = checkout
-            .lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token)
-            .await?;
-        assert!(unrelated.value.record.is_none());
+        for (workspace_name, child_name, contents, prior) in [
+            ("watch-ancestor", "/sub/changed.txt", "changed", None),
+            ("watch-stale-ancestor", "/sub/new.txt", "new", Some("old")),
+        ] {
+            let temporary = tempfile::tempdir()?;
+            std::fs::create_dir(temporary.path().join("sub"))?;
+            std::fs::write(temporary.path().join(&child_name[1..]), contents.as_bytes())?;
+            if prior.is_none() {
+                std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
+            }
+            let workspace = crate::Fs::memory()
+                .create_workspace(workspace_name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            if let Some(contents) = prior { workspace.write_text("/sub", contents).await?; }
+            let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let child = path(child_name)?;
+            let hint = if prior.is_some() { WatchChange::Created(child.clone()) }
+                else { WatchChange::Modified(child.clone()) };
+            capture_watch_batch(&mut checkout, batch(vec![hint]), &options(temporary.path(), 2)?,
+                &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+            let token = CancellationToken::new();
+            let parent = checkout.lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token).await?;
+            assert_eq!(parent.value.record.map(|record| record.kind), Some(FileKind::Directory));
+            let file = checkout.lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token).await?;
+            assert_eq!(file.value.record.map(|record| record.kind), Some(FileKind::Regular));
+            if prior.is_none() {
+                let unrelated = checkout.lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token).await?;
+                assert!(unrelated.value.record.is_none());
+            }
+        }
         Ok(())
     }
 
@@ -449,48 +442,6 @@ mod capture_policy_tests {
             }
         }
         assert_eq!(captured, ["/modified", "/arrived", "/arrived/inner.txt"]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn watch_nested_file_replaces_a_stale_non_directory_ancestor()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("sub"))?;
-        std::fs::write(temporary.path().join("sub/new.txt"), b"new")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-stale-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        workspace.write_text("/sub", "old").await?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let child = path("/sub/new.txt")?;
-        capture_watch_batch(
-            &mut checkout,
-            batch(vec![WatchChange::Created(child.clone())]),
-            &options(temporary.path(), 2)?,
-            &CapturePolicy::default(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let token = CancellationToken::new();
-        assert_eq!(
-            checkout
-                .lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .map(|record| record.kind),
-            Some(FileKind::Directory)
-        );
-        assert!(
-            checkout
-                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_some()
-        );
         Ok(())
     }
 
@@ -705,12 +656,12 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
         ? {
             return Err(CaptureError::InvalidOptions);
         }
-        let mut receipt = CaptureReceipt::default();
+        let receipt = CaptureReceipt::default();
         let candidate = checkout.private_candidate(&meter.native, &cancellation)?;
         (receipt, candidate, unique)
     };
     let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
-    let mut states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
+    let states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
     let mut host_links = CaptureMap::new();
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     let mut states = states.into_iter();
@@ -848,8 +799,8 @@ pub(crate) fn capture_runtime_meter_owner(
     if !capture.owns_native_work(native) {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
-    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64)?;
-    let base = native.runtime_meter_owner();
+    let header = native.claim(std::mem::size_of::<CapturedRuntimeReadMeter>() as u64, u64::from((std::mem::size_of::<CapturedRuntimeReadMeter>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+    let base = native.runtime_meter();
     Ok(std::sync::Arc::new(CapturedRuntimeReadMeter {
         base, _header: header, _capture: std::sync::Arc::clone(capture),
     }))
@@ -921,7 +872,7 @@ fn native_device_control_in_scope(
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
-        file, code, input, output, Some((scope.native.runtime_meter(), acyclic_native_runtime::NativeOperationKind::Read)),
+        file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
     ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
@@ -1018,7 +969,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let expected_identity = options.expected_root_identity;
     let worker = meter.native.clone();
     let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
-    let task_meter = meter.native.runtime_meter_owner();
+    let task_meter = meter.native.runtime_meter();
     let task = acyclic_native_runtime::run_blocking_io(move || {
         let worker = CaptureWorkScope { native: worker, custody: None };
         let result = (|| {
@@ -2852,7 +2803,7 @@ mod shared_watch_capture_tests {
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
         let original = native.original_demand_work();
-        let meter = Arc::clone(original.meter());
+        let meter = Arc::clone(&original.state);
         *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
         let limits = checkout.volume_config().limits;
         let path = NamespacePath::from_portable(
@@ -3634,7 +3585,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         let logical_bytes = metadata.len();
         let ranges = allocated_data_ranges(
             &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
-            |work| work.original_arc().lock().remaining(),
+            |work| work.original.lock().remaining(),
             #[cfg(windows)]
             |file, code, input, output, _work| {
                 native_device_control_in_scope(file, code, input, output, meter)
@@ -4117,7 +4068,7 @@ fn native_positional_file(
     file: std::fs::File,
     original: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter = original.runtime_meter_owner();
+    let meter = original.runtime_meter();
     #[cfg(windows)]
     let result = unsafe {
         // SAFETY: the fresh positional handle is overlapped and has no prior completion port.

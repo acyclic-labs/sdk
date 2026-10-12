@@ -544,7 +544,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     }
     let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
     let allocation = if let Some(original) = &original {
-        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
+        Some(original.claim(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
             .map_err(crate::native_name::original_name_error)?)
     } else {
         work.allocate(backing)?;
@@ -1113,7 +1113,7 @@ impl NativeWatch {
         let queue_bytes = (capacity as u64).checked_mul(size_of::<WatchChange>() as u64)
             .ok_or(WorkError::Overflow)?;
         let queue_allocation = if let Some(original) = original {
-            Some(original.claim(queue_bytes)?)
+            Some(original.claim(queue_bytes, u64::from((queue_bytes) != 0), crate::WorkCounters::UNCHARGED)?)
         } else {
             work.allocate(queue_bytes).map_err(demand_watch_error)?;
             None
@@ -1946,7 +1946,7 @@ impl NativeWatch {
         replacement.1 = if shared_bytes == 0 {
             None
         } else if let Some(original) = original {
-            Some(original.claim(shared_bytes as u64)?)
+            Some(original.claim(shared_bytes as u64, u64::from((shared_bytes as u64) != 0), crate::WorkCounters::UNCHARGED)?)
         } else {
             work.allocate(shared_bytes as u64).map_err(demand_watch_error)?;
             None
@@ -2247,7 +2247,7 @@ impl NativeWatch {
         // Data always drops before either its old payload or new buffer guards.
         let mut owned = (
             Vec::<WatchChange>::new(), WatchBatchOriginal::default(),
-            original.map(|original| original.retain_owned(0)).transpose()?,
+            original.map(|original| original.claim(0, 0, crate::WorkCounters::UNCHARGED)).transpose()?,
         );
         let mut ordinary_bytes = 0;
         let mut dequeued = false;
@@ -2269,7 +2269,7 @@ impl NativeWatch {
                     .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
                 if capacity != 0 {
                     if let Some(original) = original {
-                        owned.2 = Some(original.claim(bytes)?);
+                        owned.2 = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
                     } else {
                         work.allocate(bytes).map_err(demand_watch_error)?;
                         ordinary_bytes = bytes;
@@ -2396,19 +2396,6 @@ impl NativeWatch {
     }
 }
 
-fn admit_watch_work(
-    work: &mut WorkCounters,
-    proposed: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), NativeWatchError> {
-    cancellation.check()?;
-    let next = work.checked_add(proposed)?;
-    next.verify(budget)?;
-    *work = next;
-    Ok(())
-}
-
 #[cfg(windows)]
 fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     bytes: u64, work: &mut W,
@@ -2417,7 +2404,7 @@ fn watch_claim_allocation<W: crate::demand::SourceDemandReadWork>(
     if work.is_native_original() {
         let native = work.native_source_work()
             .ok_or(crate::demand::DemandError::NativeWorkUnavailable)?.materialization_work()?;
-        return native.claim(bytes).map(Some).map_err(|error| NativeWatchError::from(error).into());
+        return native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map(Some).map_err(|error| NativeWatchError::from(error).into());
     }
     work.allocate(bytes)?;
     Ok(None)

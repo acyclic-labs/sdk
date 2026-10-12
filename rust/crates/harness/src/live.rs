@@ -103,7 +103,7 @@ impl TaskGroup {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if let Some(work) = work {
             let bytes = (std::mem::size_of::<GroupState>() + std::mem::size_of::<Semaphore>()) as u64;
-            let custody = work.retain_owned(bytes)
+            let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
                 .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
             work.charge(acyclic_fs::WorkCounters {
                 allocation_operations: 2, ..Default::default()
@@ -152,7 +152,7 @@ impl TaskGroup {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
                         custody: None,
                     })? as u64;
-                let custody = work.retain_owned(bytes)
+                let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
                 work.charge(acyclic_fs::WorkCounters {
                     allocation_operations: 1, ..Default::default()

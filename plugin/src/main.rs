@@ -456,7 +456,7 @@ fn guarded_cli_text(
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "native CLI metadata exceeds its byte bound",
         })?;
-    let allocation = work.claim(bytes as u64)
+    let allocation = work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let mut name = String::new();
     name.try_reserve_exact(bytes)
