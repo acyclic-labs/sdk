@@ -90,7 +90,12 @@ impl ControlPlane {
                 binding.created()?.native_root_identity,
                 &binding.path,
             )?;
-            LazyWorkspace::open(workspace, source, self.store.clone())
+            LazyWorkspace::open(workspace, source, self.store.clone(), &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                allocations: Default::default(),
+                work: acyclic_fs::WorkCounters::UNCHARGED,
+                budget: WorkBudget::UNBOUNDED,
+                cancellation: &CancellationToken::new(),
+            })
                 .await
                 .map_err(display)
         }
