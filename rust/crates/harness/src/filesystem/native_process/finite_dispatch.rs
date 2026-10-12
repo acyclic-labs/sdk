@@ -75,7 +75,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             return Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch view changed"));
         }
         view.operation_cancellation().check()
-            .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+            .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, *approval_digest, work)?.await?;
