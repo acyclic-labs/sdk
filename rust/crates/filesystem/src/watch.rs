@@ -1385,12 +1385,12 @@ impl NativeWatch {
             &ordinary_root
         };
         let cleanup = original.map(|work| work.allocation_work().reserve_cleanup_write()).transpose()?;
-        let held = crate::native_host::HostRoot::open_with_work(root_path, work)
+        let held = crate::native_host::HostRoot::open(root_path, work)
             .map_err(demand_watch_error)?;
         let held_root = NativeWatchHeldRoot {
             root: Some(held), cleanup, original: original.map(crate::NativeMaterializationWork::allocation_work),
         };
-        let metadata = held_root.stat_with_work(Path::new(""), work).map_err(demand_watch_error)?;
+        let metadata = held_root.stat(Path::new(""), work).map_err(demand_watch_error)?;
         if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
         let root_identity = held_root.identity();
         if metadata.identity().map_err(demand_watch_error)? != root_identity {
@@ -1819,7 +1819,7 @@ impl NativeWatch {
                                 .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?,
                             ..WorkCounters::default()
                         };
-                        work.preflight(copied)?;
+                        work.admit(copied)?;
                         self.windows_directories[at].watcher.stop_with_work(work)?;
                         if !self.windows_directories[at].watcher.is_stopped() {
                             return Err(DemandError::WorkerUnavailable);
@@ -1835,7 +1835,7 @@ impl NativeWatch {
                         let old_bytes = (self.windows_directories.capacity() as u64)
                             .checked_mul(size_of::<WindowsDirectoryWatch>() as u64).ok_or(WorkError::Overflow)?;
                         let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-                        work.preflight(copied)?;
+                        work.admit(copied)?;
                         let allocation = watch_claim_allocation(bytes, work)?;
                         let mut grown = Vec::with_capacity(count);
                         grown.append(&mut self.windows_directories);
@@ -1852,7 +1852,7 @@ impl NativeWatch {
                     }
                     let key_bytes = (prefix.len() as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
                     let copied = WorkCounters { bytes_copied: key_bytes, ..WorkCounters::default() };
-                    work.preflight(copied)?;
+                    work.admit(copied)?;
                     let allocation = watch_claim_allocation(key_bytes, work)?;
                     if allocation.is_none() {
                         retained_bytes = retained_bytes.checked_add(key_bytes).ok_or(WorkError::Overflow)?;
@@ -2703,7 +2703,7 @@ impl NativeWatch {
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
         let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
-        let held = root.stat_with_work(Path::new(""), work)?.identity()?;
+        let held = root.stat(Path::new(""), work)?.identity()?;
         match crate::native_host::root_path_identity_with_work(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
@@ -3115,7 +3115,7 @@ fn grow_watch_path_with_work<W: crate::demand::SourceDemandReadWork>(
         .and_then(|bytes| bytes.checked_add(separator)).ok_or(WorkError::Overflow)?;
     let bytes = capacity as u64;
     let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::default() };
-    work.preflight(copied)?;
+    work.admit(copied)?;
     work.allocate(bytes)?;
     let mut grown = PathBuf::with_capacity(capacity);
     grown.push(candidate.as_path());
@@ -3147,7 +3147,7 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
             {
                 use std::os::unix::ffi::OsStringExt as _;
                 let bytes = u64::try_from(source.len()).map_err(|_| WorkError::Overflow)?;
-                work.preflight(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?;
+                work.admit(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })?;
                 work.allocate(bytes)?;
                 let name = OsString::from_vec(source.to_vec());
                 if let Err(error) = work.record(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() }) {
@@ -3175,7 +3175,7 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
                 items_examined: decoded_items,
                 ..WorkCounters::default()
             };
-            work.preflight(copied)?;
+            work.admit(copied)?;
             work.allocate(logical)?;
             let mut name = String::with_capacity(bytes);
             let result = (|| {
@@ -3608,15 +3608,15 @@ pub enum NativeWatchError {
     /// Original Linux metadata cause.
     #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(crate::native_host::LinuxMetadataError),
+    LinuxMetadata(crate::native_host::NativeMetadataError),
     /// Original macOS metadata cause.
     #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
     #[error(transparent)]
-    MacMetadata(crate::native_host::MacMetadataError),
+    MacMetadata(crate::native_host::NativeMetadataError),
     /// Original Windows metadata cause.
     #[cfg(all(windows, any(feature = "native-mount", test)))]
     #[error(transparent)]
-    WindowsMetadata(crate::native_host::WindowsMetadataError),
+    WindowsMetadata(crate::native_host::NativeMetadataError),
     /// Watcher state synchronization was poisoned.
     #[error("native watcher state is poisoned")]
     StatePoisoned,

@@ -17,24 +17,20 @@ pub type Client = wire::workers_service_client::WorkersServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
 
 /// Statically named workers RPC span factory.
-#[derive(Clone, Debug)]
-pub struct CallSpan;
-
-impl acyclic_grpc_observability::CallSpan for CallSpan {
-    fn span(rpc: Option<&str>) -> tracing::Span {
-        tracing::trace_span!(
-            "acyclic.workers.grpc.transport",
-            rpc,
-            rpc.code = Empty,
-            outcome = Empty,
-            outcome.scope = "grpc_transport",
-            error.kind = Empty
-        )
-    }
+pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
+    tracing::trace_span!(
+        "acyclic.workers.grpc.transport",
+        rpc,
+        rpc.code = Empty,
+        outcome = Empty,
+        outcome.scope = "grpc_transport",
+        error.kind = Empty
+    )
 }
+
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -95,7 +91,7 @@ pub async fn connect(
     Ok(
         wire::workers_service_client::WorkersServiceClient::with_origin(
             tonic::service::interceptor::InterceptedService::new(
-                TracedChannel::new(channel),
+                TracedChannel::new(channel, transport_span),
                 authorization,
             ),
             endpoint

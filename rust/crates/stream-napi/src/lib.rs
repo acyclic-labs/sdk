@@ -3,7 +3,7 @@
 //! Protobuf request and response bytes cross the JavaScript boundary. The
 //! bridge owns no transport or retry policy: endpoint failover, cursor
 //! recovery, idempotency, and domain validation remain in
-//! `acyclic_stream::grpc::Client` and `StreamClient`.
+//! `acyclic_stream::grpc::Client`.
 
 use std::{
     future::Future,
@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use acyclic_stream::{StreamProvider, StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
+use acyclic_stream::{StreamProvider, StreamError, StreamPath, grpc, wire, wire_codec};
 use futures::StreamExt;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
@@ -445,17 +445,12 @@ impl NativeStreamFollow {
 /// Native Stream client and its authenticated gRPC transport.
 #[napi]
 pub struct NativeStreamClient {
-    inner: Arc<StreamClient<grpc::Client>>,
     provider: Arc<grpc::Client>,
 }
 
 impl NativeStreamClient {
     fn from_client(provider: grpc::Client) -> Self {
-        let provider = Arc::new(provider);
-        Self {
-            inner: Arc::new(StreamClient::new(Arc::clone(&provider))),
-            provider,
-        }
+        Self { provider: Arc::new(provider) }
     }
 }
 
@@ -599,7 +594,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(inspect_idempotency(&self.inner, request, cancellation)).await
+        operation_result(inspect_idempotency(&self.provider, request, cancellation)).await
     }
 
     /// Executes a canonical tail request.
@@ -609,7 +604,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(tail(&self.inner, request, cancellation)).await
+        operation_result(tail(&self.provider, request, cancellation)).await
     }
 
     /// Observes the canonical atomic replay bound for one stream path.
@@ -619,7 +614,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(bounds(&self.inner, request, cancellation)).await
+        operation_result(bounds(&self.provider, request, cancellation)).await
     }
 
     /// Executes a canonical append request.
@@ -629,7 +624,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(append(&self.inner, request, cancellation)).await
+        operation_result(append(&self.provider, request, cancellation)).await
     }
 
     /// Executes a canonical fork request.
@@ -639,7 +634,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(fork(&self.inner, request, cancellation)).await
+        operation_result(fork(&self.provider, request, cancellation)).await
     }
 
     /// Reads one bounded page as encoded `ReadResponse` values.
@@ -649,7 +644,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamSequenceResult> {
-        Ok(match read(&self.inner, request, cancellation).await {
+        Ok(match read(&self.provider, request, cancellation).await {
             Ok(values) => NativeStreamSequenceResult::success(values),
             Err(error) => NativeStreamSequenceResult::failure(error),
         })
@@ -663,7 +658,7 @@ impl NativeStreamClient {
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamFollowResult> {
         Ok(
-            match open_follow(&self.inner, request, cancellation).await {
+            match open_follow(&self.provider, request, cancellation).await {
                 Ok(follow) => NativeStreamFollowResult::success(follow),
                 Err(error) => NativeStreamFollowResult::failure(error),
             },
@@ -677,7 +672,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(children_page(&self.inner, request, cancellation)).await
+        operation_result(children_page(&self.provider, request, cancellation)).await
     }
 
     /// Executes a canonical commit request, retaining an optional provider deadline.
@@ -687,7 +682,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(commit(&self.inner, request, cancellation)).await
+        operation_result(commit(&self.provider, request, cancellation)).await
     }
 
     /// Reads one committed envelope by its canonical identity.
@@ -697,7 +692,7 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamOperationResult> {
-        operation_result(read_commit(&self.inner, request, cancellation)).await
+        operation_result(read_commit(&self.provider, request, cancellation)).await
     }
 
     /// Reads all children from one fixed snapshot as encoded responses.
@@ -707,17 +702,15 @@ impl NativeStreamClient {
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamSequenceResult> {
-        Ok(match children(&self.inner, request, cancellation).await {
+        Ok(match children(&self.provider, request, cancellation).await {
             Ok(values) => NativeStreamSequenceResult::success(values),
             Err(error) => NativeStreamSequenceResult::failure(error),
         })
     }
 }
 
-type Client = Arc<StreamClient<grpc::Client>>;
-
 async fn inspect_idempotency(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
@@ -726,8 +719,7 @@ async fn inspect_idempotency(
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {
-            client
-                .provider.inspect_idempotency(key)
+            client.inspect_idempotency(key)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -743,13 +735,12 @@ async fn inspect_idempotency(
 }
 
 async fn tail(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::TailRequest>(&request, "tail")?;
-    let stream = client
-        .stream(request.path)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path)
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async { stream.tail().await.map_err(|error| stream_error(&error)) },
@@ -760,15 +751,16 @@ async fn tail(
 }
 
 async fn bounds(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::TailRequest>(&request, "bounds")?;
     let value = run_with_cancellation(
         async {
+            let path = StreamPath::new(&request.path).map_err(|error| stream_error(&error))?;
             client
-                .bounds(&request.path)
+                .bounds(path)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -779,14 +771,13 @@ async fn bounds(
 }
 
 async fn append(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = client
-        .stream(request.path.to_string())
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path.to_string())
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async move {
@@ -802,14 +793,13 @@ async fn append(
 }
 
 async fn fork(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = client
-        .stream(request.source.to_string())
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.source.to_string())
         .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async move {
@@ -829,14 +819,13 @@ async fn fork(
 }
 
 async fn read(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = client
-        .stream(request.path.to_string())
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path.to_string())
         .map_err(|error| stream_error(&error))?;
     let token = cancellation_state(cancellation);
     let records = stream.read(request.from, request.limit);
@@ -867,13 +856,12 @@ async fn read(
 }
 
 async fn open_follow(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
     let request = decode::<wire::FollowRequest>(&request, "follow")?;
-    let stream = client
-        .stream(request.path)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), request.path)
         .map_err(|error| stream_error(&error))?;
     let records = run_with_cancellation(
         async move {
@@ -895,19 +883,18 @@ async fn open_follow(
 }
 
 async fn children(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
     let request =
         wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
             .map_err(|error| stream_error(&error))?;
-    let parent = request.parent.as_ref().map(ToString::to_string);
     let token = cancellation_state(cancellation);
     let mut values = run_with_cancellation(
         async {
             client
-                .children(parent.as_deref(), request.limit)
+                .children(request)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -940,7 +927,7 @@ async fn children(
 }
 
 async fn children_page(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
@@ -949,12 +936,10 @@ async fn children_page(
         "children_page",
     )?)
     .map_err(|error| stream_error(&error))?;
-    let parent = request.parent.as_ref().map(StreamPath::as_str);
-    let after = request.after.as_ref().map(StreamPath::as_str);
     let value = run_with_cancellation(
         async {
             client
-                .children_page(parent, after, request.hierarchy_version, request.limit)
+                .children_page(request)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -965,7 +950,7 @@ async fn children_page(
 }
 
 async fn commit(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
@@ -975,8 +960,8 @@ async fn commit(
     let value = run_with_cancellation(
         async {
             match deadline {
-                Some(deadline) => client.provider.commit_before(request, deadline).await,
-                None => client.provider.commit(request).await,
+                Some(deadline) => client.commit_before(request, deadline).await,
+                None => client.commit(request).await,
             }
             .map_err(|error| stream_error(&error))
         },
@@ -987,7 +972,7 @@ async fn commit(
 }
 
 async fn read_commit(
-    client: &Client,
+    client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
@@ -996,8 +981,7 @@ async fn read_commit(
         wire_codec::commit_id(&request.commit_id).map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {
-            client
-                .provider.read_commit(commit_id)
+            client.read_commit(commit_id)
                 .await
                 .map_err(|error| stream_error(&error))
         },

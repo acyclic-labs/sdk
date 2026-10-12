@@ -790,8 +790,7 @@ impl ObjectsProvider for GrpcObjects {
     ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsPutReceipt>, NativeObjectsError> {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
-            let prepared = Download::prepare_native(0, meter.clone())?;
-            let errors = prepared.errors.clone();
+            let errors = super::NativeTransportErrors::new(&meter)?;
             errors.prepare_codec_failure(&meter)?;
             let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
             let (header, carrier) = request_input.value();
@@ -800,8 +799,8 @@ impl ObjectsProvider for GrpcObjects {
             let wire = match PreparedWireBody::new(controls.clone(), wire_bytes, owners) {
                 Ok(wire) => wire,
                 Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(prepared.fail(original, None, 0, None));
+                    let original = errors.take().unwrap_or_else(|| error.into());
+                    return Err(original);
                 }
             };
             let mut body = None;
@@ -813,8 +812,8 @@ impl ObjectsProvider for GrpcObjects {
             match Self::put_stream_controlled(self.clone(), request_input, source, Some(controls), Some(wire)).await {
                 Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
                 Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    Err(prepared.fail(original, None, 0, None))
+                    let original = errors.take().unwrap_or_else(|| error.into());
+                    Err(original)
                 }
             }
         })
@@ -847,14 +846,14 @@ impl ObjectsProvider for GrpcObjects {
                 Ok(wire) => wire,
                 Err(error) => {
                     let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(prepared.fail(original, None, 0, None));
+                    return Err(original);
                 }
             };
             let download = match self.get_stream_controlled(request_input, maximum_bytes, Some(controls), &mut header_allocation, Some(wire)).await {
                 Ok(download) => download,
                 Err(error) => {
                     let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(prepared.fail(original, None, 0, None));
+                    return Err(original);
                 }
             };
             if let Some(allocation) = header_allocation {
@@ -1054,8 +1053,7 @@ mod native_wire_tests {
     {
         let observed = Arc::new(super::super::tests::NativeTransportMeter::new());
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
-        let prepared = Download::prepare_native(0, meter.clone())?;
-        let errors = prepared.errors.clone();
+        let errors = super::super::NativeTransportErrors::new(&meter)?;
         errors.prepare_codec_failure(&meter)?;
         let controls = response::NativeGetControls { meter: meter.clone(), errors };
         let packet = super::super::ObjectsNativeRequest::new(wire::GetObjectRequest::default(), (), &meter)?;
@@ -1071,7 +1069,6 @@ mod native_wire_tests {
         let alias = wire.slice(1..);
         drop(body);
         drop(controls);
-        drop(prepared);
         drop(meter);
         let retained = observed.memory.load(SeqCst);
         assert!(retained > 0);

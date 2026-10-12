@@ -2,7 +2,7 @@
 use crate::body::{LocalBodyLocation, LocalBodyReference};
 use crate::v1::{Error, wire::ErrorCode::Unavailable};
 use crate::{LocalDurability, LocalObjectsGarbageCollection};
-use crate::v1::{NativeObjectsError, Publication};
+use crate::v1::{NativeObjectsCause, NativeObjectsError, Publication};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -229,9 +229,9 @@ pub(crate) fn write_segment<B: AsRef<[u8]>>(
 
 fn native_write_error(error: PhysicalError) -> NativeObjectsError {
     match error {
-        PhysicalError::Io(error) => NativeObjectsError::Admission(error),
+        PhysicalError::Io(error) => NativeObjectsError::from(NativeObjectsCause::Admission(error)),
         PhysicalError::Invalid(_) | PhysicalError::Corrupt =>
-            NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+            NativeObjectsError::from(NativeObjectsCause::Service(crate::v1::wire::ErrorCode::Unavailable.into())),
     }
 }
 
@@ -357,7 +357,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
             validate_segment_publication(&destination, &id, position, publication)?;
             return Ok((id, offsets));
         }
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::NotFound) => {}
         Err(error) => return Err(error),
     }
     let mut opened = None;
@@ -384,8 +384,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
         });
         match result {
             Ok(file) => { opened = Some((temporary, file)); break; }
-            Err(NativeObjectsError::Admission(error))
-                if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) => {}
             Err(error) => return Err(error),
         }
     }
@@ -419,10 +418,10 @@ fn write_segment_inner<B: AsRef<[u8]>>(
             &temporary, &destination, Some(meter),
         ),
         None => acyclic_native_runtime::publish_new(&temporary, &destination, None),
-    }.map_err(NativeObjectsError::Admission);
+    }.map_err(NativeObjectsError::from);
     match published {
         Ok(()) => {}
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
             validate_segment_publication(&destination, &id, position, publication)?,
         Err(error) => {
             let _ = publication_namespace(publication, || fs::remove_file(&temporary));
@@ -431,7 +430,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
     }
     match publication_namespace(publication, || fs::remove_file(&temporary)) {
         Ok(()) => {}
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::NotFound) => {}
         Err(error) => return Err(error),
     }
     Ok((id, offsets))
@@ -817,8 +816,8 @@ pub(crate) fn local_path(
     let mut allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, maximum)).transpose()?;
     let mut path = PathBuf::new();
     path.try_reserve_exact(maximum).map_err(|error| match meter {
-        Some(meter) => NativeObjectsError::Admission(meter.allocation_failed(error)),
-        None => NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+        Some(meter) => NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
+        None => NativeObjectsError::from(NativeObjectsCause::Service(crate::v1::wire::ErrorCode::Unavailable.into())),
     })?;
     if let Some(allocation) = &mut allocation { allocation.reconcile_capacity(path.capacity())?; }
     if let Some(meter) = meter { meter.admit_codec(0, maximum as u64, 0)?; }

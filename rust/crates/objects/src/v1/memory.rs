@@ -12,7 +12,7 @@ use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 #[cfg(not(target_arch = "wasm32"))]
-use super::{NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
+use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 use imbl::OrdMap;
 use prost::Message;
 use wire::ErrorCode::{
@@ -393,13 +393,14 @@ impl MemoryObjects {
     fn put_locked_native(
         &self,
         state: &mut State,
-        query: &wire::PutObjectHeader,
+        mut query: wire::PutObjectHeader,
         body: OwnedBytes,
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsPutReceipt, NativeObjectsError> {
-        let name = request::put(query)?;
+        request::put(&query)?;
         request::upload_length(body.len() as u64)?;
-        let digest = put_digest_measured(query, &body, meter)?;
+        let digest = put_digest_measured(&mut query, &body, meter)?;
+        let name = query.bucket.as_ref().expect("validated put bucket").name.as_str();
         self.mutate_locked_engine(
                 state, digest, &query.mutation,
                 |receipt| {
@@ -833,33 +834,14 @@ fn encode_measured(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn put_digest_measured(
-    query: &wire::PutObjectHeader,
+    query: &mut wire::PutObjectHeader,
     body: &[u8],
     meter: &Arc<dyn NativeReadMeter>,
 ) -> Result<[u8; 32], NativeObjectsError> {
-    request::identity(&query.mutation)?;
-    let mut allocation = ReadAllocation::empty(meter);
-    let normalized = wire::PutObjectHeader {
-        bucket: query.bucket.as_ref().map(|value| {
-            clone_native_text(&value.name, meter, &mut allocation)
-                .map(|name| wire::BucketRef { name })
-        }).transpose()?,
-        object_key: clone_native_text(&query.object_key, meter, &mut allocation)?,
-        metadata: query.metadata.as_ref().map(|metadata| clone_native_metadata(metadata, meter, &mut allocation)).transpose()?,
-        preconditions: query.preconditions.as_ref().map(|value| {
-            Ok::<_, NativeObjectsError>(wire::Preconditions {
-                condition: value.condition.as_ref().map(|condition| match condition {
-                    wire::preconditions::Condition::IfAbsent(value) =>
-                        Ok(wire::preconditions::Condition::IfAbsent(*value)),
-                    wire::preconditions::Condition::IfMatch(value) =>
-                        clone_native_text(value, meter, &mut allocation)
-                            .map(wire::preconditions::Condition::IfMatch),
-                }).transpose()?,
-            })
-        }).transpose()?,
-        mutation: None,
-    };
-    let encoded = encode_measured(&normalized, meter)?;
+    let mutation = query.mutation.take();
+    let encoded = encode_measured(query, meter);
+    query.mutation = mutation;
+    let encoded = encoded?;
     let domain = b"acyclic.objects.v1.mutation\0";
     let hash_bytes = body.len().checked_add(domain.len() + 8 + 3 + 8 + 8 + 32)
         .and_then(|bytes| bytes.checked_add(encoded.len()))
@@ -869,8 +851,6 @@ fn put_digest_measured(
     let digest = request::finish_digest("put", &encoded, body.len() as u64, *body_hash.as_bytes());
     meter.record_codec(0, 0, hash_bytes as u64)?;
     drop(encoded);
-    drop(normalized);
-    drop(allocation);
     Ok(digest)
 }
 
@@ -1041,29 +1021,29 @@ impl NativeBatchObjects for MemoryObjects {
                         let mut requests = input.data.drain(..);
                         for (count, failure) in plans.0.drain(..) {
                             let start = results.0.len();
-                            let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::Admission) {
+                            let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::from) {
                                 Ok(next) => next,
                                 Err(error) => {
-                                    failure.set(error)?;
+                                    failure.error.set(error)?;
                                     for _ in requests.by_ref().take(count) {
-                                        results.0.push(Err(NativeObjectsError::SharedFailure(
-                                            Arc::clone(&failure))));
+                                        results.0.push(Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
+                                            Arc::clone(&failure)))));
                                     }
                                     continue;
                                 }
                             };
                             for (query, body) in requests.by_ref().take(count) {
-                                results.0.push(staged.put_locked_native(&mut next, &query, body, &meter));
+                                results.0.push(staged.put_locked_native(&mut next, query, body, &meter));
                             }
                             if next.sequence != state.sequence {
                                 match journal.commit(&state, &mut next, Some(Arc::clone(&meter))) {
                                     Ok(()) => *state = next,
                                     Err(error) => {
-                                        failure.set(error)?;
+                                        failure.error.set(error)?;
                                         for result in &mut results.0[start..] {
                                             if result.is_ok() {
-                                                *result = Err(NativeObjectsError::SharedFailure(
-                                                    Arc::clone(&failure)));
+                                                *result = Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
+                                                    Arc::clone(&failure))));
                                             }
                                         }
                                     }
@@ -1074,7 +1054,7 @@ impl NativeBatchObjects for MemoryObjects {
                         return ObjectsBatch::new(values, allocation);
                     }
                     for (query, body) in input.data.drain(..) {
-                        results.0.push(self.put_locked_native(&mut state, &query, body, &meter));
+                        results.0.push(self.put_locked_native(&mut state, query, body, &meter));
                     }
                 }
                 let (values, allocation) = results;
@@ -1196,8 +1176,8 @@ impl ObjectsProvider for MemoryObjects {
             obs::traced(obs::span!(INFO, "acyclic.objects.put", bytes = input.data().1.len()), async {
                 meter.check()?;
                 let mut state = self.lock_state()?;
-                let body = std::mem::replace(&mut input.data.1, OwnedBytes::new());
-                self.put_locked_native(&mut state, &input.data().0, body, &meter)
+                let (query, body) = std::mem::take(&mut input.data);
+                self.put_locked_native(&mut state, query, body, &meter)
             }).await
         })
     }
@@ -1722,7 +1702,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new((changed, OwnedBytes::from_static(b"actual")), custody, &meter)?;
         let mismatch = provider.put_native(input, Arc::clone(&meter))?.await
             .err().ok_or("retry accepted changed metadata")?;
-        assert!(matches!(mismatch, NativeObjectsError::Service(Error { code: IdempotencyMismatch })));
+        assert!(matches!(mismatch, NativeObjectsError { cause: NativeObjectsCause::Service(Error { code: IdempotencyMismatch }), .. }));
         let query = wire::GetObjectRequest {
             bucket: Some(bucket.clone()), object_key: "native-publication".into(), ..Default::default()
         };
@@ -1768,7 +1748,7 @@ mod bootstrap_tests {
         current.cancelled.store(true, SeqCst);
         let failure = provider.put_native(input, Arc::clone(&meter))
             .err().ok_or("body payer bypassed current cancellation")?;
-        assert!(matches!(&failure, NativeObjectsError::Admission(error)
+        assert!(matches!(&failure.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::Interrupted));
         assert_eq!(current.memory.load(SeqCst), 0);
         assert!(original.memory.load(SeqCst) >= 4);
@@ -1829,7 +1809,7 @@ mod bootstrap_tests {
         assert_eq!(results.results().len(), 3);
         assert!(results.results()[0].is_ok());
         assert!(matches!(&results.results()[1],
-            Err(NativeObjectsError::Service(Error { code: QuotaExceeded }))));
+            Err(NativeObjectsError { cause: NativeObjectsCause::Service(Error { code: QuotaExceeded }), .. })));
         assert!(results.results()[2].is_ok());
         for key in ["a", "c"] {
             let object = provider.get(wire::GetObjectRequest {
@@ -1866,7 +1846,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new(request, custody, &meter)?;
         let denied = provider.get_native(input, 4, Arc::clone(&meter))?.await
             .err().ok_or("lookup bypassed original backend admission")?;
-        assert!(matches!(&denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert_eq!(observed.memory.load(SeqCst), 0);
 
@@ -1878,7 +1858,7 @@ mod bootstrap_tests {
         // Deny response allocation after the funded lookup.
         observed.limit.store(observed.memory.load(SeqCst), SeqCst);
         let copy_denied = future.await.err().ok_or("header copy bypassed allocation admission")?;
-        assert!(matches!(&copy_denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&copy_denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::OutOfMemory));
         assert_eq!(observed.memory.load(SeqCst), 0);
 
@@ -1891,7 +1871,7 @@ mod bootstrap_tests {
         let input = ObjectsNativeRequest::new((header, OwnedBytes::from_static(b"data")), custody, &meter)?;
         let denied = provider.put_native(input, Arc::clone(&meter))?.await
             .err().ok_or("publication bypassed original backend admission")?;
-        assert!(matches!(&denied, NativeObjectsError::Admission(error)
+        assert!(matches!(&denied.cause, NativeObjectsCause::Admission(error)
             if error.kind() == std::io::ErrorKind::PermissionDenied));
         assert!(matches!(provider.get(wire::GetObjectRequest {
             bucket: Some(bucket), object_key: "unpublished".into(), ..Default::default()

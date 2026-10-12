@@ -17,7 +17,7 @@ test("project workspace bindings need authority and scoped views cannot regain t
     async prepareProjectMerge() { throw new Error("unused"); },
   };
   await expect(Harness.builder(contracts).workspaces(workspaces).build()).rejects.toThrow("project workspaces require");
-  const runtime = await Harness.builder(contracts).bindings({ workspaces, grants: ["project:merge"] }).build();
+  const runtime = await Harness.builder(contracts).workspaces(workspaces).grant("project:merge").build();
   expect(runtime.projectWorkspaces()).toBe(workspaces);
   const ungranted = await runtime.scoped(ExecutionScope.create().onlyGrants());
   expect(() => ungranted.projectWorkspaces()).toThrow("lacks project authority");

@@ -279,8 +279,8 @@ pub(crate) struct NativeGetControls {
 impl NativeGetControls {
     pub(crate) fn fail(&self, error: impl Into<super::NativeObjectsError>) -> Error {
         let error = error.into();
-        let service = match &error {
-            super::NativeObjectsError::Service(error) => *error,
+        let service = match &error.cause {
+            super::NativeObjectsCause::Service(service) if !error.has_payload() => *service,
             _ => invalid(),
         };
         self.errors.record(error);
@@ -302,7 +302,7 @@ impl NativeGetControls {
         let (operation, recorded) = plan.attempt(operation);
         let failed = recorded.is_err();
         if let Err(error) = recorded {
-            self.errors.record(super::NativeObjectsError::Admission(error));
+            self.errors.record(super::NativeObjectsError::from(super::NativeObjectsCause::Admission(error)));
         }
         Ok((operation, failed))
     }
@@ -460,9 +460,9 @@ pub(crate) fn validate_put_controlled(
     if let Err(error) = validation {
         if let (Some(controls), Some(allocation)) = (controls, allocation.take()) {
             let original = controls.errors.take().unwrap_or_else(|| error.into());
-            let mut failure = original.into_failure();
+            let mut failure = original;
             failure.receipt = Some(super::ObjectsPutReceipt::new(result, Some(allocation)));
-            return Err(controls.fail(super::NativeObjectsError::ReadFailure(failure)));
+            return Err(controls.fail(failure));
         }
         return Err(error);
     }

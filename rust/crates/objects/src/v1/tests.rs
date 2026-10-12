@@ -1156,14 +1156,13 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     use std::sync::{Arc, atomic::Ordering::SeqCst};
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
-    let prepared = super::Download::prepare_native(0, meter.clone())?;
-    let controls = super::response::NativeGetControls { meter, errors: prepared.errors.clone() };
+    let errors = super::NativeTransportErrors::new(&meter)?;
+    let controls = super::response::NativeGetControls { meter, errors };
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;
     let alias = wire.slice(1..4);
     let attempts = observed.allocations.load(SeqCst);
     drop(controls);
-    drop(prepared);
     let retained = observed.memory.load(SeqCst);
     assert!(retained > 0);
     observed.cancelled.store(true, SeqCst);
@@ -1249,9 +1248,7 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
         }
         let error = native_transport_get(provider, query("native-body"), bytes.len() as u64, observed.clone())
             .await.err().ok_or("native transport ignored in-flight cancellation/quota")?;
-        let super::NativeObjectsError::ReadFailure(failure) = error else {
-            return Err("native failure lost completed prefix".into());
-        };
+        let failure = error;
         let object = failure.object.as_ref().ok_or("native failure lost decoded metadata")?;
         assert_eq!(object.body().as_ref(), &bytes[..65_536]);
         assert!(object.header().object.is_some());
@@ -1304,9 +1301,7 @@ pub(super) async fn exercise_native_transport<P: ObjectsProvider>(
     let observed = Arc::new(NativeTransportMeter::new());
     let error = native_transport_put(provider, &bucket, "native-bad-receipt", bytes.clone(), observed.clone())
         .await.err().ok_or("native publication accepted a malformed acknowledgement")?;
-    let super::NativeObjectsError::ReadFailure(failure) = error else {
-        return Err("native publication lost its actual failed receipt".into());
-    };
+    let failure = error;
     assert!(matches!(&failure.cause, super::NativeObjectsCause::Service(error) if error.code == wire::ErrorCode::Unavailable));
     let allocations = observed.allocations.load(SeqCst);
     observed.cancelled.store(true, SeqCst);

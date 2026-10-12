@@ -718,20 +718,19 @@ impl ObjectsProvider for HttpObjects {
     ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsPutReceipt>, NativeObjectsError> {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
-            let prepared = Download::prepare_native(0, meter.clone())?;
-            let errors = prepared.errors.clone();
+            let errors = super::NativeTransportErrors::new(&meter)?;
             let mut body = None;
             let request_input = request_input.map(|(header, carrier)| {
                 body = Some(carrier);
                 header
             });
             let source = upload::chunks_native(body.expect("native publication owns its canonical body"), meter.clone(), errors.clone())?;
-            let controls = response::NativeGetControls { meter, errors };
+            let controls = response::NativeGetControls { meter, errors: errors.clone() };
             match self.put_stream_controlled(request_input, source, Some(controls)).await {
                 Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
                 Err(error) => {
-                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    Err(prepared.fail(original, None, 0, None))
+                    let original = errors.take().unwrap_or_else(|| error.into());
+                    Err(original)
                 }
             }
         })
@@ -762,7 +761,7 @@ impl ObjectsProvider for HttpObjects {
                 Ok(download) => download,
                 Err(error) => {
                     let original = prepared.errors.take().unwrap_or_else(|| error.into());
-                    return Err(prepared.fail(original, None, 0, None));
+                    return Err(original);
                 }
             };
             if let Some(allocation) = header_allocation {

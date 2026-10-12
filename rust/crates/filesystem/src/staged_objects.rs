@@ -21,7 +21,6 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue, PublicationScope,
 };
 use crate::cancellation::CancellationToken;
-use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
 use crate::materializer::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
@@ -920,7 +919,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
     ) -> Result<ObjectReceipt<ObjectRead>, (ObjectStoreError, WorkCounters)> {
         if let Some(native) = native {
             return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                .await.map(|read| ObjectReceipt { value: read.into_read(), work: WorkCounters::default() })
+                .await.map(|read| ObjectReceipt { value: read, work: WorkCounters::default() })
                 .map_err(|error| (error, WorkCounters::default()));
         }
         self.inner.read(object_id, maximum_bytes, budget, cancellation).await
@@ -1195,11 +1194,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     async fn read_with_native_work(
         &self, object_id: ObjectId, maximum_bytes: u64,
         work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
         read.retention = ObjectReadRetention::Shared;
-        NativeObjectRead::shared(read)
+        Ok(read)
     }
 
     async fn read_many(
@@ -1214,7 +1213,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     async fn read_many_with_native_work(
         &self, requests: &[ObjectReadRequest],
         work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         crate::async_storage::read_many_sequential_with_native_work(self, requests, work, cancellation).await
     }
 
@@ -1834,8 +1833,8 @@ mod tests {
         let (id, bytes) = spill_fixture(&store, &token).await?;
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
         let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
-        assert_eq!(read.read().bytes, bytes);
-        let alias = read.read().bytes.clone();
+        assert_eq!(read.bytes, bytes);
+        let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         assert!(held >= NativeMaterializationWork::accounting_state_bytes() + bytes.len() as u64);
         assert_eq!(work.receipt().backend_read_operations, 1);
@@ -1907,7 +1906,7 @@ mod tests {
         let work = NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
         let initial = work.receipt().allocation_operations;
         let read = store.read_with_native_work(id, bytes.len() as u64, &work, &token).await?;
-        assert_eq!(read.read().bytes.as_ptr(), bytes.as_ptr());
+        assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
         assert_eq!(work.receipt().allocation_operations, initial);
         assert_eq!(work.receipt().backend_read_operations, 0);
         let mut allocation = work.claim(std::mem::size_of::<Page>() as u64)?;
@@ -1961,15 +1960,15 @@ mod tests {
             ObjectReadRequest { object_id: second, maximum_bytes: second_bytes.len() as u64 },
         ];
         let batch = store.read_many_with_native_work(&requests, &work, &token).await?;
-        assert_eq!(batch.reads().len(), 2);
-        assert_eq!(batch.reads()[0].bytes, first_bytes);
-        assert_eq!(batch.reads()[1].bytes, second_bytes);
+        assert_eq!(batch.0.len(), 2);
+        assert_eq!(batch.0[0].bytes, first_bytes);
+        assert_eq!(batch.0[1].bytes, second_bytes);
         // Staging's canonical ordinary convention is sequential scalar reads;
         // native attribution must retain both real submissions, not invent one.
         assert_eq!(work.receipt().backend_read_operations, 2);
         assert_eq!(work.receipt().object_bytes_read, (first_bytes.len() + second_bytes.len()) as u64);
-        let alias = batch.reads()[0].bytes.clone();
-        let (values, allocation) = batch.into_parts();
+        let alias = batch.0[0].bytes.clone();
+        let (values, allocation) = batch;
         assert_eq!(allocation.bytes(), (values.capacity() * std::mem::size_of::<ObjectRead>()) as u64);
         drop(values);
         drop(allocation);
