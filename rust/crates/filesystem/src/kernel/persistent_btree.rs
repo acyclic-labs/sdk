@@ -3,8 +3,8 @@
 use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::codec::DecodedPageShape;
 use super::persistent_io::{self, PageLease};
-use super::persistent_point::{Owned, absorb, retire_allocation};
-use super::search::counted_binary_search;
+use super::persistent_point::{Owned, retire_allocation, split_allocation};
+use super::search::binary_search_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -550,8 +550,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[(usize, &M)]) -> Result<bool, crate::FsError> {
         let mut changed = false;
         for (_, mutation) in mutations {
-            let (found, comparisons) = search::<F>(&entries.value, mutation.key());
-            self.charge_items(comparisons)?;
+            let found = binary_search_with_accounting(&entries.value, self.accounting, |entry| F::key(entry).cmp(mutation.key()))?;
             let prior = found.ok().and_then(|index| entries.value.get(index));
             let next = mutation.replacement(prior).map_err(|error| Self::error(Error::Semantic(error)))?;
             if prior.is_some() != next.is_some() { return Err(Self::error(Error::MutationContract)); }
@@ -562,10 +561,10 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
                 let replacement = current.value.take().ok_or_else(|| Self::error(Error::MutationContract))?;
                 let slot = entries.value.get_mut(index).ok_or_else(|| Self::error(Error::MutationContract))?;
                 let old_bytes = F::value_owned_bytes(slot);
-                let old_allocation = split_guard(&mut entries.allocation, old_bytes)?;
+                let old_allocation = split_allocation(&mut entries.allocation, old_bytes)?;
                 drop(std::mem::replace(slot, replacement));
                 retire_allocation(old_allocation, old_bytes, self.accounting)?;
-                absorb(&mut entries.allocation, current.allocation)?;
+                entries.allocation.absorb(&mut current.allocation)?;
                 entries.bytes = entries.bytes.checked_sub(old_bytes).and_then(|bytes| bytes.checked_add(current.bytes)).ok_or(WorkError::Overflow)?;
             }
         }
@@ -752,19 +751,11 @@ fn storage_error(error: ObjectStoreError) -> crate::FsError {
     }
 }
 
-fn split_guard(allocation: &mut KernelOwnedAllocation, bytes: u64) -> Result<KernelOwnedAllocation, crate::FsError> {
-    match allocation {
-        KernelOwnedAllocation::Standalone => Ok(KernelOwnedAllocation::Standalone),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelOwnedAllocation::NativeOriginal(allocation) => Ok(KernelOwnedAllocation::NativeOriginal(allocation.split_off(bytes)?)),
-    }
-}
-
 fn push_summary<K>(output: &mut Owned<Vec<Child<K>>>, first: Owned<K>, page: ObjectId, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
     output.ensure_for_push(usize::MAX, accounting)?;
-    let Owned { value, allocation, bytes } = first;
+    let Owned { value, mut allocation, bytes } = first;
     output.value.push(Child { first: value, page });
-    absorb(&mut output.allocation, allocation)?;
+    output.allocation.absorb(&mut allocation)?;
     output.bytes = output.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
     Ok(())
 }
@@ -772,7 +763,7 @@ fn push_summary<K>(output: &mut Owned<Vec<Child<K>>>, first: Owned<K>, page: Obj
 fn push_value<V>(output: &mut Owned<Vec<V>>, mut value: Owned<Option<V>>) -> Result<(), crate::FsError> {
     let entry = value.value.take().ok_or(CanonicalDecodeError::AllocationFailed)?;
     output.value.push(entry);
-    absorb(&mut output.allocation, value.allocation)?;
+    output.allocation.absorb(&mut value.allocation)?;
     output.bytes = output.bytes.checked_add(value.bytes).ok_or(WorkError::Overflow)?;
     Ok(())
 }
@@ -785,10 +776,10 @@ fn append_owned<T>(output: &mut Owned<Vec<T>>, mut source: Owned<Vec<T>>, accoun
         let count = spare.min(source.value.len());
         output.value.extend(source.value.drain(..count));
     }
-    let buffer_allocation = split_guard(&mut source.allocation, buffer_bytes)?;
+    let buffer_allocation = split_allocation(&mut source.allocation, buffer_bytes)?;
     drop(source.value);
     retire_allocation(buffer_allocation, buffer_bytes, accounting)?;
-    absorb(&mut output.allocation, source.allocation)?;
+    output.allocation.absorb(&mut source.allocation)?;
     output.bytes = output.bytes.checked_add(source.bytes.checked_sub(buffer_bytes).ok_or(WorkError::Overflow)?).ok_or(WorkError::Overflow)?;
     Ok(())
 }
@@ -876,10 +867,6 @@ where
         self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
         Ok(Some((page, usize_to_u64(count))))
     }
-}
-
-fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    counted_binary_search(entries, |entry| F::key(entry).cmp(key))
 }
 
 pub(crate) fn within_bounds<K: Ord>(

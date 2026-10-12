@@ -327,12 +327,12 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
             .await
     });
     assert!(
-        GrpcObjects::connect(&endpoint, "exact-token", None)
+        GrpcObjects::connect(&endpoint, "exact-token", None, None)
             .await
             .is_err()
     );
-    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes())).await?;
-    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes())).await?;
+    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
+    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes()), None).await?;
     let bucket = wire::BucketRef {
         name: "namespace.inputs".into(),
     };
@@ -703,15 +703,14 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     });
     let ca = Some(server_pem.as_bytes());
     // TLS 1.3 peers can report an admission alert on the first RPC rather than connect.
-    let missing = GrpcObjects::connect(&endpoint, "exact-token", ca).await;
+    let missing = GrpcObjects::connect(&endpoint, "exact-token", ca, None).await;
     assert_transport_denied(missing).await;
     let untrusted = rcgen::generate_simple_self_signed(["untrusted".to_owned()])?;
-    let wrong = GrpcObjects::connect_with_identity(
+    let wrong = GrpcObjects::connect(
         &endpoint,
         "exact-token",
         ca,
-        untrusted.cert.pem().as_bytes(),
-        untrusted.signing_key.serialize_pem().as_bytes(),
+        Some((untrusted.cert.pem().as_bytes(), untrusted.signing_key.serialize_pem().as_bytes())),
     )
     .await;
     assert_transport_denied(wrong).await;
@@ -723,7 +722,7 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         (client_pem.as_bytes(), server_key.as_bytes()),
     ] {
         assert!(
-            GrpcObjects::connect_with_identity(&endpoint, "exact-token", ca, cert, key)
+            GrpcObjects::connect(&endpoint, "exact-token", ca, Some((cert, key)))
                 .await
                 .is_err()
         );
@@ -734,27 +733,25 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         (client_pem.as_bytes(), oversized.as_slice()),
     ] {
         assert!(matches!(
-            GrpcObjects::connect_with_identity(&endpoint, "exact-token", ca, cert, key).await,
+            GrpcObjects::connect(&endpoint, "exact-token", ca, Some((cert, key))).await,
             Err(super::grpc::ConnectError::InvalidConfiguration)
         ));
     }
     assert!(
-        GrpcObjects::connect_with_identity(
+        GrpcObjects::connect(
             &endpoint,
             "exact-token",
             None,
-            client_pem.as_bytes(),
-            client_key_pem.as_bytes(),
+            Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
         )
         .await
         .is_err()
     );
-    let unauthorized = GrpcObjects::connect_with_identity(
+    let unauthorized = GrpcObjects::connect(
         &endpoint,
         "wrong",
         ca,
-        client_pem.as_bytes(),
-        client_key_pem.as_bytes(),
+        Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
     )
     .await?;
     assert_eq!(
@@ -768,12 +765,11 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    let client = GrpcObjects::connect_with_identity(
+    let client = GrpcObjects::connect(
         &endpoint,
         "exact-token",
         ca,
-        client_pem.as_bytes(),
-        client_key_pem.as_bytes(),
+        Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
     )
     .await?;
     super::conformance::verify(&client, "conformance-mtls").await?;

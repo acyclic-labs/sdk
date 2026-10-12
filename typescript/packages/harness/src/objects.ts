@@ -10,7 +10,6 @@ import {
 } from "@acyclic-labs/objects/v1";
 
 const encoder = new TextEncoder();
-const maximumObjectKeyBytes = ObjectsLimit.MAX_KEY_BYTES;
 
 export interface ObjectContentOptions {
   readonly objects: ObjectsV1Provider;
@@ -32,7 +31,7 @@ export class ObjectContentStore {
   readonly #writable: boolean;
   readonly #objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">;
 
-  private constructor(readonly options: ObjectContentOptions, namespace: string, writable: boolean,
+  private constructor(private readonly options: Pick<ObjectContentOptions, "scope" | "volume" | "authority" | "maximumBytes"> & { readonly bucket: Bucket["bucket"] }, namespace: string, writable: boolean,
     objects: Pick<ObjectsV1Provider, "headBucket" | "put" | "get">) {
     this.#namespace = namespace;
     this.#writable = writable;
@@ -44,8 +43,8 @@ export class ObjectContentStore {
     const volume = authority.contracts.validate("volume_ref", options.volume);
     const ownerScope = freezeScope(options.ownerScope);
     const scope = freezeScope(options.scope);
-    const bucket = Object.freeze({ ...options.bucket, bucket: options.bucket.bucket === undefined
-      ? undefined : Object.freeze({ ...options.bucket.bucket }) });
+    const selectedBucket = options.bucket.bucket;
+    const bucket = selectedBucket === undefined ? undefined : Object.freeze({ ...selectedBucket });
     const expectedProvider = Object.freeze({ ...options.expectedProvider });
     const maximumBytes = options.maximumBytes;
     const owner = options.objects;
@@ -64,20 +63,18 @@ export class ObjectContentStore {
       || volume.provider.namespace !== expectedProvider.namespace
       || volume.provider.family !== expectedProvider.family
       || volume.provider.version !== expectedProvider.version
-      || volume.id !== bucket.bucket?.name
-      || !bucket.bucket?.name || !Number.isSafeInteger(maximumBytes)
+      || volume.id !== bucket?.name
+      || !bucket?.name || !Number.isSafeInteger(maximumBytes)
       || maximumBytes <= 0) {
       throw new TypeError("Objects content binding is invalid");
     }
-    const resolved = await objects.headBucket(create(HeadBucketRequestSchema, { bucket: bucket.bucket }));
-    if (resolved.bucket?.name !== bucket.bucket.name) {
+    const resolved = await objects.headBucket(create(HeadBucketRequestSchema, { bucket }));
+    if (resolved.bucket?.name !== bucket.name) {
       throw new Error("Objects provider resolved another bucket");
     }
-    const writeGrant = authority.volumeCapability(volume, "write");
-    const writable = scope.capabilities.includes(writeGrant);
+    const writable = scope.capabilities.includes(ownerWrite);
     if (writable) authority.verifyContentWrite(scope, volume);
-    return new ObjectContentStore(Object.freeze({ ...options, bucket, expectedProvider,
-      maximumBytes, ownerScope, scope, volume, authority }),
+    return new ObjectContentStore(Object.freeze({ bucket, maximumBytes, scope, volume, authority }),
       authority.volumeStorageName(volume), writable, objects);
   }
 
@@ -118,7 +115,7 @@ export class ObjectContentStore {
     const objectKey = this.#key(path, content);
     await this.#pinUpload(operationId, reference);
     const header = create(PutObjectHeaderSchema, {
-      bucket: this.options.bucket.bucket,
+      bucket: this.options.bucket,
       objectKey,
       metadata: { contentType: mediaType, user: { "harness-display-name": displayName } },
       preconditions: { condition: { case: "ifAbsent", value: true } },
@@ -132,8 +129,7 @@ export class ObjectContentStore {
         throw new Error("Objects publication returned inconsistent metadata");
       }
     } catch (error) {
-      // Another operation may already have placed this exact content. Verify
-      // the selected current bytes below; a retry receipt alone is not residency.
+      // Existing content still requires an exact read; retry receipts do not prove residency.
       if (!(error instanceof ObjectsV1Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
     await this.#readContent(reference);
@@ -155,7 +151,7 @@ export class ObjectContentStore {
       throw new Error("Objects file content identity does not match its descriptor");
     }
     const result = await this.#objects.get(create(GetObjectRequestSchema, {
-      bucket: this.options.bucket.bucket, objectKey: this.#key(file.path, file.version),
+      bucket: this.options.bucket, objectKey: this.#key(file.path, file.version),
     }), BigInt(file.descriptor.byte_length));
     const info = result.header.object;
     if (info?.size !== BigInt(file.descriptor.byte_length)
@@ -190,7 +186,7 @@ export class ObjectContentStore {
     const contentType = "application/vnd.acyclic.harness.upload-intent-v1";
     try {
       await this.#objects.put(create(PutObjectHeaderSchema, {
-        bucket: this.options.bucket.bucket, objectKey, metadata: { contentType },
+        bucket: this.options.bucket, objectKey, metadata: { contentType },
         preconditions: { condition: { case: "ifAbsent", value: true } },
         mutation: { idempotencyKey: `harness-upload-intent:${this.#namespace}:${operationId}` },
       }), intent);
@@ -198,7 +194,7 @@ export class ObjectContentStore {
       if (!(error instanceof ObjectsV1Error) || error.code !== ErrorCode.PRECONDITION_FAILED) throw error;
     }
     const pinned = await this.#objects.get(create(GetObjectRequestSchema, {
-      bucket: this.options.bucket.bucket, objectKey,
+      bucket: this.options.bucket, objectKey,
     }), 32n);
     if (pinned.header.contentRange !== undefined || pinned.header.object?.size !== 32n
       || pinned.header.object.metadata?.contentType !== contentType
@@ -211,7 +207,7 @@ export class ObjectContentStore {
   #key(path: string, content: string): string {
     if (!/^[0-9a-f]{64}$/.test(content)) throw new TypeError("Objects content identity is invalid");
     const key = `${this.#namespace}/${path}/@content/${content}`;
-    if (encoder.encode(key).byteLength > maximumObjectKeyBytes) {
+    if (encoder.encode(key).byteLength > ObjectsLimit.MAX_KEY_BYTES) {
       throw new TypeError("Objects content key exceeds provider limit");
     }
     return key;

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::CancellationToken;
 use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 
@@ -15,9 +16,7 @@ async fn original_native_actor(
         .await.unwrap();
     let owner = fixture.runtime.runtime.task_host().journal_owner_with_native_work(task, &fixture.fence, work)
         .await.unwrap().with_invocation_cancellation(work.cancellation()).into_native_shared(work).unwrap();
-    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(
-        context, &owner, std::sync::Arc::clone(&fixture.owner), &fixture.resources,
-        std::sync::Arc::clone(&fixture.filesystem), fixture.stream.clone(), &fixture.root_request, work)
+    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &owner, std::sync::Arc::clone(&fixture.owner), &fixture.resources, std::sync::Arc::clone(&fixture.filesystem), fixture.stream.clone(), &(fixture.root_request).binding, &(fixture.root_request).root, work)
         .await.unwrap();
     (context, owner)
 }
@@ -157,7 +156,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         acyclic_harness::conversation::VolumeOperation::Write] {
         assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
     }
-    fixture.runtime.runtime.task_host().cancel(owner.task_id()).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(owner.task_id(), None).await.unwrap();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
     cancellation.cancel();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());

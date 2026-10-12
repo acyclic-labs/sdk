@@ -7,10 +7,12 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::{Span, field::Empty};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 /// wasm32 records nothing.
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Copy)]
-pub(crate) struct Span;
+pub(crate) struct OperationSpan;
 
 /// A result with a stable, path-free `error.kind` for a failure.
 #[cfg_attr(
@@ -39,17 +41,11 @@ impl<T> Outcome for Result<T, crate::v1::NativeObjectsError> {
             }
         }
         fn native_failure(error: &NativeObjectsError) -> &'static str {
-            match error {
-                NativeObjectsError::Service(error) => error.code.as_str_name(),
-                NativeObjectsError::Admission(error) => admission(error),
-                NativeObjectsError::Unsupported => "unsupported",
-                NativeObjectsError::SharedFailure(failure) => native_failure(failure.error()),
-                NativeObjectsError::ReadFailure(failure) => match &failure.cause {
-                    NativeObjectsCause::Service(error) => error.code.as_str_name(),
-                    NativeObjectsCause::Admission(error) => admission(error),
-                    NativeObjectsCause::Unsupported => "unsupported",
-                    NativeObjectsCause::SharedFailure(failure) => native_failure(failure.error()),
-                },
+            match &error.cause {
+                NativeObjectsCause::Service(error) => error.code.as_str_name(),
+                NativeObjectsCause::Admission(error) => admission(error),
+                NativeObjectsCause::Unsupported => "unsupported",
+                NativeObjectsCause::SharedFailure(failure) => native_failure(failure.error()),
             }
         }
         self.as_ref().err().map(native_failure)
@@ -68,7 +64,7 @@ impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
 
 /// Keeps an operation incomplete until it returns or its body reaches validated EOF.
 #[cfg(not(target_arch = "wasm32"))]
-struct Lifetime(Option<Span>);
+struct Lifetime(Option<OperationSpan>);
 
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::obs::Scoped;
@@ -165,13 +161,13 @@ impl futures::Stream for BodyState {
 // Record on the owned operation, including when filtered.
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
-    static RECORDING: std::cell::Cell<Option<Span>> = const { std::cell::Cell::new(None) };
+    static RECORDING: std::cell::Cell<Option<OperationSpan>> = const { std::cell::Cell::new(None) };
 }
 #[cfg(not(target_arch = "wasm32"))]
-struct Recording(Option<Span>);
+struct Recording(Option<OperationSpan>);
 #[cfg(not(target_arch = "wasm32"))]
 impl Recording {
-    fn enter(span: Option<Span>) -> Self {
+    fn enter(span: Option<OperationSpan>) -> Self {
         Self(RECORDING.with(|current| current.replace(span)))
     }
 }
@@ -182,7 +178,7 @@ impl Drop for Recording {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn record_on_operation(fields: impl FnOnce(&Span)) {
+pub(crate) fn record_on_operation(fields: impl FnOnce(&OperationSpan)) {
     let current = Recording(RECORDING.with(std::cell::Cell::take));
     if let Some(span) = &current.0 {
         fields(span);
@@ -190,12 +186,6 @@ pub(crate) fn record_on_operation(fields: impl FnOnce(&Span)) {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl Lifetime {
-    fn dispatch(&self) -> tracing::Dispatch {
-        self.0
-            .as_ref()
-            .and_then(|span| span.with_subscriber(|(_, dispatch)| dispatch.clone()))
-            .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone))
-    }
     fn scoped<R>(&self, work: impl FnOnce() -> R) -> R {
         let _recording = Recording::enter(self.0.clone());
         work()
@@ -244,31 +234,22 @@ impl<T> Outcome for std::io::Result<T> {
 
 /// Runs `future` inside `span` and records its outcome there.
 pub(crate) fn traced<R: Outcome>(
-    span: Span,
+    span: OperationSpan,
     future: impl Future<Output = R>,
 ) -> impl Future<Output = R> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut lifetime = Lifetime(Some(span.clone()));
     #[cfg(not(target_arch = "wasm32"))]
-    let dispatch = lifetime.dispatch();
-    #[cfg(not(target_arch = "wasm32"))]
-    return Scoped::new(
-        tracing::Instrument::instrument(
-            async move {
-                let mut future = std::pin::pin!(future);
-                let result =
-                    futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx)))
-                        .await;
-                lifetime.finish(result.failure());
-                result
-            },
-            span.or_current(),
-        ),
-        dispatch,
-    );
+    return span.scope(async move {
+        let mut future = std::pin::pin!(future);
+        let result =
+            futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx))).await;
+        lifetime.finish(result.failure());
+        result
+    });
     #[cfg(target_arch = "wasm32")]
     {
-        let Span = span;
+        let OperationSpan = span;
         future
     }
 }
@@ -276,66 +257,56 @@ pub(crate) fn traced<R: Outcome>(
 /// Transfers the RPC lifetime from header validation to the decoded body stream.
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pub(crate) fn download(
-    span: Span,
+    span: OperationSpan,
     future: impl Future<Output = Result<crate::v1::Download, crate::Error>>,
 ) -> impl Future<Output = Result<crate::v1::Download, crate::Error>> {
     let mut lifetime = Lifetime(Some(span.clone()));
-    let context = span.clone().or_current();
-    let dispatch = lifetime.dispatch();
-    Scoped::new(
-        tracing::Instrument::instrument(
-            async move {
-                let mut future = std::pin::pin!(future);
-                let result =
-                    futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx)))
-                        .await;
-                match result {
-                    Ok(mut download) => {
-                        download.body.inner.set_dispatch(lifetime.dispatch());
-                        if let Some(body) = download.body.inner.inner_mut() {
-                            body.lifetime = lifetime;
-                            body.context = Some(context);
-                        }
-                        Ok(download)
-                    }
-                    Err(error) => {
-                        lifetime.finish(Some(error.code.as_str_name()));
-                        Err(error)
-                    }
+    let context = span.caller.as_ref().unwrap_or(&span).clone();
+    span.scope(async move {
+        let mut future = std::pin::pin!(future);
+        let result =
+            futures::future::poll_fn(|cx| lifetime.scoped(|| future.as_mut().poll(cx))).await;
+        match result {
+            Ok(mut download) => {
+                download.body.inner.set_dispatch(tracing::dispatcher::get_default(Clone::clone));
+                if let Some(body) = download.body.inner.inner_mut() {
+                    body.lifetime = lifetime;
+                    body.context = Some(context);
                 }
-            },
-            span.or_current(),
-        ),
-        dispatch,
-    )
+                Ok(download)
+            }
+            Err(error) => {
+                lifetime.finish(Some(error.code.as_str_name()));
+                Err(error)
+            }
+        }
+    })
 }
 
 /// Runs `body` inside `span` and records its outcome there.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-pub(crate) fn scoped<R: Outcome>(span: &Span, body: impl FnOnce() -> R) -> R {
+pub(crate) fn scoped<R: Outcome>(span: &OperationSpan, body: impl FnOnce() -> R) -> R {
     let mut lifetime = Lifetime(Some(span.clone()));
-    tracing::dispatcher::with_default(&lifetime.dispatch(), || {
-        span.in_scope(|| {
-            let result = lifetime.scoped(body);
-            lifetime.finish(result.failure());
-            result
-        })
+    span.in_scope(|| {
+        let result = lifetime.scoped(body);
+        lifetime.finish(result.failure());
+        result
     })
 }
 
-/// Opens a span at `level` with `outcome`/`error.kind` slots for [`traced`]; a unit [`Span`] on wasm32, where the field values are not evaluated.
+/// Opens an owned operation span; WASM does not evaluate fields.
 macro_rules! span {
     ($level:ident, $name:literal $(, $($field:tt)+)?) => {{
         #[cfg(not(target_arch = "wasm32"))]
-        let span = ::tracing::span!(
+        let span = crate::obs::OperationSpan::new(::tracing::span!(
             ::tracing::Level::$level,
             $name,
             outcome = ::tracing::field::Empty,
             error.kind = ::tracing::field::Empty
             $(, $($field)+)?
-        );
+        ));
         #[cfg(target_arch = "wasm32")]
-        let span = crate::obs::Span;
+        let span = crate::obs::OperationSpan;
         span
     }};
 }
@@ -361,7 +332,7 @@ pub(crate) use record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::body::tests::Capture;
+    use acyclic_grpc_observability::test_support::Capture;
     use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]
@@ -750,14 +721,14 @@ mod tests {
             );
             let consumer = span!(INFO, "acyclic.objects.test.consumer");
             let mut download = future
-                .instrument(consumer.clone())
+                .instrument((*consumer).clone())
                 .await
                 .unwrap_or_else(|_| unreachable!());
             assert!(
                 download
                     .body
                     .next()
-                    .instrument(consumer.clone())
+                    .instrument((*consumer).clone())
                     .await
                     .unwrap_or_else(|| unreachable!())
                     .is_err()
@@ -767,7 +738,7 @@ mod tests {
                 download
                     .body
                     .next()
-                    .instrument(consumer.clone())
+                    .instrument((*consumer).clone())
                     .await
                     .is_none()
             );

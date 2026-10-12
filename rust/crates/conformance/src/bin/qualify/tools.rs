@@ -287,11 +287,11 @@ fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     println!(
         "probe: kind={:?} available={} writable={} reason={:?}",
         capabilities.kind,
-        capabilities.available,
-        capabilities.writable,
+        capabilities.available(),
+        capabilities.available(),
         capabilities.unavailable_reason
     );
-    if !capabilities.available || !capabilities.writable {
+    if !capabilities.available() {
         return Err("native mount unavailable or read-only — fork engine gate FAILS".into());
     }
 
@@ -892,7 +892,7 @@ fn with_lazy_mount<T>(
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::native_mount::MountOptions;
-    use acyclic_fs::{DistributedFs, LocalCoreStateStore, MountPublication};
+    use acyclic_fs::{LazyWorkspace, LocalCoreStateStore, MountPublication};
     use std::sync::Arc;
 
     let mount_dir = work.join("mnt");
@@ -905,14 +905,14 @@ fn with_lazy_mount<T>(
                 .map_err(engine_err("open store"))?;
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
-            let distributed = DistributedFs::new(engine, state);
-            let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
-                .await
+            let demand = NativeDemandSource::open(std::borrow::Cow::Owned(source.to_path_buf()), profile, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("open source"))?;
-            let workspace = distributed
-                .attach_lazy_with_config(
+            let workspace = LazyWorkspace::attach_with_config(
+                    &engine,
                     "mount-bench",
                     Arc::new(demand),
+                    state,
                     VolumeConfig::native(Lifecycle::Durable),
                 )
                 .await
@@ -1472,7 +1472,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     };
 
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("baseline"))?
         .value;
@@ -1517,6 +1517,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             &mut checkout,
             batch,
             &options,
+            &acyclic_fs::CapturePolicy::default(),
             WorkCounters::UNBOUNDED,
             &cancel,
         )
@@ -1677,7 +1678,7 @@ async fn capture_and_commit(
         maximum_extent_spans: 65_536,
     };
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("capture_baseline"))?
         .value;

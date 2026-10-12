@@ -30,7 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    if io.uses_native_work() { return Ok(None); }
+    if io.original_native_work().is_some() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -104,7 +104,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     maximum_payload_bytes: u64,
     owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_metadata: Option<acyclic_fs::NativeAllocation>,
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
@@ -141,26 +141,29 @@ where
         Ok(())
     }
 
-    /// Binds one task workflow to its exact worker lease.
+    /// Binds one task workflow to its exact worker lease and original IO.
     pub fn for_task(
-        owner: TaskJournalOwner<P>,
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        maximum_payload_bytes: u64,
-    ) -> Result<Self> {
-        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
-        let mut journal = Self::new(
-            owner.stream(),
-            host,
-            &owner.workflow_admission().operation_id.to_string(),
-            volume,
-            verifier,
-            scope,
-            maximum_payload_bytes,
-        )?;
-        journal.owner = Some(Arc::new(owner));
+        owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        maximum_payload_bytes: u64, io: Option<&PreparationIo>,
+    ) -> Result<Arc<Self>> {
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
+        let _identity;
+        let identity = crate::contract::preparation_format(
+            format_args!("{}", owner.workflow_admission().operation_id), io)?;
+        _identity = io.map(|io| io.guard_owned(identity.capacity() as u64)).transpose()?;
+        let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
+            maximum_payload_bytes, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(PreparationIo::original_native_work) {
+            Some(work) => owner.into_native_shared(work)?,
+            None => Arc::new(owner),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = Arc::new(owner);
+        Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
     }
 
@@ -168,63 +171,14 @@ where
         self.owner.clone()
     }
 
-    /// Uses the original sealed configuration and ledger before any SDK copy.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn for_task_with_native_work(
-        owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
-        maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        let stream = owner.stream();
-        let io = PreparationIo::from_native_work(work)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::authorize_volume(verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
-        }
-        let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
-        let scope = scope.copy(&mut Some(&mut io.history_io()))?;
-        let volume = volume.copy(&mut Some(&mut io.history_io()))?;
-        let identity_io = PreparationIo::from_native_work(work)?;
-        let _identity;
-        let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
-        _identity = identity_io.guard_owned(identity.capacity() as u64)?;
-        let mut journal = Self::configure(stream, host, &identity, volume, verifier, scope,
-            maximum_payload_bytes, Some(&io))?;
-        journal.owner = Some(owner.into_native_shared(work)?);
-        Ok(journal)
-    }
-
-    /// Shares an already funded journal, admitting the actual SDK Arc attempt.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(
-        self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<Self>> {
-        if !self.native_metadata.as_ref().is_some_and(|custody|
-            custody.work().shares_ledger(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native journal sharing requires its original funded metadata",
-            });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
-    }
-
-    /// Binds a workflow identity and its private-volume grants.
+    /// Binds a workflow identity and its private-volume grants using original IO.
     pub fn new(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
-        volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope, maximum_payload_bytes: u64,
-    ) -> Result<Self> {
-        Self::configure(stream, host, workflow_id, volume, verifier, scope, maximum_payload_bytes, None)
-    }
-
-    fn configure(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
-        volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
             || workflow_id == "."
             || workflow_id == ".."
@@ -237,10 +191,15 @@ where
         {
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
-        if io.is_none() {
-            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
-            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+            ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, &mut work)?;
         }
+        let volume = volume.copy(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let path_hold;
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{workflow_id}"), io)?;
@@ -253,10 +212,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            Some(io.take_native_custody(io.owned_bytes()?)?)
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+            Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("workflow metadata custody underflows"))?)?)
         } else { None };
         if let Some(held) = path_hold { held.into_retained(); }
-        Ok(Self {
+        Ok(Arc::new(Self {
             stream,
             host,
             path,
@@ -266,8 +227,8 @@ where
             maximum_payload_bytes,
             owner: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native_metadata,
-        })
+            _native_metadata: native_metadata,
+        }))
     }
 
     fn id(&self) -> &str { &self.path["harness/v2/workflows/".len()..] }
@@ -292,7 +253,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowRecord>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -374,7 +335,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -408,38 +369,6 @@ where
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
-    }
-
-    /// Reads the exact historical transition using the original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn observe_transition_with_native_work(
-        &self, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(WorkflowRecord, acyclic_fs::NativeAllocation)> {
-        let io = PreparationIo::from_native_work(work)?;
-        let record = self.observe_transition(revision, Some(&io)).await?;
-        let retained = io.owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok((record, custody))
-    }
-
-    /// Original authenticated outbox observation; no machine callback executes.
-    pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record(None).await?.map(|record| record.transition))
-    }
-
-    /// Observes the original authenticated outbox without a machine callback.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn observe_latest_outbox_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<crate::workflow::MachineTransition>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let transition = self.observe_latest_record(Some(&io)).await?
-                .map(|record| record.transition);
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((transition, custody))
-        })
     }
 
     pub(crate) async fn observe_latest_record(
@@ -561,7 +490,7 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                if !io.uses_native_work() {
+                if io.original_native_work().is_none() {
                     reference.validate(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
@@ -722,7 +651,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -748,7 +677,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -1039,7 +968,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };
@@ -1058,21 +987,18 @@ where
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
         match appended {
-            Ok(true) => Ok(admission),
-            Err(error) if self.owner.is_some() => Err(error),
-            Ok(false) | Err(Error::Conflict(_)) =>
-                match self.read_admission(io).await? {
-                    Some(existing) if existing == admission => Ok(existing),
-                    Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                    None if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
-                    None => Err(Error::Indeterminate(admission.operation_id)),
-                },
-            Err(Error::Indeterminate(_)) => match self.read_admission(io).await {
-                Ok(Some(existing)) if existing == admission => Ok(existing),
-                Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(admission.operation_id)),
-                Err(error) => Err(error),
-            },
+            Ok(true) => return Ok(admission),
+            Err(error) if self.owner.is_some() => return Err(error),
+            Ok(false) | Err(Error::Conflict(_) | Error::Indeterminate(_)) => {}
+            Err(error) => return Err(error),
+        }
+        match self.read_admission(io).await {
+            Ok(Some(existing)) if existing == admission => Ok(existing),
+            Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
+            Ok(None) if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
+            Ok(None) => Err(Error::Indeterminate(admission.operation_id)),
+            Err(Error::Storage(_)) if matches!(appended, Err(Error::Indeterminate(_))) =>
+                Err(Error::Indeterminate(admission.operation_id)),
             Err(error) => Err(error),
         }
     }
