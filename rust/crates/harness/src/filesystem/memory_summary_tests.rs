@@ -779,13 +779,15 @@ async fn assert_summary_child_import(
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
-        storage.stream.clone(),
-        storage.host.clone(),
-        seed.child_private_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        scope,
-        262_144,
-    )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &seed.child_private_volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
+                262_144,
+                None,
+            )?
     .with_input_verifier(reader);
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -1163,13 +1165,15 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if index == TURNS - 3 {
             storage.journal = Arc::new(
                 FilesystemExecutionJournal::new(
-                    storage.stream.clone(),
-                    storage.host.clone(),
-                    storage.volume.clone(),
-                    storage.verifier(), crate::core::SchemaRegistry::new(),
-                    storage.scope.clone(),
-                    storage.maximum_file_bytes,
-                )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &storage.volume,
+                &storage.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &storage.scope,
+                storage.maximum_file_bytes,
+                None,
+            )?
                 .with_input_verifier(storage.content_verifier.clone()),
             );
             bundle = build_bundle(&storage)?;
