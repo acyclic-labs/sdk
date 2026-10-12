@@ -126,20 +126,10 @@ pub(crate) struct SharedRootSlot {
     pub(crate) _native_custody: [Option<acyclic_fs::NativeAllocation>; 2],
 }
 
-impl std::ops::Deref for SharedRootSlot {
-    type Target = AsyncMutex<SharedRootRegistration>;
-    fn deref(&self) -> &Self::Target { &self.state }
-}
-
 pub(crate) struct SharedSourceReference {
     pub(crate) value: Mutex<SourceReference>,
     // The reference may outlive the physical root through a cold registration.
     pub(crate) _native_custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl std::ops::Deref for SharedSourceReference {
-    type Target = Mutex<SourceReference>;
-    fn deref(&self) -> &Self::Target { &self.value }
 }
 
 #[derive(Default)]
@@ -182,10 +172,9 @@ pub(crate) struct SharedRootObservation {
     pub(crate) batch: WatchBatch,
     pub(crate) prior_source: SourceReference,
     pub(crate) source: SourceReference,
-    pub(crate) consumed_changes: bool,
 }
 
-fn observation_consumes_changes(batch: &WatchBatch) -> bool {
+pub(crate) fn observation_consumes_changes(batch: &WatchBatch) -> bool {
     !matches!(batch, WatchBatch::Changes { changes, .. } if changes.is_empty())
 }
 
@@ -220,39 +209,6 @@ impl SharedPhysicalRoot {
         })
     }
 
-    /// The same indivisible watcher/source observation as `observe`, with one
-    /// remaining allowance shared by the fence and publication-ready poll.
-    pub(crate) fn observe_measured(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<SharedRootObservation>, String> {
-        let mut work = acyclic_fs::WorkCounters::default();
-        let result = self.observe_with(|| {
-            let mut watcher = self.watcher.lock()
-                .map_err(|_| "physical root watcher state is poisoned".to_owned())?;
-            match watcher.fence_measured(
-                WATCH_FENCE_TIMEOUT, work.remaining(budget).map_err(display)?, cancellation,
-            ) {
-                Ok(receipt) => work = work.checked_add(receipt.work).map_err(display)?,
-                Err(failure) => {
-                    work = work.checked_add(*failure.work).map_err(display)?;
-                    return Err(display(failure.error));
-                }
-            }
-            match watcher.poll(65_536, work.remaining(budget).map_err(display)?, cancellation) {
-                Ok(receipt) => {
-                    work = work.checked_add(receipt.work).map_err(display)?;
-                    Ok(receipt.value)
-                }
-                Err(failure) => {
-                    work = work.checked_add(*failure.work).map_err(display)?;
-                    Err(display(failure.error))
-                }
-            }
-        });
-        result.map(|value| acyclic_fs::OperationReceipt { value, work })
-            .map_err(|error| acyclic_fs::OperationFailure::new(error, work))
-    }
-
     pub(crate) fn observe_with(
         &self, poll: impl FnOnce() -> Result<WatchBatch, String>,
     ) -> Result<SharedRootObservation, String> {
@@ -260,11 +216,10 @@ impl SharedPhysicalRoot {
             || "physical root reference state is poisoned".to_owned(),
             |prior_source, reference| {
                 let batch = poll()?;
-                let consumed_changes = observation_consumes_changes(&batch);
-                let source = if consumed_changes { self.source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(display)? }
+                let source = if observation_consumes_changes(&batch) { self.source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(display)? }
                     else { prior_source };
                 *reference = source;
-                Ok(SharedRootObservation { batch, prior_source, source, consumed_changes })
+                Ok(SharedRootObservation { batch, prior_source, source })
             },
         )
     }
@@ -334,9 +289,8 @@ impl SharedPhysicalRoot {
                         Ok(())
                     })
                     .map_err(native_watch_error)?;
-                let consumed_changes = observation_consumes_changes(&batch);
                 Ok((SharedRootObservation {
-                    batch, prior_source, source, consumed_changes,
+                    batch, prior_source, source,
                 }, allocation))
             },
         )
@@ -350,7 +304,7 @@ impl SharedPhysicalRoot {
         &self, poisoned: impl FnOnce() -> E,
         observe: impl FnOnce(SourceReference, &mut SourceReference) -> Result<T, E>,
     ) -> Result<T, E> {
-        let mut reference = self.reference.lock().map_err(|_| poisoned())?;
+        let mut reference = self.reference.value.lock().map_err(|_| poisoned())?;
         observe(self.source.reference(), &mut reference)
     }
 }
@@ -412,7 +366,7 @@ impl SharedRootRegistry {
             .collect::<Vec<_>>();
         let mut live = 0;
         for registration in registrations {
-            live += usize::from(registration.lock().await.live.strong_count() > 0);
+            live += usize::from(registration.state.lock().await.live.strong_count() > 0);
         }
         live
     }

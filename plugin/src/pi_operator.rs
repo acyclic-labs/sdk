@@ -4,7 +4,7 @@ use crate::{ControlCommand, ControlRequest, pi_owner::PiOwnerConfig,
 use acyclic_fs::{GenerationId, LazySnapshotRef, MaterializationJournal, NativeAllocation, NativeMaterializationWork,
     WorkCounters};
 use acyclic_harness::{Capabilities, OperationId, Result, Error, JsonBounds, JsonCodecCharge,
-    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted, core::Scope, conversation::VolumeRef};
+    json_from_slice_bounded, json_from_value_bounded, core::Scope, conversation::VolumeRef};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -89,7 +89,7 @@ impl PiOperatorRequest {
         let bounds = JsonBounds { maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
             maximum_items: remaining.items_examined, maximum_depth: 64 };
         let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
-        let decoded = json_from_value_bounded_native_trusted(body_value, bounds, 0,
+        let decoded = json_from_value_bounded(std::borrow::Cow::Borrowed(body_value), bounds, 0,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody));
         let body: PiOperatorBody = match decoded {
@@ -284,8 +284,8 @@ fn decode_prepared_approval(bytes: &[u8], work: &NativeMaterializationWork)
         maximum_depth: 64,
     };
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
-    let decoded = json_from_slice_bounded_native_trusted(bytes, bounds, 0,
-        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+    let decoded = json_from_slice_bounded(std::marker::PhantomData::<PiPreparedApproval>, bytes, bounds, 0,
+        Some(acyclic_harness::wire::ErrorCode::Invalid), Some(acyclic_harness::JsonValueSchema::None),
         &mut |charge| operator_decode_charge(charge, work, &mut custody));
     match decoded {
         Ok(prepared) => Ok((prepared, custody)),

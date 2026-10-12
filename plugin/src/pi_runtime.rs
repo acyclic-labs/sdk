@@ -115,7 +115,6 @@ impl PiRuntimeAuthority {
 pub(crate) struct PiTaskRuntime<P> {
     pub(crate) runtime: FilesystemTaskRuntime<P, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
-    pub(crate) fork_definition: Arc<TaskDefinition<acyclic_harness::resource_preparation::ResourcePreparationRequest, acyclic_harness::fork::ForkReport>>,
     policy: super::pi_owner::PiOwnerPolicy,
     storage_scope: Scope,
     _native_custody: acyclic_fs::NativeAllocation,
@@ -198,7 +197,6 @@ where
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
         tasks.register_with_native_work(fork.0, fork.1, work)?;
-        let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
         let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
         machines.1 = Some(machines.0.register_with_native_work(machine, work)?);
@@ -213,7 +211,7 @@ where
             clock, None, &creation_providers, work,
         ).await?;
         Ok(Self {
-            runtime, definition, fork_definition,
+            runtime, definition,
             policy: retained.0, storage_scope: retained.1, _native_custody: retained.2,
         })
     }

@@ -520,7 +520,7 @@ impl PiControlHost<'_> {
             (snapshot, custody)
         } else {
             let live = destination_live.as_ref().ok_or_else(|| denied("destination original native view unavailable"))?;
-            let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
+            let (snapshot, custody) = crate::pi_fork_host::freeze_child_source(
                 live.context.context(), &live.owner, &live.view, &workspace, &live.original_work).await?;
             owner.verify_with_native_work(false, work).await?;
             (snapshot, custody)
@@ -557,7 +557,7 @@ impl PiControlHost<'_> {
                 return Ok(TaskCommandProgress::Pending);
             }
         }
-        result.map_err(crate::pi_lazy_capture::native_lazy_error)?
+        result.map_err(crate::pi_fork_host::native_lazy_error)?
     };
     let imported = if let Some(imported) = completed { imported } else {
         if reconcile || resuming_import { return Ok(TaskCommandProgress::Pending); }

@@ -311,7 +311,7 @@ impl Fixture {
             SchemaRegistry::new(), &work).await?;
         let mut parent_value = parent.0;
         parent_value.set_limits(shared.context().scope().limits())?;
-        let frozen = source.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, work.cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+        let frozen = source.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, work.cancellation()).map_err(crate::pi_fork_host::native_lazy_error)?).await.map_err(crate::pi_fork_host::native_lazy_error)?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&commit, maximum, &work)?;
         let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum,
@@ -665,7 +665,7 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
         &input.0, key, &fixture.root_handle, &work).await.unwrap();
     assert_eq!(frozen.0.workspace_id, fixture.root_handle.workspace.workspace().id());
     fixture.root_handle.workspace.validate_snapshot_with_native_work(frozen.0, &work).await.unwrap();
-    assert!(crate::pi_lazy_capture::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
+    assert!(crate::pi_fork_host::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
         context.context(), &fixture.journal, &fixture.root_handle.physical, &fixture.root_handle.workspace, &work,
         || async { panic!("foreign root must be rejected before the original creator callback") }).await.is_err());
     work.cancellation().cancel();

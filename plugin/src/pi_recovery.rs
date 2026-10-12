@@ -415,8 +415,8 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined, maximum_depth: 64,
     };
-    let result = acyclic_harness::json_from_value_owned_bounded_native_trusted::<T, _>(
-        value, bounds, std::mem::size_of::<T>() as u64,
+    let result = acyclic_harness::json_from_value_bounded::<T, _>(
+        std::borrow::Cow::Owned(value), bounds, std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid, schema, &mut |charge| {
             if let acyclic_harness::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
                 let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;

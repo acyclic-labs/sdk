@@ -25,7 +25,6 @@ mod pi_conversation;
 mod pi_inspection;
 mod pi_fork;
 mod pi_fork_host;
-mod pi_lazy_capture;
 mod pi_mail;
 mod pi_owner;
 mod pi_recovery;

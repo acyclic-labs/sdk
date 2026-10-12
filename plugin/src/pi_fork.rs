@@ -2,7 +2,7 @@
 
 use crate::{LocalAuthorityBackend, LocalObjectBackend, LocalLazyWorkspace,
     PiScratchAllocation, PiScratchCreation, PiTaskBinding, ServiceResources,
-    pi_lazy_capture::PiLazyCapture, pi_native::PiNativeLaunchIntent,
+    pi_native::PiNativeLaunchIntent,
     pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
     pi_task::{PiTaskExecution, PiTaskInput, NATIVE_LAUNCH_TASK_COMMAND_KIND}};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -168,6 +168,10 @@ impl PiForkCoordinator {
     pub(crate) fn new(runtime: Arc<Runtime>, filesystem: Arc<Filesystem>,
         stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
         work: &NativeMaterializationWork) -> Result<Self> {
+        if !work.budget().has_finite_allowances() {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi fork requires finite original work allowances" });
+        }
         runtime.verify_owner_with_native_work(&owner, work)?;
         let resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
         Ok(Self { runtime, filesystem, stream, resources: resources.0, owner, work: work.clone(),
@@ -428,14 +432,11 @@ impl PiForkCoordinator {
             &self.stream, parent.into_reducer(), &verifier.0, signed, context, &caller_snapshot.0,
             &stream_provider.0, operations.fork, &arguments.0, &config,
             source_read.as_ref().map(|pair| &pair.0), resolver, &cancel, work).await?;
-        let capture = PiLazyCapture::new(source.clone(), frozen, self.remaining(budget)?, work).await?;
-        let mut request = source_binding.0.request;
+        source.validate_snapshot_with_native_work(frozen, work).await
+            .map_err(crate::pi_fork_host::native_lazy_error)?;
+        let request = source_binding.0.request;
         let mut request_custody = source_binding.1;
-        let selection = capture.selection(work)?;
-        request.add_selection_with_native_work(selection.0, &mut request_custody, selection.1, work)?;
-        let preparer = Arc::try_unwrap(source_binding.0.preparer).map_err(|_| Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi original native preparer escaped its construction" })?;
-        let preparer = preparer.with_capture_provider_with_native_work(capture, work)?;
+        let preparer = source_binding.0.preparer;
         let mut source_read_custody = source_read.map(|pair| pair.1);
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -626,7 +627,7 @@ impl PiForkCoordinator {
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child.0.verify_published_child_with_native_work(&parent.0, &seed_value, plan.history_limits, work).await?;
-            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok(Some(self.created_fork(plan, report.0, admission.0, source, &cancel, report.1, admission.1).await?));
          }}
 
@@ -637,7 +638,7 @@ impl PiForkCoordinator {
                 acyclic_harness::JsonValueSchema::ForkRequest, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES)?;
             let name = request.0.preparation.child_project_volume.storage_name_with_native_work(work)?;
             let prepared = source.prepare_fork_snapshot_with_native_work(&name.0, plan.frozen,
-                plan.project_creation, work, cancel).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                plan.project_creation, work, cancel).await.map_err(crate::pi_fork_host::native_lazy_error)?;
             if prepared != plan.frozen { return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "native preparation changed its immutable source cut" }); }
             (owner).verify_with_native_work(false, &self.work).await?;
@@ -688,16 +689,15 @@ impl PiForkCoordinator {
             self.filesystem.clone(), &self.stream, reducer, &verifier.0, &authority.0.2,
             caller_project, &provider.0, request, plan.history_limits,
             source_read.as_ref().map(|pair| &pair.0), resolver, cancel, work).await?;
-        let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
-        let preparer = Arc::try_unwrap(restored.0.preparer).map_err(|_| Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi restored preparer escaped its original native ownership" })?;
-        let preparer = preparer.with_capture_provider_with_native_work(capture, work)?;
+        source.validate_snapshot_with_native_work(plan.frozen, work).await
+            .map_err(crate::pi_fork_host::native_lazy_error)?;
+        let preparer = restored.0.preparer;
         if preparer.project_creation_operation(&restored.0.request)? != plan.project_creation {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi native companion changed its original filesystem operation" });
         }
         (owner).verify_with_native_work(false, &self.work).await?;
-        preparer.into_native_shared(work)
+        Ok(preparer)
     }
 
     async fn require_original_plan(&self, plan: &PiForkPlan) -> Result<()> {
@@ -843,7 +843,7 @@ impl PiForkCoordinator {
                 code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi created project generation has a different identity shape" })?;
             let (workspace, native_lazy) = source.bind_prepared_fork_with_native_work(plan.frozen, project,
                 GenerationId::new(Digest::from_bytes(generation)), plan.project_creation, work, cancel)
-                .await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                .await.map_err(crate::pi_fork_host::native_lazy_error)?;
             let scratch_name = report.child_private_volume.storage_name_with_native_work(work)?;
             let scratch = self.resources.fs.open_workspace_with_native_work(&scratch_name.0, work, cancel)
                 .await.map_err(native_workspace_error)?;
@@ -870,7 +870,7 @@ impl PiForkCoordinator {
             binding.0.validate_with_native_work(None, binding.0.project_volumes.keys().map(String::as_str), false, work)?;
             let mut original_source = self.native_copy::<RecursiveSourceSnapshot, _>(&plan.source,
                 acyclic_harness::JsonValueSchema::None, work)?;
-            let workspace = workspace.into_arc_with_native_work(work).map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            let workspace = workspace.into_arc_with_native_work(work).map_err(crate::pi_fork_host::native_lazy_error)?;
             let mut prepared = PreparedPiFork { binding: binding.0, report, admission, source: original_source.0,
                 frozen_source: plan.frozen, native_lazy, workspace, _metadata_custody: report_allocation };
             prepared._metadata_custody.absorb(&mut admission_allocation).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -894,7 +894,8 @@ impl PiForkCoordinator {
             let (seed, _) = report.copy(&mut Some(&mut seed_io))?;
             let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
             let _seed_custody = seed_io.into_custody();
-            let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
+            source.validate_snapshot_with_native_work(plan.frozen, work).await
+                .map_err(crate::pi_fork_host::native_lazy_error)?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
                 acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(self.filesystem.clone(),
                     plan.request.maximum_bytes, &verifier.0, &authority.0.2, work)?.into_native_shared(work)?;
@@ -903,7 +904,7 @@ impl PiForkCoordinator {
                 acyclic_harness::fork::StreamHistoryForkVerifier::new_with_native_work(&stream_provider.0, work)?
                     .into_native_shared(work)?;
             let forks = acyclic_harness::fork::CompositeForkVerifier::new_with_native_work(
-                &[filesystem, history, capture], work)?.into_native_shared(work)?;
+                &[filesystem, history], work)?.into_native_shared(work)?;
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut parent_value = parent.0;
@@ -1073,7 +1074,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             }
             self.caller_owner.verify_with_native_work(false, work).await?;
             self.source.validate_snapshot_with_native_work(self.frozen, work).await
-                .map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                .map_err(crate::pi_fork_host::native_lazy_error)?;
             self.caller_owner.verify_with_native_work(false, work).await?;
             if !context.created_project_authenticated {
                 if self.selected != context.graph_root {
@@ -1109,7 +1110,7 @@ fn reserved_native_key(key: &str) -> bool {
 pub(crate) mod tests;
 
 fn native_workspace_error((source, custody): (acyclic_fs::WorkspaceError, Option<acyclic_fs::NativeAllocation>)) -> Error {
-    crate::pi_lazy_capture::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspaceCause(
+    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspaceCause(
         acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody }))
 }
 

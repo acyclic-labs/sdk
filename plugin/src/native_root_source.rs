@@ -94,7 +94,7 @@ async fn acquire_engine<I: RootInstrumentation>(
             Arc::clone(registration)
         } else {
             let key = instrumentation.copy_path(&canonical.0)?;
-            let slot_custody = instrumentation.claim(std::mem::size_of::<SharedRootSlot>(), u64::from((std::mem::size_of::<SharedRootSlot>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+            let slot_custody = instrumentation.claim(std::mem::size_of::<SharedRootSlot>())?;
             let slot = Arc::new(SharedRootSlot {
                 state: AsyncMutex::new(SharedRootRegistration::default()),
                 _native_custody: [key.1, slot_custody],
@@ -103,12 +103,12 @@ async fn acquire_engine<I: RootInstrumentation>(
             slot
         }
     };
-    let mut registration = registration.lock().await;
+    let mut registration = registration.state.lock().await;
     authenticate(instrumentation, root, admission, original).await?;
     // Reject another registered source before opening even the current path.
     if let Some(reference) = &registration.reference
         && original.is_some() {
-        let retained = *reference.lock().map_err(|_| instrumentation.rejection(
+        let retained = *reference.value.lock().map_err(|_| instrumentation.rejection(
             POISONED_REFERENCE, &canonical.0))?;
         if admission.reference().is_some_and(|expected| expected.identity != retained.identity) {
             return Err(instrumentation.rejection(SOURCE_IDENTITY, &canonical.0));
@@ -126,7 +126,7 @@ async fn acquire_engine<I: RootInstrumentation>(
         if observed.to_bytes() == native_identity {
             let retained = *registration.reference.as_ref()
                 .ok_or_else(|| instrumentation.rejection(MISSING_REFERENCE, &canonical.0))?
-                .lock().map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))?;
+                .value.lock().map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))?;
             if admission.reference().is_some_and(|expected| expected.identity != retained.identity) {
                 return Err(instrumentation.rejection(SOURCE_IDENTITY, &canonical.0));
             }
@@ -147,14 +147,14 @@ async fn acquire_engine<I: RootInstrumentation>(
         }
     }
     let retained = registration.reference.as_ref().map(|reference| {
-        *reference.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *reference.value.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     });
     let reference = retained.or(admission.reference()).unwrap_or_else(|| SourceReference {
         identity: uuid::Uuid::new_v4().into_bytes(), epoch: 0,
     });
     if original.is_some() && registration.reference.as_ref()
         .is_none_or(|reference| reference._native_custody.is_none()) {
-        let custody = instrumentation.claim(std::mem::size_of::<SharedSourceReference>(), u64::from((std::mem::size_of::<SharedSourceReference>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+        let custody = instrumentation.claim(std::mem::size_of::<SharedSourceReference>())?;
         registration.reference = Some(Arc::new(SharedSourceReference {
             value: Mutex::new(reference), _native_custody: custody,
         }));
@@ -192,10 +192,10 @@ async fn acquire_engine<I: RootInstrumentation>(
     } else {
         Arc::new(SharedSourceReference { value: Mutex::new(source.reference()), _native_custody: None })
     };
-    *reference.lock().map_err(|_| instrumentation.rejection(
+    *reference.value.lock().map_err(|_| instrumentation.rejection(
         POISONED_REFERENCE, &canonical.0))? = source.reference();
     let native_identity = source.inner().root_identity().to_bytes();
-    let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>(), u64::from((std::mem::size_of::<SharedPhysicalRoot>()) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+    let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>())?;
     let shared = Arc::new(SharedPhysicalRoot {
         source, watcher, reference: Arc::clone(&reference), _native_custody: shared_custody,
     });
@@ -575,7 +575,7 @@ where G: FnMut() -> F + Send,
             reason: "pending root cleanup changed its original owner allocation",
         });
     }
-    let mut registration = registration.lock().await;
+    let mut registration = registration.state.lock().await;
     if guard().await? != expected {
         return Err(RootError::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -863,7 +863,7 @@ mod tests {
         let (observation, allocation) = physical.observe_with_native_work(&query,
             || async { original_root_guard(&fixture, &query).await.map(|_| ()) })
             .await.unwrap();
-        assert!(observation.consumed_changes);
+        assert!(observation_consumes_changes(&observation.batch));
         assert_eq!(observation.prior_source, prior);
         assert_eq!(observation.source.identity, original.identity);
         assert!(observation.source.epoch > prior.epoch);
@@ -921,7 +921,7 @@ mod tests {
         let observed = physical.observe_with_native_work(&query,
             || async { original_root_guard(&fixture, &query).await.map(|_| ()) })
             .await.unwrap();
-        assert!(observed.0.consumed_changes);
+        assert!(observation_consumes_changes(&observed.0.batch));
         assert_eq!(observed.0.prior_source, prior);
         assert!(observed.0.source.epoch > prior.epoch);
         drop(observed);

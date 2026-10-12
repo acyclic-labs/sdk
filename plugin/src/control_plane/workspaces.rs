@@ -145,11 +145,11 @@ impl ControlPlane {
                 .lock()
                 .map_err(|_| "physical root watcher state is poisoned".to_owned())?
                 .reports_every_change();
-            if !observation.consumed_changes && !source_advanced_elsewhere && !unreported {
+            if !observation_consumes_changes(&observation.batch) && !source_advanced_elsewhere && !unreported {
                 return Ok(());
             }
             #[cfg(test)]
-            if (observation.consumed_changes || source_advanced_elsewhere) && self.fail_after_watch_poll
+            if (observation_consumes_changes(&observation.batch) || source_advanced_elsewhere) && self.fail_after_watch_poll
             {
                 self.fail_after_watch_poll = false;
                 return Err("injected failure after shared watcher poll".to_owned());
@@ -262,7 +262,7 @@ impl ControlPlane {
                 )
                 .await
                 .map_err(display)?;
-                if !observation.consumed_changes
+                if !observation_consumes_changes(&observation.batch)
                     && !source_advanced_elsewhere
                     && !checkout.has_pending_mutations()
                 {

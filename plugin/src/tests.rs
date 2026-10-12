@@ -690,7 +690,7 @@ async fn shared_root_observations_case() {
     assert_eq!(second.prior_source.epoch, first.source.epoch);
     assert_eq!(second.source.epoch, first.source.epoch);
     assert_eq!(
-        shared.reference.lock().expect("published reference").epoch,
+        shared.reference.value.lock().expect("published reference").epoch,
         second.source.epoch
     );
 }

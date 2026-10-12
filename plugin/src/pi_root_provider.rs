@@ -16,9 +16,9 @@ use acyclic_fs::{
 };
 use acyclic_harness::{
     EffectAttemptId, EffectId, Error, IdempotencyKey, JsonBounds, JsonCodecCharge, OperationId, Result, TaskId,
-    canonical_json_bytes_bounded_native_trusted,
-    json_bytes_bounded_native_trusted,
-    json_value_bounded_native_trusted, json_from_slice_bounded_native_trusted,
+    canonical_json_bytes_bounded,
+    json_bytes_bounded,
+    json_value_bounded, json_from_slice_bounded,
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
     core::{EffectGuarantee, EffectState, EffectStatus},
     durable_host::TaskJournalOwner,
@@ -749,7 +749,7 @@ pub(crate) fn guarded_pi_bytes<T: Serialize>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
     encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
-        json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 
@@ -876,7 +876,7 @@ pub(crate) fn canonical_pi_value<T: Serialize + ?Sized>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
     encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
-        canonical_json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        canonical_json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 
@@ -907,7 +907,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let result = json_from_slice_bounded_native_trusted(bytes, bounds, maximum_owned_bytes, code, value_schema, &mut |charge| {
+    let result = json_from_slice_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, Some(code), Some(value_schema), &mut |charge| {
         if let JsonCodecCharge::Release { bytes } = charge {
             return custody.release(bytes).map_err(native_error);
         }
@@ -954,7 +954,7 @@ pub(crate) fn guarded_pi_value<T: Serialize>(
     value: &T, maximum_owned_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(serde_json::Value, NativeAllocation)> {
     encode_pi(None, Some(maximum_owned_bytes), work, |bounds, charge| {
-        json_value_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        json_value_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 

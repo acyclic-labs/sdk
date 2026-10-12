@@ -1,5 +1,6 @@
 //! Native Pi fork controls over the one retained catalog and task journal.
 use crate::{PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
+    LocalLazyWorkspace, SharedPhysicalRoot, LocalAuthorityBackend, LocalObjectBackend,
     pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation, derived},
     pi_native_host::PiNativeFilesystem,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
@@ -13,7 +14,7 @@ use acyclic_harness::{Error, Result, TaskId, OperationId,
 use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, future::Future, sync::Arc};
 
 pub(crate) const PI_FORK_COMMAND_KIND: &str = "acyclic.pi.fork";
 pub(crate) const PI_OBSERVE_SOURCE_COMMAND_KIND: &str = "acyclic.pi.observe-source";
@@ -173,13 +174,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?
         };
         if let Some(plan) = plan {
-            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            source.validate_snapshot_with_native_work(plan.frozen, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok((source, plan.frozen, None));
         }
         let mut source_custody = None;
         let frozen = if command.commit.source_task == self.protected.policy().root_task {
             if let Some(frozen) = command.root_source {
-                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
             } else if owner.task_id() == self.protected.policy().root_task {
                 let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi selected root handle missing"))?;
@@ -202,7 +203,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 if live.binding.task_id != command.commit.source_task || live.workspace.workspace().id() != source.workspace().id() {
                     return Err(unauthorized("Pi live source substituted its actual creator workspace"));
                 }
-                let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
+                let (snapshot, custody) = crate::pi_fork_host::freeze_child_source(
                     live.context.context(), &live.owner, &live.view, &source, &live.original_work).await?;
                 source_custody = Some(custody);
                 owner.verify_with_native_work(false, work).await?;
@@ -210,7 +211,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             } else {
                 let frozen = self.native.source_frozen(command.commit.source_task)
                     .ok_or_else(|| invalid("Pi undispatched source lost its actual first native companion"))?;
-                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+                source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen
             }
         };
@@ -403,7 +404,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));
             }
-            actual.workspace.validate_snapshot_with_native_work(observed.snapshot, work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+            actual.workspace.validate_snapshot_with_native_work(observed.snapshot, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
             return ready(&PiRootSource { snapshot: observed.snapshot, root_key: &observed.root_key }, &work);
         }
         let frozen = freeze_created_root_source(self.protected.clone(), self.resources,
@@ -433,7 +434,7 @@ pub(crate) async fn freeze_created_root_source(
     let original = crate::pi_root_provider::observe_root_allocation(protected.clone(),
         resources, filesystem.clone(), stream.clone(), preparation, work).await?
         .ok_or_else(|| unauthorized("Root freeze has no actual original created allocation"))?;
-    crate::pi_lazy_capture::freeze_root_source_with_native_work(protected.policy().root_task,
+    crate::pi_fork_host::freeze_root_source_with_native_work(protected.policy().root_task,
         shared.context(), owner, &actual.physical, &actual.workspace, work, || async {
             owner.verify_with_native_work(false, work).await?;
             let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
@@ -473,4 +474,76 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 
 fn remaining(work: &NativeMaterializationWork) -> Result<WorkBudget> {
     work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })
+}
+
+/// The Root's actual created-source guard spans the watcher, rebind and freeze on the command's existing ledger.
+pub(crate) async fn freeze_root_source_with_native_work<P, F, G>(
+    original_root: acyclic_harness::TaskId,
+    context: &acyclic_harness::runtime::TaskContext,
+    owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
+    physical: &SharedPhysicalRoot, source: &LocalLazyWorkspace,
+    work: &acyclic_fs::NativeMaterializationWork, mut guard: G,
+) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)>
+where P: acyclic_stream::StreamProvider,
+      G: FnMut() -> F + Send,
+      F: Future<Output = Result<()>> + Send,
+{
+    if owner.task_id() != original_root || context.durable_task_id() != Some(original_root) {
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Root snapshot requires its actual original Root context and owner" });
+    }
+    owner.verify_with_native_work(false, work).await?;
+    let observed = physical.observe_with_native_work(work, &mut guard).await?;
+    guard().await?;
+    let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation()).map_err(native_lazy_error)?;
+    let rebound = source.rebind_source(&accounting).await.map_err(native_lazy_error)?;
+    guard().await?;
+    if rebound.as_state().source != observed.0.source {
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "Root source rebind changed its guarded watcher observation" });
+    }
+    let frozen = source.snapshot(&accounting).await.map_err(native_lazy_error)?;
+    guard().await?;
+    if frozen.source != observed.0.source {
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+            reason: "Root source freeze changed its guarded watcher observation" });
+    }
+    owner.verify_with_native_work(false, work).await?;
+    drop(rebound);
+    drop(observed.0);
+    Ok((frozen, observed.1))
+}
+
+pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
+    let (source, custody) = source.into_native_failure();
+    match source {
+        acyclic_fs::LazyWorkspaceError::NativeWork(cause) => Error::NativeWork { cause, custody },
+        source => Error::NativeSource { source, custody },
+    }
+}
+
+/// Only an active source's ORIGINAL native view owner may checkpoint its dirty mounts.
+pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
+    context: &acyclic_harness::runtime::TaskContext,
+    owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
+    view: &acyclic_harness::filesystem::NativeVolumeView<LocalAuthorityBackend, LocalObjectBackend>,
+    source: &LocalLazyWorkspace, work: &acyclic_fs::NativeMaterializationWork,
+) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {
+    if context.durable_task_id() != Some(owner.task_id()) {
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi source checkpoint requires its actual source task context" });
+    }
+    owner.verify_with_native_work(false, work).await?;
+    let checkpoint = view.checkpoint_projects_with_native_work(owner.native_view_owner(), work)?.await?;
+    owner.verify_with_native_work(false, work).await?;
+    let mut selected = checkpoint.0.iter().filter(|(_, snapshot)| snapshot.workspace_id == source.workspace().id());
+    let snapshot = selected.next().ok_or_else(|| Error::NativeBoundary {
+        code: acyclic_harness::wire::ErrorCode::Unauthorized,
+        reason: "Pi checkpoint has no actual selected source workspace" })?.1;
+    if selected.next().is_some() {
+        return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+            reason: "Pi checkpoint repeats a selected source workspace" });
+    }
+    drop(checkpoint.0);
+    Ok((snapshot, checkpoint.1))
 }
