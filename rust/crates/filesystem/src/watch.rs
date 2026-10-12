@@ -321,7 +321,11 @@ impl NativeWatch {
             }
             let root_identity = NativeRootIdentity::from_file(&root_file)?;
             #[cfg(windows)]
-            let complete = crate::native_host::reports_every_change(&root_file)?;
+            let complete = crate::native_host::reports_every_change(
+                &root_file,
+                &mut crate::native_host::ordinary_work(),
+            )
+            .map_err(crate::native_host::ordinary_error)?;
             #[cfg(not(windows))]
             let complete = true;
             let capacity = usize::try_from(options.maximum_queued_changes)
@@ -366,7 +370,7 @@ impl NativeWatch {
                 },
                 notify::Config::default(),
             )
-            .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+            .map_err(|error| NativeWatchError::Backend(error))?;
             watcher
                 .watch(
                     &root,
@@ -376,7 +380,7 @@ impl NativeWatch {
                         RecursiveMode::NonRecursive
                     },
                 )
-                .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+                .map_err(|error| NativeWatchError::Backend(error))?;
             Ok(Self {
                 watcher,
                 watched_directories: BTreeSet::from([root.clone()]),
@@ -429,7 +433,7 @@ impl NativeWatch {
                     }
                     break;
                 }
-                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+                Err(error) => return Err(NativeWatchError::Io(error)),
             };
             if metadata.file_type().is_symlink() {
                 return Err(NativeWatchError::SymbolicLinkDirectory);
@@ -443,7 +447,7 @@ impl NativeWatch {
         }
         self.watcher
             .watch(&candidate, RecursiveMode::NonRecursive)
-            .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+            .map_err(|error| NativeWatchError::Backend(error))?;
         self.watched_directories.insert(candidate);
         Ok(())
     }
@@ -458,10 +462,10 @@ impl NativeWatch {
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+                Err(error) => return Err(NativeWatchError::Io(error)),
             };
             for entry in entries {
-                let entry = entry.map_err(|error| NativeWatchError::Io(error.to_string()))?;
+                let entry = entry.map_err(|error| NativeWatchError::Io(error))?;
                 let is_directory = entry
                     .file_type()
                     .is_ok_and(|file_type| file_type.is_dir() && !file_type.is_symlink());
@@ -478,7 +482,7 @@ impl NativeWatch {
                             self.watched_directories.insert(path.clone());
                         }
                         Err(_) if !path.is_dir() => continue,
-                        Err(error) => return Err(NativeWatchError::Backend(error.to_string())),
+                        Err(error) => return Err(NativeWatchError::Backend(error)),
                     }
                 }
                 pending.push(path);
@@ -773,7 +777,7 @@ impl NativeWatch {
         drop(state);
         std::fs::File::create_new(cookie)
             .and_then(|_| std::fs::remove_file(cookie))
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            .map_err(|error| NativeWatchError::Io(error))?;
         let deadline = Instant::now() + timeout;
         let mut state = self
             .shared
@@ -799,7 +803,7 @@ impl NativeWatch {
                 Ok(metadata) if metadata.is_dir() => return Ok((subtree.clone(), host.clone())),
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+                Err(error) => return Err(NativeWatchError::Io(error)),
             }
         }
         let (subtree, host) = self
@@ -807,7 +811,7 @@ impl NativeWatch {
             .first()
             .cloned()
             .ok_or(NativeWatchError::InvalidOptions)?;
-        std::fs::create_dir(&host).map_err(|error| NativeWatchError::Io(error.to_string()))?;
+        std::fs::create_dir(&host).map_err(|error| NativeWatchError::Io(error))?;
         Ok((subtree, host))
     }
 
@@ -903,7 +907,7 @@ impl NativeWatch {
             match self
                 .receiver
                 .get_mut()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
+                .map_err(|_| OperationFailure::new(NativeWatchError::StatePoisoned, work))?
                 .try_recv()
             {
                 Ok(change) => {
@@ -1345,10 +1349,10 @@ pub enum NativeWatchError {
     RootChanged,
     /// Root path I/O failed.
     #[error("native watcher I/O failed: {0}")]
-    Io(String),
+    Io(#[source] std::io::Error),
     /// Native backend setup failed.
     #[error("native watcher backend failed: {0}")]
-    Backend(String),
+    Backend(#[source] notify::Error),
     /// Watcher state synchronization was poisoned.
     #[error("native watcher state is poisoned")]
     StatePoisoned,
@@ -1380,7 +1384,7 @@ pub enum NativeWatchError {
 
 impl From<std::io::Error> for NativeWatchError {
     fn from(error: std::io::Error) -> Self {
-        Self::Io(error.to_string())
+        Self::Io(error)
     }
 }
 

@@ -94,7 +94,6 @@ where
             let mut owner = NativeMountSourceWatchOwner {
                 watch: None,
                 sink: Some(Arc::clone(&sink) as Arc<dyn SourceChangeSink>),
-                startup_failure: None,
                 custody,
                 bytes: 0,
             };
@@ -207,13 +206,6 @@ where
             };
             if let Err(error) = watched_result {
                 return Err(match error {
-                    LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure)) => {
-                        owner.startup_failure = Some(Arc::clone(&failure));
-                        NativeMountError::SourceWatchStartupFailed {
-                            cause: DemandError::SourceWatchStartup(failure),
-                            owner,
-                        }
-                    }
                     LazyWorkspaceError::Demand(error) if original.is_some() => {
                         NativeMountError::Demand(error)
                     }

@@ -37,13 +37,13 @@ async fn fork_workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<Workspace<A, O>, WorkspaceError> {
     value!(
         source
-            .fork(
+            .fork::<_, _, WorkspaceError>(
                 name,
                 options,
                 crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-                allow
+                &mut allow::<FsError>
             )
             .await
     )

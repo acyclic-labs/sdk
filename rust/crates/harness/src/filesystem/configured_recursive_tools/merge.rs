@@ -1,9 +1,7 @@
 use super::*;
 use crate::executor::with_history_io;
-use crate::filesystem::{
-    PreparationIo,
-    fork_preparer_io::{failure, item},
-};
+use crate::filesystem::PreparationIo;
+use crate::executor::stock_boundary;
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -28,13 +26,13 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             for prefix in ["volume:read:", "volume:write:"] {
-                item(Some(io), 0)?;
+                crate::model::charge_items(Some(io), 1)?;
                 if !io.contains_capability(
                     context.effective_scope().grants(),
                     &caller.project,
                     prefix,
                 )? {
-                    return Err(failure(
+                    return Err(stock_boundary(
                         Some(io),
                         ErrorCode::Unauthorized,
                         "effective scope denies its Project operation",
@@ -60,7 +58,7 @@ where
             }
         }
         let allocation = allocation
-            .ok_or_else(|| failure(io, ErrorCode::Unauthorized, "merge has no notice binding"))?;
+            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge has no notice binding"))?;
         let runtime = self.runtime(io)?;
         let ordinary;
         #[cfg(not(target_arch = "wasm32"))]
@@ -92,7 +90,7 @@ where
                         != 1
                 })
             {
-                return Err(failure(
+                return Err(stock_boundary(
                     io,
                     ErrorCode::Unauthorized,
                     "merge source differs from its admitted allocation",
@@ -102,11 +100,11 @@ where
         };
         let mut selected = None;
         for snapshot in snapshots {
-            item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if snapshot.volume.class() == crate::conversation::VolumeClass::Project
                 && (snapshot.volume != source.project || selected.replace(snapshot).is_some())
             {
-                return Err(failure(
+                return Err(stock_boundary(
                     io,
                     ErrorCode::Unauthorized,
                     "merge differs from its unique admitted Project",
@@ -114,7 +112,7 @@ where
             }
         }
         let selected = selected
-            .ok_or_else(|| failure(io, ErrorCode::Unauthorized, "merge source has no Project"))?;
+            .ok_or_else(|| stock_boundary(io, ErrorCode::Unauthorized, "merge source has no Project"))?;
         if let Some(original) = original
             && (original.caller != caller.task
                 || original.arguments != *arguments
@@ -123,7 +121,7 @@ where
                 || original.target_project != caller.project
                 || original.source_project != selected.volume)
         {
-            return Err(failure(
+            return Err(stock_boundary(
                 io,
                 ErrorCode::Unauthorized,
                 "merge retry changed its original owners",
@@ -172,7 +170,7 @@ where
                     "volume:read:",
                 )? {
                     if original.is_some() || self.project_policy.get().is_none() {
-                        return Err(failure(
+                        return Err(stock_boundary(
                             Some(io),
                             ErrorCode::Unauthorized,
                             "merge lacks its Project read authority",
@@ -181,7 +179,7 @@ where
                     io.original_native_work()
                         .expect("native merge work")
                         .remaining()?;
-                    return Err(failure(
+                    return Err(stock_boundary(
                         Some(io),
                         ErrorCode::Unsupported,
                         "native Project policy requires originally funded installed metadata",
@@ -200,7 +198,7 @@ where
                 break 'source None;
             }
             let (issuer, provider) = self.project_policy.get().ok_or_else(|| {
-                failure(
+                stock_boundary(
                     None,
                     ErrorCode::Unauthorized,
                     "foreign merge lacks a RootService Project policy",

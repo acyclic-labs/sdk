@@ -78,9 +78,7 @@ pub(super) fn fatal(error: &NativeMountError) -> bool {
                     crate::FsError::Cancelled(_) | crate::FsError::Work(_),
                 ) => true,
                 #[cfg(feature = "native-watch")]
-                MountSourceError::SourceWatchStartup(_)
-                | MountSourceError::NativeWatchStartupFailed { .. }
-                | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,
+                MountSourceError::NativeWatchStartupFailed { .. } => true,
                 _ => false,
             }
         }

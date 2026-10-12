@@ -89,7 +89,7 @@ where
         }
         for file in &allocation.input_files {
             self.delegate_file(context, file, io).await?;
-            let grant = match io { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
+            let grant = match io { Some(io) => io.capability(file, "file:read:"), None => file.read_capability(&mut None) }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -110,7 +110,7 @@ where
             {
                 self.delegate_file(context, file, io).await?;
             }
-            let grant = match io { Some(io) => io.capability(&reference.file, "file:read:"), None => reference.file.read_capability() }?;
+            let grant = match io { Some(io) => io.capability(&reference.file, "file:read:"), None => reference.file.read_capability(&mut None) }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -123,12 +123,12 @@ where
         } else {
             0
         };
-        let old = std::mem::replace(&mut child.grants, Capabilities::from_owned_set(grants));
+        let old = std::mem::replace(&mut child.grants, Capabilities(grants));
         drop(old);
         if let Some(io) = io {
             io.release(old_bytes)?;
         }
-        let scoped = Capabilities::from_owned_set(scoped);
+        let scoped = Capabilities(scoped);
         let scope = crate::executor::with_history_io(io, |work| {
             allocation.child.issuer().issue(
                 allocation.child.scope.id(),

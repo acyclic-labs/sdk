@@ -128,7 +128,7 @@ impl PiRootProvider {
                     .await?;
                 self.require_native_creation()?;
                 let identity = guard_root_preparation_source_with_native_work(
-                    self.preparation.context.context(),
+                    self.preparation.context.as_ref(),
                     owner,
                     &self.preparation,
                     key,

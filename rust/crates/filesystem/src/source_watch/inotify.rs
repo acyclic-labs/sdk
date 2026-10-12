@@ -398,10 +398,10 @@ impl Shared {
                 } else {
                     let path = alias.join(name);
                     if mask & REBINDING == 0 {
-                        changes.push(HostChange::Altered(path));
+                        changes.push(HostChange::Altered(path.into()));
                     } else {
                         orphaned.extend(watches.forget_beneath(&path));
-                        changes.push(HostChange::Rebound(path));
+                        changes.push(HostChange::Rebound(path.into()));
                     }
                 }
             }

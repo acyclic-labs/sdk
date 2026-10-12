@@ -953,10 +953,6 @@ pub enum DemandError {
     /// A real owned-buffer reservation failed without discarding its cause.
     #[error("source buffer allocation failed: {0}")]
     Allocation(#[source] std::collections::TryReserveError),
-    /// A started native watcher remains owned until measured cleanup succeeds.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error("{0}")]
-    SourceWatchStartup(#[source] std::sync::Arc<crate::source_watch::SourceWatchStartupFailure>),
     /// Native or remote source failed.
     #[error("source failed: {0}")]
     Io(std::io::Error),
@@ -8222,7 +8218,7 @@ pub mod native {
             work.with_original_leaf(|work| {
                 work.reserve(crate::materializer::NativeResourceCredit::ReturnedItems, 1)
             })?;
-            let producer = match crate::source_watch::NativeSourceWatch::start_with_output_with_work(
+            let producer = match crate::source_watch::NativeSourceWatch::start(
                 &self.inner.root,
                 changes,
                 work,
@@ -8235,6 +8231,7 @@ pub mod native {
                     return Err(error);
                 }
             };
+            work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::ReturnedItems, 1, 1))?;
             Arc::get_mut(&mut watch)
                 .expect("private uninitialized watch owner")
                 .write(NativeSourceWatchBacking {
@@ -8787,10 +8784,12 @@ pub mod native {
         }
     }
 
-    impl<'a> From<&'a crate::source_watch::HostChange> for NativeChangedItem<'a> {
-        fn from(change: &'a crate::source_watch::HostChange) -> Self {
+    impl<'a> From<&'a crate::source_watch::HostChange<'a>> for NativeChangedItem<'a> {
+        fn from(change: &'a crate::source_watch::HostChange<'a>) -> Self {
             use crate::source_watch::HostChange;
             match change {
+                #[cfg(windows)]
+                HostChange::WidePath { action, path } => NativeChangedItem::WidePath { relative: path, altered: *action == 3 },
                 HostChange::Everything => NativeChangedItem::Everything,
                 #[cfg(any(target_os = "macos", windows))]
                 HostChange::Unconfirmed => NativeChangedItem::Unconfirmed,
@@ -8808,39 +8807,18 @@ pub mod native {
         }
     }
 
-    #[cfg(windows)]
-    impl<'a> From<&'a crate::source_watch::HostChangeWide<'_>> for NativeChangedItem<'a> {
-        fn from(change: &'a crate::source_watch::HostChangeWide<'_>) -> Self {
-            use crate::source_watch::HostChangeWide;
-            match change {
-                HostChangeWide::Everything => NativeChangedItem::Everything,
-                HostChangeWide::Unconfirmed => NativeChangedItem::Unconfirmed,
-                HostChangeWide::File(index) => NativeChangedItem::File(*index),
-                HostChangeWide::Path { action, path } => NativeChangedItem::WidePath {
-                    relative: path,
-                    altered: *action == 3,
-                },
-            }
-        }
-    }
-
     impl crate::source_watch::HostChangeSink for NativeChanges {
         fn logical_owned_bytes(&self) -> u64 {
             std::mem::size_of::<Self>() as u64 + self.sink.logical_owned_bytes()
         }
 
         fn host_changed(
-            &self, changes: &[crate::source_watch::HostChange], work: &mut crate::source_watch::CallbackWork<'_>,
+            &self, changes: &[crate::source_watch::HostChange<'_>], work: &mut crate::source_watch::CallbackWork<'_>,
         ) -> Result<(), DemandError> {
             self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
         }
 
-        #[cfg(windows)]
-        fn host_changed_wide(
-            &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::source_watch::CallbackWork<'_>,
-        ) -> Result<(), DemandError> {
-            self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
-        }
+
     }
 
     const fn version_hash_bytes() -> u64 {

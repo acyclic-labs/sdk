@@ -19,8 +19,6 @@ pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSo
         #[cfg(windows)]
         DemandError::WindowsMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(feature = "native-watch")]
-        DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
-        #[cfg(feature = "native-watch")]
         DemandError::Observation(error) => match error {
             crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
             crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,

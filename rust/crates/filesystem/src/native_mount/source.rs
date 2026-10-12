@@ -503,9 +503,6 @@ pub enum MountSourceError {
     /// The original native operation has not finished reconciliation.
     #[error("original native operation is indeterminate")]
     Indeterminate,
-    /// The original SDK seal returned an exact semantic decision.
-    #[error("selected import publication was not committed: {0:?}")]
-    SelectedPublication(crate::LivePublicationObservation),
     /// Canonical namespace validation retains its exact typed cause.
     #[error(transparent)]
     NamespacePath(crate::kernel::NamespacePathError),
@@ -528,10 +525,6 @@ pub enum MountSourceError {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[error("filesystem engine failure: source demand failed: {0}")]
     Metadata(#[source] crate::native_host::NativeMetadataError),
-    /// Original preallocated source-watch failure and its physical owner.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error("filesystem engine failure: source demand failed: {0}")]
-    SourceWatchStartup(#[source] Arc<crate::source_watch::SourceWatchStartupFailure>),
     /// Original finite watcher I/O cause, with no replacement error box.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error("filesystem engine failure: source demand failed: native watcher I/O failed: {0}")]
@@ -550,18 +543,6 @@ pub enum MountSourceError {
         #[source]
         cause: crate::NativeTreeMaterializationError,
         /// Actual same root watcher to retain through measured terminal cleanup.
-        watch: crate::watch::NativeWatch,
-    },
-    /// Same complete root watcher and already-retained source startup cause.
-    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error(
-        "filesystem engine failure: source demand failed: native source watcher startup failed: {cause}"
-    )]
-    NativeWatchSourceStartupFailed {
-        /// Original preallocated partial source failure.
-        #[source]
-        cause: Arc<crate::source_watch::SourceWatchStartupFailure>,
-        /// Actual same complete root watcher to retain for bounded cleanup.
         watch: crate::watch::NativeWatch,
     },
     /// An actual mutation failed and its original completion accounting also failed.

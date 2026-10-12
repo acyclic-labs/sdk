@@ -171,7 +171,7 @@ pub enum MaterializeError {
     },
     /// Host filesystem operation failed.
     #[error("host filesystem operation failed: {0}")]
-    Io(#[from] std::io::Error),
+    Io(#[source] std::io::Error),
     /// Exact work overflowed or exceeded the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
@@ -183,7 +183,7 @@ pub enum MaterializeError {
 impl From<crate::FsError> for MaterializeError {
     fn from(error: crate::FsError) -> Self {
         match error {
-            crate::FsError::NativeKernel(error) => materialize_native_error(error),
+            crate::FsError::NativeKernel(error) => MaterializeError::from(error),
             crate::FsError::Work(error)
             | crate::FsError::Authority(crate::AuthorityStoreError::Work(error))
             | crate::FsError::Object(crate::ObjectStoreError::Work(error))
@@ -206,6 +206,58 @@ impl From<crate::FsError> for MaterializeError {
                 crate::kernel::TreeReadError::Storage(crate::ObjectStoreError::Cancelled),
             )) => Self::Cancelled(crate::CancellationError),
             error => Self::Source(error),
+        }
+    }
+}
+
+impl From<std::io::Error> for MaterializeError {
+    fn from(error: std::io::Error) -> Self {
+        if let Some(work) = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<WorkError>())
+        {
+            MaterializeError::Work(*work)
+        } else if let Some(demand) = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<DemandError>())
+        {
+            match demand {
+                DemandError::Work(work) => MaterializeError::Work(*work),
+                DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
+                _ => MaterializeError::Io(error),
+            }
+        } else {
+            MaterializeError::Io(error)
+        }
+    }
+}
+
+impl From<crate::NativeTreeMaterializationError> for MaterializeError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        match error {
+            crate::NativeTreeMaterializationError::Work(error) => MaterializeError::Work(error),
+            crate::NativeTreeMaterializationError::Cancelled => {
+                MaterializeError::Cancelled(crate::CancellationError)
+            }
+            crate::NativeTreeMaterializationError::Io(error) => MaterializeError::Io(error),
+            error => MaterializeError::NativeWork(error),
+        }
+    }
+}
+
+impl From<DemandError> for MaterializeError {
+    fn from(error: DemandError) -> Self {
+        match error {
+            DemandError::Work(error) => MaterializeError::Work(error),
+            DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
+            DemandError::Io(error) => MaterializeError::Io(error),
+            #[cfg(target_os = "linux")]
+            DemandError::LinuxMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+            #[cfg(target_os = "macos")]
+            DemandError::MacMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+            #[cfg(windows)]
+            DemandError::WindowsMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+            error => MaterializeError::Demand(error),
         }
     }
 }

@@ -66,11 +66,11 @@ impl CreatedResourceAccess {
             || self
                 .native_custody
                 .as_ref()
-                .is_none_or(|g| !g.matches_work(work))
+                .is_none_or(|g| !g.work().shares_allocation_context(work))
             || next
                 .native_custody
                 .as_ref()
-                .is_none_or(|g| !g.matches_work(work))
+                .is_none_or(|g| !g.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: Unauthorized,

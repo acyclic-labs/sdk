@@ -175,21 +175,26 @@ where
                     .has_retained_operation()
                     .then(|| checkout.retained_operation_id())
             };
-            if retained == Some(operation)
-                && !self
-                    .authored
-                    .shared_checkout()
-                    .resolve_acknowledged_original_with_native_work(
-                        operation,
-                        generation,
-                        original,
-                        cancellation,
-                        Some(self.authored.cancellation()),
+            if retained == Some(operation) {
+                let context = crate::lazy_workspace::NativeSnapshotContext::Selected {
+                    cut: self.lazy.publication_cut(Some(operation), &mut accounting)
+                        .await.map_err(lazy_error)?,
+                    input,
+                };
+                let mut acknowledged = None;
+                self.authored.shared_checkout().publish(
+                    crate::PublicationPermit::Unrestricted, original, cancellation,
+                    Some(self.authored.cancellation()),
+                    &mut adapter::source_publication_guard(
                         self.authored.callback_guard().cloned(),
-                    )
-                    .await?
-            {
-                return Err(MountSourceError::Indeterminate);
+                        Some(self.authored.cancellation().clone()),
+                    ),
+                    Some(context), &mut acknowledged,
+                ).await.map_err(|(error, _)| error)?;
+                if !acknowledged.is_some_and(|snapshot| snapshot.operation() == Some(operation)
+                    && snapshot.generation() == generation) {
+                    return Err(MountSourceError::Indeterminate.into());
+                }
             }
             self.lazy
                 .finish_selected_import(

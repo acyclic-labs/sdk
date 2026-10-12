@@ -6,13 +6,10 @@
 )]
 
 use super::{Delivery, HostChange};
-use std::ffi::OsString;
 use std::io;
-use std::os::windows::ffi::OsStringExt as _;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use windows::Win32::Foundation::{
@@ -20,333 +17,656 @@ use windows::Win32::Foundation::{
     HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_ACTION_MODIFIED, FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES,
-    FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
-    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE,
-    FILE_NOTIFY_EXTENDED_INFORMATION, FILE_NOTIFY_INFORMATION, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_READ, FILE_SHARE_WRITE,
     ReadDirectoryChangesExW, ReadDirectoryNotifyExtendedInformation,
     ReadDirectoryNotifyInformation,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForSingleObject};
 
-/// Room for many reports per read; a local volume admits more than 64 KiB.
+use crate::WorkCounters;
+use crate::demand::{DemandError, SourceDemandReadWork};
+use crate::native_host::NativeHostWork;
+mod decode;
+use decode::translate;
+const READ: WorkCounters = WorkCounters {
+    backend_read_operations: 1,
+    ..WorkCounters::UNCHARGED
+};
+const WRITE: WorkCounters = WorkCounters {
+    backend_write_operations: 1,
+    ..WorkCounters::UNCHARGED
+};
+
 const BUFFER_WORDS: usize = 64 * 1024 / size_of::<u64>();
-/// How long a fence waits for the reader before it assumes everything
-const FENCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
+    thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 struct Shared {
-    directory: OwnedHandle,
-    /// Signaled when the pending read completes.
-    completed: OwnedHandle,
     delivery: Arc<Delivery>,
-    /// Whether reads report each entry's file identity too, which the file
+    reads: Mutex<Option<Reads>>,
     extended: AtomicBool,
-    /// Whether the file system reports every change or its loss (NTFS).
     complete: bool,
-    reads: Mutex<Reads>,
-    /// Fences the reader thread has completed.
     fenced: Mutex<u64>,
     fence_delivered: Condvar,
     stopping: AtomicBool,
+    cleanup: Option<crate::materializer::NativeWorkReservation>,
+    allocation: Option<crate::NativeAllocation>,
 }
 
-/// The one read in flight. Its buffer and `OVERLAPPED` stay in place until
 struct Reads {
+    directory: Option<OwnedHandle>,
+    completed: Option<OwnedHandle>,
     overlapped: Box<OVERLAPPED>,
-    buffer: Box<[u64; BUFFER_WORDS]>,
+    buffer: Option<Box<std::mem::MaybeUninit<[u64; BUFFER_WORDS]>>>,
     pending: bool,
-    /// Fences requested so far.
     requested: u64,
+    cleanup: Option<crate::materializer::NativeWorkReservation>,
+    allocation: Option<crate::NativeAllocation>,
 }
 
-// SAFETY: the read's buffer and `OVERLAPPED` are touched only under the
-// `reads` lock, and the kernel writes them only while a read is pending.
+// SAFETY: the kernel owns only the pinned boxes during a pending read.
 unsafe impl Send for Reads {}
 
+impl Reads {
+    fn cleanup_call<T>(&self, delta: WorkCounters, operation: impl FnOnce() -> T) -> T {
+        if let Some(credit) = &self.cleanup {
+            if let Err(error) = credit.record_completed(delta) {
+                credit.work().with_original_leaf(|state| {
+                    state.record_native_io_failure(crate::native_name::original_name_error(error));
+                    state.poison_native_original_work();
+                });
+            }
+        }
+        operation()
+    }
+    fn wake(&self) {
+        if self.pending {
+            self.cleanup_call(WRITE, || unsafe {
+                let _ = CancelIoEx(
+                    HANDLE(
+                        self.directory
+                            .as_ref()
+                            .expect("opened directory")
+                            .as_raw_handle(),
+                    ),
+                    Some(&raw const *self.overlapped),
+                );
+            });
+        }
+        self.cleanup_call(WRITE, || unsafe {
+            let _ = SetEvent(HANDLE(
+                self.completed
+                    .as_ref()
+                    .expect("completion event")
+                    .as_raw_handle(),
+            ));
+        });
+    }
+}
+
+impl Drop for Reads {
+    fn drop(&mut self) {
+        if self.pending {
+            self.cleanup_call(WRITE, || unsafe {
+                let _ = CancelIoEx(
+                    HANDLE(
+                        self.directory
+                            .as_ref()
+                            .expect("opened directory")
+                            .as_raw_handle(),
+                    ),
+                    Some(&raw const *self.overlapped),
+                );
+            });
+            self.cleanup_call(READ, || unsafe {
+                let mut transferred = 0;
+                let _ = GetOverlappedResult(
+                    HANDLE(
+                        self.directory
+                            .as_ref()
+                            .expect("opened directory")
+                            .as_raw_handle(),
+                    ),
+                    &raw const *self.overlapped,
+                    &mut transferred,
+                    true,
+                );
+            });
+        }
+        self.cleanup_call(
+            WorkCounters {
+                backend_write_operations: u64::from(self.directory.is_some())
+                    + u64::from(self.completed.is_some()),
+                ..WorkCounters::UNCHARGED
+            },
+            || (),
+        );
+        // Handles and buffers drop before their retained-capacity guard.
+    }
+}
+
 impl NativeSourceWatch {
-    pub(super) fn start_driver(
-        directory: &crate::native_host::HostRoot,
+    pub(super) fn start_driver<W: SourceDemandReadWork>(
+        root: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
-    ) -> io::Result<Self> {
-        let directory = open_for_changes(directory)?;
-        let complete = crate::native_host::reports_every_change(&directory)?;
-        // SAFETY: an unnamed manual-reset event.
-        let completed =
-            unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
-        // SAFETY: as above.
-        let completed = unsafe { OwnedHandle::from_raw_handle(completed.0) };
-        let shared = Arc::new(Shared {
-            directory,
-            completed,
+        work: &mut W,
+    ) -> Result<Self, DemandError> {
+        let original = work
+            .native_source_work()
+            .map(|source| source.materialization_work())
+            .transpose()?;
+        let cleanup = original
+            .as_ref()
+            .map(|work| {
+                work.allocation_work().reserve_work(WorkCounters {
+                    backend_read_operations: 2,
+                    backend_write_operations: 6,
+                    ..WorkCounters::UNCHARGED
+                })
+            })
+            .transpose()
+            .map_err(crate::native_name::original_name_error)?;
+        let thread_cleanup = cleanup
+            .as_ref()
+            .map(|credit| {
+                credit.partition_work(WorkCounters {
+                    backend_read_operations: 1,
+                    backend_write_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                })
+            })
+            .transpose()
+            .map_err(crate::native_name::original_name_error)?;
+        let bytes = (size_of::<Shared>()
+            + 2 * size_of::<usize>()
+            + size_of::<OVERLAPPED>()
+            + size_of::<[u64; BUFFER_WORDS]>()) as u64;
+        let mut allocation = if let Some(original) = &original {
+            Some(
+                original
+                    .claim(bytes, 3, WorkCounters::UNCHARGED)
+                    .map_err(crate::native_name::original_name_error)?,
+            )
+        } else {
+            work.claim_allocation(bytes, 3)?;
+            None
+        };
+        let header = allocation
+            .as_mut()
+            .map(|allocation| {
+                allocation.split_off((size_of::<Shared>() + 2 * size_of::<usize>()) as u64)
+            })
+            .transpose()
+            .map_err(crate::native_name::original_name_error)?;
+        let mut shared = Arc::new(Shared {
             delivery,
             extended: AtomicBool::new(true),
-            complete,
-            reads: Mutex::new(Reads {
-                overlapped: Box::default(),
-                buffer: Box::new([0; BUFFER_WORDS]),
-                pending: false,
-                requested: 0,
-            }),
+            complete: false,
             fenced: Mutex::new(0),
             fence_delivered: Condvar::new(),
             stopping: AtomicBool::new(false),
+            cleanup: thread_cleanup,
+            allocation: header,
+            reads: Mutex::new(Some(Reads {
+                directory: None,
+                completed: None,
+                overlapped: Box::default(),
+                buffer: Some(Box::new_uninit()),
+                pending: false,
+                requested: 0,
+                cleanup,
+                allocation,
+            })),
         });
+        let complete = {
+            let mut state = shared.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let reads = state.as_mut().expect("prepared reader");
+            reads.directory = Some(open_for_changes(root, work)?);
+            let complete = crate::native_host::reports_every_change(
+                reads.directory.as_ref().expect("opened directory"),
+                work,
+            )?;
+            work.started_io(WRITE)?;
+            // SAFETY: an unnamed, exclusively owned manual-reset event.
+            let event =
+                unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::from)?;
+            reads.completed = Some(unsafe { OwnedHandle::from_raw_handle(event.0) });
+            complete
+        };
+        Arc::get_mut(&mut shared)
+            .expect("startup owns Shared")
+            .complete = complete;
         {
-            let mut reads = shared.lock_reads();
-            let mut changes = Vec::new();
-            // The first read has nothing to complete: a failure here means
-            // the root cannot be watched at all, unless only file
-            // identities are what the file system cannot report.
-            if let Err(error) = shared.read_until_pending(&mut reads, &mut changes) {
-                if error.raw_os_error() != Some(ERROR_INVALID_FUNCTION.to_hresult().0) {
+            let mut state = shared.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let reads = state.as_mut().expect("new reader");
+            if let Err(error) = shared.issue_read(reads, work) {
+                if !matches!(&error, DemandError::Io(error) if error.raw_os_error() == Some(ERROR_INVALID_FUNCTION.to_hresult().0))
+                {
                     return Err(error);
                 }
                 shared.extended.store(false, Ordering::Release);
-                shared.read_until_pending(&mut reads, &mut changes)?;
+                shared.issue_read(reads, work)?;
             }
         }
+        work.started_io(WRITE)?;
         let reader = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("acyclic-source-watch".to_owned())
-            .spawn(move || reader.run())?;
+            .spawn(move || {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.run())).is_err()
+                {
+                    let _ = reader
+                        .delivery
+                        .with_work(|_| Err::<(), _>(DemandError::WorkerUnavailable));
+                    drop(
+                        reader
+                            .reads
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .take(),
+                    );
+                    *reader.fenced.lock().unwrap_or_else(PoisonError::into_inner) = u64::MAX;
+                    reader.fence_delivered.notify_all();
+                }
+            })?;
+        if !work.is_native_original() {
+            work.release(bytes)?;
+        }
         Ok(Self {
             shared,
-            thread: Some(thread),
+            thread: Mutex::new(Some(thread)),
         })
     }
 
-    pub(crate) fn fence(&self) -> io::Result<()> {
+    pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
+        &self,
+        timeout: Duration,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
         let shared = &self.shared;
         let fence = {
-            let mut reads = shared.lock_reads();
-            reads.requested += 1;
-            if reads.pending {
-                // Completes the read, which wakes the reader to drain.
-                // SAFETY: cancels only this handle's read in flight.
-                let _ = unsafe {
-                    CancelIoEx(
-                        HANDLE(shared.directory.as_raw_handle()),
+            let mut state = shared.reads.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(reads) = state.as_mut() else {
+                return shared.delivery.take_failure(work);
+            };
+            reads.requested = reads
+                .requested
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?;
+            work.started_io(WRITE)?;
+            // SAFETY: cancellation targets only the pinned pending read.
+            unsafe {
+                if reads.pending {
+                    let _ = CancelIoEx(
+                        HANDLE(
+                            reads
+                                .directory
+                                .as_ref()
+                                .expect("opened directory")
+                                .as_raw_handle(),
+                        ),
                         Some(&raw const *reads.overlapped),
-                    )
-                };
-            } else {
-                // SAFETY: signals our own event so the reader looks again.
-                let _ = unsafe { SetEvent(HANDLE(shared.completed.as_raw_handle())) };
+                    );
+                } else {
+                    SetEvent(HANDLE(
+                        reads
+                            .completed
+                            .as_ref()
+                            .expect("completion event")
+                            .as_raw_handle(),
+                    ))
+                    .map_err(io::Error::from)?;
+                }
             }
             reads.requested
         };
         let fenced = shared.fenced.lock().unwrap_or_else(PoisonError::into_inner);
-        let (_fenced, timeout) = shared
+        let (_, timeout) = shared
             .fence_delivered
-            .wait_timeout_while(fenced, FENCE_TIMEOUT, |delivered| *delivered < fence)
+            .wait_timeout_while(fenced, timeout, |delivered| *delivered < fence)
             .unwrap_or_else(PoisonError::into_inner);
         if timeout.timed_out() {
-            // Unproven delivery: assume everything changed instead.
             shared.delivery.deliver(&[HostChange::Everything]);
         } else if !shared.complete {
             shared.delivery.deliver(&[HostChange::Unconfirmed]);
         }
-        Ok(())
+        shared.delivery.take_failure(work)
     }
 
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
+        if self.shared.delivery.original.is_some() && !self.shared.delivery.birth_matches(work) {
+            return Err(DemandError::NativeWorkUnavailable);
+        }
+        self.stop()
+    }
+    pub(crate) fn stop_with_cleanup_wait(
+        &self,
+        wait: &crate::CancellationToken,
+    ) -> Result<(), DemandError> {
+        wait.check().map_err(|_| DemandError::Cancelled)?;
+        self.stop()?;
+        wait.check().map_err(|_| DemandError::Cancelled)
+    }
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+        self.stop()
+    }
+    fn stop(&self) -> Result<(), DemandError> {
+        let mut thread = self
+            .thread
+            .try_lock()
+            .map_err(|_| DemandError::WorkerUnavailable)?;
+        if thread
+            .as_ref()
+            .is_some_and(|thread| thread.thread().id() == std::thread::current().id())
+        {
+            return Err(DemandError::WorkerUnavailable);
+        }
+        let first = !self.shared.stopping.swap(true, Ordering::AcqRel);
+        if first {
+            if let Some(reads) = self
+                .shared
+                .reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                reads.wake();
+            }
+        }
+        if let Some(thread) = thread.take() {
+            if let Some(credit) = &self.shared.cleanup {
+                credit
+                    .record_completed(WorkCounters {
+                        backend_read_operations: 1,
+                        backend_write_operations: 1,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .map_err(crate::native_name::original_name_error)?;
+            }
+            thread.join().map_err(|_| DemandError::WorkerUnavailable)?;
+        }
+        drop(
+            self.shared
+                .reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+        Ok(())
+    }
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.shared
+            .reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_none()
+    }
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        let reads = self
+            .shared
+            .reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (size_of::<Shared>() + size_of::<Self>()) as u64
+            + reads.as_ref().map_or(0, |_| {
+                (size_of::<OVERLAPPED>() + size_of::<[u64; BUFFER_WORDS]>()) as u64
+            })
+    }
     pub(super) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
-
-    /// Holds delivery back while the returned guard lives.
     #[cfg(test)]
     pub(super) fn paused(&self) -> impl Sized + '_ {
-        self.shared.lock_reads()
+        self.shared
+            .reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
-        {
-            let reads = self.shared.lock_reads();
-            // SAFETY: cancels our own read and wakes the reader.
-            unsafe {
-                if reads.pending {
-                    let _ = CancelIoEx(
-                        HANDLE(self.shared.directory.as_raw_handle()),
-                        Some(&raw const *reads.overlapped),
-                    );
-                }
-                let _ = SetEvent(HANDLE(self.shared.completed.as_raw_handle()));
+        let first = !self.shared.stopping.swap(true, Ordering::AcqRel);
+        if first {
+            if let Some(reads) = self
+                .shared
+                .reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                reads.wake();
             }
         }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        let thread = self
+            .thread
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
+            let joining = thread.thread().id() != std::thread::current().id();
+            if let Some(credit) = &self.shared.cleanup {
+                if let Err(error) = credit.record_completed(WorkCounters {
+                    backend_read_operations: u64::from(joining),
+                    backend_write_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                }) {
+                    credit.work().with_original_leaf(|state| {
+                        state.record_native_io_failure(crate::native_name::original_name_error(
+                            error,
+                        ));
+                        state.poison_native_original_work();
+                    });
+                }
+            }
+            if joining {
+                let _ = thread.join();
+            }
         }
     }
 }
 
 impl Shared {
-    fn lock_reads(&self) -> MutexGuard<'_, Reads> {
-        self.reads.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn run(&self) {
         loop {
-            // SAFETY: waits on our own live event.
-            unsafe { WaitForSingleObject(HANDLE(self.completed.as_raw_handle()), INFINITE) };
-            let mut reads = self.lock_reads();
-            let fence = reads.requested;
-            let mut changes = Vec::new();
-            let drained = self
-                .finish_read(&mut reads, true, &mut changes)
-                .and_then(|_| {
-                    if self.stopping.load(Ordering::Acquire) {
-                        Ok(())
+            let event = {
+                let state = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+                let Some(reads) = state.as_ref() else {
+                    break;
+                };
+                HANDLE(
+                    reads
+                        .completed
+                        .as_ref()
+                        .expect("completion event")
+                        .as_raw_handle(),
+                )
+            };
+            if self
+                .delivery
+                .with_work(|work| work.started_io(READ))
+                .is_err()
+            {
+                break;
+            }
+            // SAFETY: the worker retains the event and pinned read state.
+            unsafe { WaitForSingleObject(event, INFINITE) };
+            let drained = self.delivery.with_work(|work| {
+                let mut state = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+                let Some(reads) = state.as_mut() else {
+                    return Ok(());
+                };
+                let fence = reads.requested;
+                let transferred = self.finish_read(reads, true, work)?;
+                let buffer = reads.buffer.take().expect("completed read buffer");
+                drop(state);
+                let result = if let Some(length) = transferred {
+                    if length == 0 {
+                        self.delivery
+                            .sink
+                            .host_changed(&[HostChange::Everything], work)
                     } else {
-                        self.read_until_pending(&mut reads, &mut changes)
-                    }
-                });
-            self.delivery.deliver(&changes);
-            if drained.is_err() {
-                self.delivery.abandon();
-            }
-            let stop = drained.is_err() || self.stopping.load(Ordering::Acquire);
-            if stop {
-                // A read still pending must finish before its buffer goes. It
-                // may have been issued after the dropping thread cancelled
-                // the one it saw, so it is cancelled here, where the lock
-                // that issued it is held.
-                if reads.pending {
-                    // SAFETY: cancels only this handle's read in flight.
-                    let _ = unsafe {
-                        CancelIoEx(
-                            HANDLE(self.directory.as_raw_handle()),
-                            Some(&raw const *reads.overlapped),
+                        // SAFETY: terminal completion initialized this prefix.
+                        let bytes = unsafe {
+                            std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), length)
+                        };
+                        translate(
+                            bytes,
+                            self.extended.load(Ordering::Acquire),
+                            &self.delivery,
+                            work,
                         )
-                    };
+                    }
+                } else {
+                    Ok(())
+                };
+                let mut state = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
+                let reads = state.as_mut().expect("worker owns read state");
+                reads.buffer = Some(buffer);
+                result?;
+                if !self.stopping.load(Ordering::Acquire) {
+                    self.issue_read(reads, work)?;
                 }
-                let _ = self.finish_read(&mut reads, true, &mut Vec::new());
-            }
-            drop(reads);
-            let mut fenced = self.fenced.lock().unwrap_or_else(PoisonError::into_inner);
-            *fenced = (*fenced).max(fence);
-            self.fence_delivered.notify_all();
-            drop(fenced);
-            if stop {
-                return;
-            }
-            if !self.delivery.is_exact() {
-                // Nothing more is read; later fences return at once.
+                drop(state);
                 let mut fenced = self.fenced.lock().unwrap_or_else(PoisonError::into_inner);
-                *fenced = u64::MAX;
+                *fenced = (*fenced).max(fence);
                 self.fence_delivered.notify_all();
-                return;
+                Ok(())
+            });
+            if drained.is_err()
+                || self.stopping.load(Ordering::Acquire)
+                || !self.delivery.is_exact()
+            {
+                break;
             }
         }
+        drop(
+            self.reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
+        *self.fenced.lock().unwrap_or_else(PoisonError::into_inner) = u64::MAX;
+        self.fence_delivered.notify_all();
     }
 
-    /// Issues reads until one stays pending, collecting every read that
-    fn read_until_pending(
+    fn issue_read<W: SourceDemandReadWork>(
         &self,
         reads: &mut Reads,
-        changes: &mut Vec<HostChange>,
-    ) -> io::Result<()> {
-        loop {
-            let Reads {
-                overlapped, buffer, ..
-            } = reads;
-            **overlapped = OVERLAPPED {
-                hEvent: HANDLE(self.completed.as_raw_handle()),
-                ..OVERLAPPED::default()
-            };
-            // SAFETY: the buffer and `OVERLAPPED` stay in place, under the
-            // lock, until the read completes (see `finish_read`).
-            unsafe {
-                ReadDirectoryChangesExW(
-                    HANDLE(self.directory.as_raw_handle()),
-                    buffer.as_mut_ptr().cast(),
-                    u32::try_from(size_of::<[u64; BUFFER_WORDS]>()).unwrap_or(u32::MAX),
-                    true,
-                    FILE_NOTIFY_CHANGE_FILE_NAME
-                        | FILE_NOTIFY_CHANGE_DIR_NAME
-                        | FILE_NOTIFY_CHANGE_ATTRIBUTES
-                        | FILE_NOTIFY_CHANGE_SIZE
-                        | FILE_NOTIFY_CHANGE_LAST_WRITE
-                        | FILE_NOTIFY_CHANGE_CREATION
-                        | FILE_NOTIFY_CHANGE_SECURITY,
-                    None,
-                    Some(&raw mut **overlapped),
-                    None,
-                    if self.extended.load(Ordering::Acquire) {
-                        ReadDirectoryNotifyExtendedInformation
-                    } else {
-                        ReadDirectoryNotifyInformation
-                    },
-                )
-            }
-            .map_err(io::Error::from)?;
-            reads.pending = true;
-            if !self.finish_read(reads, false, changes)? {
-                return Ok(());
-            }
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        *reads.overlapped = OVERLAPPED {
+            hEvent: HANDLE(
+                reads
+                    .completed
+                    .as_ref()
+                    .expect("completion event")
+                    .as_raw_handle(),
+            ),
+            ..OVERLAPPED::default()
+        };
+        work.started_io(READ)?;
+        // SAFETY: pinned buffers stay alive until completion, including startup failure.
+        unsafe {
+            ReadDirectoryChangesExW(
+                HANDLE(
+                    reads
+                        .directory
+                        .as_ref()
+                        .expect("opened directory")
+                        .as_raw_handle(),
+                ),
+                reads
+                    .buffer
+                    .as_mut()
+                    .expect("pending read buffer")
+                    .as_mut_ptr()
+                    .cast(),
+                size_of::<[u64; BUFFER_WORDS]>() as u32,
+                true,
+                FILE_NOTIFY_CHANGE_FILE_NAME
+                    | FILE_NOTIFY_CHANGE_DIR_NAME
+                    | FILE_NOTIFY_CHANGE_ATTRIBUTES
+                    | FILE_NOTIFY_CHANGE_SIZE
+                    | FILE_NOTIFY_CHANGE_LAST_WRITE
+                    | FILE_NOTIFY_CHANGE_CREATION
+                    | FILE_NOTIFY_CHANGE_SECURITY,
+                None,
+                Some(&raw mut *reads.overlapped),
+                None,
+                if self.extended.load(Ordering::Acquire) {
+                    ReadDirectoryNotifyExtendedInformation
+                } else {
+                    ReadDirectoryNotifyInformation
+                },
+            )
         }
+        .map_err(io::Error::from)?;
+        reads.pending = true;
+        Ok(())
     }
 
-    /// Takes the pending read's result into `changes`; false while it is
-    fn finish_read(
+    fn finish_read<W: SourceDemandReadWork>(
         &self,
         reads: &mut Reads,
         wait: bool,
-        changes: &mut Vec<HostChange>,
-    ) -> io::Result<bool> {
+        work: &mut W,
+    ) -> Result<Option<usize>, DemandError> {
         if !reads.pending {
-            return Ok(true);
+            return Ok(None);
         }
-        let mut transferred = 0_u32;
-        // SAFETY: the read's own `OVERLAPPED`, which is live.
+        work.started_io(READ)?;
+        let mut transferred = 0;
+        // SAFETY: the pending read owns these pinned boxes until this completion.
         let result = unsafe {
             GetOverlappedResult(
-                HANDLE(self.directory.as_raw_handle()),
+                HANDLE(
+                    reads
+                        .directory
+                        .as_ref()
+                        .expect("opened directory")
+                        .as_raw_handle(),
+                ),
                 &raw const *reads.overlapped,
-                &raw mut transferred,
+                &mut transferred,
                 wait,
             )
         };
-        match result {
-            Err(error) if error.code() == ERROR_IO_INCOMPLETE.to_hresult() => return Ok(false),
-            Ok(()) if transferred == 0 => changes.push(HostChange::Everything),
-            Ok(()) => {
-                let length = usize::try_from(transferred).unwrap_or(usize::MAX);
-                // SAFETY: the completed read wrote `transferred` bytes into
-                // the buffer, which is at least that long.
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(
-                        reads.buffer.as_ptr().cast::<u8>(),
-                        length.min(size_of::<[u64; BUFFER_WORDS]>()),
-                    )
-                };
-                translate(bytes, self.extended.load(Ordering::Acquire), changes);
-            }
-            Err(error) if error.code() == ERROR_OPERATION_ABORTED.to_hresult() => {}
-            // The handle's own buffer overflowed: reports were lost.
-            Err(error) if error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult() => {
-                changes.push(HostChange::Everything);
-            }
-            Err(error) => {
-                reads.pending = false;
-                return Err(io::Error::from(error));
-            }
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code() == ERROR_IO_INCOMPLETE.to_hresult())
+        {
+            return Ok(None);
         }
         reads.pending = false;
-        Ok(true)
+        match result {
+            Ok(()) => Ok(Some(
+                (transferred as usize).min(size_of::<[u64; BUFFER_WORDS]>()),
+            )),
+            Err(error) if error.code() == ERROR_OPERATION_ABORTED.to_hresult() => Ok(None),
+            Err(error) if error.code() == ERROR_NOTIFY_ENUM_DIR.to_hresult() => Ok(Some(0)),
+            Err(error) => Err(io::Error::from(error).into()),
+        }
     }
 }
 
 /// Opens the held root itself again (an empty name relative to it), for
-fn open_for_changes(root: &crate::native_host::HostRoot) -> io::Result<OwnedHandle> {
+fn open_for_changes<W: SourceDemandReadWork>(
+    root: &crate::native_host::HostRoot,
+    work: &mut W,
+) -> Result<OwnedHandle, DemandError> {
     use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
     use windows::Wdk::Storage::FileSystem::{
         FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_FOR_BACKUP_INTENT, NtCreateFile,
@@ -366,6 +686,7 @@ fn open_for_changes(root: &crate::native_host::HostRoot) -> io::Result<OwnedHand
     let mut status_block = IO_STATUS_BLOCK::default();
     // SAFETY: every pointer names a live value for this synchronous call;
     // without a synchronous-I/O option the handle is asynchronous.
+    work.started_io(WRITE)?;
     let status = unsafe {
         NtCreateFile(
             &raw mut handle,
@@ -384,132 +705,8 @@ fn open_for_changes(root: &crate::native_host::HostRoot) -> io::Result<OwnedHand
     if status.is_err() {
         // SAFETY: a pure status-code translation.
         let code = unsafe { RtlNtStatusToDosError(status) };
-        return Err(io::Error::from_raw_os_error(
-            i32::try_from(code).unwrap_or(i32::MAX),
-        ));
+        return Err(io::Error::from_raw_os_error(i32::try_from(code).unwrap_or(i32::MAX)).into());
     }
     // SAFETY: a handle the call just returned is ours to own.
     Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
-}
-
-/// Turns one read's reports into changes: each names the entry, relative to
-fn translate(mut bytes: &[u8], extended: bool, changes: &mut Vec<HostChange>) {
-    let (name_offset, length_offset) = if extended {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileNameLength),
-        )
-    } else {
-        (
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileName),
-            std::mem::offset_of!(FILE_NOTIFY_INFORMATION, FileNameLength),
-        )
-    };
-    let file = |record: &[u8]| -> Option<u64> {
-        let offset = std::mem::offset_of!(FILE_NOTIFY_EXTENDED_INFORMATION, FileId);
-        record
-            .get(offset..offset + 8)
-            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-            .map(u64::from_le_bytes)
-    };
-    loop {
-        let (Some(next), Some(length)) = (
-            bytes
-                .get(..4)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-            bytes
-                .get(length_offset..)
-                .and_then(|bytes| bytes.get(..4))
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok()),
-        ) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let length = usize::try_from(u32::from_le_bytes(length)).unwrap_or(usize::MAX);
-        let Some(name) = bytes.get(name_offset..name_offset.saturating_add(length)) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let Some(units) = crate::kernel::types::utf16le_units(name) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        let units = units.collect::<Vec<_>>();
-        let path = PathBuf::from(OsString::from_wide(&units));
-        let action = bytes
-            .get(4..8)
-            .and_then(|action| <[u8; 4]>::try_from(action).ok())
-            .map_or(0, u32::from_le_bytes);
-        changes.push(if action == FILE_ACTION_MODIFIED.0 {
-            HostChange::Altered(path)
-        } else {
-            HostChange::Rebound(path)
-        });
-        if extended {
-            let Some(file) = file(bytes) else {
-                changes.push(HostChange::Everything);
-                return;
-            };
-            changes.push(HostChange::File(file));
-        }
-        let next = usize::try_from(u32::from_le_bytes(next)).unwrap_or(0);
-        if next == 0 {
-            return;
-        }
-        let Some(rest) = bytes.get(next..) else {
-            changes.push(HostChange::Everything);
-            return;
-        };
-        bytes = rest;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{HostChange, translate};
-    use std::path::PathBuf;
-
-    /// One report as the file system lays it out: the fixed fields, then the
-    fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
-        let name = name
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>();
-        let mut bytes = vec![0_u8; if extended { 84 } else { 12 }];
-        bytes[4..8].copy_from_slice(&action.to_le_bytes());
-        let length = u32::try_from(name.len()).unwrap_or(u32::MAX).to_le_bytes();
-        if extended {
-            bytes[64..72].copy_from_slice(&file.to_le_bytes());
-            bytes[80..84].copy_from_slice(&length);
-        } else {
-            bytes[8..12].copy_from_slice(&length);
-        }
-        bytes.extend_from_slice(&name);
-        bytes.resize(bytes.len().next_multiple_of(8), 0);
-        if !last {
-            let next = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-            bytes[..4].copy_from_slice(&next.to_le_bytes());
-        }
-        bytes
-    }
-
-    /// Both report layouts name each entry; only the extended one names its
-    #[test]
-    fn reports_translate_in_either_layout() {
-        for extended in [true, false] {
-            let mut bytes = record(extended, 1, 7, r"d\created", false);
-            bytes.extend(record(extended, 3, 9, "written", true));
-            let mut changes = Vec::new();
-            translate(&bytes, extended, &mut changes);
-            let mut expected = vec![HostChange::Rebound(PathBuf::from("d").join("created"))];
-            if extended {
-                expected.push(HostChange::File(7));
-            }
-            expected.push(HostChange::Altered(PathBuf::from("written")));
-            if extended {
-                expected.push(HostChange::File(9));
-            }
-            assert_eq!(changes, expected, "extended: {extended}");
-        }
-    }
 }

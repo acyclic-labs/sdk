@@ -20,8 +20,7 @@ where
                 let record = self.authored.record_by_id(id, owner, carrier).await?;
                 let file = self
                     .authored
-                    .detached_file_from_record(record, metadata, owner, carrier)
-                    .await?;
+                    .detached_file_from_record(record, metadata)?;
                 Ok((record, file))
             })
         })
@@ -198,13 +197,7 @@ where
             if !exists {
                 let file = self
                     .authored
-                    .detached_file_from_record(
-                        *record,
-                        *metadata,
-                        ViewGate::callback_owner(),
-                        &mut adapter::NativeDemandCarrier::Native(work),
-                    )
-                    .await?;
+                    .detached_file_from_record(*record, *metadata)?;
                 self.detached
                     .lock()
                     .map_err(|_| MountSourceError::Stale)?
