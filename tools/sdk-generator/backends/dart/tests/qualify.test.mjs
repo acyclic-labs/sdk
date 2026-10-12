@@ -27,7 +27,7 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "dart-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority"), packageRoot = join(root, "package"), runtime = join(root, "runtime"), cache = join(root, "prepared-cache"), archiver = join(root, "tar");
-  const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
+  const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
   const manifest = { schema: "acyclic.sdk.rust-authority.v1", authority: "rust", source_revision: "a".repeat(40), families: targets.map(source => {
     put(join(authority, source), source); return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   }) };
@@ -99,14 +99,14 @@ function fixture(t, failure = "") {
   return { root, args, payload, receipt, manifest, toolchain, command, calls, put };
 }
 
-test("builds, installs and checks a fresh offline SDK with three independent static rejections", t => {
+test("builds, installs and checks a fresh offline SDK with two independent static rejections", t => {
   const f = fixture(t), result = qualify(f.args, f);
-  assert.equal(result.independent_negative_static_type_controls_rejected, 3);
+  assert.equal(result.independent_negative_static_type_controls_rejected, 2);
   assert.equal(result.complete_file_descriptor_comparison, false); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.equal(result.archive_sha256, sha256(readFileSync(join(f.args.output, "package/acyclic_sdk_transport-0.2.0-alpha.1.tar.gz"))));
-  assert.equal(f.calls.filter(c => c.argv[0] === "analyze").length, 3);
+  assert.equal(f.calls.filter(c => c.argv[0] === "analyze").length, 2);
   const adapter = readFileSync(join(f.args.output, "project/reflection.dart"), "utf8");
-  for (let i = 0; i < 3; i++) assert.ok(adapter.includes(`"/fixture/Method${i}":ClientProbe(false,false,`));
+  for (let i = 0; i < 2; i++) assert.ok(adapter.includes(`"/fixture/Method${i}":ClientProbe(false,false,`));
   for (const { argv, options } of f.calls) {
     assert.equal(options.env.PUB_CACHE, join(f.args.output, "cache")); assert.equal(options.env.HOME, join(f.args.output, "home"));
     if (argv[0] === "pub") { assert.ok(argv.includes("--offline")); assert.ok(argv.includes("--enforce-lockfile")); }

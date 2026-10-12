@@ -11,7 +11,6 @@ import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
-import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
 import * as objectsWire from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { MemoryObjectsV1 } from "../../objects/dist/v1.js";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
@@ -25,7 +24,6 @@ function rustRoutes(packageName, example) {
   return Object.fromEntries(JSON.parse(generated.stdout));
 }
 const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
-const workerRoutes = rustRoutes("acyclic-workers", "workers-http-routes");
 const protobufRoot = resolve(require.resolve("@bufbuild/protobuf"), "../../..");
 const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
 assert.equal(generated.status, 0, generated.stderr);
@@ -66,7 +64,7 @@ async function streamDispatch(route, input) {
     default: throw new Error(`unknown Stream route ${route}`);
   }
 }
-function actorWorkerResponse(method, input) {
+function actorResponse(method, input) {
   if (method.name === "AddSubscription") {
     assert.equal(input.subscription.streamPath, "events/input");
     assert.equal(input.subscription.start.start.value, 9007199254740993n);
@@ -74,9 +72,7 @@ function actorWorkerResponse(method, input) {
   if (method.name === "CheckpointActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "checkpoint-browser"); return { actor: { actorId: input.actorId, codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } }; }
   if (method.name === "DeleteActor") { assert.equal(input.actorId, "browser-actor"); assert.equal(input.idempotencyKey, "delete-browser"); return {}; }
   if (method.name === "InvokeActor") return { status: 201, body: new Uint8Array([5]) };
-  if (method.name === "InvokeVersion") { assert.deepEqual(Uint8Array.from(input.versionSha256), new Uint8Array(32).fill(1)); return { resolvedSha256: input.versionSha256 }; }
-  if (method.name === "InvokeDeployment") { assert.equal(input.alias, "current"); return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n }; }
-  if (method.name === "SelectDeployment") assert.equal(input.expectedRevision, 7n);
+
   if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) return { actor: { actorId: input.actorId ?? "browser-actor", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
   return {};
 }
@@ -106,7 +102,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     const isObjects = pathname.startsWith("/v1/objects/");
     const isStream = pathname.startsWith("/v1/stream/");
     const grpcWebService = request.headers["content-type"]?.startsWith("application/grpc-web")
-      ? [ActorsService, WorkersService].find(service => pathname.startsWith(`/${service.typeName}/`) || service.methods.some(method => pathname === `/${method.name}`))
+      ? [ActorsService].find(service => pathname.startsWith(`/${service.typeName}/`) || service.methods.some(method => pathname === `/${method.name}`))
       : undefined;
     if (request.headers.authorization !== "Bearer conformance") {
       if (grpcWebService) {
@@ -141,7 +137,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
         return;
       }
       seen.add(`${grpcWebService.typeName}/${method.name}`);
-      const body = toBinary(method.output, create(method.output, actorWorkerResponse(method, input)));
+      const body = toBinary(method.output, create(method.output, actorResponse(method, input)));
       response.writeHead(200, { "content-type": "application/grpc-web+proto", "access-control-expose-headers": "grpc-status,grpc-message" });
       response.end(grpcWebResponse(body)); return;
     }
@@ -173,14 +169,14 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       const result = await streamDispatch(route, revive("", JSON.parse(data.toString("utf8"))));
       response.end(JSON.stringify(result, jsonReplacer)); return;
     }
-    for (const [service, routes] of [[ActorsService, actorRoutes], [WorkersService, workerRoutes]]) for (const method of service.methods) {
+    for (const [service, routes] of [[ActorsService, actorRoutes]]) for (const method of service.methods) {
       const route = "/" + routes[method.localName].replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
       if (route !== pathname) continue;
       const input = fromJsonString(method.input, data.toString("utf8"));
       if (input.actorId === "oversize" || input.jobId === "oversize") { response.writeHead(200, { "content-type": "application/json" }).end(" ".repeat(64)); return; }
       seen.add(`${service.typeName}/${method.name}`);
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(toJsonString(method.output, create(method.output, actorWorkerResponse(method, input)))); return;
+      response.end(toJsonString(method.output, create(method.output, actorResponse(method, input)))); return;
     }
     response.writeHead(404).end();
   } catch (error) {
@@ -233,7 +229,7 @@ try {
   await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
-  assert.equal(seen.size, 39, `expected 13 Objects, 16 Actor/Worker and 10 Stream HTTP routes: ${[...seen]}`);
+  assert.equal(seen.size, 32, `expected 13 Objects, 9 Actor and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
   const memory = await until("browser Objects v1 memory", async () => {

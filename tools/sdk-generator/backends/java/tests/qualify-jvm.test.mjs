@@ -10,7 +10,7 @@ function fixture(t, language = "kotlin", failure = "") {
   const root = mkdtempSync(join(tmpdir(), "jvm-consumer-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"].map(source => {
+  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
     put(join(authority, source), source);
     return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   });
@@ -23,7 +23,7 @@ function fixture(t, language = "kotlin", failure = "") {
   put(join(installation, "installed/sdk-java-transport-0.2.0-alpha.1.jar"), "SDK JAR fixture");
   put(join(installation, "installed/sdk-java-transport-0.2.0-alpha.1.pom"), "SDK POM fixture");
   const proof = { schema: "acyclic.sdk.java.installed-qualification.v1", scope: "installed-java-transport-bindings",
-    source_revision: "a".repeat(40), authority_manifest_sha256: sha256(manifest), positive_controls_passed: true, negative_type_controls_rejected: 3,
+    source_revision: "a".repeat(40), authority_manifest_sha256: sha256(manifest), positive_controls_passed: true, negative_type_controls_rejected: 2,
     installed_jar_sha256: sha256("SDK JAR fixture"), installed_pom_sha256: sha256("SDK POM fixture"), dependency_sha256: { [dependency]: sha256("SDK runtime fixture") } };
   put(join(installation, "qualification.json"), JSON.stringify(proof));
   put(join(cache, "compiler.jar"), "compiler fixture");
@@ -56,12 +56,12 @@ function fixture(t, language = "kotlin", failure = "") {
 }
 
 for (const language of ["kotlin", "scala"]) {
-  test(`${language} runner snapshots pinned compiler, SDK and dependencies and rejects three intended types`, t => {
+  test(`${language} runner snapshots pinned compiler, SDK and dependencies and rejects two intended types`, t => {
     const f = fixture(t, language); const result = qualifyJvm(f.args, f);
-    assert.equal(result.independent_negative_type_controls_rejected, 3);
+    assert.equal(result.independent_negative_type_controls_rejected, 2);
     assert.equal(result.rust_backed_rpc_qualified, false);
     const compiles = f.calls.filter(call => call.argv.includes("fixture.Compiler") && call.argv.includes("-d"));
-    assert.equal(compiles.length, 4);
+    assert.equal(compiles.length, 3);
     for (const call of compiles) {
       const compiler = call.argv[call.argv.indexOf("-cp") + 1];
       assert.ok(compiler.startsWith(join(f.args.output, "compiler")));
@@ -70,7 +70,7 @@ for (const language of ["kotlin", "scala"]) {
     }
     const positive = f.calls.find(call => call.argv.includes(language === "kotlin" ? "InstalledKotlinConsumer" : "InstalledScalaConsumer"));
     assert.ok(positive.argv.includes(`-Dsdk.qualified.jar=${join(f.args.output, "installed/sdk-java-transport-0.2.0-alpha.1.jar")}`));
-    for (const path of positive.argv.slice(-3)) assert.equal(readFileSync(path, "utf8"), "descriptors");
+    for (const path of positive.argv.slice(-2)) assert.equal(readFileSync(path, "utf8"), "descriptors");
     assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
   });
 }

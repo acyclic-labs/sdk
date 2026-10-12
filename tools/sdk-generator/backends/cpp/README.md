@@ -1,5 +1,7 @@
 # C++ descriptor backend
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 This producer generates C++ messages and gRPC client/server bindings from
 immutable Rust authority exports using protoc 35.0 and the official gRPC 1.82.0
 C++ plugin. Its compiler, plugin and runtime use the same upstream dependency

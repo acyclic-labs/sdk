@@ -2,7 +2,6 @@
 $loader=require $argv[1];
 use Google\Protobuf\Internal\FileDescriptorSet;
 use Acyclic\Actors\V1\CreateActorRequest;
-use Acyclic\Workers\V1\PublishVersionRequest;
 use Acyclic\Stream\V1\AppendRequest;
 use Acyclic\Stream\V1\ReadRequest;
 function check($value,$message) { if(!$value) throw new RuntimeException($message); }
@@ -68,10 +67,9 @@ trait Probe {
  }
 }
 class ProbeActors extends Acyclic\Actors\V1\ActorsServiceClient { use Probe; }
-class ProbeWorkers extends Acyclic\Workers\V1\WorkersServiceClient { use Probe; }
 class ProbeStream extends Acyclic\Stream\V1\StreamServiceClient { use Probe; }
-$probes=[new ProbeActors(),new ProbeWorkers(),new ProbeStream()];$index=0;
-check(count($argv)===6,'pass installed autoload, SDK root and three Rust descriptors');
+$probes=[new ProbeActors(),new ProbeStream()];$index=0;
+check(count($argv)===5,'pass installed autoload, SDK root and two Rust descriptors');
 $installed=realpath($argv[2]);
 $vendor=dirname(realpath($argv[1]));
 $roots=[$installed,realpath($vendor.'/google/protobuf'),realpath($vendor.'/grpc/grpc')];
@@ -93,7 +91,7 @@ foreach($loader->getClassMap() as $class=>$file) {
 }
 foreach([FileDescriptorSet::class,Google\Protobuf\Internal\Message::class,Google\Protobuf\Internal\DescriptorPool::class,Google\Protobuf\Internal\GPBUtil::class] as $class)check(str_starts_with(realpath((new ReflectionClass($class))->getFileName()),$roots[1].DIRECTORY_SEPARATOR),'protobuf runtime provenance differs');
 foreach([Grpc\AbstractCall::class,Grpc\BaseStub::class] as $class)check(str_starts_with(realpath((new ReflectionClass($class))->getFileName()),$roots[2].DIRECTORY_SEPARATOR),'gRPC runtime provenance differs');
-foreach(['actors/v1/actors','workers/v1/workers','stream/v1/stream'] as $family) {
+foreach(['actors/v1/actors','stream/v1/stream'] as $family) {
  $metadata=$installed.'/src/GPBMetadata/'.str_replace(' ','/',ucwords(str_replace('/',' ',$family))).'.php';
  $tokens=token_get_all(file_get_contents($metadata));$find=false;$literal=null;
  foreach($tokens as $token) {
@@ -123,14 +121,13 @@ foreach(['actors/v1/actors','workers/v1/workers','stream/v1/stream'] as $family)
 }
 $bytes="\x00\xff";
 $actor=new CreateActorRequest(['code_sha256'=>$bytes,'home_region'=>'test','idempotency_key'=>'test']);
-$worker=new PublishVersionRequest(['javascript_module'=>$bytes,'expected_sha256'=>$bytes,'idempotency_key'=>'test']);
 $append=new AppendRequest(['path'=>'test/path','records'=>[$bytes,''],'if_tail'=>-1,'idempotency_key'=>$bytes]);
 $read=new ReadRequest(['path'=>'test/path','from'=>-1,'limit'=>4294967295]);
-check($actor->getCodeSha256()===$bytes&&$worker->getJavascriptModule()===$bytes&&$worker->getExpectedSha256()===$bytes,'bytes changed during construction');
+check($actor->getCodeSha256()===$bytes,'actor bytes changed during construction');
 check(count($append->getRecords())===2&&$append->getRecords()[0]===$bytes&&$append->getRecords()[1]===''&&$append->getIdempotencyKey()===$bytes,'stream bytes changed during construction');
 check($append->getIfTail()===-1&&$read->getFrom()===-1&&$read->getLimit()===-1,'unsigned bits changed');
 check(bin2hex($read->serializeToString())===bin2hex(chr(10).chr(9).'test/path'). '10ffffffffffffffffff0118ffffffff0f','unsigned maximum wire bits differ');
-foreach([$actor,$worker,$append,$read] as $message) {
+foreach([$actor,$append,$read] as $message) {
  $class=get_class($message);$restored=new $class();$restored->mergeFromString($message->serializeToString());
  check($restored->serializeToString()===$message->serializeToString(),'wire round trip differs');
  check(str_starts_with(realpath((new ReflectionClass($class))->getFileName()),$installed.DIRECTORY_SEPARATOR),'message source is not installed');

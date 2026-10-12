@@ -108,7 +108,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
     lock_sha256: sha256(lock), installed_dependencies: installedDependencies, payload_sha256: admitted.receipt.output_sha256,
     compiled_sdk_sha256: Object.fromEntries(files(join(output, "build/lib/acyclic_sdk_transport/ebin")).map(name => [name, sha256(readFileSync(join(output, "build/lib/acyclic_sdk_transport/ebin", name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    populated_rpc_message_pairs: 25, runtime_type_rejections: 3, compiled_sdk_provenance: true,
+    populated_rpc_message_pairs: 18, runtime_type_rejections: 2, compiled_sdk_provenance: true,
     native_rpc_calls_executed: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
   put("qualification.json", JSON.stringify(receipt, null, 2) + "\n");
   return receipt;

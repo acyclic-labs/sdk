@@ -10,7 +10,7 @@ function fixture(t, failure = "") {
   const root = mkdtempSync(join(tmpdir(), "ruby-qualification-test-")); t.after(() => rmSync(root, { recursive: true }));
   const put = (path, bytes) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
   const authority = join(root, "authority");
-  const families = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"].map(source => {
+  const families = ["actors/v1/actors.proto", "stream/v1/stream.proto"].map(source => {
     put(join(authority, source), source);
     return { source, source_sha256: sha256(source), descriptor: "shared.bin", descriptor_sha256: sha256("descriptors") };
   });
@@ -57,10 +57,10 @@ function fixture(t, failure = "") {
 
 test("qualifier builds and installs exact gem in a fresh cache with independent runtime type controls", t => {
   const f = fixture(t); const result = qualify(f.args, f);
-  assert.equal(result.independent_negative_runtime_type_controls_rejected, 3);
+  assert.equal(result.independent_negative_runtime_type_controls_rejected, 2);
   assert.equal(result.compile_time_type_controls_supported, false);
   assert.equal(result.rust_backed_rpc_qualified, false);
-  assert.equal(f.calls.filter(call => /Invalid/.test(call.argv[0])).length, 3);
+  assert.equal(f.calls.filter(call => /Invalid/.test(call.argv[0])).length, 2);
   for (const { argv, options } of f.calls) {
     assert.equal(options.env.GEM_HOME, join(f.args.output, "cache"));
     assert.deepEqual(options.env.GEM_PATH.split(delimiter), [join(f.args.output, "cache"), join(f.args["ruby-home"], "lib/ruby/gems/fixture-api")]);

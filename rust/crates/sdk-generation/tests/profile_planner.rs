@@ -27,7 +27,6 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     let host = host_target();
     let targets = BTreeSet::from([host.clone(), "wasm32-unknown-unknown".to_owned()]);
     let public_feature_roots = [
-        "acyclic-workers",
         "acyclic-fs",
         "acyclic-objects",
         "acyclic-stream",
@@ -101,7 +100,12 @@ fn public_roots_without_optional_features_stay_single_default_profiles() {
     let metadata = load_metadata(root.join("Cargo.toml")).unwrap();
     let host = host_target();
     let targets = BTreeSet::from([host.clone()]);
-    for package_name in ["acyclic-actors", "acyclic-native-runtime", "acyclic-plugin"] {
+    for package_name in [
+        "acyclic-actors",
+        "acyclic-workers",
+        "acyclic-native-runtime",
+        "acyclic-plugin",
+    ] {
         let package = metadata
             .packages
             .iter()

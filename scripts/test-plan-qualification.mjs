@@ -212,7 +212,7 @@ test("registered backends declare the shared readers used by their source and co
 });
 
 test("registered backend targets match the maintained transport contracts", () => {
-  const expected = ["actors", "workers", "stream"].map(name =>
+  const expected = ["actors", "stream"].map(name =>
     compatibilityArtifacts[name].schemaDigest.split("proto/").at(-1)).sort();
   for (const backend of languageGeneratorBackends) {
     const root = `tools/sdk-generator/backends/${backend}/src`;
@@ -222,6 +222,18 @@ test("registered backend targets match the maintained transport contracts", () =
     for (const [, targets] of declarations) assert.deepEqual(JSON.parse(targets).sort(), expected, backend);
   }
 });
+test("Windows qualification native builders exist in the maintained source", () => {
+  const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
+  const loop = script.match(/foreach \(\$family in @\(([^)]+)\)\) \{[\s\S]*?\n\}/);
+  assert.ok(loop, "Windows native build loop is required");
+  const families = [...loop[1].matchAll(/'([^']+)'/g)].map(([, family]) => family);
+  assert.ok(families.length > 0);
+  for (const family of families) {
+    assert.doesNotThrow(() => readFileSync(`scripts/build-${family}-native.mjs`, "utf8"),
+      `Windows qualification invokes a missing ${family} native builder`);
+  }
+});
+
 test("unregistered generators retain full qualification inputs", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("tools/sdk-generator/backends/future/generate.mjs"));

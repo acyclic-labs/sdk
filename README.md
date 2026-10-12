@@ -53,10 +53,7 @@ until their family version is published and tagged.
   with grouped native batches and private compaction. Native Filesystem
   compositions use the sole Objects v1 contract. Roots with obsolete format discriminators are rejected without conversion or
   overwrite.
-- Candidate Actors v1 and Workers v1 public contracts with Rust validation,
-  generated TypeScript message types, and authenticated Rust and Node/Bun
-  TypeScript gRPC and HTTP clients. Their
-  Cloud service routes require separate qualification before hosted use.
+- Actors v1 with Rust validation, generated TypeScript types and authenticated gRPC/HTTP clients. Workers deploy stateless modules through these Actors operations, with code stored in Objects. Hosted acceptance requires separate qualification.
 - An Inference v1 Rust client with immutable item-addressed Context revisions,
   independent forks, exact edit/compact/transfer, recoverable Runs, inclusive
   event replay, cancellation, four work meters, and admitted warm commitments.

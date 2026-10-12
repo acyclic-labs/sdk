@@ -107,7 +107,7 @@ import { ObjectContentStore } from "@acyclic-labs/harness/objects";
 if (typeof filesystem.openBrowserFs !== "function" || typeof inference.InferenceClient !== "function" ||
     typeof harness.Harness !== "function" || typeof machines.SimulatedMachines !== "function" || typeof stream.StreamClient !== "function" ||
     typeof objects !== "object" || typeof actors.HttpActorsClient !== "function" ||
-    typeof workers.HttpWorkersClient !== "function" || typeof harnessObjects.ObjectContentStore !== "function" ||
+    typeof workers.WorkersDeploymentClient !== "function" || typeof harnessObjects.ObjectContentStore !== "function" ||
     harnessObjects.ObjectContentStore !== ObjectContentStore) throw new Error("SDK exports are incomplete");
 EOF
 (cd "$work/consumer" && BUN_INSTALL_CACHE_DIR="$work/install-cache" bun install --ignore-scripts && bun smoke.mjs && node smoke.mjs)

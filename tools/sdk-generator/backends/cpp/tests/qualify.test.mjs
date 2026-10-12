@@ -7,9 +7,9 @@ import { fixture } from "./fixtures/qualification.mjs";
 
 test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", t => {
   const f = fixture(t), result = qualify(f.args, f.options);
-  assert.equal(result.native_rpc_method_calls, 25); assert.equal(result.independent_negative_compiles, 3);
+  assert.equal(result.native_rpc_method_calls, 19); assert.equal(result.independent_negative_compiles, 2);
   assert.equal(result.host_sdk_files, 9); assert.equal(result.runtime_files, 1); assert.equal(result.rust_backed_rpc_qualified, false);
-  assert.equal(f.calls.length, 12);
+  assert.equal(f.calls.length, 11);
   for (const [name, bytes] of f.pkg.payload) assert.deepEqual(readFileSync(join(f.args.output, "sdk-source", name)), bytes);
   assert.deepEqual(JSON.parse(readFileSync(join(f.args.output, "qualification.json"))), result);
 });
@@ -29,7 +29,7 @@ test("failed native commands, markers and unrelated negative errors cannot quali
     ...["configure-sdk", "build-sdk", "install-sdk", "configure-consumer", "build-consumer", "consumer"].map(name => [name, r => { r.status = 1; }]),
     ["consumer", r => { r.stdout = "no completion marker"; }],
     ["negative-InvalidActorBytes", r => { r.status = 0; }],
-    ["negative-InvalidWorkerBytes", r => { r.stdout = "unrelated compiler failure"; }],
+    ["negative-InvalidActorBytes", r => { r.stdout = "unrelated compiler failure"; }],
     ["negative-InvalidOptionalInteger", r => { r.stdout = "fatal error C1083: missing file"; }],
   ]) { const f = fixture(t); f.hooks[phase] = mutate; assert.throws(() => qualify(f.args, f.options)); assert.equal(existsSync(join(f.args.output, "qualification.json")), false); }
 });

@@ -11,8 +11,8 @@ const coordinate = "acyclic-sdk-transport";
 const version = "0.2.0.alpha.1";
 const packageName = `${coordinate}-${version}.gem`;
 const specName = `${coordinate}.gemspec`;
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
-const negatives = { InvalidActorBytes: "code_sha256", InvalidWorkerBytes: "javascript_module", InvalidOptionalInteger: "if_tail" };
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
+const negatives = { InvalidActorBytes: "code_sha256", InvalidOptionalInteger: "if_tail" };
 
 function files(root, prefix = "") {
   return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
@@ -141,7 +141,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     toolchain_sha256: sha256(JSON.stringify(toolchain)),
     control_sha256: Object.fromEntries(controlFiles.map(name => [name, sha256(readFileSync(join(output, "controls", name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    positive_controls_passed: true, independent_negative_runtime_type_controls_rejected: 3, compile_time_type_controls_supported: false,
+    positive_controls_passed: true, independent_negative_runtime_type_controls_rejected: 2, compile_time_type_controls_supported: false,
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
   };
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;

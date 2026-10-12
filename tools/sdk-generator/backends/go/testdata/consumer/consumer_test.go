@@ -8,7 +8,6 @@ import (
 
 	actors "github.com/acyclic-labs/sdk/go/gen/actors/v1"
 	stream "github.com/acyclic-labs/sdk/go/gen/stream/v1"
-	workers "github.com/acyclic-labs/sdk/go/gen/workers/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -26,7 +25,6 @@ func TestRustDescriptors(t *testing.T) {
 		file protoreflect.FileDescriptor
 	}{
 		{"actors/v1/actors.proto", actors.File_actors_v1_actors_proto},
-		{"workers/v1/workers.proto", workers.File_workers_v1_workers_proto},
 		{"stream/v1/stream.proto", stream.File_stream_v1_stream_proto},
 	}
 	for _, c := range cases {
@@ -67,7 +65,6 @@ func TestInstalledWireRoundTrips(t *testing.T) {
 	tail := uint64(math.MaxUint64)
 	cases := []proto.Message{
 		&actors.CreateActorRequest{CodeSha256: make([]byte, 32), HomeRegion: "test", IdempotencyKey: "test"},
-		&workers.PublishVersionRequest{JavascriptModule: []byte{0, 255}, ExpectedSha256: make([]byte, 32), IdempotencyKey: "test"},
 		&stream.AppendRequest{Path: "test/path", Records: [][]byte{{0, 255}, {}}, IfTail: &tail, IdempotencyKey: []byte{0, 255}},
 		&stream.ReadRequest{Path: "test/path", From: math.MaxUint64, Limit: math.MaxUint32},
 	}

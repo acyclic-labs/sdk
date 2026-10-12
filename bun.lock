@@ -170,6 +170,8 @@
       "name": "@acyclic-labs/workers",
       "version": "0.2.0",
       "dependencies": {
+        "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/objects": "0.2.0",
         "@bufbuild/protobuf": "2.15.0",
       },
       "devDependencies": {

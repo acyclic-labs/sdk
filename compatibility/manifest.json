@@ -9,12 +9,6 @@
       "schemaDigest": "sha256:ae7b6bf87e8be61996eba12f6a40de69d3d151b7c68f3b155ec26a25a21e3c6d",
       "descriptorDigest": "sha256:657a72cdea8a52a3fcb4ca545d6ff988f20b1d57293d5c33d6ed0f76b779e897"
     },
-    "workers": {
-      "version": "0.2.0",
-      "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:c8fa507d88f24a0e644e1c0fded4364ec33e2468b47db1db2a2fc24762492a80",
-      "descriptorDigest": "sha256:aa586c0713d6a9b327b2eba75cc59662ba1114d77f793cc06169a7c08283ae42"
-    },
     "harness": {
       "version": "0.2.0",
       "schemaDigest": "sha256:8608e415b400621d8d50beaa86a8707acd5ce14d32a58c39d3e364ea3dfa97cf",

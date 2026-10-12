@@ -19,7 +19,6 @@ export const packagedTypeScriptBindings = [
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v1/stream_pb", ["stream"]],
   ["actors/v1/actors_pb", ["actors"]],
-  ["workers/v1/workers_pb", ["workers"]],
 ];
 
 export const compatibilityArtifacts = {
@@ -56,10 +55,6 @@ export const compatibilityArtifacts = {
     schemaDigest: "proto/actors/v1/actors.proto",
     descriptorDigest: "compatibility/descriptors/actors-v1.bin",
   },
-  workers: {
-    schemaDigest: "proto/workers/v1/workers.proto",
-    descriptorDigest: "compatibility/descriptors/workers-v1.bin",
-  },
 };
 
 export const generatedDescriptors = [
@@ -68,7 +63,6 @@ export const generatedDescriptors = [
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
   ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
-  ["proto/workers", compatibilityArtifacts.workers.descriptorDigest],
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
 ];
 

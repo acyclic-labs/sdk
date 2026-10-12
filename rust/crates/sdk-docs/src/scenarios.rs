@@ -35,8 +35,6 @@ pub enum ScenarioKind {
     StreamTypescriptConsumer,
     FilesystemEmbedded,
     MachinesTypescriptConsumer,
-    WorkersModuleContract,
-    WorkersTypescriptConsumer,
     ObjectsTypescriptConsumer,
     InferenceContractDefaults,
     PluginCliHelp,
@@ -58,7 +56,6 @@ impl ScenarioKind {
             Self::MachinesTypescriptConsumer
                 | Self::ActorsTypescriptConsumer
                 | Self::StreamTypescriptConsumer
-                | Self::WorkersTypescriptConsumer
                 | Self::ObjectsTypescriptConsumer
                 | Self::InferenceContractDefaults
         )
@@ -153,30 +150,6 @@ pub const SCENARIOS: &[Scenario] = &[
         source_path: "rust/crates/machines/examples/machines-typescript-consumer.rs",
         operation: "create-list-consumer",
         kind: ScenarioKind::MachinesTypescriptConsumer,
-        mode: ScenarioMode::ExecuteLocal,
-        features: &[],
-        fixture_script: None,
-    },
-    Scenario {
-        id: "workers/module-contract",
-        family: "workers",
-        package: "acyclic-workers",
-        example: "workers-module-contract",
-        source_path: "rust/crates/workers/examples/workers-module-contract.rs",
-        operation: "module-contract",
-        kind: ScenarioKind::WorkersModuleContract,
-        mode: ScenarioMode::ExecuteLocal,
-        features: &[],
-        fixture_script: None,
-    },
-    Scenario {
-        id: "workers/typescript-consumer",
-        family: "workers",
-        package: "acyclic-workers",
-        example: "workers-typescript-consumer",
-        source_path: "rust/crates/workers/examples/workers-typescript-consumer.rs",
-        operation: "publish-submit-consumer",
-        kind: ScenarioKind::WorkersTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
         fixture_script: None,
@@ -585,7 +558,7 @@ pub fn execute_local(
 /// from the Rust-owned registry. The latter are deliberately invoked through
 /// the checked-in fixture path recorded on [`Scenario::fixture_script`], so a
 /// generation run cannot silently report the 17 local examples as the full
-/// 19-scenario release result.
+/// 17-scenario release result.
 pub fn execute_all(
     root: &Path,
     sources: &[ScenarioSource],
@@ -687,7 +660,6 @@ pub fn render_typescript(
             ScenarioKind::MachinesTypescriptConsumer => render_machines_typescript(execution),
             ScenarioKind::ActorsTypescriptConsumer => render_actors_typescript(execution),
             ScenarioKind::StreamTypescriptConsumer => render_stream_typescript(execution),
-            ScenarioKind::WorkersTypescriptConsumer => render_workers_typescript(execution),
             ScenarioKind::ObjectsTypescriptConsumer => render_objects_typescript(execution),
             ScenarioKind::InferenceContractDefaults => render_inference_typescript(execution),
             _ => unreachable!("filtered scenario kind must have a TypeScript renderer"),
@@ -931,47 +903,6 @@ fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScrip
     })
 }
 
-fn render_workers_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
-    if value.get("validated") != Some(&serde_json::Value::Bool(true)) {
-        return Err(Error::Invalid(
-            "Workers scenario did not report validation".into(),
-        ));
-    }
-    let module = required_field(&value, "module")?;
-    let digest = required_field(&value, "digest")?;
-    let input = required_field(&value, "input")?;
-    let module_literal = array_literal(module)?;
-    let digest_literal = array_literal(digest)?;
-    let input_literal = array_literal(input)?;
-    let alias = string_field(&value, "alias")?;
-    let publish_idempotency = string_field(&value, "publish_idempotency")?;
-    let job_idempotency = string_field(&value, "job_idempotency")?;
-    let max_attempts = number_field(&value, "max_attempts")?;
-    let timeout = number_field(&value, "timeout_millis")?;
-    let memory = number_field(&value, "memory_bytes")?;
-    let output = number_field(&value, "output_bytes")?;
-    let backoff = number_field(&value, "backoff_millis")?;
-    let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\nimport {{ JobLimitsSchema, JobTargetSchema, PayloadSchema, PublishVersionRequestSchema, RetryPolicySchema, SubmitJobRequestSchema }} from \"@acyclic-labs/workers/proto\";\n\nconst module = Uint8Array.from({module_literal});\nconst digest = Uint8Array.from({digest_literal});\nconst publication = create(PublishVersionRequestSchema, {{ javascriptModule: module, expectedSha256: digest, idempotencyKey: {publish_idempotency:?} }});\nconst submission = create(SubmitJobRequestSchema, {{\n  target: create(JobTargetSchema, {{ target: {{ case: \"deploymentAlias\", value: {alias:?} }} }}),\n  input: create(PayloadSchema, {{ source: {{ case: \"inlineBytes\", value: Uint8Array.from({input_literal}) }} }}),\n  limits: create(JobLimitsSchema, {{ timeoutMillis: BigInt(\"{timeout}\"), memoryBytes: BigInt(\"{memory}\"), outputBytes: BigInt(\"{output}\") }}),\n  retry: create(RetryPolicySchema, {{ maxAttempts: {max_attempts}, backoffMillis: BigInt(\"{backoff}\") }}),\n  idempotencyKey: {job_idempotency:?},\n}});\nif (toBinary(PublishVersionRequestSchema, publication).length === 0 || toBinary(SubmitJobRequestSchema, submission).length === 0) throw new Error(\"Workers request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ validated: true, moduleBytes: module.length, attempts: submission.retry?.maxAttempts }}));\n",
-        execution.scenario.id, execution.stdout_sha256,
-    );
-    Ok(TypeScriptSnippet {
-        scenario_id: execution.scenario.id,
-        package: "@acyclic-labs/workers",
-        path: "generated/scenarios/workers/typescript-consumer.ts",
-        source_sha256: execution.source_sha256.clone(),
-        rust_output_sha256: execution.stdout_sha256.clone(),
-        source,
-    })
-}
-
 fn render_objects_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
     let value: serde_json::Value =
         serde_json::from_str(execution.stdout.trim()).map_err(|error| {
@@ -1020,23 +951,6 @@ fn render_inference_typescript(execution: &ScenarioExecution) -> Result<TypeScri
         rust_output_sha256: execution.stdout_sha256.clone(),
         source,
     })
-}
-
-fn array_literal(value: &serde_json::Value) -> Result<String, Error> {
-    value
-        .as_array()
-        .ok_or_else(|| Error::Invalid("scenario byte field is not an array".into()))?
-        .iter()
-        .map(|byte| {
-            byte.as_u64()
-                .filter(|value| *value <= u8::MAX as u64)
-                .map(|value| value.to_string())
-                .ok_or_else(|| {
-                    Error::Invalid("scenario byte field contains an invalid value".into())
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|values| format!("[{}]", values.join(", ")))
 }
 
 fn nested_policy_kind(
@@ -1277,14 +1191,14 @@ mod tests {
             })
             .collect();
         let records = catalog(&sources);
-        assert_eq!(records.scenarios.len(), 19);
+        assert_eq!(records.scenarios.len(), 17);
         assert_eq!(
             records
                 .scenarios
                 .iter()
                 .filter(|record| record.typescript_projection)
                 .count(),
-            6
+            5
         );
         for record in records.scenarios {
             assert_eq!(
@@ -1300,7 +1214,7 @@ mod tests {
 
     #[test]
     fn registry_contains_requested_consumer_families() {
-        assert_eq!(SCENARIOS.len(), 19);
+        assert_eq!(SCENARIOS.len(), 17);
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "actors/typescript-consumer"));
@@ -1310,9 +1224,6 @@ mod tests {
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "machines/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "workers/typescript-consumer"));
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "objects/typescript-consumer"));
@@ -1411,32 +1322,5 @@ name = "decoy-owner"
         let catalog = execution_catalog(&[execution]);
         assert_eq!(catalog[0].id, "actors/typescript-consumer");
         assert_eq!(catalog[0].source_sha256, "sha256:source");
-    }
-
-    #[test]
-    fn rendered_projection_changes_when_rust_scenario_output_changes() {
-        let scenario = SCENARIOS
-            .iter()
-            .find(|scenario| scenario.id == "workers/typescript-consumer")
-            .copied()
-            .expect("Workers TypeScript scenario is registered");
-        let stdout = r#"{"validated":true,"module":[1],"digest":[2],"alias":"current","publish_idempotency":"publish-example","job_idempotency":"job-example","input":[3],"max_attempts":2,"timeout_millis":1000,"memory_bytes":4194304,"output_bytes":4096,"backoff_millis":25}"#;
-        let changed_stdout = stdout.replace("current", "canary");
-        let execution = |stdout: String| ScenarioExecution {
-            stdout_sha256: digest_bytes(stdout.as_bytes()),
-            stdout,
-            scenario,
-            source_sha256: "sha256:source".into(),
-            stderr_sha256: digest_bytes(&[]),
-        };
-        let original = render_typescript(&[execution(stdout.into())])
-            .expect("Rust scenario output should render")
-            .remove(0);
-        let changed = render_typescript(&[execution(changed_stdout)])
-            .expect("mutated Rust scenario output should render")
-            .remove(0);
-        assert_ne!(original.rust_output_sha256, changed.rust_output_sha256);
-        assert_ne!(original.source, changed.source);
-        assert!(changed.source.contains("canary"));
     }
 }

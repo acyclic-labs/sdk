@@ -7,7 +7,7 @@ import { canonical, loadAuthority, readInput, sha256, within } from "../../../sh
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 
 // Commands and manifests are injectable only for offline runner controls.
 export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
@@ -27,7 +27,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
   const approved = loadAuthority(authority);
   if (proof.schema !== "acyclic.sdk.java.installed-qualification.v1" || proof.scope !== "installed-java-transport-bindings"
     || proof.source_revision !== approved.manifest.source_revision || proof.authority_manifest_sha256 !== sha256(approved.bytes)
-    || proof.positive_controls_passed !== true || proof.negative_type_controls_rejected !== 3) throw new Error("installation lacks matching Java qualification");
+    || proof.positive_controls_passed !== true || proof.negative_type_controls_rejected !== 2) throw new Error("installation lacks matching Java qualification");
   if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
   const jarBytes = readInput(installation, `installed/${artifact}.jar`, proof.installed_jar_sha256);
   const pomBytes = readInput(installation, `installed/${artifact}.pom`, proof.installed_pom_sha256);
@@ -106,7 +106,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
     || !positiveLog.includes(`PASS: installed ${languageName} Java-binding interoperability, bytes, integer bits, presence and oneof`)) {
     throw new Error("positive consumer did not report completed Java and language controls");
   }
-  for (const name of ["ActorBytes", "WorkerBytes", "OptionalInteger"]) {
+  for (const name of ["ActorBytes", "OptionalInteger"]) {
     const { log } = compile(`Invalid${name}`, `Invalid${name}`, true);
     const expected = name === "OptionalInteger" ? "Long" : "ByteString";
     const valid = args.language === "kotlin"
@@ -125,7 +125,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     toolchain_sha256: sha256(JSON.stringify(toolchain)), control_sha256: Object.fromEntries(controls.map(name => [name, sha256(readFileSync(join(output, "controls", name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    positive_controls_passed: true, independent_negative_type_controls_rejected: 3, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
+    positive_controls_passed: true, independent_negative_type_controls_rejected: 2, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
   };
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;
 }

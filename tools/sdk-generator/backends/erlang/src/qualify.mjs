@@ -11,7 +11,7 @@ import { verifyRuntime, verifyTools, verifyTree } from "./inventory.mjs";
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
 const qualificationPins = JSON.parse(read("../toolchains/qualification.json"));
-export const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
+export const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 export const controls = ["rpc_route_control.erl", "compare_descriptor.erl", "installed_provenance.erl"];
 const fixtures = controls.map(name => "../tests/fixtures/consumer/" + name);
 const sourceNames = [...new Set(["qualify.mjs", "package.mjs", "inventory.mjs", ...producerSources,
@@ -43,7 +43,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   toolIndexBytes = read("../toolchains/generator-files.json"), dependencyIndexBytes = read("../toolchains/dependency-files.json") } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
   const admitted = readPackage(args);
-  if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1, Workers v1 and Stream v1 exports");
+  if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1 and Stream v1 exports");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies"].map(name => [name, realpathSync(args[name])]));
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
   try { lstatSync(output); throw new Error("qualification output must be absent"); }
@@ -109,7 +109,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const expression = `{ok,_}=application:ensure_all_started(acyclic_sdk_transport),${provenance},ok=compare_descriptor:run(init:get_plain_arguments()),ok=rpc_route_control:run(),${provenance},halt(0).`;
   const native = run("installed-native-consumer", join(otp, "bin/erl"), ["-pa", join(gpb, "ebin"), "-pa", join(sdk, "ebin"), "-pa", join(consumer, "ebin"), "-noshell", "-noinput", "-eval", expression, "-extra",
     ...targets.map(name => join(sdk, "authority", admitted.approved.descriptors.get(name)))]);
-  for (const marker of ["PASS archive-installed Erlang clients: 26 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "workers_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
+  for (const marker of ["PASS archive-installed Erlang clients: 19 populated native TCP RPC pairs", "actors_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
     if (!native.includes(marker)) throw new Error("installed consumer completion marker missing: " + marker);
   }
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
@@ -120,7 +120,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   if (JSON.stringify(files(sdk)) !== JSON.stringify([...admitted.payload.keys(), ...Object.keys(compiled).map(name => "ebin/" + name)].sort())) throw new Error("installed SDK tree differs");
   for (const name of controls) if (!readFileSync(join(consumer, name)).equals(sourceBytes.get("../tests/fixtures/consumer/" + name))) throw new Error("staged consumer source changed");
   for (const [name, digest] of Object.entries(consumerBeams)) if (sha256(readFileSync(join(consumer, "ebin", name))) !== digest) throw new Error("compiled consumer changed");
-  const consumerFiles = [...controls, ...expectedConsumerBeams.map(name => "ebin/" + name), "actors_pb_route_fixture.erl", "workers_pb_route_fixture.erl", "stream_pb_route_fixture.erl"].sort();
+  const consumerFiles = [...controls, ...expectedConsumerBeams.map(name => "ebin/" + name), "actors_pb_route_fixture.erl", "stream_pb_route_fixture.erl"].sort();
   if (JSON.stringify(files(consumer)) !== JSON.stringify(consumerFiles)) throw new Error("consumer tree differs");
   const receipt = { schema: "acyclic.sdk.erlang-installed-qualification.v1", authority: "rust", target: "erlang",
     source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: sha256(admitted.archiveBytes),
@@ -131,7 +131,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
     compiled_sdk_sha256: compiled, compiled_consumer_sha256: consumerBeams,
     consumer_source_sha256: Object.fromEntries(files(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
     log_sha256: Object.fromEntries(logNames.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    native_rpc_calls_executed: 26, unary_rpc_calls: 23, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 26, runtime_type_rejections: 3,
+    native_rpc_calls_executed: 19, unary_rpc_calls: 16, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: 19, runtime_type_rejections: 2,
     compiled_sdk_provenance: true, modeled_file_descriptor_semantics: true,
     descriptor_normalization: ["source locations omitted", "source filename basename", "declared protobuf defaults", "default JSON names", "message and enum declaration order", "single-field proto3-optional synthetic oneof names"],
     unknown_descriptor_extensions_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };

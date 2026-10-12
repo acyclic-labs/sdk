@@ -19,7 +19,7 @@ run(Paths) ->
       io:format("~p differing modeled file descriptor fields: ~p~n",[Pb,[K || {K,_,_}<-Different]]),
       lists:foreach(fun({K,EV,AV})->lists:foreach(fun({P,X,Y})->io:format("~p ~p expected=~p actual=~p~n",[Pb,P,X,Y]) end,diff(EV,AV,[K])) end,Different),
       Different=:=[]
-    end || {Pb,Path}<-lists:zip([actors_pb,workers_pb,stream_pb],Paths)],
+    end || {Pb,Path}<-lists:zip([actors_pb,stream_pb],Paths)],
     case lists:all(fun(X)->X end,Results) of true -> ok;false -> error(modeled_descriptor_mismatch) end.
 
 %% Normalize declared defaults, default JSON spelling, unordered message/enum

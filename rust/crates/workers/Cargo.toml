@@ -6,81 +6,24 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Public Workers v1 contract and validation"
+description = "Cloud Worker deployment through Objects and Actors"
 readme = "README.md"
 
-[lib]
-crate-type = ["rlib", "cdylib"]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+bytes.workspace = true
+hex.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 
-[package.metadata.napi]
-family = "workers"
-npm-package = "@acyclic-labs/workers"
-package-path = "typescript/packages/workers"
-companion-directory = "workers-native"
-wasm-package = "acyclic-workers"
-wasm-output-name = "acyclic_workers_wasm"
-wasm-target-directory = "workers-wasm"
-wasm-features = ["browser-binding"]
-wasm-no-default-features = true
-build-features = ["node-binding"]
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
-
-[features]
-node-binding = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
-browser-binding = ["dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:serde-wasm-bindgen"]
-
-[dependencies]
-serde.workspace = true
-serde_bytes.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
-tokio-util = { version = "=0.7.19", features = ["rt"] }
-url = "=2.5.8"
-acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-ts-rs = "=12.0.1"
-http-body = "1.1.0"
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["http"] }
+axum.workspace = true
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 serde_json.workspace = true
-sha2.workspace = true
-thiserror.workspace = true
-tonic-prost.workspace = true
-
-[dev-dependencies]
-http-body = "1.1.0"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
-reqwest.workspace = true
-tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
-napi = { workspace = true, features = ["tokio_rt"], optional = true }
-napi-derive = { workspace = true, optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["time"] }
-tracing.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
-tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
-js-sys = { workspace = true, optional = true }
-wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures = { workspace = true, optional = true }
-serde-wasm-bindgen = { workspace = true, optional = true }
-gloo-timers = { version = "=0.4.0", features = ["futures"] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio.workspace = true
-tracing-subscriber.workspace = true
-
-[build-dependencies]
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-napi-build = { version = "2.3.1", optional = true }
-prost.workspace = true
-acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
-ts-rs = "=12.0.1"
-sha2.workspace = true
-thiserror.workspace = true
-protoc-bin-vendored = "=3.3.0"
-tonic-prost-build = "=0.14.6"
 
 [lints]
 workspace = true

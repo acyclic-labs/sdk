@@ -117,7 +117,7 @@ stream_binding() {
 client_bindings() {
   local target family bundle
   target="$(rustc --version --verbose | sed -n 's/^host: //p')"
-  for family in actors workers; do
+  for family in actors; do
     bundle="$SDK_ARTIFACT_DIR/packages/$family-native/bundle"
     node "scripts/build-$family-native.mjs" build --target "$target" \
       --output "$bundle" --target-dir "$target_dir-$family-native"

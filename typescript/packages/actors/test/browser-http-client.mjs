@@ -4,7 +4,6 @@ import { lifecycle } from "../../objects/test/v1-lifecycle.mjs";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
 import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
-import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";
 
 function errorCode(error) {
@@ -35,7 +34,7 @@ try {
   const actors = new ActorsClient(options);
   assert.equal(await actors.transport, "grpc-web");
   let methods = 0;
-  for (const [service, client] of [[ActorsService, actors], [WorkersService, new HttpWorkersClient(options)]]) {
+  for (const [service, client] of [[ActorsService, actors]]) {
     for (const method of service.methods) {
       const init = {};
       if (method.name === "CreateActor") Object.assign(init, {
@@ -53,30 +52,16 @@ try {
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
       if (method.name === "DeleteActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "delete-browser" });
       if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
-      if (method.name === "PublishVersion") {
-        const javascriptModule = new TextEncoder().encode("export default { run() {} }");
-        Object.assign(init, { javascriptModule, expectedSha256: new Uint8Array(await crypto.subtle.digest("SHA-256", javascriptModule)), idempotencyKey: "publish-browser" });
-      }
-      if (method.name === "SelectDeployment") Object.assign(init, { alias: "current", versionSha256: new Uint8Array(32).fill(1), expectedRevision: 7n, idempotencyKey: "select-browser" });
-      if (["InspectJob", "CancelJob"].includes(method.name)) init.jobId = "job-browser";
-      if (method.name === "CancelJob") init.idempotencyKey = "cancel-browser";
-      if (method.name === "SubmitJob") Object.assign(init, {
-        target: { target: { case: "deploymentAlias", value: "current" } },
-        input: { source: { case: "object", value: { bucket: "customer-input", key: "video/input.mp4" } } },
-        limits: { timeoutMillis: 1000n, memoryBytes: 1024n, outputBytes: 1024n }, retry: { maxAttempts: 2 }, idempotencyKey: "job-browser",
-      });
-      if (method.name === "InvokeVersion") init.versionSha256 = new Uint8Array(32).fill(1);
-      if (method.name === "InvokeDeployment") init.alias = "current";
+
       const result = await client[method.localName](create(method.input, init));
       assert.ok(result);
       if (method.name === "CheckpointActor") assert.equal(result.actor.checkpointEpoch, 9n);
       if (method.name === "InvokeActor") assert.equal(result.status, 201);
-      if (method.name === "InvokeVersion") { assert.deepEqual(result.resolvedSha256, new Uint8Array(32).fill(1)); assert.equal(result.resolvedRevision, undefined); }
-      if (method.name === "InvokeDeployment") { assert.deepEqual(result.resolvedSha256, new Uint8Array(32).fill(2)); assert.equal(result.resolvedRevision, 8n); }
+
       methods++;
     }
   }
-  assert.equal(methods, 16);
+  assert.equal(methods, 9);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();
@@ -84,9 +69,6 @@ try {
   globalThis.abortActorsRequest = () => cancellation.abort();
   await assert.rejects(pending, error => error.code === "cancelled");
   delete globalThis.abortActorsRequest;
-  const inspectJob = WorkersService.methods.find(method => method.name === "InspectJob");
-  await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.code === "service" && error.metadata?.grpcCode === 16);
-  await assert.rejects(new HttpWorkersClient({ ...options, maximumMessageBytes: 32 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.code === "service" && /byte ceiling|message.*(?:large|size)/i.test(error.message));
 
   const stream = new HttpStreamProvider(options);
   const key = text => idempotencyKey(new TextEncoder().encode(text));
@@ -118,7 +100,7 @@ try {
   await assert.rejects(new HttpStreamProvider({ ...options, token: "wrong" }).tail(path), error => error.code === "access_denied");
   await assert.rejects(new HttpStreamProvider({ ...options, maximumResponseBytes: 8 }).readCommit(committed.commitId), error => error.code === "response_too_large");
   assert.equal((await stream.createToken({ expiresIn: "1m", allow: [{ path: "browser", subtree: true, operations: ["read"] }] })).token, "fixture-issued-token");
-  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 15 Actor/Worker operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
+  globalThis.sdkHttpResult = { status: "passed", detail: "Objects lifecycle/framing, 9 Actor operations, Stream follow/atomic Commit/replay, auth/errors/bounds" };
 } catch (error) {
   globalThis.sdkHttpResult = { status: "failed", detail: error.stack ?? String(error) };
 }

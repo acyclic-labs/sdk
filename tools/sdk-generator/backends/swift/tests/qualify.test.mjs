@@ -47,7 +47,7 @@ function installedFixture(t) {
     if (basename(exe) === "Consumer") {
       if (state.payloadDrift) write(join(args.output,"sdk/LICENSE"),"changed payload");
       return { status: 0, stdout: state.missingMarker ? "PASS only\n" :
-        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 25 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
+        "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata\nPASS Swift 19 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads\n" };
     }
     assert.equal(basename(exe), "swiftc");
     const name = basename(argv.at(-1));
@@ -59,11 +59,11 @@ function installedFixture(t) {
   return { ...f, args, toolchain, command, state, calls, runtime };
 }
 
-test("offline qualifier staging reaches native markers, exact dependencies and three specific negative diagnostics", t => {
+test("offline qualifier staging reaches native markers, exact dependencies and two specific negative diagnostics", t => {
   const f = installedFixture(t), result = qualify(f.args, f);
   assert.equal(result.native_in_process_rpc_methods, 25);
   assert.equal(Object.keys(result.dependencies).length, 4);
-  assert.equal(result.negative_type_controls.length, 3);
+  assert.equal(result.negative_type_controls.length, 2);
   assert.equal(result.network_transport_qualified, false); assert.equal(result.rust_backed_rpc_qualified, false);
   assert.ok(existsSync(join(f.args.output, "qualification.json")));
   assert.equal(result.archive_sha256, f.args.sha256);
@@ -102,7 +102,7 @@ test("untracked preparation metadata in clone inputs is excluded from compiled m
 
 test("mutated or extra staged consumer inputs cannot write qualification success", t => {
   for (const name of ["consumer/Package.swift", "consumer/Sources/Consumer/main.swift", "negative/InvalidActorBytes.swift",
-    "negative/InvalidWorkerBytes.swift", "negative/InvalidOptionalInteger.swift", "consumer/.swiftpm/configuration/mirrors.json",
+    "negative/InvalidOptionalInteger.swift", "consumer/.swiftpm/configuration/mirrors.json",
     "consumer/Package.resolved", "consumer/Sources/Consumer/Extra.swift", "consumer/Package@swift-6.4.swift", "negative/Extra.swift"]) {
     const f = installedFixture(t);
     const command = (exe, argv, options) => {

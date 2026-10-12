@@ -12,9 +12,9 @@ const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
 const markers = [
   "PASS Swift bytes, unsigned bounds, optional zero, populated oneofs, gRPC codecs and bounded RPC metadata",
-  "PASS Swift 25 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads",
+  "PASS Swift 19 generated client/server calls, Rust descriptor message/field/path/stream checks, populated native payloads",
 ];
-const negatives = { InvalidActorBytes: "Data", InvalidWorkerBytes: "Data", InvalidOptionalInteger: "UInt64" };
+const negatives = { InvalidActorBytes: "Data", InvalidOptionalInteger: "UInt64" };
 
 // Command/pin injection supports offline controls. The CLI always uses real tools.
 export function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {

@@ -1,6 +1,5 @@
 //! Local transport qualification against the SDK test server.
 use acyclic_actors as actors;
-use acyclic_workers as workers;
 use std::io::{self, Read};
 
 #[allow(
@@ -30,10 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("token")?;
     let mut actors_grpc =
         actors::grpc::connect_with_ca_certificate(endpoint, token, Some(ca.as_bytes())).await?;
-    let mut workers_grpc =
-        workers::grpc::connect_with_ca_certificate(endpoint, token, Some(ca.as_bytes())).await?;
     let actors_http = actors::http::Client::new(http_endpoint, token, 1024 * 1024)?;
-    let workers_http = workers::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let request = actors::wire::CreateActorRequest {
         ..Default::default()
     };
@@ -113,119 +109,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     actors_grpc.delete_actor(request.clone()).await?;
     actors_http.delete_actor(&request).await?;
-    let request = workers::wire::PublishVersionRequest {
-        ..Default::default()
-    };
-    workers_grpc.publish_version(request.clone()).await?;
-    workers_http.publish_version(&request).await?;
-    let request = workers::wire::SelectDeploymentRequest {
-        expected_revision: Some(7),
-        ..Default::default()
-    };
-    workers_grpc.select_deployment(request.clone()).await?;
-    workers_http.select_deployment(&request).await?;
-    let request = workers::wire::SubmitJobRequest {
-        target: Some(workers::wire::JobTarget {
-            target: Some(workers::wire::job_target::Target::DeploymentAlias(
-                "current".into(),
-            )),
-        }),
-        input: Some(workers::wire::Payload {
-            source: Some(workers::wire::payload::Source::Object(
-                workers::wire::ObjectRef {
-                    bucket: "customer-input".into(),
-                    key: "video/input.mp4".into(),
-                },
-            )),
-        }),
-        limits: Some(workers::wire::JobLimits {
-            timeout_millis: 1000,
-            memory_bytes: 1024,
-            output_bytes: 1024,
-        }),
-        retry: Some(workers::wire::RetryPolicy {
-            max_attempts: 2,
-            backoff_millis: 0,
-        }),
-        idempotency_key: "job-a".into(),
-    };
-    workers::validate_submit(&request)?;
-    assert_eq!(
-        workers_grpc
-            .submit_job(request.clone())
-            .await?
-            .into_inner()
-            .job
-            .ok_or("missing job")?
-            .resolved_sha256,
-        vec![7; 32]
-    );
-    assert_eq!(
-        workers_http
-            .submit_job(&request)
-            .await?
-            .job
-            .ok_or("missing job")?
-            .resolved_sha256,
-        vec![7; 32]
-    );
-    let request = workers::wire::InspectJobRequest {
-        ..Default::default()
-    };
-    assert_eq!(
-        workers_grpc
-            .inspect_job(request.clone())
-            .await?
-            .into_inner()
-            .job
-            .ok_or("missing job")?
-            .result
-            .ok_or("missing result")?
-            .body,
-        vec![3, 4]
-    );
-    assert_eq!(
-        workers_http
-            .inspect_job(&request)
-            .await?
-            .job
-            .ok_or("missing job")?
-            .result
-            .ok_or("missing result")?
-            .body,
-        vec![3, 4]
-    );
-    let request = workers::wire::CancelJobRequest {
-        ..Default::default()
-    };
-    workers_grpc.cancel_job(request.clone()).await?;
-    workers_http.cancel_job(&request).await?;
-    let request = workers::wire::InvokeVersionRequest {
-        version_sha256: vec![1; 32],
-        ..Default::default()
-    };
-    let pinned = workers_grpc
-        .invoke_version(request.clone())
-        .await?
-        .into_inner();
-    assert_eq!(pinned.resolved_sha256, vec![1; 32]);
-    assert_eq!(pinned.resolved_revision, None);
-    let pinned = workers_http.invoke_version(&request).await?;
-    assert_eq!(pinned.resolved_sha256, vec![1; 32]);
-    assert_eq!(pinned.resolved_revision, None);
-    let request = workers::wire::InvokeDeploymentRequest {
-        alias: "current".into(),
-        ..Default::default()
-    };
-    let resolved = workers_grpc
-        .invoke_deployment(request.clone())
-        .await?
-        .into_inner();
-    assert_eq!(resolved.resolved_sha256, vec![2; 32]);
-    assert_eq!(resolved.resolved_revision, Some(8));
-    let resolved = workers_http.invoke_deployment(&request).await?;
-    assert_eq!(resolved.resolved_sha256, vec![2; 32]);
-    assert_eq!(resolved.resolved_revision, Some(8));
     let mut denied =
         actors::grpc::connect_with_ca_certificate(endpoint, "wrong", Some(ca.as_bytes())).await?;
     assert_eq!(
@@ -257,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(actors::http::Error::ResponseTooLarge)
     ));
     println!(
-        "Rust: 15 authenticated gRPC and HTTP methods, denied authentication and response bound passed"
+        "Rust: authenticated Actors gRPC and HTTP methods, denied authentication and response bound passed"
     );
     Ok(())
 }

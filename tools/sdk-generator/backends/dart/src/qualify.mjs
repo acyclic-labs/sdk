@@ -18,8 +18,8 @@ if (!Array.isArray(sdkInventory) || sdkInventory.length === 0 || sdkInventory.so
 const pinned = { ...JSON.parse(read("../toolchains/toolchain.json")),
   runtime_files: Object.fromEntries(sdkInventory.map(entry => [entry.path, entry.sha256])),
   dependencies: JSON.parse(read("../toolchains/dependencies.json")) };
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
-const negatives = { InvalidActorBytes: "List<int>?", InvalidWorkerBytes: "List<int>?", InvalidOptionalInteger: "Int64?" };
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
+const negatives = { InvalidActorBytes: "List<int>?", InvalidOptionalInteger: "Int64?" };
 const marker = "PASS: installed Dart descriptors, bytes, unsigned bits, optional presence, oneof and gRPC shapes";
 const packageName = "acyclic_sdk_transport-0.2.0-alpha.1.tar.gz";
 
@@ -205,7 +205,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     archive_reader_sha256: sha256(read("../../../../../scripts/archive-utils.mjs")), toolchain_sha256: sha256(JSON.stringify(toolchain)),
     project_sha256: Object.fromEntries(files(project).map(name => [name, sha256(readFileSync(join(project, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    positive_controls_passed: true, independent_negative_static_type_controls_rejected: 3, complete_file_descriptor_comparison: false,
+    positive_controls_passed: true, independent_negative_static_type_controls_rejected: 2, complete_file_descriptor_comparison: false,
     descriptor_scope: "message/enum descriptors including nested contents, and gRPC method/message/streaming shapes",
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
   };

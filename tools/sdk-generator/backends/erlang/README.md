@@ -1,5 +1,7 @@
 # Erlang SDK generator
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 `src/generate.mjs` admits an immutable Rust authority export and invokes unchanged
 GPB 4.21.7 and grpcbox_plugin 0.10.0 through Rebar 3.25.1. It emits Erlang message
 maps, native gRPC clients, server behaviours, package metadata, and the original
@@ -100,7 +102,7 @@ authority. Only the exact regular-file inventory is accepted.
 `src/qualify.mjs` installs that archive with the pinned grpcbox 0.18.0 runtime
 and all five dependencies from its upstream lock. It compiles the actual
 installed application and consumer with warnings treated as errors, checks
-loaded-module paths, and executes 26 populated native TCP RPC pairs (23 unary
+loaded-module paths, and executes 19 populated native TCP RPC pairs (23 unary
 and three server-streaming). Request and response wire vectors are computed
 independently from the Rust descriptors. Bytes, unsigned maxima, optional zero
 and omission, real oneofs, and three invalid-type rejections are checked.

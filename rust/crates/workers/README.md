@@ -1,31 +1,32 @@
 # acyclic-workers
 
-Rust-owned Workers v1 public contract. Code versions are immutable SHA-256
-identities; creating an absent deployment alias omits the expected revision.
-Changing an existing alias requires its positive current revision. Each accepted
-selection advances the revision.
-An accepted durable job pins its resolved code version. HTTP invocation has
-ordinary request ambiguity and does not imply durable job acceptance.
+Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
 
-A published ES module may export `default.fetch(Request)` for HTTP invocation,
-`default.run(Uint8Array, { jobId, attempt, signal })` for durable jobs, or both.
-`run` receives the accepted input for every retry with the same job ID; attempt
-numbers start at one. Its byte result is published once under attempt fencing.
-Cancellation signals the handler but cannot undo external effects.
+Uses the canonical Objects and Actors contracts. Publication stores exact module bytes at `sha256/<digest>`. No mutation is automatically retried.
 
-Object inputs name an S3 bucket and key. Acceptance privately retains the
-selected immutable bytes so key replacement cannot change a retry's input.
-Job observations return an exact `JobResult` body bounded by the accepted output
-budget (at most 1 MiB); they expose no mutable object pointer or public Object
-version. The service owns durable acceptance, retention and attempt fencing.
+```rust,no_run
+use acyclic_actors::{http, wire};
+use acyclic_objects::HttpObjects;
+use acyclic_workers::deployment::Client;
 
-The service implementation and execution authority live outside this crate.
-This crate validates customer-authored requests and packages the versioned wire
-descriptor used to generate TypeScript bindings.
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let endpoint = std::env::var("EDGE_ENDPOINT")?;
+    let token = std::env::var("ACYCLIC_API_KEY")?;
+    let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
+        HttpObjects::new(&endpoint, &token, 1024 * 1024)?, "actors-code".into());
+    let digest = workers.publish(std::fs::read("worker.mjs")?.into(), "publish-worker".into()).await?;
+    let actor = workers.create(&wire::CreateActorRequest {
+        code_sha256: digest.to_vec(), home_region: "la".into(),
+        limits: Some(wire::ActorLimits { handler_timeout_millis: 30000, memory_bytes: 268435456, checkpoint_bytes: 1048576 }),
+        idempotency_key: "create-worker".into(), ..Default::default()
+    }).await?.actor.ok_or("create returned no deployment")?;
+    println!("{:?}", workers.invoke(&wire::InvokeActorRequest {
+        actor_id: actor.actor_id.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
+    }).await?);
+    workers.delete(&wire::DeleteActorRequest { actor_id: actor.actor_id, idempotency_key: "delete-worker".into() }).await?;
+    Ok(())
+}
+```
 
-`grpc::connect(endpoint, token)` exposes every generated Workers service RPC.
-Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
-`http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
-seven operations using canonical Protobuf JSON. Version invocation addresses the
-exact digest; alias invocation reports the version and revision resolved by the
-service. HTTP mutations are not automatically retried.
+Golden fixture provenance is recorded in `rust/crates/workers/tests/fixtures/cloud-workers/golden.json`. Local tests verify serialization and client composition; live deployment qualification belongs to the coordinator.

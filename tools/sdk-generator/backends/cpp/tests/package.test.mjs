@@ -5,9 +5,9 @@ import { readPackage } from "../src/package.mjs";
 import { sha256 } from "../../../shared/authority.mjs";
 import { fixture } from "./fixtures/package.mjs";
 
-test("archive admission verifies all 17 payload files against the producer and Rust export", t => {
+test("archive admission verifies all 13 payload files against the producer and Rust export", t => {
   const f = fixture(t), admitted = readPackage(f.args);
-  assert.equal(admitted.payload.size, 17);
+  assert.equal(admitted.payload.size, 13);
   for (const [name, bytes] of admitted.payload) assert.deepEqual(bytes, f.payload.get(name));
 });
 
@@ -32,7 +32,7 @@ test("unsafe, duplicate, extra and incomplete receipt inventories reject", t => 
     f => f.receipt.outputs.push("license"),
     f => { f.receipt.output_sha256.extra = "0".repeat(64); },
     f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("actors.pb.h")); },
-    f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("workers.grpc.pb.cc")); },
+    f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("stream.grpc.pb.cc")); },
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); assert.throws(() => readPackage(f.args)); }
 });
 

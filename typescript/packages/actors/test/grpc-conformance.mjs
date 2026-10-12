@@ -9,16 +9,13 @@ import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
-import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
-import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
-import { HttpWorkersClient } from "../../workers/dist/http.js";
 
-const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
+const services = [ActorsService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -36,24 +33,16 @@ function rustRoutes(packageName, example) {
 }
 
 const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
-const workerRoutes = rustRoutes("acyclic-workers", "workers-http-routes");
 
 function responseInitializer(method) {
   if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
   if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
-  if (method.name === "InvokeVersion") return { resolvedSha256: new Uint8Array(32).fill(1) };
-  if (method.name === "InvokeDeployment") return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n };
-  if (method.name === "SubmitJob") return { job: { jobId: "job-a", state: 1, resolvedSha256: new Uint8Array(32).fill(7) } };
-  if (method.name === "InspectJob") return { job: { jobId: "job-a", state: 3, resolvedSha256: new Uint8Array(32).fill(7), result: { body: new Uint8Array([3, 4]) } } };
+
   return {};
 }
 
 function inspectActorRequest(method, request) {
-  if (method.name === "SubmitJob") {
-    assert.equal(request.input.source.case, "object");
-    assert.deepEqual([request.input.source.value.bucket, request.input.source.value.key], ["customer-input", "video/input.mp4"]);
-    assert.equal(request.limits.outputBytes, 1024n);
-  }
+
   if (method.name === "InvokeActor") assert.equal(request.headers[0].value, "application/json");
   if (method.name === "AddSubscription") {
     assert.equal(request.actorId, "actor-a");
@@ -71,18 +60,10 @@ function inspectActorRequest(method, request) {
 }
 
 function inspectResponse(method, response) {
-  if (method.name === "SubmitJob") assert.deepEqual(Uint8Array.from(response.job.resolvedSha256), new Uint8Array(32).fill(7));
-  if (method.name === "InspectJob") assert.deepEqual(Uint8Array.from(response.job.result.body), new Uint8Array([3, 4]));
+
   if (method.name === "InvokeActor") assert.equal(response.headers[0].name, "location");
   if (method.name === "CheckpointActor") assert.equal(response.actor.checkpointEpoch, 9n);
-  if (method.name === "InvokeVersion") {
-    assert.deepEqual(Uint8Array.from(response.resolvedSha256), new Uint8Array(32).fill(1));
-    assert.equal(response.resolvedRevision, undefined);
-  }
-  if (method.name === "InvokeDeployment") {
-    assert.deepEqual(Uint8Array.from(response.resolvedSha256), new Uint8Array(32).fill(2));
-    assert.equal(response.resolvedRevision, 8n);
-  }
+
 }
 
 if (process.argv.includes("--client")) {
@@ -91,8 +72,7 @@ if (process.argv.includes("--client")) {
   const options = JSON.parse(configText);
   const objects = createObjectsV1GrpcClients(options);
   const actors = await actorsClient(options);
-  const workerOptions = { endpoint: options.endpoint, token: options.token, caCertificate: options.caCertificate };
-  const clients = [actors, createWorkersGrpcClient(workerOptions), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
+  const clients = [actors, createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
@@ -109,15 +89,7 @@ if (process.argv.includes("--client")) {
         actorId: "actor-a", subscriptionId: "input", idempotencyKey: "subscription-a",
       });
       if (method.name === "InvokeActor") initializer.headers = [{ name: "content-type", value: "application/json" }];
-      if (method.name === "PublishVersion") {
-        const javascriptModule = new TextEncoder().encode("export default { run() {} }");
-        Object.assign(initializer, { javascriptModule, expectedSha256: createHash("sha256").update(javascriptModule).digest(), idempotencyKey: "publish-a" });
-      }
-      if (method.name === "SelectDeployment") Object.assign(initializer, { alias: "current", versionSha256: new Uint8Array(32).fill(1), expectedRevision: 7n, idempotencyKey: "select-a" });
-      if (["InspectJob", "CancelJob"].includes(method.name)) initializer.jobId = "job-a";
-      if (method.name === "CancelJob") initializer.idempotencyKey = "cancel-a";
-      if (method.name === "InvokeVersion") initializer.versionSha256 = new Uint8Array(32).fill(1);
-      if (method.name === "InvokeDeployment") initializer.alias = "current";
+
       if (method.name === "AddSubscription") Object.assign(initializer, {
         actorId: "actor-a",
         subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } },
@@ -126,12 +98,7 @@ if (process.argv.includes("--client")) {
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
       if (method.name === "DeleteActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "delete-a" });
       if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
-      if (method.name === "SubmitJob") Object.assign(initializer, {
-        target: { target: { case: "deploymentAlias", value: "current" } },
-        input: { source: { case: "object", value: { bucket: "customer-input", key: "video/input.mp4" } } },
-        limits: { timeoutMillis: 1000n, memoryBytes: 1024n, outputBytes: 1024n },
-        retry: { maxAttempts: 2 }, idempotencyKey: "job-a",
-      });
+
       if (method.name === "Commit") initializer.mutations = [
         { mutation: { case: "append", value: { path: "a", records: [new Uint8Array([1])] } } },
         { mutation: { case: "append", value: { path: "b", records: [new Uint8Array([2])] } } },
@@ -147,16 +114,12 @@ if (process.argv.includes("--client")) {
       } else {
         const input = method.methodKind === "client_streaming" ? (async function* () { yield request; yield request; })() : request;
         const response = await clients[index][method.localName](input);
-        if (index <= 1) assert.ok(response);
+        if (index === 0) assert.ok(response);
         else assert.equal(response.$typeName, method.output.typeName);
         inspectResponse(method, response);
       }
       count++;
-      if (index === 1) {
-        // The compatibility alias uses the canonical Rust-selected transport.
-        const http = new HttpWorkersClient(workerOptions);
-        inspectResponse(method, await http[method.localName](request));
-      }
+
     }
   }
   const denied = await actorsClient({ ...options, token: "wrong" });
@@ -180,8 +143,8 @@ const httpServer = createServer(async (request, response) => {
       response.end(JSON.stringify({ code: "ERROR_CODE_CAPABILITY_DENIED", message: "missing bearer" }));
       return;
     }
-    for (const [index, service] of services.slice(0, 2).entries()) {
-      const routes = index === 0 ? actorRoutes : workerRoutes;
+    for (const [index, service] of services.slice(0, 1).entries()) {
+      const routes = actorRoutes;
       for (const method of service.methods) {
         const path = "/" + routes[method.localName].replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
         if (request.url !== path) continue;
@@ -192,7 +155,7 @@ const httpServer = createServer(async (request, response) => {
         }
         httpSeen.set(method.name, (httpSeen.get(method.name) ?? 0) + 1);
         inspectActorRequest(method, input);
-        if (method.name === "SelectDeployment") assert.equal(input.expectedRevision, 7n);
+
         response.writeHead(200, { "content-type": "application/json" });
         response.end(toJsonString(method.output, create(method.output, responseInitializer(method))));
         return;
@@ -210,7 +173,7 @@ const adapter = connectNodeAdapter({
           if (context.requestHeader.get("authorization") !== "Bearer conformance") throw new ConnectError("missing bearer", Code.Unauthenticated);
           seen.set(`${service.typeName}/${method.name}`, (seen.get(`${service.typeName}/${method.name}`) ?? 0) + 1);
           inspectActorRequest(method, request);
-          if (method.name === "SelectDeployment") assert.equal(request.expectedRevision, 7n);
+
           if (method.name === "Commit") assert.deepEqual(request.mutations.map(item => item.mutation.value.path), ["a", "b"]);
         };
         if (method.methodKind === "server_streaming") {
@@ -268,8 +231,8 @@ try {
     child.on("exit", code => code === 0 ? resolve() : reject(new Error(`Rust conformance exited ${code}`)));
   });
   assert.equal(seen.size, expected);
-  for (const [method, calls] of seen) assert.equal(calls, method.includes(".workers.") ? 5 : method.includes(".actors.") ? 3 : 2, method);
-  assert.equal(httpSeen.size, 16);
+  for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") ? 3 : 2, method);
+  assert.equal(httpSeen.size, 9);
   if (await (await actorsClient(options)).transport === "grpc-web") {
     assert.ok(wasmRequests.length > 0, "WASM conformance must exercise the browser transport");
     assert.ok(wasmRequests.every(path => path?.startsWith("/acyclic.actors.v1.ActorsService/")), wasmRequests.join(", "));

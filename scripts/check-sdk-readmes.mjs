@@ -36,6 +36,7 @@ export function checkReadmes() {
   mkdirSync(directory, { recursive: true });
   for (const [name, code] of guide) writeFileSync(resolve(directory, `${name}.mts`), code);
   const paths = {
+    "@acyclic-labs/objects": ["typescript/packages/objects/src/index.ts"],
     "@acyclic-labs/objects/proto": ["typescript/packages/objects/generated/proto/objects/v1/objects_pb.d.ts"],
     "@acyclic-labs/stream": ["typescript/packages/stream/src/index.ts"],
     "@acyclic-labs/actors": ["typescript/packages/actors/src/index.ts"],

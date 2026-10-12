@@ -10,9 +10,8 @@ run() ->
     ets:new(rpc_route_counts,[named_table,public,set]),
     ets:new(rpc_vectors,[named_table,public,set]),
     Services=[{actors_pb,'acyclic.actors.v1.ActorsService',acyclic_actors_v_1_actors_service_client},
-              {workers_pb,'acyclic.workers.v1.WorkersService',acyclic_workers_v_1_workers_service_client},
               {stream_pb,'acyclic.stream.v1.StreamService',acyclic_stream_v_1_stream_service_client}],
-    Paths=init:get_plain_arguments(),3=length(Paths),
+    Paths=init:get_plain_arguments(),2=length(Paths),
     lists:foreach(fun({{Pb,S,_},Path})->admit_vectors(Pb,S,Path) end,lists:zip(Services,Paths)),
     Specs=[begin
       {{service,S},Methods}=Pb:get_service_def(S),
@@ -56,11 +55,11 @@ run() ->
       end,Methods),
       length(Methods)
     end || {_Pb,S,Client,_,Methods}<-Specs],
-    26=lists:sum(Counts),26=ets:info(rpc_route_counts,size),
+    19=lists:sum(Counts),19=ets:info(rpc_route_counts,size),
     ok=grpcbox_channel:stop(route_control),
     ok=application:stop(grpcbox),
     scalar_controls(),
-    io:format("PASS archive-installed Erlang clients: 26 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and three encoding rejections on port ~p~n",[Port]),ok.
+    io:format("PASS archive-installed Erlang clients: 19 populated native TCP RPC pairs, independent Rust-descriptor wire vectors, unsigned limits, optional zero, oneofs and two encoding rejections on port ~p~n",[Port]),ok.
 
 admit_vectors(Pb,Service,Path) ->
     {ok,Bytes}=file:read_file(Path),
@@ -137,7 +136,6 @@ scalar_controls() ->
       Response=stream_pb:decode_msg(stream_pb:encode_msg(Response,acyclic_append_response),acyclic_append_response)
     end,[{committed,acyclic_append_receipt,tail,123},{conflict,acyclic_tail_conflict,actual_tail,456}]),
     reject(actors_pb,acyclic_create_actor_request,code_sha256),
-    reject(workers_pb,acyclic_publish_version_request,javascript_module),
     reject(stream_pb,acyclic_append_request,if_tail).
 
 reject(Pb,Type,Field) ->

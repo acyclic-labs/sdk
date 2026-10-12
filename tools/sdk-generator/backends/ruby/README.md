@@ -1,5 +1,7 @@
 # Ruby producer tooling
 
+Current transport qualification covers Actors and Stream. The separate Workers service has been retired; Cloud Workers use the SDK Objects/Actors deployment clients. Installed qualification records below describe earlier source cuts and do not qualify this updated source.
+
 This backend generates Ruby protobuf messages and gRPC stubs from verified
 canonical Rust descriptor sets. Maintained protoc and the grpc-tools plugin
 generate every transport definition. It adds no service policy or embedded

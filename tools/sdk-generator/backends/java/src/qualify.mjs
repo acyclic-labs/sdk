@@ -6,8 +6,8 @@ import { parseArgs } from "node:util";
 import { canonical, loadAuthority, readInput, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const targets = ["actors/v1/actors.proto", "workers/v1/workers.proto", "stream/v1/stream.proto"];
-const negatives = { "InvalidActorBytes.java": "ByteString", "InvalidWorkerBytes.java": "ByteString", "InvalidOptionalInteger.java": "long" };
+const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
+const negatives = { "InvalidActorBytes.java": "ByteString", "InvalidOptionalInteger.java": "long" };
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
 
 function files(root, prefix = "") {
@@ -154,7 +154,7 @@ export function qualify(args, command = spawnSync) {
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))), authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    positive_controls_passed: true, negative_type_controls_rejected: 3,
+    positive_controls_passed: true, negative_type_controls_rejected: 2,
     rust_backed_rpc_qualified: false, embedded_runtime_qualified: false,
   };
   writeFileSync(join(output, "qualification.json"), JSON.stringify(result, null, 2) + "\n", { flag: "wx" });

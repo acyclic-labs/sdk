@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": false,
   "license": "Apache-2.0",
-  "description": "Rust-owned Workers contracts and unified native/browser client",
+  "description": "Cloud Worker deployment through Objects and Actors",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/acyclic-labs/sdk.git",
@@ -14,38 +14,27 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    },
-    "./proto": {
-      "types": "./generated/proto/workers/v1/workers_pb.d.ts",
-      "default": "./generated/proto/workers/v1/workers_pb.js"
-    },
-    "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
     }
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "generated/proto",
-    "CHANGELOG.md",
-    "generated/native",
-    "generated/wasm"
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -b",
     "test": "tsc -b --pretty false",
-    "pack:dry": "bun pm pack --dry-run"
+    "pack:dry": "bun pm pack --dry-run",
+    "test:cloud": "tsc -b && tsc -p tsconfig.type-tests.json --pretty false && node --test test/cloud-contract.test.mjs",
+    "check:types": "tsc -p tsconfig.type-tests.json --pretty false"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2.15.0"
+    "@bufbuild/protobuf": "2.15.0",
+    "@acyclic-labs/actors": "0.2.0",
+    "@acyclic-labs/objects": "0.2.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",
     "@types/node": "26.4.1"
-  },
-  "napi": {
-    "binaryName": "index",
-    "packageName": "@acyclic-labs/workers"
   }
 }

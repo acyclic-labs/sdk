@@ -11,7 +11,7 @@ function fixture(t, fault) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const put = (name, bytes) => { const p = join(root, name); mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, bytes); return p; };
   put("source/LICENSE", "license"); put("source/NOTICE", "notice");
-  const families = ["actors", "workers", "stream"].map(name => {
+  const families = ["actors", "stream"].map(name => {
     const source = `${name}/v1/${name}.proto`, descriptor = source + ".bin";
     put("authority/" + source, "canonical " + name); put("authority/" + descriptor, "rust descriptor " + name);
     return { source, descriptor, source_sha256: sha256("canonical " + name), descriptor_sha256: sha256("rust descriptor " + name) };
@@ -33,7 +33,7 @@ function fixture(t, fault) {
     calls.push({ exe, argv, opts });
     if (!exe.endsWith("escript")) return { status: 0, stdout: "29\n" };
     const project = argv[2];
-    for (const name of ["actors", "workers", "stream"]) {
+    for (const name of ["actors", "stream"]) {
       assert.equal(readFileSync(join(project, "proto", name + ".proto"), "utf8"), "canonical " + name);
       for (const file of [name + "_pb.erl", `acyclic_${name}_v_1_${name}_service_client.erl`, `acyclic_${name}_v_1_${name}_service_bhvr.erl`]) writeFileSync(join(project, "src", file), "generated " + file);
     }
@@ -48,10 +48,8 @@ test("stage canonical inputs privately and preserve all original descriptor byte
   assert.equal(f.calls.length, 2);
   assert.equal(f.calls[1].opts.env.HOME.includes("sdk-erlang-"), true);
   assert.equal(f.calls[1].opts.env.ERL_LIBS, undefined);
-  assert.equal(readFileSync(join(f.args.output, "authority/workers/v1/workers.proto.bin"), "utf8"), "rust descriptor workers");
-  assert.equal(receipt.output_sha256["authority/workers/v1/workers.proto.bin"], receipt.input_sha256["workers/v1/workers.proto.bin"]);
   assert.equal(Object.keys(receipt.source_sha256).length, producerSources.length);
-  assert.equal(receipt.outputs.filter(name => name.endsWith(".erl")).length, 9);
+  assert.equal(receipt.outputs.filter(name => name.endsWith(".erl")).length, 6);
   assert.equal(existsSync(f.calls[1].argv[2]), false);
 });
 

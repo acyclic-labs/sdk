@@ -21,7 +21,6 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-tonic-web-wasm-client",
- "acyclic-workers",
  "http-body",
  "prost",
  "prost-reflect",
@@ -595,36 +594,17 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
- "acyclic-contract-derive",
- "acyclic-grpc-observability",
- "acyclic-tonic-web-wasm-client",
- "gloo-timers",
- "http-body",
- "js-sys",
- "napi",
- "napi-build",
- "napi-derive",
+ "acyclic-actors",
+ "acyclic-objects",
+ "axum",
+ "bytes",
+ "hex",
  "prost",
  "prost-reflect",
- "protoc-bin-vendored",
- "reqwest",
- "serde",
- "serde-wasm-bindgen",
- "serde_bytes",
  "serde_json",
  "sha2",
  "thiserror",
  "tokio",
- "tokio-util",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tracing",
- "tracing-subscriber",
- "ts-rs",
- "url",
- "wasm-bindgen",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -1816,18 +1796,6 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "gloo-timers"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "482ce8a491a501da4cd806bd190275363d674f2845005c6ddbd5d3e1dd54495d"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
  "wasm-bindgen",
 ]
 

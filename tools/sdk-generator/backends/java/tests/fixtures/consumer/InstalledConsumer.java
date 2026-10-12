@@ -1,7 +1,5 @@
 import acyclic.actors.v1.Actors;
 import acyclic.actors.v1.ActorsServiceGrpc;
-import acyclic.workers.v1.Workers;
-import acyclic.workers.v1.WorkersServiceGrpc;
 import acyclic.stream.v1.Stream;
 import acyclic.stream.v1.StreamServiceGrpc;
 import com.google.protobuf.ByteString;
@@ -33,24 +31,19 @@ public final class InstalledConsumer {
   }
 
   public static void main(String[] args) throws Exception {
-    require(args.length == 3, "pass verified Actors/Workers/Stream descriptor paths");
+    require(args.length == 2, "pass verified Actors/Stream descriptor paths");
     Path installedJar = Path.of(System.getProperty("sdk.qualified.jar"));
     for (Class<?> type : List.of(Actors.class, ActorsServiceGrpc.class, Actors.CreateActorRequest.class,
-      Workers.class, WorkersServiceGrpc.class, Workers.PublishVersionRequest.class, Workers.JobTarget.class,
       Stream.class, StreamServiceGrpc.class, Stream.AppendRequest.class, Stream.ReadRequest.class)) {
       Path origin = Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI());
       require(Files.isSameFile(installedJar, origin), "class did not load from installed JAR: " + type.getName());
     }
     descriptor(Actors.getDescriptor(), args[0]);
-    descriptor(Workers.getDescriptor(), args[1]);
-    descriptor(Stream.getDescriptor(), args[2]);
+    descriptor(Stream.getDescriptor(), args[1]);
     ByteString bytes = ByteString.copyFrom(new byte[] {0, (byte) 255});
     var actor = Actors.CreateActorRequest.newBuilder().setCodeSha256(bytes)
       .setHomeRegion("test").setIdempotencyKey("test").build();
     require(actor.equals(Actors.CreateActorRequest.parseFrom(actor.toByteArray())), "Actors wire");
-    var worker = Workers.PublishVersionRequest.newBuilder().setJavascriptModule(bytes)
-      .setExpectedSha256(bytes).setIdempotencyKey("test").build();
-    require(worker.equals(Workers.PublishVersionRequest.parseFrom(worker.toByteArray())), "Workers wire");
     var append = Stream.AppendRequest.newBuilder().setPath("test/path").addRecords(bytes)
       .addRecords(ByteString.EMPTY).setIfTail(-1L).setIdempotencyKey(bytes).build();
     require(append.equals(Stream.AppendRequest.parseFrom(append.toByteArray())), "Stream wire uint64 max");
@@ -60,20 +53,7 @@ public final class InstalledConsumer {
     var explicit = Stream.AppendRequest.newBuilder().setIfTail(0).build();
     require(!absent.hasIfTail() && explicit.hasIfTail(), "optional presence");
     require(absent.toByteArray().length == 0 && explicit.toByteArray().length != 0, "optional zero encoding");
-    var oneof = Workers.JobTarget.newBuilder().setVersionSha256(bytes).build();
-    require(oneof.getTargetCase() == Workers.JobTarget.TargetCase.VERSION_SHA256 && oneof.getDeploymentAlias().isEmpty(), "version branch presence");
-    require(oneof.equals(Workers.JobTarget.parseFrom(oneof.toByteArray())), "oneof wire");
-    var target = oneof.toBuilder().setDeploymentAlias("test-alias");
-    require(target.getTargetCase() == Workers.JobTarget.TargetCase.DEPLOYMENT_ALIAS && target.getVersionSha256().isEmpty(), "alias must clear version branch");
-    var aliasTarget = Workers.JobTarget.parseFrom(target.build().toByteArray());
-    require(aliasTarget.getTargetCase() == Workers.JobTarget.TargetCase.DEPLOYMENT_ALIAS && aliasTarget.getDeploymentAlias().equals("test-alias") && aliasTarget.getVersionSha256().isEmpty(), "alias branch wire");
-    target.setVersionSha256(bytes);
-    require(target.getTargetCase() == Workers.JobTarget.TargetCase.VERSION_SHA256 && target.getDeploymentAlias().isEmpty(), "version must clear alias branch");
-    require(target.build().equals(Workers.JobTarget.parseFrom(target.build().toByteArray())), "switched version branch wire");
-    target.clearTarget();
-    require(target.getTargetCase() == Workers.JobTarget.TargetCase.TARGET_NOT_SET && target.getVersionSha256().isEmpty() && target.getDeploymentAlias().isEmpty(), "clear oneof target");
-    for (var service : List.of(ActorsServiceGrpc.getServiceDescriptor(),
-      WorkersServiceGrpc.getServiceDescriptor(), StreamServiceGrpc.getServiceDescriptor())) {
+    for (var service : List.of(ActorsServiceGrpc.getServiceDescriptor(), StreamServiceGrpc.getServiceDescriptor())) {
       var schema = ((ProtoServiceDescriptorSupplier) service.getSchemaDescriptor()).getServiceDescriptor();
       require(service.getName().equals(schema.getFullName()), "gRPC service name");
       require(service.getMethods().size() == schema.getMethods().size(), "gRPC method count");

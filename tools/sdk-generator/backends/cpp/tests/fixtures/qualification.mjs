@@ -19,7 +19,7 @@ export function fixture(t) {
   const pins = { host_inventory_sha256: sha256(hostBytes), host_inventory_roots: 3, host_inventory_files: 9,
     runtime_inventory_sha256: sha256(runtimeBytes), runtime_files: 1, system_root: join(root, "windows"), versions: { cmake: "cmake fixture", ninja: "ninja fixture", cl: "fixture" } };
   const args = { ...pkg.args, "runtime-root": runtimeRoot, "runtime-inventory": runtimeIndex, "host-inventory": hostIndex, output: join(root, "qualified") };
-  const calls = [], hooks = {}, negatives = { InvalidActorBytes: ["C2665", "set_code_sha256"], InvalidWorkerBytes: ["C2665", "set_javascript_module"], InvalidOptionalInteger: ["C2664", "set_if_tail"] };
+  const calls = [], hooks = {}, negatives = { InvalidActorBytes: ["C2665", "set_code_sha256"], InvalidOptionalInteger: ["C2664", "set_if_tail"] };
   const command = (exe, argv, options) => {
     calls.push({ exe, argv, options });
     if (options.env.CL !== undefined || options.env.CXXFLAGS !== undefined || options.env.CMAKE_TOOLCHAIN_FILE !== undefined) throw new Error("ambient compiler injection");
@@ -47,7 +47,7 @@ export function fixture(t) {
       if (negatives[target]) { phase = "negative-" + target; status = 1; stdout = "error " + negatives[target][0] + ": intended " + negatives[target][1] + " type mismatch\n"; }
       else if (argv[1].endsWith("consumer-build")) { phase = "build-consumer"; write(join(args.output, "consumer-build/RpcConsumer.exe"), "compiled consumer fixture"); }
       else phase = "build-sdk";
-    } else if (exe.endsWith("RpcConsumer.exe")) { phase = "consumer"; stdout = "PASS C++ complete file descriptors, 25 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls\nPASS C++ 25 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n"; }
+    } else if (exe.endsWith("RpcConsumer.exe")) { phase = "consumer"; stdout = "PASS C++ complete file descriptors, 25 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls\nPASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n"; }
     else throw new Error("unexpected command");
     const result = { status, stdout, stderr: "" }; hooks[phase]?.(result, options); return result;
   };
