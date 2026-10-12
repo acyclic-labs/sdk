@@ -689,49 +689,29 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
     class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    use std::mem::{offset_of, size_of};
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
-    windows_wide_name(name, work, W::invalid_request, |_, work| {
-        let name_bytes = name
-            .len()
+    windows_wide_name(name, work, W::invalid_request)?.ok_or_else(W::invalid_request)?;
+    let copied = WorkCounters {
+        bytes_copied: (name.len() as u64)
             .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?;
-        let offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-        let length = offset
-            .checked_add(name_bytes)
-            .ok_or(crate::WorkError::Overflow)?
-            .max(size_of::<FILE_RENAME_INFORMATION>());
-        let copied = WorkCounters {
-            bytes_copied: name_bytes as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(copied)?;
-        let (mut storage, allocation) = buffer::<u64, _>(length.div_ceil(8), work)?;
-        let result = (|| {
-            work.record(copied)?;
-            storage.resize(length.div_ceil(8), 0);
-            let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-            // SAFETY: link and rename use identical native headers; aligned storage includes the complete UTF-16 tail.
-            unsafe {
-                (*information).Anonymous.ReplaceIfExists = replace;
-                (*information).RootDirectory =
-                    windows::Win32::Foundation::HANDLE(parent.as_raw_handle());
-                (*information).FileNameLength =
-                    u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?;
-                std::ptr::copy_nonoverlapping(
-                    name.as_ptr(),
-                    information.cast::<u8>().add(offset).cast::<u16>(),
-                    name.len(),
-                );
-            }
-            work.attempt_io(WRITE, || {
-                windows_name_packet_once(file, &storage, length as u32, class)
-            })
-        })();
-        drop(storage);
-        work.release(allocation)?;
-        result
-    })?
-    .ok_or_else(W::invalid_request)
+            .ok_or(crate::WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(copied)?;
+    let (storage, allocation, length) =
+        windows_name_packet(parent, name.iter().copied(), name.len(), replace, work)?;
+    let result = (|| {
+        work.record(copied)?;
+        work.attempt_io(WRITE, || {
+            windows_name_packet_once(
+                file,
+                &storage,
+                length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>() as u32),
+                class,
+            )
+        })
+    })();
+    drop(storage);
+    work.release(allocation)?;
+    result
 }
