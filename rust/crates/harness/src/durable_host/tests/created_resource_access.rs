@@ -869,7 +869,8 @@ impl CreationFixture {
                 ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
             }).ok_or_else(|| Error::Invalid("fork fixture project missing".into()))?,
             stream_provider, resolver,
-        )?.with_history_context(history)?;
+            Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+        )?;
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         child.grants = Capabilities::new([
             "task:spawn:test.created@1".into(),

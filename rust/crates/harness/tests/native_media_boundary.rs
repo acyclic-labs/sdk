@@ -1943,6 +1943,7 @@ where
         project.clone(),
         stream_provider.clone(),
         reader.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let report = aggregate
         .prepare_fork(

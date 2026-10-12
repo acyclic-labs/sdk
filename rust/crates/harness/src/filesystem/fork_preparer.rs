@@ -199,103 +199,66 @@ struct PreparationAttempt<'a, A, O> {
 }
 
 impl<A, O> FilesystemForkPreparer<A, O> {
-    /// Binds an authenticated parent snapshot and its resource providers.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every provider and authority is bound explicitly"
-    )]
+    /// Binds the authenticated parent, history and optional original native custody.
+    #[allow(clippy::too_many_arguments, reason = "providers and authority are explicit")]
     pub fn new(
-        host: Arc<FilesystemHost<A, O>>,
-        parent: Reducer,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        project: VolumeRef,
-        stream_provider: ProviderRef,
-        resolver: Arc<dyn ContentResidencyVerifier>,
+        host: Arc<FilesystemHost<A, O>>, parent: Reducer, verifier: AuthorityVerifier,
+        scope: Scope, project: VolumeRef, stream_provider: ProviderRef,
+        resolver: Arc<dyn ContentResidencyVerifier>, history: Option<PreparedForkHistory>,
+        project_source: Option<ProjectSourceReadHandle>,
+        #[cfg(not(target_arch = "wasm32"))]
+        native: Option<(acyclic_fs::NativeAllocation, &acyclic_fs::NativeMaterializationWork)>,
     ) -> Result<Self> {
-        stream_provider.validate()?;
-        if stream_provider.family() != "stream" {
-            return Err(Error::Invalid(
-                "fork preparer requires a Stream history provider".into(),
-            ));
-        }
-        ParentProjectController::new(&host, &parent, &verifier, &scope, &project, None)?;
-        Ok(Self {
-            host,
-            parent,
-            verifier,
-            scope,
-            project,
-            stream_provider,
-            resolver,
-            capture_providers: Vec::new(),
-            summary: None,
-            history: None,
-            task_preparation: None,
-            project_source: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native: None,
-        })
-    }
-
-    /// Binds admitted parent history and custody to its native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "original parent and custody are explicit")]
-    pub fn new_with_native_work(
-        host: Arc<FilesystemHost<A, O>>,
-        parent: Reducer,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        project: VolumeRef,
-        stream_provider: ProviderRef,
-        resolver: Arc<dyn ContentResidencyVerifier>,
-        history: PreparedForkHistory,
-        source_read: Option<ProjectSourceReadHandle>,
-        custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let this = Self {
-            host, parent, verifier, scope, project, stream_provider, resolver,
-            capture_providers: Vec::new(), summary: None, history: Some(history),
-            task_preparation: None, project_source: source_read,
-            native: Some((work.clone(), custody)),
+        let this = Self { host, parent, verifier, scope, project, stream_provider, resolver,
+            capture_providers: Vec::new(), summary: None, history, project_source, task_preparation: None,
+            #[cfg(not(target_arch = "wasm32"))] native: native.map(|(custody, work)| (work.clone(), custody)),
         };
-        let reject = |code, reason| Error::NativeBoundary { code, reason };
-        if !this.native.as_ref().is_some_and(|(_, guard)| guard.matches_work(work)) {
-            return Err(reject(crate::wire::ErrorCode::Invalid, "fork custody belongs to another original resource"));
+        let reject = |code, reason: &'static str| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if this.native.is_some() { return native_error(code, reason); }
+            match code {
+                crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
+                crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
+                _ => Error::Invalid(reason.into()),
+            }
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((work, custody)) = &this.native {
+            if !custody.matches_work(work) || this.history.is_none() {
+                return Err(reject(crate::wire::ErrorCode::Invalid, "native fork lacks matching custody or prepared history"));
+            }
         }
-        this.stream_provider.validate_with_native_work(work)?;
-        if this.stream_provider.family() != "stream" {
-            return Err(reject(crate::wire::ErrorCode::Invalid, "fork history requires a Stream provider"));
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut observer = this.native.as_ref().map(|(work, _)| crate::store::history::native_work_io(work)).transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(target_arch = "wasm32")]
+        let mut work = None;
+        this.stream_provider.validate_with_work(&mut work)?;
+        if this.stream_provider.family() != "stream" || this.parent.authority().kind != crate::core::AggregateKind::Conversation {
+            return Err(reject(crate::wire::ErrorCode::Invalid, "fork requires Stream history and a parent conversation"));
         }
-        if this.parent.authority().kind != crate::core::AggregateKind::Conversation {
-            return Err(reject(crate::wire::ErrorCode::Invalid, "fork parent is not a conversation"));
-        }
-        this.verifier.verify_audience(this.parent.authority(), &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        this.verifier.verify(&this.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        if this.scope.agent().is_none()
-            || this.parent.conversation().and_then(|state| state.agent) != this.scope.agent()
-        {
+        this.verifier.verify_audience(this.parent.authority(), &mut work)?;
+        this.verifier.verify(&this.scope, &mut work)?;
+        if this.scope.agent().is_none() || this.parent.conversation().and_then(|state| state.agent) != this.scope.agent() {
             return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork scope is not bound to the parent agent"));
         }
-        this.project.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        this.project.validate(&mut work)?;
         if this.project.provider() != &this.host.provider {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork project belongs to another provider"));
         }
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(Error::from)?;
-        let history = this.history.as_ref().expect("native constructor owns prepared history");
-        history.verify(&this.verifier, &mut Some(&mut io))?;
-        if history.parent() != this.parent.authority()
-            || history.parent_revision() != this.parent.revision()
-        {
-            return Err(reject(crate::wire::ErrorCode::Conflict, "fork history differs from the original parent"));
+        if let Some(history) = &this.history {
+            history.verify(&this.verifier, &mut work)?;
+            if history.parent() != this.parent.authority() || history.parent_revision() != this.parent.revision() {
+                return Err(reject(crate::wire::ErrorCode::Conflict, "fork history differs from the bound parent"));
+            }
         }
-        if this.project_source.as_ref().is_some_and(|handle|
-            handle.authorization().project.provider() != &this.host.provider)
-        {
+        if this.project_source.as_ref().is_some_and(|handle| handle.authorization().project.provider() != &this.host.provider) {
             return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork source belongs to another provider"));
         }
+        drop(work);
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(observer);
         Ok(this)
     }
 
@@ -310,27 +273,6 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         self.native.as_mut().expect("native custody was checked").1.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
         Ok(Arc::new(self))
-    }
-
-    /// Retains an operation-specific project read sealed by the original task owner.
-    pub fn with_project_source_read_handle(mut self, handle: ProjectSourceReadHandle) -> Result<Self> {
-        if handle.authorization().project.provider() != &self.host.provider {
-            return Err(Error::Unauthorized("project source belongs to another Filesystem provider".into()));
-        }
-        self.project_source = Some(handle);
-        Ok(self)
-    }
-
-    /// Binds a finite archive selection produced by the original history reader.
-    pub fn with_history_context(mut self, history: PreparedForkHistory) -> Result<Self> {
-        history.verify(&self.verifier, &mut None)?;
-        if history.parent() != self.parent.authority()
-            || history.parent_revision() != self.parent.revision()
-        {
-            return Err(Error::Conflict("fork history differs from the bound parent".into()));
-        }
-        self.history = Some(history);
-        Ok(self)
     }
 
     /// Binds the original Summary history, retaining its input custody on native work.

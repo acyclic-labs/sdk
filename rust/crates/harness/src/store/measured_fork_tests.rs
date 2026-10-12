@@ -186,8 +186,9 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
     )?);
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().clone(),
-        parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver)?
-        .with_history_context(history)?;
+        parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver,
+        Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let mut admission = fixture.admission(85, serde_json::json!({"action":"filesystem-io"}));
     admission.parent = Some(task);
     admission.grants = Capabilities::new([

@@ -258,7 +258,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let child_project = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::Project, project.owner().clone())?;
     let child_private = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().clone(), issuer.verifier(), signed.clone(),
-        project.clone(), stream_provider.clone(), reader)?;
+        project.clone(), stream_provider.clone(), reader,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let request = ForkRequest { authorized_source: None, operation_id: OperationId::from_bytes([140; 16]), parent: authority.clone(),
         parent_revision: original_revision, child: child_authority.clone(), child_agent, attached_agents: Vec::new(), boundary: None,
         preparation: ForkPreparation { child_result_volume: None, summary: None, child_project_volume: child_project.clone(),
