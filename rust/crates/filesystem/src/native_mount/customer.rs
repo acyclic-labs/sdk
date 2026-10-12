@@ -2062,7 +2062,7 @@ where
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;
-                    super::materialize_checkout_paths_with_mode_and_work(
+                    super::materialize_reader_paths(
                         &reader, std::slice::from_ref(&root.0), options,
                         super::MaterializeMode::ReconstructibleView, meter,
                     ).await.map_err(MountLifecycleError::Materialize)?;

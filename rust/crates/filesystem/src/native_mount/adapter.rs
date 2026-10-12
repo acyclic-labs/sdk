@@ -10448,7 +10448,6 @@ pub(super) fn native_custody_error(error: super::NativeMountStartupAdmissionErro
         super::NativeMountStartupAdmissionError::Work(error) => MountSourceError::Work(error),
         super::NativeMountStartupAdmissionError::Demand(error) => super::lazy::mount_demand_error(error),
         super::NativeMountStartupAdmissionError::Materialization(error) => MountSourceError::NativeWork(error),
-        super::NativeMountStartupAdmissionError::Allocation(error) => MountSourceError::Allocation(error),
         super::NativeMountStartupAdmissionError::ServicesCold => MountSourceError::ServicesNotInitialized,
         super::NativeMountStartupAdmissionError::ServiceUnavailable(error) => MountSourceError::ServiceUnavailable(error),
     }
