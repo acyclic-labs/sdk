@@ -38,7 +38,7 @@ pub(super) async fn read_records<P: StreamProvider>(
     maximum: u32,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<operations::ObservedRecords>> {
-    match operations::read_records_with_work(client, stream, from, maximum, work).await? {
+    match operations::read_records(client, stream.path(), from, maximum, work).await? {
         Ok(source) => Ok(Some(source)),
         Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => Ok(None),
         Err(error) => Err(sdk_error(error, work)),

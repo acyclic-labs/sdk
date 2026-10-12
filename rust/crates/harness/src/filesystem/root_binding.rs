@@ -47,14 +47,14 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     {
         return Err(invalid("ROOT binding requires its original conversation authority and finite event allowance"));
     }
-    owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+    owner.verify(false, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?)).await?;
     let verifier = allocate(work, |io| issuer.verifier(&mut Some(&mut io.history_io())))?;
     let operation = native_root_output_binding_operation(
         &audience, private_volume, original_creation, work,
     )?;
-    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    let mut reader_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
     let reader = crate::store::HistoryReader::new(stream, &audience, &verifier.0, &mut Some(&mut reader_io))?;
-    let reader_custody = reader_io.into_custody();
+    let reader_custody = reader_io.into_custody()?;
     let event = reader.operation_event_bounded_with_native_work(
         operation, limits.file_bytes, work,
     ).await?;
@@ -95,7 +95,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
         expected_revision: original_revision.unwrap_or_else(|| aggregate.0.reducer().revision()),
         causal_parent: None, action: crate::core::Action::BindConversation { agent }, scope,
     };
-    let mut io = crate::store::history::native_work_io(work)?;
+    let mut io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
     let encoded = crate::store::history::canonical_bytes_with_work(
         &command, crate::store::default_projection_read_limits().maximum_bytes,
         &mut Some(&mut io),

@@ -92,7 +92,7 @@ impl McpStdioExchange {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(guard) = frame_custody.as_mut() {
                     let retained = value_storage(&value, work)?;
-                    guard.substitute(retained).map_err(native_error)?;
+                    guard.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| guard.release(bytes)).map_err(native_error)?;
                 }
                 self.result = Some((value, frame_custody));
             } else {

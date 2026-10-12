@@ -336,9 +336,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 "inbox page bound is invalid",
             )
         })?;
-        let mut records = match operations::read_records_with_work(
+        let mut records = match operations::read_records(
             &self.stream,
-            &mailbox.0,
+            mailbox.0.path(),
             after,
             maximum,
             &mut work,
@@ -876,7 +876,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             &mut work,
         )?;
         let mut records =
-            match operations::read_records_with_work(&self.stream, &location.0, 0, 2, &mut work)
+            match operations::read_records(&self.stream, location.0.path(), 0, 2, &mut work)
                 .await?
             {
                 Ok(records) => records,
@@ -927,9 +927,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             recipient_path(retained.recipient, &mut text),
             &mut work,
         )?;
-        let mut originals = match operations::read_records_with_work(
+        let mut originals = match operations::read_records(
             &self.stream,
-            &mailbox.0,
+            mailbox.0.path(),
             retained.sequence,
             1,
             &mut work,

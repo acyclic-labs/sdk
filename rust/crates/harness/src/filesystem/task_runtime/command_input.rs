@@ -165,10 +165,10 @@ fn reserve_native_vec<T>(values: &mut Vec<T>, claimed: &mut u64, guard: &mut acy
     claim(guard, bytes)?;
     guard.work().charge(acyclic_fs::WorkCounters { allocation_operations: 1, ..Default::default() }).map_err(Error::from)?;
     if let Err(cause) = values.try_reserve_exact(1) {
-        guard.substitute(guard.bytes() - bytes).map_err(Error::from)?;
+        guard.release(bytes).map_err(Error::from)?;
         return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause)));
     }
-    guard.substitute(guard.bytes() - *claimed).map_err(Error::from)?;
+    guard.release(*claimed).map_err(Error::from)?;
     *claimed = (values.capacity() * std::mem::size_of::<T>()) as u64;
     Ok(())
 }

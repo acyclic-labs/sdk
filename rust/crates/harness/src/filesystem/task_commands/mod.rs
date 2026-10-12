@@ -355,7 +355,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -379,7 +379,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,

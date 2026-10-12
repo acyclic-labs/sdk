@@ -230,8 +230,7 @@ pub(super) fn encode_line<T: Serialize>(
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
-                diagnostic
-                    .substitute(message.capacity() as u64)
+                diagnostic.bytes().checked_sub(message.capacity() as u64).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| diagnostic.release(bytes))
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,
@@ -309,8 +308,7 @@ pub(super) fn frame_admission(
             });
         match scanned {
             Err(Error::Invalid(message)) => {
-                diagnostic
-                    .substitute(message.capacity() as u64)
+                diagnostic.bytes().checked_sub(message.capacity() as u64).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| diagnostic.release(bytes))
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,

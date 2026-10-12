@@ -137,12 +137,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     pub(super) async fn native_preparation_source(
-        &self, context: &Arc<crate::runtime::NativeTaskContext>, token: &TaskResourcePreparation,
+        &self, context: &Arc<crate::runtime::TaskContext>, token: &TaskResourcePreparation,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
         reconciliation_only: bool,
     ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        let task_context = context.context();
+        let task_context = context;
         task_context.owned_task_binding_with_native_work(work)?;
         if reconciliation_only {
             token.verify_reconciliation_with_native_work(work)?.await?;
@@ -185,7 +185,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
+            let retained = context.read_file_with_native_work(checkpoint, work).await?;
             let capture = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<SourceCheckpoint>, &retained, crate::wire::ErrorCode::Storage)?);
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,

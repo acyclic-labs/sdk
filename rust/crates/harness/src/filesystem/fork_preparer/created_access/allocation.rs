@@ -80,9 +80,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, FilesystemRootBootstrapAllocation<A, O>>> {
         use crate::resource_preparation::RootBootstrapContentRole;
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         let agent = owner.authenticated_binding_agent(&mut Some(
-            &mut crate::store::history::native_work_io(work)?,
+            &mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?,
         ))?;
         let valid_role = match role {
             RootBootstrapContentRole::Project => volume.class() == VolumeClass::Project,

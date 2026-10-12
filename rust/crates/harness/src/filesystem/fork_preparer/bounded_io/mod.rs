@@ -110,7 +110,7 @@ impl PreparationIo {
         let mut custody = custody
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(cause) = custody.substitute(retained) {
+        if let Err(cause) = custody.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| custody.release(bytes)) {
             return Err(Error::NativeWork {
                 cause,
                 custody: Some(custody),

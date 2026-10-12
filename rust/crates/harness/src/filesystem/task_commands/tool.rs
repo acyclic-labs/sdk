@@ -40,10 +40,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let work = io.and_then(crate::filesystem::PreparationIo::original_native_work).expect("native tool has its original work");
-                let context = ToolContext::new_with_native_work(context, operation, &invocation.call_id, work)?;
+                let context = ToolContext::new(context, operation, &invocation.call_id, io)?;
                 self.runtime.bind_native_tool_interactions(context, task, fence, turn, Arc::clone(&journal), work)?
             }
-            WorkerContext::Ordinary(context) => ToolContext::new(context, operation, invocation.call_id.clone())?,
+            WorkerContext::Ordinary(context) => ToolContext::new(Arc::new(context), operation, &invocation.call_id, None)?,
         };
         if !reconciliation_only || io.is_none() {
             let _records;

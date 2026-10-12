@@ -226,7 +226,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
+    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -235,7 +235,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
+        &'a self, context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {

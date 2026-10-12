@@ -144,7 +144,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source owner differs from original context" });
         }
         let caller = self.caller(task, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
-        if owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))? != caller.owner.scope.agent() {
+        if owner.authenticated_binding_agent(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))? != caller.owner.scope.agent() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source actor differs from admitted current creator" });
         }
@@ -169,9 +169,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     reason: "native source binding differs from authenticated current allocation" });
             }
         }
-        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         if require_project_read {
-            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();

@@ -41,12 +41,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 WorkerContext::Native(context) => {
                     let io = io.expect("native model has its original observer");
                     let work = io.original_native_work().expect("native model has its original work");
-                    let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
+                    let item = self.committed_mail_input(task, fence, turn, receive, context, Some(io)).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
                     let copy_path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), work))?;
                     let _path = io.guard_owned(copy_path.capacity() as u64)?;
                     let (call_id, _call_id) = work.display(&copy_operation)?;
-                    let publisher = ToolContext::new_with_native_work(Arc::clone(context), copy_operation, &call_id, work)?;
+                    let publisher = ToolContext::new(Arc::clone(context), copy_operation, &call_id, Some(io))?;
                     let retained = publisher.observe_staged_file_once_with_native_work(copy_operation, work).await?;
                     io.absorb_native_custody(retained.1)?;
                     let copy = match retained.0 {
@@ -56,9 +56,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                             reason: "started steered model has no retained receiver parcel",
                         }),
                         None => {
-                            let bytes = context.context().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
+                            let bytes = context.read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
                             self.runtime.owner_observed(task, fence, false, Some(io)).await?;
-                            let staged = context.context().stage_file_once_with_native_work(
+                            let staged = context.stage_file_once_with_native_work(
                                 copy_operation, &copy_path, &bytes,
                                 item.payload.descriptor().media_type(), item.payload.display_name(), work,
                             ).await?;

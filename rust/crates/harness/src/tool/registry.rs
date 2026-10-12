@@ -212,20 +212,18 @@ impl ToolRegistry {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
                 // Replaced selection storage is gone before its refund.
-                custody
-                    .as_mut()
-                    .expect("checked registry custody")
-                    .substitute(retained)?;
+                let custody = custody.as_mut().expect("checked registry custody");
+                custody.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into())
+                    .and_then(|bytes| custody.release(bytes))?;
             }
             Ok(())
         })();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if result.is_err() && !published && work.is_some() {
             // The closure's input and prepared buffers have dropped before refund.
-            custody
-                .as_mut()
-                .expect("checked registry custody")
-                .substitute(original_quota)?;
+            let custody = custody.as_mut().expect("checked registry custody");
+            custody.bytes().checked_sub(original_quota).ok_or(acyclic_fs::WorkError::Overflow.into())
+                .and_then(|bytes| custody.release(bytes))?;
         }
         let _ = (published, custody, work);
         result
