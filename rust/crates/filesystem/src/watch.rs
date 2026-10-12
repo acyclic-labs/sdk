@@ -1670,15 +1670,6 @@ impl NativeWatch {
         self.watch_directory_with_work(directory, work)
     }
 
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn watch_directory_with_native_work(
-        &mut self, directory: &NamespacePath, work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.watch_directory_with_work(
-            directory, &mut crate::demand::NativeSourceWork::from_native_materialization_work(work),
-        )
-    }
-
     pub(crate) fn watch_directory_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, directory: &NamespacePath, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
@@ -2208,14 +2199,6 @@ impl NativeWatch {
             .map_err(|error| OperationFailure::new(error, work.work))
     }
 
-    /// Starts the original scan without deriving a second work budget.
-    pub fn begin_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchEpoch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.begin_rescan_with_work(&mut source)
-    }
-
     fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<WatchEpoch, NativeWatchError> {
@@ -2365,14 +2348,6 @@ impl NativeWatch {
                 .map_err(|error| OperationFailure::new(error, work.work)),
             |receipt| &receipt.work,
         )
-    }
-
-    /// Completes the same original scan on the caller's native work.
-    pub fn finish_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchBatch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.finish_rescan_with_work(&mut source)
     }
 
     fn finish_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
@@ -2723,14 +2698,6 @@ impl NativeWatch {
         Ok(())
     }
 
-    /// Observes the held and current physical root without adopting its graph.
-    pub fn root_unchanged_with_native_work(
-        &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.root_unchanged_with_work(&mut source).map_err(demand_watch_error)
-    }
-
     fn root_unchanged_with_work<W: crate::demand::SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
@@ -2884,20 +2851,6 @@ impl NativeWatch {
             Ok((value, _)) => Ok(OperationReceipt { value, work: work.work }),
             Err(error) => Err(OperationFailure::new(error, work.work)),
         }
-    }
-
-    /// Polls on the caller's original ledger, retaining the actual output buffer.
-    ///
-    /// Keep the returned allocation until the batch's change vector is freed.
-    /// Queued path allocations remain on their original producer ledger.
-    ///
-    /// # Errors
-    ///
-    /// Returns native-root, admission, cancellation, queue, and sequence errors.
-    pub fn poll_with_native_work(
-        &mut self, maximum_changes: u32, original: &crate::NativeMaterializationWork,
-    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError> {
-        self.poll_with_native_work_guarded(maximum_changes, original, |_| Ok(()))
     }
 
     /// Runs the consumer's guarded publication before committing watch progress.

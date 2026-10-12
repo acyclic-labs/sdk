@@ -21,7 +21,7 @@ fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) 
         let fs = Box::pin(Fs::local(LocalOptions::new(root.path())))
             .await
             .unwrap();
-        let workspace = Box::pin(fs.create_workspace("bench")).await.unwrap();
+        let workspace = Box::pin(fs.create_workspace("bench", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap();
         (root, fs, workspace)
     })
 }

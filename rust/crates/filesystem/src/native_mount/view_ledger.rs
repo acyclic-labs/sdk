@@ -984,7 +984,7 @@ impl ViewLedger {
         let slot = self.nodes.prepare_slot(
             key_of(&file_id), &mut work, &mut ViewLedgerAdmission::default(), AdmittedMap::Nodes, true,
         )?;
-        let items_examined = (observers.len() as u64).checked_add(slot.terminal_items() as u64)
+        let items_examined = (observers.values.len() as u64).checked_add(slot.terminal_items() as u64)
             .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
         let completion = original.reserve_work(crate::WorkCounters {
             items_examined,
@@ -1010,7 +1010,7 @@ impl ViewLedger {
         position.record_in(&self.latest);
         let mut result = completion.record_completed(terminal)
             .map_err(super::MountSourceError::NativeWork);
-        let notified = notify_recorded_observers(false, &observers, position, || {
+        let notified = notify_recorded_observers(false, &observers.values, position, || {
             let visited = completion.record_completed(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(super::MountSourceError::NativeWork);
@@ -1027,7 +1027,7 @@ impl ViewLedger {
         position: ViewStamp, result: Result<(), super::MountSourceError>, work: &mut W,
     ) -> Result<(), super::MountSourceError> {
         let notified = notify_recorded_observers(
-            matches!(change, ViewChange::Unconfirmed), &observers, position, || {},
+            matches!(change, ViewChange::Unconfirmed), &observers.values, position, || {},
         );
         let released = observers.retire(work);
         if let Err(panic) = notified { std::panic::resume_unwind(panic); }
@@ -1048,7 +1048,7 @@ impl ViewLedger {
         let (observers, position, result) =
             carrier.with_work(|work| self.prepare_record(change, work, owned))?;
         let notified = notify_recorded_observers(
-            matches!(change, ViewChange::Unconfirmed), &observers, position, || {},
+            matches!(change, ViewChange::Unconfirmed), &observers.values, position, || {},
         );
         let bytes = observers.retire_physical();
         let released = carrier.with_work(|work|
@@ -1080,17 +1080,17 @@ impl ViewLedger {
                     for observer in entries.observers.iter() {
                         record_items(work, 1)?;
                         if let Some(observer) = observer.observer.upgrade() {
-                            if observers.len() == observers.capacity() { return Ok(false); }
+                            if observers.values.len() == observers.values.capacity() { return Ok(false); }
                             if !include_delivery_visits {
                                 work.record_charge(crate::WorkCounters {
                                     bytes_copied: std::mem::size_of::<Arc<dyn ViewObserver>>() as u64,
                                     ..crate::WorkCounters::UNCHARGED
                                 })?;
                             }
-                            observers.push(observer);
+                            observers.values.push(observer);
                         }
                     }
-                    if include_delivery_visits { record_items(work, observers.len())?; }
+                    if include_delivery_visits { record_items(work, observers.values.len())?; }
                     Ok(true)
                 })()
             };
@@ -1319,28 +1319,22 @@ impl PreparedChangeMapSlot<'_> {
 
 impl ChangePositions {
 
-    fn get_visiting<E>(
-        &self, key: u64, mut visit: impl FnMut() -> Result<(), E>,
-    ) -> Result<Option<u64>, E> {
-        if self.slots.is_empty() { return Ok(None); }
+    fn unchanged_key(
+        &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, super::MountSourceError> {
+        if self.slots.is_empty() { return Ok(self.floor <= stamp.0); }
         let mask = self.slots.len() - 1;
         let mut index = key as usize & mask;
         loop {
-            visit()?;
+            super::lazy::mount_items(work, 1)?;
             match self.slots.get(index).copied().flatten() {
-                None => return Ok(None),
-                Some((stored, at)) if stored == key => return Ok(Some(at)),
+                None => return Ok(self.floor <= stamp.0),
+                Some((stored, at)) if stored == key => return Ok(at.max(self.floor) <= stamp.0),
                 Some(_) => index = (index + 1) & mask,
             }
         }
     }
 
-    fn unchanged_key(
-        &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, super::MountSourceError> {
-        Ok(self.get_visiting(key, || super::lazy::mount_items(work, 1))?
-            .map_or(self.floor, |at| at.max(self.floor)) <= stamp.0)
-    }
 }
 
 fn notify_recorded_observers(
@@ -1415,13 +1409,6 @@ struct ViewRecordBuffer<T> {
     allocation: ViewRecordAllocation,
 }
 
-impl<T> std::ops::Deref for ViewRecordBuffer<T> {
-    type Target = Vec<T>;
-    fn deref(&self) -> &Self::Target { &self.values }
-}
-impl<T> std::ops::DerefMut for ViewRecordBuffer<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.values }
-}
 impl<T> ViewRecordBuffer<T> {
     fn retire_physical(self) -> u64 {
         let Self { values, allocation } = self;
@@ -1549,7 +1536,7 @@ impl ChangeMap {
                     ..crate::WorkCounters::UNCHARGED
                 })?;
             }
-            replacement.resize(count, None);
+            replacement.values.resize(count, None);
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
             if positions.allocation_generation != old_generation {
                 drop(positions);
@@ -1564,7 +1551,7 @@ impl ChangeMap {
                         let mut index = *stored as usize & (count - 1);
                         loop {
                             record_items(work, 1)?;
-                            let slot = replacement.get_mut(index).ok_or(super::MountSourceError::Stale)?;
+                            let slot = replacement.values.get_mut(index).ok_or(super::MountSourceError::Stale)?;
                             if slot.is_none() {
                                 work.record_charge(crate::WorkCounters {
                                     bytes_copied: std::mem::size_of::<Option<(u64, u64)>>() as u64,
@@ -1688,49 +1675,49 @@ fn hash_unicode_fold<I: Iterator<Item = char> + Clone, W: ViewRecordAccounting>(
         let mut emitted = 0;
         decompose_canonical(scalar, |_| emitted += 1);
         record_items(work, emitted)?;
-        decompose_canonical(scalar, |scalar| decomposed.push((canonical_combining_class(scalar), scalar)));
+        decompose_canonical(scalar, |scalar| decomposed.values.push((canonical_combining_class(scalar), scalar)));
     }
-    for index in 1..decomposed.len() {
-        let value = *decomposed.get(index).ok_or(super::MountSourceError::Stale)?;
+    for index in 1..decomposed.values.len() {
+        let value = *decomposed.values.get(index).ok_or(super::MountSourceError::Stale)?;
         if value.0 == 0 { continue; }
         let mut position = index;
         while position > 0 {
             record_items(work, 1)?;
-            let prior = *decomposed.get(position - 1).ok_or(super::MountSourceError::Stale)?;
+            let prior = *decomposed.values.get(position - 1).ok_or(super::MountSourceError::Stale)?;
             if prior.0 <= value.0 { break; }
             work.record_charge(crate::WorkCounters {
                 bytes_copied: std::mem::size_of::<(u8, char)>() as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;
-            *decomposed.get_mut(position).ok_or(super::MountSourceError::Stale)? = prior;
+            *decomposed.values.get_mut(position).ok_or(super::MountSourceError::Stale)? = prior;
             position -= 1;
         }
         if position != index {
-            *decomposed.get_mut(position).ok_or(super::MountSourceError::Stale)? = value;
+            *decomposed.values.get_mut(position).ok_or(super::MountSourceError::Stale)? = value;
         }
     }
     let mut written = 0;
     let mut starter: Option<usize> = None;
     let mut last_class = 0;
-    for read in 0..decomposed.len() {
+    for read in 0..decomposed.values.len() {
         record_items(work, 1)?;
-        let value = *decomposed.get(read).ok_or(super::MountSourceError::Stale)?;
+        let value = *decomposed.values.get(read).ok_or(super::MountSourceError::Stale)?;
         if let Some(starter) = starter {
             if last_class == 0 || last_class < value.0 {
-                let prior = decomposed.get(starter).ok_or(super::MountSourceError::Stale)?.1;
+                let prior = decomposed.values.get(starter).ok_or(super::MountSourceError::Stale)?.1;
                 if let Some(composed) = compose(prior, value.1) {
-                    decomposed.get_mut(starter).ok_or(super::MountSourceError::Stale)?.1 = composed;
+                    decomposed.values.get_mut(starter).ok_or(super::MountSourceError::Stale)?.1 = composed;
                     continue;
                 }
             }
         }
         if value.0 == 0 { starter = Some(written); }
         last_class = value.0;
-        *decomposed.get_mut(written).ok_or(super::MountSourceError::Stale)? = value;
+        *decomposed.values.get_mut(written).ok_or(super::MountSourceError::Stale)? = value;
         written += 1;
     }
     let mut encoded = [0_u8; 4];
-    for (_, scalar) in decomposed.get(..written).ok_or(super::MountSourceError::Stale)? {
+    for (_, scalar) in decomposed.values.get(..written).ok_or(super::MountSourceError::Stale)? {
         for folded in scalar.to_uppercase().flat_map(char::to_lowercase) {
             record_items(work, 1)?;
             hasher.write(folded.encode_utf8(&mut encoded).as_bytes());
@@ -1947,7 +1934,7 @@ mod tests {
         let prefix = original.receipt();
         let map_bytes = (prepared.slot.positions.slots.capacity()
             * std::mem::size_of::<Option<(u64, u64)>>()) as u64;
-        let observer_bytes = (prepared.observers.capacity()
+        let observer_bytes = (prepared.observers.values.capacity()
             * std::mem::size_of::<Arc<dyn ViewObserver>>()) as u64;
         assert_eq!(original.live_allocation_bytes(), baseline + map_bytes + observer_bytes);
         drop(observer);

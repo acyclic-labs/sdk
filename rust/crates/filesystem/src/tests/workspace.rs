@@ -11,7 +11,7 @@ use std::sync::Arc;
 async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("discovered-agent").await?;
+    let workspace = fs.create_workspace("discovered-agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/visible.txt", "visible").await?;
     let pinned = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
@@ -28,8 +28,8 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
     let mut retained = Vec::with_capacity(10_000);
     for index in 0..10_000 {
         let other = fs
-            .create_workspace(&format!("retained-agent-{index}"))
-            .await?;
+            .create_workspace(&format!("retained-agent-{index}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         retained.push(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     }
     workspace
@@ -59,7 +59,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
 async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs.create_workspace("scratch-parent").await?;
+    let parent = fs.create_workspace("scratch-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/memory.txt", "parent").await?;
     let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
@@ -110,7 +110,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
 -> Result<(), Box<dyn Error>> {
     for paths in [vec!["/notes/keep.txt"], vec!["/notes"]] {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("parent").await?;
+        let parent = fs.create_workspace("parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_directory("/notes").await?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -171,7 +171,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     for mask in 0_u8..8 {
         for descendant in [false, true] {
             let fs = Fs::memory();
-            let parent = fs.create_workspace("subset-parent").await?;
+            let parent = fs.create_workspace("subset-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             for index in 0..3 {
                 parent.write_text(&format!("/file-{index}"), "base").await?;
             }
@@ -254,7 +254,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     // Negative control: deletion on an ordinary full fork IS an authored
     // deletion and must reach the parent. Filtering must not mean fork+clear.
     let fs = Fs::memory();
-    let parent = fs.create_workspace("negative-parent").await?;
+    let parent = fs.create_workspace("negative-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/omitted", "base").await?;
     let child = parent
         .fork(
@@ -279,7 +279,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
 #[tokio::test]
 async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs.create_workspace("filtered-rebase-parent").await?;
+    let parent = fs.create_workspace("filtered-rebase-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/omitted", "base").await?;
     let child = parent
         .fork(
@@ -316,7 +316,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
 async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let root = fs.create_workspace("nested-root").await?;
+    let root = fs.create_workspace("nested-root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     root.write_text("/keep", "root").await?;
     root.write_text("/omit", "root").await?;
     let parent = root
@@ -373,7 +373,7 @@ proptest::proptest! {
     fn selected_fork_hardlink_aliases_keep_exact_content(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64), carry_alias in proptest::prelude::any::<bool>()) {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let fs = Fs::memory();
-            let parent = fs.create_workspace("hardlink-parent").await?;
+            let parent = fs.create_workspace("hardlink-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             parent.write("/file", bytes::Bytes::copy_from_slice(&bytes)).await?;
             let mut transaction = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             transaction.hard_link("/file", "/alias").await?;
@@ -451,7 +451,7 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("repo").await?;
+    let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let fork_key = IdempotencyKey::from_bytes([0x42; 16]);
     let fork = main
@@ -466,7 +466,7 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
             ForkOptions::from_generation(base.clone(), fork_key),
         )
         .await?;
-    assert_eq!(fs.open_workspace("repo").await?.id(), main.id());
+    assert_eq!(fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), main.id());
     assert_ne!(fork.id(), main.id());
     assert_ne!(fork.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), base.id());
     assert_eq!(retried.id(), fork.id());
@@ -494,8 +494,8 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
             ..VolumeConfig::portable(Lifecycle::Ephemeral)
         };
         let workspace = fs
-            .create_workspace_with_config("native-path", config)
-            .await?;
+            .create_workspace_with_config("native-path", config, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/ÃƒÂ©.txt", "native").await?;
         let mut checkout = workspace
             .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -519,7 +519,7 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
 #[tokio::test]
 async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("conditional-remove").await?;
+    let workspace = fs.create_workspace("conditional-remove", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut create = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     create.write_text("/file.txt", "current").await?;
     assert!(matches!(
@@ -543,7 +543,7 @@ async fn conditional_remove_preserves_typed_stale_identity() -> Result<(), Box<d
 #[tokio::test]
 async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-exact").await?;
+    let workspace = fs.create_workspace("restore-exact", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/state", "first").await?;
     let first = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/state", "second").await?;
@@ -578,7 +578,7 @@ async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<d
 async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-paths").await?;
+    let workspace = fs.create_workspace("restore-paths", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x60; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/tree").await?;
     transaction
@@ -640,7 +640,7 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 #[tokio::test]
 async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("apply-paths").await?;
+    let workspace = fs.create_workspace("apply-paths", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "base").await?;
     let base = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let source_workspace = workspace
@@ -669,7 +669,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
         OwnedBytes::from_static(b"source")
     );
 
-    let conflicting = fs.create_workspace("apply-paths-conflict").await?;
+    let conflicting = fs.create_workspace("apply-paths-conflict", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     conflicting.write_text("/file", "base").await?;
     let conflict_base = conflicting.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let conflict_source = conflicting
@@ -706,7 +706,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs.create_workspace("incremental-parent").await?;
+    let parent = fs.create_workspace("incremental-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let parent_base = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let child = parent
         .fork(
@@ -748,7 +748,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
 async fn public_workspace_checkout_opens_pinned_and_live_private_views()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("public-checkout").await?;
+    let workspace = fs.create_workspace("public-checkout", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let pinned = workspace.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(pinned.generation_id(), head.id());
@@ -766,7 +766,7 @@ async fn public_workspace_checkout_opens_pinned_and_live_private_views()
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("materialize-consumer").await?;
+    let workspace = fs.create_workspace("materialize-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/output/nested").await?;
     transaction
@@ -840,7 +840,7 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("materialize-paths-consumer").await?;
+    let workspace = fs.create_workspace("materialize-paths-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/nested").await?;
     transaction.write_text("/nested/a", "linked").await?;
@@ -880,7 +880,7 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
 async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-host-consumer").await?;
+    let workspace = fs.create_workspace("restore-host-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/nested").await?;
     transaction
@@ -953,7 +953,7 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
 async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-host-containment").await?;
+    let workspace = fs.create_workspace("restore-host-containment", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
@@ -984,8 +984,8 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace("restore-host-containment-windows")
-        .await?;
+        .create_workspace("restore-host-containment-windows", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
@@ -1021,7 +1021,7 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
 async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let source = fs.create_workspace("checkpoint-source").await?;
+    let source = fs.create_workspace("checkpoint-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = source.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .write_text("/candidate-only", "candidate")
@@ -1053,7 +1053,7 @@ async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
 #[tokio::test]
 async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("repo").await?;
+    let workspace = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     let mut transaction = workspace.begin_transaction(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/output/nested").await?;
@@ -1108,7 +1108,7 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
 async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("transaction-rebase").await?;
+    let workspace = fs.create_workspace("transaction-rebase", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     let mut first = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut disjoint = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -1171,7 +1171,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
 async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("exact-transaction").await?;
+    let workspace = fs.create_workspace("exact-transaction", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     workspace.write_text("/upstream", "one").await?;
@@ -1200,7 +1200,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         OwnedBytes::from_static(b"two")
     );
 
-    let other = fs.create_workspace("other-exact-transaction").await?;
+    let other = fs.create_workspace("other-exact-transaction", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let foreign = other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         workspace
@@ -1215,7 +1215,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
 async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("shapes").await?;
+    let workspace = fs.create_workspace("shapes", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree").await?;
     transaction
@@ -1279,7 +1279,7 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
 async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("read-shapes").await?;
+    let workspace = fs.create_workspace("read-shapes", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree").await?;
     transaction
@@ -1386,7 +1386,7 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
 #[tokio::test]
 async fn checkpoint_retains_the_exact_current_generation() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("repo").await?;
+    let workspace = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let checkpoint = workspace.checkpoint("baseline").await?;
     assert_eq!(checkpoint.0.as_str(), "baseline");
     assert_eq!(checkpoint.1.id(), workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
@@ -1398,7 +1398,7 @@ async fn checkpoint_retains_the_exact_current_generation() -> Result<(), Box<dyn
 #[tokio::test]
 async fn explicit_pin_is_exact_and_conflicting_reuse_fails_closed() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("repo").await?;
+    let workspace = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let first = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let pin = first.pin("deployment").await?;
     assert_eq!(pin.0.as_str(), "deployment");
@@ -1420,7 +1420,7 @@ async fn explicit_pin_is_exact_and_conflicting_reuse_fails_closed() -> Result<()
 #[tokio::test]
 async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("repo").await?;
+    let workspace = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let fork = workspace
         .fork(
@@ -1438,8 +1438,8 @@ async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box
         fs.delete_workspace("repo", key).await?,
         WorkspaceDelete::AlreadyDeleted
     );
-    assert!(fs.open_workspace("repo").await.is_err());
-    assert!(fs.create_workspace("repo").await.is_err());
+    assert!(fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    assert!(fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     assert_eq!(fork.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.workspace_id(), fork.id());
     Ok(())
 }
@@ -1448,7 +1448,7 @@ async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box
 async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main").await?;
+    let main = fs.create_workspace("main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base", "base").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let agent = main
@@ -1530,7 +1530,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main-exact").await?;
+    let main = fs.create_workspace("main-exact", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base", "base").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let agent = main
@@ -1568,7 +1568,7 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
 async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_frontier()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("lineage-main").await?;
+    let main = fs.create_workspace("lineage-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let left = main
         .fork(
@@ -1608,7 +1608,7 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
         Err(WorkspaceError::LineageLimit)
     ));
 
-    let unrelated = fs.create_workspace("lineage-unrelated").await?;
+    let unrelated = fs.create_workspace("lineage-unrelated", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         main.join_into(&unrelated).bounds(1, 32, 32).plan().await,
         Err(WorkspaceError::NoCommonAncestor)
@@ -1628,7 +1628,7 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
 async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main-rebase").await?;
+    let main = fs.create_workspace("main-rebase", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base", "base").await?;
     let agent = main
         .fork(
@@ -1677,7 +1677,7 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
 #[tokio::test]
 async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main-conflict").await?;
+    let main = fs.create_workspace("main-conflict", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/shared", "base").await?;
     let agent = main
         .fork(
@@ -1713,7 +1713,7 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
 async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main-ranges").await?;
+    let main = fs.create_workspace("main-ranges", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write("/shared", bytes::Bytes::from(vec![b'a'; 128])).await?;
     let agent = main
         .fork(
@@ -1759,7 +1759,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 #[tokio::test]
 async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main").await?;
+    let main = fs.create_workspace("main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let agent = main
         .fork(
@@ -1789,7 +1789,7 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
 #[tokio::test]
 async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("main").await?;
+    let main = fs.create_workspace("main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/shared", "base").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let agent = main
@@ -1849,7 +1849,7 @@ impl crate::MergeDriver for SelectTheirsDriver {
 #[tokio::test]
 async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("driver-main").await?;
+    let main = fs.create_workspace("driver-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/shared", "base").await?;
     let agent = main
         .fork(
@@ -1894,7 +1894,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
 #[tokio::test]
 async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("text-driver-main").await?;
+    let main = fs.create_workspace("text-driver-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/shared", "base\n").await?;
     let agent = main
         .fork(
@@ -1952,7 +1952,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
 #[tokio::test]
 async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("compose").await?;
+    let workspace = fs.create_workspace("compose", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/before", "body").await?;
     let middle = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -1980,7 +1980,7 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
 async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("changed-paths").await?;
+    let workspace = fs.create_workspace("changed-paths", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut initial = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     initial.create_dir_all("/nested/deep").await?;
     initial
@@ -2135,7 +2135,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
 async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("lookup-paths").await?;
+    let workspace = fs.create_workspace("lookup-paths", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
@@ -2179,7 +2179,7 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("bounded-path-index").await?;
+    let workspace = fs.create_workspace("bounded-path-index", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.write_text("/a", "body").await?;
     transaction.hard_link("/a", "/b").await?;
@@ -2208,7 +2208,7 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
 async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("generation-reader").await?;
+    let workspace = fs.create_workspace("generation-reader", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/present", "body").await?;
     let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
@@ -2246,14 +2246,14 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
         *allowance = serde_json::json!(100_000_000_u64);
     }
     let budget: WorkBudget = serde_json::from_value(allowances)?;
-    let created = fs.create_workspace_with_operation_measured(
+    let created = fs.create_workspace_with_operation(
         "readonly-original-creation", config, operation, budget, &cancellation,
     ).await?.value;
-    let workspace = fs.open_workspace("readonly-original-creation").await?;
+    let workspace = fs.open_workspace("readonly-original-creation", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/later", "advanced head").await?;
     let advanced = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(advanced, created.id());
-    let original = fs.workspace_for_creation_operation_measured(
+    let original = fs.workspace_for_creation_operation(
         "readonly-original-creation", config, operation, budget, &cancellation,
     ).await?;
     original.work.verify(budget)?;
@@ -2266,24 +2266,24 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     let mut wrong_config = config;
     wrong_config.lifecycle = Lifecycle::Durable;
     for (requested_config, requested_operation) in [(config, wrong_operation), (wrong_config, operation)] {
-        let failure = fs.workspace_for_creation_operation_measured(
+        let failure = fs.workspace_for_creation_operation(
             "readonly-original-creation", requested_config, requested_operation, budget, &cancellation,
         ).await.err().expect("mismatched original creation is rejected");
         assert_ne!(*failure.work, crate::WorkCounters::UNCHARGED);
         failure.work.verify(budget)?;
         assert_eq!(failure.work.authority_records_appended, 0);
     }
-    let missing = fs.workspace_for_creation_operation_measured(
+    let missing = fs.workspace_for_creation_operation(
         "readonly-missing-creation", config, operation, budget, &cancellation,
     ).await?;
     assert!(missing.value.is_none());
     assert_eq!(missing.work.authority_records_appended, 0);
     missing.work.verify(budget)?;
-    assert!(fs.open_workspace("readonly-missing-creation").await.is_err());
+    assert!(fs.open_workspace("readonly-missing-creation", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
     let mut denied = budget;
     denied.backend_read_operations = 0;
-    let failure = fs.workspace_for_creation_operation_measured(
+    let failure = fs.workspace_for_creation_operation(
         "readonly-original-creation", config, operation, denied, &cancellation,
     ).await.err().expect("finite denial retains name admission prefix");
     assert_ne!(*failure.work, crate::WorkCounters::UNCHARGED);
@@ -2573,7 +2573,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);
-            let attempt = fs.create_workspace("repo").await;
+            let attempt = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error);
             let fired = cutting.disarm();
             let committed = cutting.commits();
             let volume = fs.workspace_id("repo")?.volume_id();
@@ -2596,13 +2596,13 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 "a fault at call {fail_at} was not reported"
             );
             // An interruption leaves no volume or the complete one.
-            let opened = fs.open_workspace("repo").await;
+            let opened = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error);
             assert_eq!(opened.is_ok(), created.is_some());
-            let retried = fs.create_workspace("repo").await?;
+            let retried = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             retried.write_text("/after.txt", "after").await?;
             assert_eq!(
-                fs.open_workspace("repo")
-                    .await?
+                fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                     .read("/after.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 OwnedBytes::from_static(b"after")
             );
@@ -2710,7 +2710,7 @@ async fn fork_through_every_cut(
                 crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
-            let main = fs.create_workspace("repo").await?;
+            let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             main.write_text("/base.txt", "base").await?;
             main.write_text("/excluded.txt", "excluded").await?;
             let source = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -2859,7 +2859,7 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
     let source_id;
     {
         let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-        let main = fs.create_workspace("repo").await?;
+        let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         main.write_text("/base.txt", "base").await?;
         source_id = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         drop(main);
@@ -2869,7 +2869,7 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
     let forked_head;
     {
         let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-        let main = fs.open_workspace("repo").await?;
+        let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let source = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(source.id(), source_id);
         let fork = main
@@ -2907,10 +2907,10 @@ async fn a_local_fork_survives_power_loss_at_every_journal_cut() -> Result<(), B
     for length in cuts {
         cut_journal(root, &journal, length)?;
         let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-        let main = fs.open_workspace("repo").await?;
+        let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let source = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(source.id(), source_id);
-        if let Ok(agent) = fs.open_workspace("agent").await {
+        if let Ok(agent) = fs.open_workspace("agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             assert_eq!(agent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), forked_head);
             assert_eq!(
                 agent.read("/base.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
@@ -2942,7 +2942,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     let cancellation = CancellationToken::new();
     {
         let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-        let main = fs.create_workspace("repo").await?;
+        let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         main.write_text("/base.txt", "base").await?;
         let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let agent = main
@@ -2962,8 +2962,8 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
             fs.delete_workspace("agent", key).await?,
             WorkspaceDelete::AlreadyDeleted
         );
-        assert!(fs.open_workspace("agent").await.is_err());
-        assert!(fs.create_workspace("agent").await.is_err());
+        assert!(fs.open_workspace("agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+        assert!(fs.create_workspace("agent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         assert_eq!(
             fs.authority().authorities(64).await?.len(),
             2,
@@ -2985,7 +2985,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
         1,
         "the fork base went with its fork"
     );
-    let main = fs.open_workspace("repo").await?;
+    let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(main.read("/base.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"base");
     // Content the collection removed is stored again when written again.
     let content = "only the agent ".repeat(8_192);
@@ -2993,7 +2993,7 @@ async fn a_deleted_local_fork_releases_its_authority_and_content() -> Result<(),
     drop(main);
     close_local(fs).await?;
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-    let main = fs.open_workspace("repo").await?;
+    let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(main.read("/again.txt", 1 << 20, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), content.as_bytes());
     Ok(())
 }
@@ -3008,11 +3008,11 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     let root = directory.path();
     let cancellation = CancellationToken::new();
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-    fs.create_workspace("repo").await?;
+    fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let writer = tokio::spawn({
         let fs = fs.clone();
         async move {
-            let main = fs.open_workspace("repo").await?;
+            let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             for round in 0..24_u32 {
                 let TransactionCommit::Committed(generation) = main
                     .write_text("/churn.txt", &round.to_string().repeat(20_000))
@@ -3045,7 +3045,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
     close_local(fs).await?;
 
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-    let main = fs.open_workspace("repo").await?;
+    let main = fs.open_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(
         main.read("/churn.txt", 1 << 20, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
         "23".repeat(20_000).as_bytes()
@@ -3069,7 +3069,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     .await?;
     let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
     let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
-    let main = fs.create_workspace("repo").await?;
+    let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base.txt", "base").await?;
     let mut children = Vec::new();
     for name in ["kept", "deleted"] {
@@ -3127,7 +3127,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
     let directory = tempfile::tempdir()?;
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs.create_workspace("promote-main").await?;
+        let main = fs.create_workspace("promote-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         main.write_text("/README.md", "base\n").await?;
         let mut transaction = main.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_dir_all("/src").await?;
@@ -3147,15 +3147,15 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        fs.open_workspace("promote-first")
-            .await?
+        fs.open_workspace("promote-first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .write_text("/README.md", "first\n")
             .await?;
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs.open_workspace("promote-main").await?;
-        let first = fs.open_workspace("promote-first").await?;
+        let main = fs.open_workspace("promote-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let first = fs.open_workspace("promote-first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = first
             .join_into(&main)
             .history(JoinHistory::Merge)
@@ -3176,15 +3176,15 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        fs.open_workspace("promote-second")
-            .await?
+        fs.open_workspace("promote-second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .write_text("/README.md", "second\n")
             .await?;
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs.open_workspace("promote-main").await?;
-        let second = fs.open_workspace("promote-second").await?;
+        let main = fs.open_workspace("promote-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let second = fs.open_workspace("promote-second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = second
             .join_into(&main)
             .history(JoinHistory::Merge)
@@ -3212,7 +3212,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("siblings-main").await?;
+    let main = fs.create_workspace("siblings-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/README.md", "base\n").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let first = main
@@ -3264,7 +3264,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("fold-main").await?;
+    let main = fs.create_workspace("fold-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/README.md", "base\n").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut forks = Vec::new();
@@ -3321,7 +3321,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
 #[tokio::test]
 async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let main = fs.create_workspace("file-fold-main").await?;
+    let main = fs.create_workspace("file-fold-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/README.md", "base\n").await?;
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut forks = Vec::new();
@@ -3410,7 +3410,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     use crate::kernel::MetadataField;
 
     let fs = Fs::memory();
-    let main = fs.create_workspace("sibling-times-main").await?;
+    let main = fs.create_workspace("sibling-times-main", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/README.md", "base\n").await?;
     {
         let mut transaction = main.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3527,7 +3527,7 @@ fn selected_transaction_budget() -> WorkBudget {
 async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_state()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("guarded-selected-restore").await?;
+    let workspace = fs.create_workspace("guarded-selected-restore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut seed = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     seed.create_dir_all("/tree").await?;
     seed.write("/tree/file", bytes::Bytes::from_static(b"source")).await?;
@@ -3621,7 +3621,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
 async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let parent = fs.create_workspace("original-fork-parent").await?;
+    let parent = fs.create_workspace("original-fork-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/file", "original").await?;
     let frozen = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
@@ -3645,7 +3645,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     assert_eq!(retry.work.authority_records_appended, 0);
     assert_eq!(retry.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced_child.id());
     assert_eq!(retry.value.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"later child");
-    let creation = fs.workspace_for_creation_operation_measured(
+    let creation = fs.workspace_for_creation_operation(
         "original-fork-child", child.volume.config, key.operation_id(), budget, &cancellation,
     ).await?.value.ok_or("original creation missing")?;
     assert_eq!(creation.id(), original_child.id());
@@ -3657,7 +3657,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
 async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("resolved-owner-seal").await?;
+    let workspace = fs.create_workspace("resolved-owner-seal", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     let mut first = workspace.begin_transaction(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3703,7 +3703,7 @@ impl From<FsError> for OrdinaryOwnerError {
 async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("whole-ordinary-owner").await?;
+    let workspace = fs.create_workspace("whole-ordinary-owner", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let base = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     let mut candidate = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3742,7 +3742,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
 async fn measured_directory_record_restore_preserves_original_ignored_descendants()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("record-not-subtree-restore").await?;
+    let workspace = fs.create_workspace("record-not-subtree-restore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut seed = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     seed.create_dir_all("/tree").await?;
     seed.set_metadata("/tree", FileMetadata {
@@ -3777,7 +3777,7 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
 async fn selected_record_restore_prepares_file_to_directory_privately_before_one_seal()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let source_workspace = fs.create_workspace("source-selected-directory-shape").await?;
+    let source_workspace = fs.create_workspace("source-selected-directory-shape", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut source_tx = source_workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source_tx.create_dir_all("/hot/empty/nested").await?;
     source_tx.set_metadata("/hot", FileMetadata {
@@ -3787,7 +3787,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     source_tx.hard_link("/hot/value", "/hot/alias").await?;
     source_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let source = source_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let workspace = fs.create_workspace("target-selected-directory-shape").await?;
+    let workspace = fs.create_workspace("target-selected-directory-shape", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut target_tx = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     target_tx.write("/hot", bytes::Bytes::from_static(b"original file")).await?;
     target_tx.hard_link("/hot", "/outside-linked").await?;
@@ -3847,10 +3847,10 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
 async fn selected_record_restore_removes_directory_descendants_before_file_replacement()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let source_workspace = fs.create_workspace("source-selected-file-shape").await?;
+    let source_workspace = fs.create_workspace("source-selected-file-shape", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source_workspace.write("/hot", bytes::Bytes::from_static(b"replacement file")).await?;
     let source = source_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let workspace = fs.create_workspace("target-selected-file-shape").await?;
+    let workspace = fs.create_workspace("target-selected-file-shape", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut seed = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     seed.create_dir_all("/hot/nested/empty").await?;
     seed.write("/hot/nested/old", bytes::Bytes::from_static(b"retained outside alias")).await?;
@@ -3940,7 +3940,7 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
     assert!(seals.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(original.receipt().bytes_hashed > before.bytes_hashed);
     assert_eq!(original.receipt().authority_records_appended, before.authority_records_appended);
-    assert!(fs.open_workspace("native-guarded-creation-denied").await.is_err());
+    assert!(fs.open_workspace("native-guarded-creation-denied", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
 }
@@ -3950,7 +3950,7 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
 async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_authority()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-guarded-fork-source").await?;
+    let workspace = fs.create_workspace("native-guarded-fork-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write("/selected", bytes::Bytes::from_static(b"original")).await?;
     let frozen = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
@@ -3974,7 +3974,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
     assert!(matches!(failure, WorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
     assert!(seals.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(original.receipt().bytes_hashed > before.bytes_hashed);
-    assert!(fs.open_workspace("native-guarded-fork-denied").await.is_err());
+    assert!(fs.open_workspace("native-guarded-fork-denied", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
 }
@@ -3984,7 +3984,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
 async fn native_selected_restore_honors_the_real_retained_authority_reservation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-selected-reservation").await?;
+    let workspace = fs.create_workspace("native-selected-reservation", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write("/selected", bytes::Bytes::from_static(b"frozen")).await?;
     let frozen = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write("/selected", bytes::Bytes::from_static(b"current")).await?;
@@ -4029,7 +4029,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
 async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_rebinding_it()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-fork-reserved-source").await?;
+    let workspace = fs.create_workspace("native-fork-reserved-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write("/value", bytes::Bytes::from_static(b"frozen")).await?;
     let frozen = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
@@ -4054,7 +4054,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
         WorkspaceError::Filesystem(crate::FsError::Authority(
             crate::AuthorityStoreError::RejectedStatic(_)))));
     assert_eq!(original.receipt().authority_records_appended, before);
-    assert!(fs.open_workspace("native-fork-reserved-destination").await.is_err());
+    assert!(fs.open_workspace("native-fork-reserved-destination", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     workspace.release_publication_with_native_work(reservation, &original, &cancellation)
         .await.map_err(|(error, _)| error)?;
     Ok(())
@@ -4064,7 +4064,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
 async fn contextual_operation_record_retains_original_witness_after_head_advances()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-context-record").await?;
+    let workspace = fs.create_workspace("original-context-record", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     let key = IdempotencyKey::new();
     let original_evidence: &'static [u8] = b"opaque original SDK operation witness";
@@ -4113,7 +4113,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
 async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_changed_data()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-fingerprint-current-reservation").await?;
+    let workspace = fs.create_workspace("original-fingerprint-current-reservation", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     let key = IdempotencyKey::new();
     let context = crate::Digest::from_bytes([0xc8; 32]);
@@ -4167,23 +4167,13 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         operation_id: rotated.operation_id.into_bytes(), gate_tail: rotated.gate_tail, expected: rotated.expected,
     };
     assert_ne!(rotated_permit, current_permit);
-    let recovered = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context), Some(evidence.clone()), Some(historical_permit),
-    ).await?;
+    let recovered = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(evidence.clone()), Some(historical_permit)).await?;
     assert!(matches!(recovered.value, Some(crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. })
         if generation_id == generation.id()));
-    let changed_evidence = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context),
-        Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit),
-    ).await?;
+    let changed_evidence = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit)).await?;
     assert!(matches!(changed_evidence.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
     transaction.write("/original", bytes::Bytes::from_static(b"changed candidate content")).await?;
-    let changed_payload = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context), Some(evidence), Some(historical_permit),
-    ).await?;
+    let changed_payload = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(evidence), Some(historical_permit)).await?;
     assert!(matches!(changed_payload.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
     assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), generation.id());
     workspace.release_publication(rotated, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -4194,8 +4184,8 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
 async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reservation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-fingerprint-current-target").await?;
-    let foreign = fs.create_workspace("original-fingerprint-foreign-current-grant").await?;
+    let workspace = fs.create_workspace("original-fingerprint-current-target", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let foreign = fs.create_workspace("original-fingerprint-foreign-current-grant", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     let original_head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();

@@ -59,7 +59,7 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
 fn request_json_append(input: &[u8]) -> Result<Value> {
     let request = wire::AppendRequest::decode(input).map_err(|_| "invalid_argument")?;
     let request = wire_codec::append_from_wire(request).map_err(|error| error.code())?;
-    memory::validate_records(&request.records).map_err(|error| error.code())?;
+    memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default())).map_err(|error| error.code())?;
     memory::validate_append_size(&request).map_err(|error| error.code())?;
     let values = request
         .records
@@ -99,8 +99,8 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
     let request = wire::CommitRequest::decode(input).map_err(|_| "invalid_argument")?;
     let deadline = request.deadline_unix_millis;
     let mut request = wire_codec::commit_from_wire(request).map_err(|error| error.code())?;
-    memory::normalize_commit(&mut request).map_err(|error| error.code())?;
-    memory::validate_commit_shape(&request).map_err(|error| error.code())?;
+    memory::provider_result(memory::normalize_commit(&mut request, &memory::MemoryObserver::default())).map_err(|error| error.code())?;
+    memory::provider_result(memory::validate_commit_shape(&request, &memory::MemoryObserver::default())).map_err(|error| error.code())?;
     let conditions = request
         .conditions
         .iter()

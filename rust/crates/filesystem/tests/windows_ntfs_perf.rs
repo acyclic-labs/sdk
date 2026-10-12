@@ -154,7 +154,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
         ..FileMetadata::default()
     };
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("ntfs-metadata-view").await?;
+    let workspace = fs.create_workspace("ntfs-metadata-view", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree").await?;
     transaction
@@ -246,8 +246,8 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
         .create_workspace_with_config(
             "ntfs-link-capture",
             VolumeConfig::native(Lifecycle::Durable),
-        )
-        .await?;
+        acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),

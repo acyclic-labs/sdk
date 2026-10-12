@@ -384,8 +384,7 @@ where
         let mut acknowledged = None;
         // This is the final SDK operation. Its own ACK slot survives errors
         // after a real DATA CAS; absent metadata remains unconfirmed.
-        self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
-            permit, work, cancellation, context, &mut acknowledged, before_publication,
+        self.source.sync_async_with_permit_carrier_guarded_context_with_ack(permit, false, &mut super::adapter::NativeDemandCarrier::Native(work), &mut super::view_ledger::ViewLedgerAdmission::default(), cancellation, &mut { before_publication }, Some(context), &mut acknowledged,
         ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
             cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
         })
@@ -398,7 +397,7 @@ where
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
-        self.source.cancel_with_cleanup_wait(wait)?;
+        self.source.cancel_cleanup(Some(wait))?;
         if !self.source.capture_retired() {
             return Err(MountLifecycleError::Native(NativeMountError::ControlPending));
         }
@@ -609,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async()
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -622,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async_with_permit(permit)
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -1023,7 +1022,7 @@ where
                     session.revalidate_with_meter(native_work)?;
                 }
             }
-            self.source.selected_import_snapshot_with_meter(operation, native_work, cancellation)
+            self.source.selected_import_snapshot(operation, native_work, cancellation)
                 .await.map_err(NativeMountError::from)
         }.await;
         if result.is_err() { self.retain_failed_session(); }
@@ -1135,11 +1134,11 @@ where
             with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
                 .map_err(|cause| (cause, None))?;
             if qualify_readonly {
-                let snapshot = self.source.publication_snapshot_with_native_work(native_work, cancellation)
+                let snapshot = self.source.publication_snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map_err(|(cause, accounting)| (MountLifecycleError::Source(cause), accounting))?;
                 Ok(MountedSnapshotCapture::Qualified(snapshot))
             } else {
-                self.source.snapshot_with_native_work(native_work, cancellation)
+                self.source.snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map(MountedSnapshotCapture::Original)
                     .map_err(|cause| (MountLifecycleError::Source(cause), None))
             }
@@ -1157,7 +1156,7 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.validate_snapshot_with_native_work(
+        self.source.lazy.validate_snapshot_with_native_work(
             frozen, &native_work.native_materialization_work(),
         ).await.map_err(MountLifecycleError::Lazy)
     }
@@ -1172,8 +1171,8 @@ where
         path: &str,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(crate::LazyLookup, crate::NativeAllocation), MountLifecycleError> {
-        self.source.lookup_at_snapshot_with_work(
-            frozen, path, &native_work.native_materialization_work(),
+        self.source.lazy.lookup_at_snapshot_with_work(
+            frozen, path, &native_work.native_materialization_work(), native_work.native_materialization_work().cancellation(),
         ).await.map_err(MountLifecycleError::from)
     }
 
@@ -2264,7 +2263,7 @@ mod tests {
         assert!(ordinary_job.shares_resource_allowance(&job));
         assert!(!ordinary_job.shares_ledger(&work));
         drop(ordinary_job);
-        ordinary_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         let (native_source, _, _, _) = lazy.prepare_authored_mount_source(
             &options, Some(pinned), None, &work.native_mount_work(), &cancellation, Some(&work),
         ).await?;
@@ -2278,7 +2277,7 @@ mod tests {
         assert!(native_job.shares_ledger(&work));
         assert!(native_job.shares_resource_allowance(&work));
         drop(native_job);
-        native_source.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
+        native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
         assert!(ordinary_source.capture_retired());
         assert!(native_source.capture_retired());
         work.receipt().verify(budget)?;
@@ -2488,8 +2487,8 @@ mod tests {
         })?;
         assert_eq!(source_ack, Some(qualified_ack));
         assert!(qualified_ack.operation().is_some());
-        let acknowledged = mount.source.snapshot_with_native_work(
-            &publication_native, &publication_cancellation,
+        let acknowledged = mount.source.snapshot(
+            super::super::adapter::NativeDemandCarrier::Native(&publication_native), &publication_cancellation,
         ).await?;
         assert_eq!(
             qualified_ack.snapshot().lazy_snapshot_with_native_work(&publication_work, &publication_cancellation)?,
@@ -2658,7 +2657,7 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("native-carrier-admission").await?;
+        let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_directory("/selected-é").await?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -2742,7 +2741,7 @@ mod tests {
         acyclic_native_runtime::initialize_native_io_services()?;
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
-        let workspace = fs.create_workspace("pinned-native-view").await?;
+        let workspace = fs.create_workspace("pinned-native-view", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "original").await?;
         let admitted = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "concurrent").await?;

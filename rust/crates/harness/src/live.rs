@@ -104,13 +104,7 @@ pub struct TaskGroup {
 
 impl TaskGroup {
     /// Creates a task group with bounded concurrency.
-    #[must_use]
-    pub fn new(max_concurrency: usize) -> Self {
-        Self::new_observed(max_concurrency, None)
-            .expect("ordinary task-group construction has no observer")
-    }
-
-    fn new_observed(max_concurrency: usize, work: GroupWork<'_>) -> crate::Result<Self> {
+    pub fn new(max_concurrency: usize, work: GroupWork<'_>) -> crate::Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if let Some(work) = work {
             let bytes = (std::mem::size_of::<GroupState>() + std::mem::size_of::<Semaphore>()) as u64;
@@ -137,25 +131,11 @@ impl TaskGroup {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn new_with_native_work(
-        max_concurrency: usize, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<Self> {
-        Self::new_observed(max_concurrency, Some(work))
-    }
-
     /// Creates an independently bounded child retained in this cancellation tree.
-    #[must_use]
-    pub fn child(&self, max_concurrency: usize) -> Self {
-        self.attach_child(Self::new(max_concurrency), None)
-            .expect("ordinary task-group attachment has no observer")
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn child_with_native_work(
-        &self, max_concurrency: usize, work: &acyclic_fs::NativeMaterializationWork,
+    pub fn child(
+        &self, max_concurrency: usize, work: GroupWork<'_>,
     ) -> crate::Result<Self> {
-        self.attach_child(Self::new_observed(max_concurrency, Some(work))?, Some(work))
+        self.attach_child(Self::new(max_concurrency, work)?, work)
     }
 
     fn attach_child(&self, mut child: Self, work: GroupWork<'_>) -> crate::Result<Self> {
@@ -369,18 +349,6 @@ impl TaskGroup {
             .await
     }
 
-    /// Preserves one admission result per input.
-    pub async fn admit_many<T, F, I>(&self, futures: I) -> Vec<Admission<TaskHandle<T>>>
-    where
-        T: Send + 'static,
-        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
-        I: IntoIterator<Item = F>,
-    {
-        stream::iter(futures)
-            .then(|future| self.try_spawn(future))
-            .collect()
-            .await
-    }
 }
 
 /// Addressable handle for an admitted live task.
@@ -404,7 +372,7 @@ impl<T> TaskHandle<T> {
     }
 
     /// Waits for a terminal outcome, cancelling this task if the wait is dropped.
-    pub fn result_owned(self) -> impl Future<Output = Outcome<T>> {
+    pub fn result(mut self) -> impl Future<Output = Outcome<T>> {
         struct CancelOnDrop(Option<AbortHandle>);
         impl Drop for CancelOnDrop {
             fn drop(&mut self) {
@@ -416,31 +384,28 @@ impl<T> TaskHandle<T> {
         let guard = CancelOnDrop(self.join.as_ref().map(|join| join.abort_handle()));
         async move {
             let mut guard = guard;
-            let outcome = self.result().await;
+            let outcome = match self.join.take() {
+                Some(join) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        match join.await {
+                            Ok(outcome) => outcome,
+                            Err(error) if error.is_cancelled() => Outcome::Cancelled,
+                            Err(error) => Outcome::Failed { message: error.to_string() },
+                        }
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        match join.outcome.await {
+                            Ok(outcome) => outcome,
+                            Err(error) => Outcome::Failed { message: error.to_string() },
+                        }
+                    }
+                }
+                None => Outcome::Failed { message: "task handle has no join".into() },
+            };
             guard.0 = None;
             outcome
-        }
-    }
-
-    /// Waits for a terminal outcome.
-    pub async fn result(mut self) -> Outcome<T> {
-        let Some(join) = self.join.take() else {
-            return Outcome::Failed {
-                message: "task handle has no join".into(),
-            };
-        };
-        #[cfg(not(target_arch = "wasm32"))]
-        match join.await {
-            Ok(outcome) => outcome,
-            Err(error) if error.is_cancelled() => Outcome::Cancelled,
-            Err(error) => Outcome::Failed {
-                message: error.to_string(),
-            },
-        }
-        #[cfg(target_arch = "wasm32")]
-        match join.outcome.await {
-            Ok(outcome) => outcome,
-            Err(error) => Outcome::Failed { message: error.to_string() },
         }
     }
 }
@@ -522,41 +487,6 @@ pub async fn quorum<T: Send + 'static>(
     Err(failures)
 }
 
-/// Recursively sums input with balanced live fork-join decomposition.
-pub async fn recursive_sum(group: TaskGroup, values: Vec<u64>, leaf_size: usize) -> Outcome<u64> {
-    if values.len() <= leaf_size.max(1) {
-        return group
-            .spawn(async move { values.into_iter().sum() })
-            .await
-            .result()
-            .await;
-    }
-    let midpoint = values.len() / 2;
-    let (left, right) = values.split_at(midpoint);
-    let (left, right) = (left.to_vec(), right.to_vec());
-    let (left_result, right_result) = tokio::join!(
-        recursive_sum_boxed(group.clone(), left, leaf_size),
-        recursive_sum_boxed(group, right, leaf_size),
-    );
-    match (left_result, right_result) {
-        (Outcome::Succeeded(left), Outcome::Succeeded(right)) => Outcome::Succeeded(left + right),
-        (Outcome::Failed { message }, _) | (_, Outcome::Failed { message }) => {
-            Outcome::Failed { message }
-        }
-        (Outcome::Indeterminate { operation_id }, _)
-        | (_, Outcome::Indeterminate { operation_id }) => Outcome::Indeterminate { operation_id },
-        _ => Outcome::Cancelled,
-    }
-}
-
-fn recursive_sum_boxed(
-    group: TaskGroup,
-    values: Vec<u64>,
-    leaf_size: usize,
-) -> std::pin::Pin<Box<dyn Future<Output = Outcome<u64>> + Send>> {
-    Box::pin(recursive_sum(group, values, leaf_size))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,9 +494,9 @@ mod tests {
 
     #[tokio::test]
     async fn grandchildren_retain_the_original_cancellation_parent() {
-        let root = TaskGroup::new(2);
-        let parent = root.child(2);
-        let grandchild = parent.child(1);
+        let root = TaskGroup::new(2, None).unwrap();
+        let parent = root.child(2, None).unwrap();
+        let grandchild = parent.child(1, None).unwrap();
         drop(parent);
         root.cancel();
         assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
@@ -584,13 +514,13 @@ mod tests {
         let denied = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..budget }, &cancellation,
         ).map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
-        let root = TaskGroup::new(2);
-        assert!(root.child_with_native_work(1, &denied).is_err());
+        let root = TaskGroup::new(2, None).unwrap();
+        assert!(root.child(1, Some(&denied)).is_err());
         assert_eq!(denied.receipt().allocation_operations, 0);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
-        let parent = root.child_with_native_work(2, &work)?;
-        let grandchild = parent.child_with_native_work(1, &work)?;
+        let parent = root.child(2, Some(&work))?;
+        let grandchild = parent.child(1, Some(&work))?;
         drop(parent);
         root.cancel();
         assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
@@ -603,16 +533,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recursive_work_joins_to_expected_value() {
-        assert_eq!(
-            recursive_sum(TaskGroup::new(8), (1..=16).collect(), 2).await,
-            Outcome::Succeeded(136)
-        );
-    }
-
-    #[tokio::test]
     async fn named_admission_rejects_active_duplicates_and_allows_settled_retry() {
-        let group = TaskGroup::new(2);
+        let group = TaskGroup::new(2, None).unwrap();
         let operation = OperationId::new();
         let Admission::Accepted(handle) = group
             .try_spawn_with_operation(operation, std::future::pending::<u64>())
@@ -664,7 +586,7 @@ mod tests {
                 self.0.store(true, Ordering::SeqCst);
             }
         }
-        let group = TaskGroup::new(2);
+        let group = TaskGroup::new(2, None).unwrap();
         let dropped = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&dropped);
         let (started, observed) = tokio::sync::oneshot::channel();
@@ -678,7 +600,7 @@ mod tests {
         observed.await?;
         let other = group.spawn(std::future::pending::<u64>()).await;
         // Cancellation must also work when the returned wait was never polled.
-        drop(handle.result_owned());
+        drop(handle.result());
         for _ in 0..16 {
             if dropped.load(Ordering::SeqCst) {
                 break;
@@ -696,7 +618,7 @@ mod tests {
         other.cancel();
         assert_eq!(other.result().await, Outcome::Cancelled);
         assert_eq!(
-            group.spawn(async { 11_u64 }).await.result_owned().await,
+            group.spawn(async { 11_u64 }).await.result().await,
             Outcome::Succeeded(11)
         );
         Ok(())
@@ -704,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_is_explicit() {
-        let handle = TaskGroup::new(1).spawn(std::future::pending::<u64>()).await;
+        let handle = TaskGroup::new(1, None).unwrap().spawn(std::future::pending::<u64>()).await;
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
     }
@@ -721,7 +643,7 @@ mod tests {
         let dropped = Arc::new(AtomicBool::new(false));
         let (started, observed) = tokio::sync::oneshot::channel();
         let flag = Arc::clone(&dropped);
-        let group = TaskGroup::new(2);
+        let group = TaskGroup::new(2, None).unwrap();
         let loser = group
             .spawn(async move {
                 let _guard = MarkDropped(flag);
@@ -746,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn ordered_reduction_uses_admission_order() -> Result<(), Box<dyn std::error::Error>> {
-        let group = TaskGroup::new(2);
+        let group = TaskGroup::new(2, None).unwrap();
         let (release, wait) = tokio::sync::oneshot::channel();
         let first = group
             .spawn(async move {

@@ -70,8 +70,6 @@ impl PiOwnerPolicy {
     }
 }
 
-// Deliberately no Debug: configuration contains the signing key. It is never
-// returned to the extension, serialized into adapter state or included in logs.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerConfig {
@@ -99,31 +97,10 @@ impl PiOwnerConfig {
     pub(crate) fn policy(&self) -> &PiOwnerPolicy {
         &self.policy
     }
-    /// Called only for an explicitly new root, before admission or selected
-    /// allocation. Reopening must load the original file, never call this.
-    pub(crate) fn new(policy: PiOwnerPolicy) -> Result<Self> {
-        Self::new_with_native_runtime(policy, None)
-    }
 
-    pub(crate) fn new_with_native_runtime(
-        policy: PiOwnerPolicy, native_runtime: Option<super::pi_native::PiNativeHostRuntime>,
-    ) -> Result<Self> {
-        let native_runtime = native_runtime.map(|runtime| runtime.sanitize()).transpose()?;
-        let owner = Self {
-            version: 1,
-            key: protection::new_key().map_err(storage)?,
-            policy,
-            native_runtime,
-            _native_custody: None,
-        };
-        owner.authority()?;
-        Ok(owner)
-    }
 
-    /// Initial owner creation borrows admitted configuration sources and copies
-    /// only through their genuine original-ledger producers. This is called
-    /// solely for a new root, never as a recovery credential replacement.
-    pub(crate) fn new_with_native_runtime_with_native_work(
+    /// Initial owner creation borrows admitted configuration sources and copies only through their genuine original-ledger producers.
+    pub(crate) fn new(
         policy: &PiOwnerPolicy, runtime: Option<&super::pi_native::PiNativeHostRuntime>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
@@ -157,21 +134,11 @@ impl PiOwnerConfig {
 
     pub(crate) fn native_runtime(&self) -> Result<&super::pi_native::PiNativeHostRuntime> {
         self.native_runtime.as_ref()
-            .ok_or_else(|| invalid("Pi original bootstrap has no pinned native runtime"))
-    }
-
-    /// Borrows the original protected runtime; no credential, scope, String or
-    /// guard is copied, and absence retains its genuine Invalid classification.
-    pub(crate) fn native_runtime_with_native_work(
-        &self, work: &NativeMaterializationWork,
-    ) -> Result<&super::pi_native::PiNativeHostRuntime> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        self.native_runtime.as_ref()
             .ok_or_else(|| native_invalid("Pi original bootstrap has no pinned native runtime"))
     }
 
-    /// Moves a genuinely native owner into shared host custody without copying
-    /// credentials. Ordinary preexisting DTOs cannot be adopted retrospectively.
+
+    /// Moves a genuinely native owner into shared host custody without copying credentials.
     pub(crate) fn into_native_shared(
         self, work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
@@ -181,8 +148,6 @@ impl PiOwnerConfig {
         {
             return Err(native_invalid("Pi owner sharing requires its original native metadata custody"));
         }
-        // The existing guard already owns the complete payload. This is the
-        // actual Arc allocation attempt, not a second Self claim or a key copy.
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1, ..acyclic_fs::WorkCounters::UNCHARGED
         }).map_err(native_work_error)?;
@@ -267,9 +232,7 @@ impl PiOwnerConfig {
         combine_native_metadata(owned)
     }
 
-    /// Authorizes through the SDK's original journal owner and protected-key
-    /// verifier. The issuer and its genuine custody remain private and live
-    /// until the original native authorization future settles.
+    /// Authorizes through the SDK's original journal owner and protected-key verifier.
     #[allow(clippy::too_many_arguments, reason = "original source selection and owner remain explicit")]
     pub(crate) async fn authorize_project_source_with_native_work<P: StreamProvider + 'static>(
         &self,
@@ -327,8 +290,7 @@ impl PiOwnerConfig {
         )
     }
 
-    /// The Root effect grant retains its original task-ID scope name, not the
-    /// conversation binding prefix. No owner configuration or scope is cloned.
+    /// The Root effect grant retains its original task-ID scope name, not the conversation binding prefix.
     pub(crate) fn effect_authority_with_native_work(
         &self, work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
@@ -364,8 +326,7 @@ impl PiOwnerConfig {
         drop(scope_id.1);
         combine_native_metadata(((audience.0, issuer.0, scope.0), audience.1, [issuer.1, scope.1]))
     }
-    /// Shares the original effect audience and protected owner key. References
-    /// and caller-provided task IDs never select another issuer.
+    /// Shares the original effect audience and protected owner key.
     fn effect_issuer(&self) -> AuthorityIssuer {
         AuthorityIssuer::new(ISSUER, self.key, Authority {
             kind: AggregateKind::Conversation,
@@ -373,9 +334,7 @@ impl PiOwnerConfig {
         })
     }
 
-    /// Called only after authenticating the actual task and its reconstructed
-    /// scope. This signs that conversation's identity with the same original
-    /// protected key; it does not create or admit a task or resource.
+    /// Called only after authenticating the actual task and its reconstructed scope.
     pub(crate) fn conversation_authority(
         &self, task: TaskId, agent: AgentId, grants: Capabilities,
     ) -> Result<(Authority, AuthorityIssuer, acyclic_harness::core::Scope)> {
@@ -386,48 +345,23 @@ impl PiOwnerConfig {
         Ok((audience, issuer, signed))
     }
 
-    /// Check the retained references before opening the owner's journals. The
-    /// journal still authenticates the complete original admission afterward.
-    pub(crate) fn validate_root(&self, binding: &super::PiTaskBinding) -> Result<()> {
-        self.validate_root_inner(binding, None)
-    }
 
-    pub(crate) fn validate_root_with_native_work(
+
+    pub(crate) fn validate_root(
         &self, binding: &super::PiTaskBinding, work: &NativeMaterializationWork,
     ) -> Result<()> {
-        self.validate_root_inner(binding, Some(work))
-    }
-
-    fn validate_root_inner(
-        &self, binding: &super::PiTaskBinding, work: Option<&NativeMaterializationWork>,
-    ) -> Result<()> {
-        if let Some(work) = work {
-            binding.validate_with_native_work(
-                None, binding.project_volumes.keys().map(String::as_str), true, work,
-            )?;
-        } else {
-            binding.validate(None, binding.project_volumes.keys().map(String::as_str), true)?;
-        }
+        binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
         if binding.task_id != self.policy.root_task
             || binding.agent_id != self.policy.agent
             || binding.scratch.volume.provider() != self.policy.journal.provider()
         {
-            return Err(match work {
-                Some(_) => Error::NativeBoundary {
-                    code: acyclic_harness::wire::ErrorCode::Unauthorized,
-                    reason: "Pi root binding differs from its original service owner",
-                },
-                None => Error::Unauthorized("Pi root binding differs from its original service owner".to_owned()),
-            });
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi root binding differs from its original service owner" });
         }
         Ok(())
     }
 
-    /// Atomically publishes once. An existing, missing-on-reopen or damaged
-    /// owner is never replaced, regenerated or repaired from route references.
-    /// Publishes the same protected owner format once, with original-ledger
-    /// canonical encoding and actual held-file writes. No success is inferred
-    /// from a path, and NoReplace preserves the original immutable credential.
+    /// Atomically publishes once.
     pub(crate) fn save_new_with_native_work(
         &self, root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, work: &NativeMaterializationWork,
@@ -441,8 +375,6 @@ impl PiOwnerConfig {
         let protected = protection::protect_with_copy(&plain.bytes, |bytes| work.copy_bytes(bytes));
         drop(plain);
         let protected = protected.map_err(native_work_error)?;
-        // Unix protection is private-file custody rather than encryption, so
-        // clear managed protected buffers on every platform as well.
         let protected = NativeOwnerPlaintext { bytes: protected.0, _custody: protected.1 };
         if protected.bytes.len() as u64 > MAXIMUM_OWNER_BYTES.saturating_sub(40) {
             return Err(native_invalid("protected Pi owner configuration exceeds its byte bound"));
@@ -451,8 +383,6 @@ impl PiOwnerConfig {
             bytes_hashed: protected.bytes.len() as u64, ..acyclic_fs::WorkCounters::UNCHARGED
         }).map_err(native_work_error)?;
         let digest = blake3::hash(&protected.bytes);
-        // UUID remains the original unguessable temporary name, never a Task,
-        // invocation operation, journal identity or admission replacement.
         let leaf = work.display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))
             .map_err(native_work_error)?;
         let temporary = work.join_path(session, Path::new(&leaf.0)).map_err(native_work_error)?;
@@ -491,10 +421,7 @@ impl PiOwnerConfig {
         publish.map_err(storage)
     }
 
-    /// Reopens the original protected credential record with the request's
-    /// borrowed native work. Private-file/ACL checks and OS crypto remain the
-    /// same host authority boundary; all managed bytes and JSON ownership use
-    /// actual SDK producers, never a restaged input or a fresh owner key.
+    /// Reopens the original protected credential record with the request's borrowed native work.
     pub(crate) fn load_with_native_work(
         root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, work: &NativeMaterializationWork,
@@ -536,8 +463,6 @@ impl PiOwnerConfig {
         if digest != blake3::hash(protected).as_bytes() {
             return Err(native_invalid("Pi owner configuration digest differs"));
         }
-        // The callback runs while DPAPI's foreign buffer is still live. The
-        // same engine clears/frees that buffer on native copy denial as well.
         let plain = protection::unprotect_with_copy(protected, |bytes| work.copy_bytes(bytes))
             .map_err(native_work_error)?;
         let plain = NativeOwnerPlaintext { bytes: plain.0, _custody: plain.1 };
@@ -548,8 +473,6 @@ impl PiOwnerConfig {
         drop(authority.0);
         drop(authority.1);
         if !readonly {
-            // These exact held-file barriers preserve the existing interrupted
-            // publication recovery rule; readonly observers never flush.
             file.sync_file().map_err(native_work_error)?;
             file.sync_parent().map_err(native_work_error)?;
         }
@@ -585,19 +508,11 @@ impl PiOwnerConfig {
         plain.fill(0);
         let owner = decoded?;
         owner.authority()?;
-        // Publication may have reached the final name before its caller lost
-        // the durability acknowledgement. Make these original credentials
-        // durable before allowing any later admission to rely on them.
         sync_file(&file, Durability::Full).map_err(storage)?;
         sync_parent(session, Durability::Full).map_err(storage)?;
         Ok(owner)
     }
     /// The existing SDK source pass issues this closed DTO's admission shape.
-    /// Fixed fields (including the exact [u8; 32] key) are in Self. Dynamic slots
-    /// are String, PathBuf and (String, String); their collection/serde overlap
-    /// fits the SDK's Value slot bound. Its four source-byte string allowances
-    /// also cover UTF-16 paths and serde scratch. Opaque serde/map allocation
-    /// metadata is not reported as observed allocation operations.
     fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<Self> {
         use acyclic_harness::contract::{
             JsonBounds, JsonCodecCharge, JsonValueSchema,
@@ -641,8 +556,6 @@ impl PiOwnerConfig {
         );
         match decoded {
             Ok(mut owner) => {
-                // Decoder scratch has already dropped; the original admitted
-                // configuration ownership survives intrinsically, after data.
                 owner._native_custody = Some(custody);
                 owner._native_custody.as_mut().unwrap().substitute(retained)
                     .map_err(native_work_error)?;

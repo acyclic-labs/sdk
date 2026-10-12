@@ -1,7 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
 use crate::filesystem::{PreparationIo, workspace_ref};
-use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{
@@ -37,7 +36,6 @@ impl ModelProvider for SummaryModel {
                 let bytes = message
                     .content
                     .file_refs()
-                    .iter()
                     .try_fold(0_u64, |bytes, file| {
                         bytes
                             .checked_add(file.descriptor().byte_length())
@@ -147,10 +145,8 @@ async fn sealed_summary_preparation(
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
         })?;
-    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
-        storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(),
-        issuer.verifier(), signed.clone(), 2_097_152)?);
+    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(), &signed, 2_097_152, None)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
         identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
@@ -278,7 +274,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(conversation.messages()[0].sequence, 4);
     }
     let reference =
-        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
+        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits, None)
             .await?
             .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
     let later = OperationId::new();
@@ -286,7 +282,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         "r".repeat(60_000).as_bytes(), "text/plain", "later-input.txt").await?;
     storage.run_conversation(&bundle, later, later_input, Vec::new(), 1).await?;
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
-        storage.journal.as_ref(), later, limits).await?
+        storage.journal.as_ref(), later, limits, None).await?
         .ok_or_else(|| Error::Invalid("missing later admitted checkpoint".into()))?;
     assert_ne!(later_checkpoint, reference);
     let mut aggregate = StreamAggregate::open(
@@ -641,12 +637,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        storage.host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        262_144,
-    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
         seed.child.clone(),
@@ -874,7 +865,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         commit: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.client.read_commit(commit).await
+        self.client.provider.read_commit(commit).await
     }
     async fn append(
         &self,

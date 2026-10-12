@@ -159,9 +159,6 @@ impl NativeMailboxDto for MailSendTaskCommand {}
 fn decode<T: NativeMailboxDto>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
-    // These concrete DTOs contain only fixed metadata, Strings and FileRefs.
-    // The SDK's issued source-shape bound covers their dynamic slots and
-    // strings; this witness adds the concrete inline envelope before serde.
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
         acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }

@@ -650,29 +650,13 @@ fn mount_path_text(
     Ok(text)
 }
 
-struct MountPathText {
-    text: String,
-    allocation: Option<crate::NativeAllocation>,
-}
-
-impl std::ops::Deref for MountPathText {
-    type Target = str;
-    fn deref(&self) -> &str { &self.text }
-}
-
-impl MountPathText {
-    fn legacy_owned_bytes(&self) -> u64 {
-        if self.allocation.is_some() { 0 } else { self.text.capacity() as u64 }
-    }
-}
-
 fn mount_path_text_with_carrier(
     root: &str, path: &MountPath,
     carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-) -> Result<MountPathText, MountSourceError> {
+) -> Result<MountOwnedBuffer<String>, MountSourceError> {
     let Some(original) = carrier.original_native_work() else {
         return carrier.with_work(|work| mount_path_text(root, path, work))
-            .map(|text| MountPathText { text, allocation: None });
+            .map(|text| MountOwnedBuffer { legacy_bytes: text.capacity() as u64, value: text, allocation: None });
     };
     let (length, fill_items) = mount_path_text_measure(
         root, path,
@@ -691,7 +675,7 @@ fn mount_path_text_with_carrier(
     let recorded_copy = copied.record(length as u64).map_err(MountSourceError::NativeWork);
     let recorded_items = examined.consume(fill_items).map_err(MountSourceError::NativeWork);
     recorded_copy.and(recorded_items)?;
-    Ok(MountPathText { text, allocation: Some(allocation) })
+    Ok(MountOwnedBuffer { value: text, legacy_bytes: 0, allocation: Some(allocation) })
 }
 
 fn mount_namespace(
@@ -797,58 +781,38 @@ fn mount_bounded_error(error: &(dyn std::error::Error + 'static)) -> Option<Moun
     }
 }
 
-trait MountRecordAccounting {
-    fn visit(&mut self, items: usize) -> Result<(), MountSourceError>;
-    fn copying<T>(&mut self, bytes: u64, copy: impl FnOnce() -> T) -> Result<T, MountSourceError>;
-}
-
-impl MountRecordAccounting for crate::demand::DemandWork {
-    fn visit(&mut self, items: usize) -> Result<(), MountSourceError> { mount_items(self, items) }
-    fn copying<T>(&mut self, bytes: u64, copy: impl FnOnce() -> T) -> Result<T, MountSourceError> {
-        self.charge(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED })
-            .map_err(mount_demand_error)?;
-        Ok(copy())
-    }
-}
-
-impl MountRecordAccounting for crate::NativeMaterializationWork {
-    fn visit(&mut self, items: usize) -> Result<(), MountSourceError> {
-        self.charge(crate::WorkCounters { items_examined: items as u64, ..crate::WorkCounters::UNCHARGED })
+fn mount_record_items(
+    carrier: &mut super::adapter::NativeDemandCarrier<'_>, items: usize,
+) -> Result<(), MountSourceError> {
+    if let Some(original) = carrier.original_native_work() {
+        original.charge(crate::WorkCounters { items_examined: items as u64, ..crate::WorkCounters::UNCHARGED })
             .map_err(MountSourceError::NativeWork)
-    }
-    fn copying<T>(&mut self, bytes: u64, copy: impl FnOnce() -> T) -> Result<T, MountSourceError> {
-        let mut reserved = self.reserve_copy(bytes).map_err(MountSourceError::NativeWork)?;
-        let value = copy();
-        reserved.record(bytes).map_err(MountSourceError::NativeWork)?;
-        Ok(value)
-    }
-}
-
-fn mount_record_union_with_carrier<'a, I, J, K>(
-    captured: I, candidate: J, dirty: K, output: Option<&mut Vec<(FileRecord, FileMetadata)>>,
-    carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-) -> Result<usize, MountSourceError>
-where
-    I: ExactSizeIterator<Item = (&'a FileRecord, &'a FileMetadata)>,
-    J: ExactSizeIterator<Item = (&'a FileRecord, &'a FileMetadata)>,
-    K: ExactSizeIterator<Item = (&'a FileRecord, &'a FileMetadata)>,
-{
-    if let Some(mut original) = carrier.original_native_work() {
-        mount_record_union(captured, candidate, dirty, output, &mut original)
     } else {
-        carrier.with_work(|work| mount_record_union(captured, candidate, dirty, output, work))
+        carrier.with_work(|work| mount_items(work, items))
     }
 }
 
-/// Visits three identity-sorted sources; later sources retain their precedence.
-/// Counting and filling use the same traversal, without cloning a tree or growing
-/// the final owned record buffer implicitly.
+fn mount_record_copy(
+    carrier: &mut super::adapter::NativeDemandCarrier<'_>, bytes: u64, copy: impl FnOnce(),
+) -> Result<(), MountSourceError> {
+    if let Some(original) = carrier.original_native_work() {
+        let mut reserved = original.reserve_copy(bytes).map_err(MountSourceError::NativeWork)?;
+        copy();
+        reserved.record(bytes).map_err(MountSourceError::NativeWork)
+    } else {
+        carrier.with_work(|work| work.charge(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED }))
+            .map_err(mount_demand_error)?;
+        copy();
+        Ok(())
+    }
+}
+
 fn mount_record_union<'a, I, J, K>(
     captured: I,
     candidate: J,
     dirty: K,
     mut output: Option<&mut Vec<(FileRecord, FileMetadata)>>,
-    work: &mut impl MountRecordAccounting,
+    work: &mut super::adapter::NativeDemandCarrier<'_>,
 ) -> Result<usize, MountSourceError>
 where
     I: ExactSizeIterator<Item = (&'a FileRecord, &'a FileMetadata)>,
@@ -862,7 +826,7 @@ where
         let present = usize::from(captured.len() != 0)
             + usize::from(candidate.len() != 0) + usize::from(dirty.len() != 0);
         if present == 0 { return Ok(count); }
-        work.visit(present)?;
+        mount_record_items(work, present)?;
         let first = captured.peek().map(|(record, _)| record.file_id);
         let second = candidate.peek().map(|(record, _)| record.file_id);
         let third = dirty.peek().map(|(record, _)| record.file_id);
@@ -873,7 +837,7 @@ where
         if third == Some(id) { selected = dirty.next(); }
         if let Some(output) = &mut output {
             let (record, metadata) = selected.ok_or(MountSourceError::Stale)?;
-            work.copying(std::mem::size_of::<(FileRecord, FileMetadata)>() as u64,
+            mount_record_copy(work, std::mem::size_of::<(FileRecord, FileMetadata)>() as u64,
                 || output.push((*record, *metadata)))?;
         }
         count = count.checked_add(1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -883,11 +847,11 @@ where
 fn mount_upsert_record(
     records: &mut Vec<(FileRecord, FileMetadata)>,
     record: (FileRecord, FileMetadata),
-    work: &mut impl MountRecordAccounting,
+    work: &mut super::adapter::NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {
     let (mut low, mut high) = (0, records.len());
     while low < high {
-        work.visit(1)?;
+        mount_record_items(work, 1)?;
         let middle = low + (high - low) / 2;
         let existing = records.get(middle).ok_or(MountSourceError::Stale)?;
         match existing.0.file_id.cmp(&record.0.file_id) {
@@ -899,7 +863,7 @@ fn mount_upsert_record(
             }
         }
     }
-    work.copying(((records.len() - low) * std::mem::size_of::<(FileRecord, FileMetadata)>()) as u64,
+    mount_record_copy(work, ((records.len() - low) * std::mem::size_of::<(FileRecord, FileMetadata)>()) as u64,
         || records.insert(low, record))?;
     Ok(())
 }
@@ -920,12 +884,9 @@ fn mount_reconcile_owned(
 
 const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
-/// Entries listed per page while promoting a subtree.
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
 const MAXIMUM_REMEMBERED_RESOLUTIONS: usize = 65_536;
 const MAXIMUM_PROMOTION_RETRIES: usize = 3;
-/// First-page listings of one directory before an interrupting change is
-/// reported as stale.
 const MAXIMUM_INTERRUPTED_LISTINGS: usize = 3;
 
 async fn stage_mount_promotion<A, O, D, S>(
@@ -978,8 +939,8 @@ where
                 &original, &cancellation,
             ).await.map_err(native_lazy_error)?
         } else {
-            let result = lazy.stage_exact_into_checkout_measured(
-                &mut candidate.checkout, path, expected_source, MAXIMUM_PROMOTION_BYTES,
+            let result = lazy.stage_into_checkout_measured(
+                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
                 work.remaining().map_err(mount_demand_error)?, &cancellation,
             ).await;
             let changed = work.accept(result, lazy_error)?;
@@ -1010,8 +971,6 @@ where
     Err(MountSourceError::Stale)
 }
 
-/// Promotion changes facts only where the projected answer differs; newly
-/// authored names additionally invalidate their parent listing.
 async fn promotion_effect_with_carrier<A, O, D, S>(
     lazy: &LazyWorkspace<A, O, D, S>,
     authored: &CheckoutMountSource<A, O>,
@@ -1064,11 +1023,11 @@ where
                 if let Some(original) = scratch.carrier.original_native_work() {
                     match lazy.inspect_unauthored_with_native_work(text, None, &original, &cancellation).await {
                         Ok(((lookup, _), allocation)) => {
-                            let lookup = ScopedLazyLookup { lookup, allocation: Some(allocation) };
+                            let lookup = MountOwnedBuffer { value: lookup, legacy_bytes: 0, allocation: Some(allocation) };
                             let file_id = lazy.stable_file_id_for_lookup_with_native_work(
-                                text, &lookup.lookup, &original, &cancellation,
+                                text, &lookup.value, &original, &cancellation,
                             ).await.map_err(native_lazy_error)?;
-                            Some(mount_lookup_ref(&lookup.lookup, file_id))
+                            Some(mount_lookup_ref(&lookup.value, file_id))
                         }
                         Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) => None,
                         Err(error) => return Err(native_lazy_error(error)),
@@ -1738,10 +1697,6 @@ impl<T> CursorTable<T> {
     }
 }
 
-/// Source identities last proven absent from the authored checkout, each
-/// with the checkout revision of that proof. Staging an identity changes the
-/// revision, so a proof holds exactly while the revision does; shared by
-/// every handle so reopening an unchanged file proves nothing again.
 type UnstagedIdentities = Arc<UnstagedTable>;
 
 #[derive(Default)]
@@ -1765,48 +1720,20 @@ impl UnstagedTable {
     }
 }
 
-/// How the view answers a name the authored checkout lacks: the source node
-/// that answers it, or nothing.
-/// One name resolved through the view.
 enum Resolution {
-    /// The authored checkout answers the name.
     Authored(MountLookup),
-    /// Nothing answers the name.
     Absent,
-    /// The lazy workspace answers the name the authored checkout lacks.
     Unauthored(LazyLookup, Option<SourceReference>, Option<crate::NativeAllocation>),
 }
 
-struct ScopedLazyLookup {
-    lookup: LazyLookup,
-    allocation: Option<crate::NativeAllocation>,
-}
-
-impl ScopedLazyLookup {
-    fn legacy_owned_bytes(&self) -> u64 {
-        if self.allocation.is_none() { self.lookup.logical_owned_bytes() } else { 0 }
-    }
-}
-
-/// How a remembered deferral proves the source still names its node. The
-/// source changes outside the view, so the view alone never proves it.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SourceProof {
-    /// A fresh source lookup must name exactly the remembered node.
     Lookup,
-    /// The caller opens the remembered node at its exact version, which
-    /// fails on any other file, so no lookup is repeated first.
     Open,
 }
 
-/// A name the view deferred to the source: the authored checkout and the
-/// overlay left it to what the source named, if anything, in one source
-/// view. The source changes outside the view: a watched source reports
-/// each change, and a deferral of an unwatched one is proved again on every
-/// use (see [`SourceProof`]).
 #[derive(Clone, Copy)]
 struct Deferral {
-    /// Sampled before the name was resolved.
     stamp: ViewStamp,
     source: SourceReference,
     node: Option<SourceNode>,
@@ -1820,13 +1747,6 @@ impl Deferral {
     }
 }
 
-/// Names the view deferred to the source. A deferral holds only while the
-/// view records no change to the name's binding, its parent directories, or
-/// its node. The source changes outside the view: a watched source records
-/// each such change in the view as it reports it, so the deferral answers
-/// until then; an unwatched one is read afresh on every use, and the
-/// deferral answers only while the source still names exactly what it did.
-/// Anything else resolves the name anew.
 #[derive(Default)]
 struct Resolutions(Mutex<HashMap<MountPath, Deferral>>);
 
@@ -1855,7 +1775,6 @@ impl Resolutions {
     }
 }
 
-/// Directories a source lacks; see [`LazyMountSource::source_lacks`].
 #[derive(Default)]
 struct SourceAbsentDirectories(Mutex<HashMap<MountPath, (ViewStamp, SourceReference)>>);
 
@@ -1939,8 +1858,6 @@ struct CapturedRemovalRecord {
 
 impl Drop for CapturedRemovalRecord {
     fn drop(&mut self) {
-        // Fixed inline logical data ceases to be an owned map entry here;
-        // scalar snapshots never clone this physical custody token.
         if let Some(custody) = &self.custody {
             custody.retire(self.bytes).expect("captured removal data retires only its original owned bytes");
         }
@@ -2000,8 +1917,6 @@ struct MountedPublicationCustody {
 struct MountedRemovals {
     paths: BTreeMap<MountedRemovalPath, MountedRemoval>,
     records: BTreeMap<FileId, CapturedRemovalRecord>,
-    // Transient custody only. The existing companion journal and the original
-    // authority operation remain the restart and publication decision.
     publication: Option<MountedPublicationCustody>,
     epoch: u64,
     selected_inputs: Option<crate::lazy_workspace::SelectedImportEffects>,
@@ -2057,8 +1972,6 @@ impl MountedRemovals {
 }
 
 struct PendingDetachedIdentity<A, O> {
-    // This immutable canonical hold pins the original physical record even if
-    // a live native handle writes its next epoch before the journal CAS retries.
     file: crate::DetachedFile<A, O>,
     metadata: FileMetadata,
     epoch: u64,
@@ -2180,14 +2093,6 @@ fn detached_position<A, O>(
     Ok(Err(low))
 }
 
-/// Records the changes a watched source reports in the view, as one effect
-/// per batch: each rebound name rebinds with everything reached through it,
-/// each entry altered in place changes its own attributes and the listing
-/// that shows them, and each node changes under all its names.
-///
-/// A completed view is referenced weakly: notification machinery may outlive
-/// it. An unfinished constructor instead retains its actual owned inputs in
-/// this same preallocated callback context until physical watcher retirement.
 struct SourceChangeRecorder<A, O, D, S> {
     lazy: Weak<LazyWorkspace<A, O, D, S>>,
     authored: Weak<CheckoutMountSource<A, O>>,
@@ -2257,8 +2162,6 @@ fn recorder_check(
     work.admit(crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)
 }
 
-/// A scalar callback around the canonical namespace producer. Physical
-/// reserves and copies execute between callbacks, outside the original lock.
 fn recorder_namespace(
     names: &[crate::kernel::LogicalName], limits: crate::VolumeLimits,
     work: &crate::NativeMaterializationWork, custody: &mut crate::NativeAllocation,
@@ -2458,10 +2361,6 @@ where
     }
 }
 
-/// Whether a source node may have a name outside the root, through which it
-/// changes unreported: a node other than a directory with more than one
-/// name. A directory's names are its parent's entry and its own `.` and its
-/// children's `..`, all beneath the root.
 fn linked(node: &SourceNode) -> bool {
     node.kind != SourceNodeKind::Directory && node.link_count.is_some_and(|count| count > 1)
 }
@@ -2487,8 +2386,6 @@ pub(super) fn with_capture_observer_dispatch<T>(
         let frame = CaptureObserverDispatch { gate, prior: current.get() };
         let _restore = Restore(current, frame.prior);
         current.set(std::ptr::from_ref(&frame));
-        // This is strictly a synchronous callback frame, never a marker held
-        // across polling, suspension, or migration of an SDK future.
         dispatch()
     })
 }
@@ -2515,9 +2412,6 @@ enum SourceWatchConstructionPhase {
 }
 
 /// Physical custody of the original source watcher and its constructor sink.
-/// Keep this facade for explicit measured cleanup retries. Failed constructor
-/// inputs live in the original preallocated callback context, whose custody
-/// follows the physical watcher. Facade loss is not evidence of quiescence.
 pub struct NativeMountSourceWatchOwner {
     watch: Option<Box<dyn SourceWatch>>,
     sink: Option<Arc<dyn SourceChangeSink>>,
@@ -2534,7 +2428,6 @@ impl NativeMountSourceWatchOwner {
     pub fn is_stopped(&self) -> bool { self.stopped.load(Ordering::Acquire) }
 
     /// Retires this original watch using its before-start cleanup credit.
-    /// The caller's token controls waiting, not the watcher's Root authority.
     pub(super) fn stop_with_cleanup_wait(
         &self, wait: &crate::CancellationToken,
     ) -> Result<bool, MountSourceError> {
@@ -2601,8 +2494,6 @@ impl NativeMountSourceWatchOwner {
         })?;
         if self.stopped.load(Ordering::Acquire) { return Ok(false); }
         let watch = self.watch.as_ref().expect("ordinary construction retains its original watch");
-        // This ordinary SDK projection performs the provider's physical stop
-        // outside every invocation meter, then imports its actual prefix once.
         let result = watch.stop(budget, &cancellation);
         self.stopped.store(watch.is_stopped(), Ordering::Release);
         match result {
@@ -2642,12 +2533,7 @@ impl NativeMountSourceWatchOwner {
         result.map_err(mount_demand_error).map(|()| true)
     }
 
-    /// Stops this same watcher on the original invocation, retaining it on
-    /// every cancellation, budget denial, or native failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns the original failure with all completed work in `work`.
+    /// Stops the watcher on its original invocation.
     pub fn stop_with_work(
         &mut self, work: &mut super::NativeMountWork<'_>,
     ) -> Result<bool, super::NativeMountError> {
@@ -2656,11 +2542,6 @@ impl NativeMountSourceWatchOwner {
     }
 
     /// Stops this original watch using an already operative shared meter.
-    /// The SDK stop and join run outside its short metadata locks.
-    ///
-    /// # Errors
-    ///
-    /// Preserves the actual owner and every completed prefix for retry.
     pub fn stop_with_meter(
         &mut self, work: &super::NativeMountMeterWork,
     ) -> Result<bool, super::NativeMountError> {
@@ -2669,10 +2550,6 @@ impl NativeMountSourceWatchOwner {
     }
 
     /// Measured projection of this original watch's cleanup engine.
-    ///
-    /// # Errors
-    ///
-    /// Failed cleanup leaves this owner available for an explicit retry.
     pub fn stop_measured(
         &mut self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, super::NativeMountError> {
@@ -2694,10 +2571,6 @@ impl std::ops::Deref for NativeMountSourceWatchOwner {
 
 impl Drop for NativeMountSourceWatchOwner {
     fn drop(&mut self) {
-        // The existing native watch's preborn reader owns Delivery, its sink,
-        // constructor inputs and intrinsic G. Last facade Drop requests that
-        // same physical retirement; it must not leak the watcher or mint an
-        // executor. This does not publish stopped/detached evidence.
         drop(self.watch.take());
         drop(self.sink.take());
         drop(self.startup_failure.take());
@@ -2709,29 +2582,13 @@ impl Drop for NativeMountSourceWatchOwner {
 }
 
 /// One native callback adapter over a source-backed sparse workspace.
-///
-/// Reads demand only the addressed source facts. Mutations promote the exact
-/// node into the authored checkout before delegating to the ordinary checkout
-/// adapter, keeping all publication semantics in the SDK.
-///
-/// A source that reports its changes records them in the view, which keeps
-/// every remembered answer (the mount's and the kernel's) until a change to
-/// what it depends on is reported. A source that cannot report them is read
-/// afresh behind every remembered answer, and the kernel caches nothing of
-/// it.
 pub struct LazyMountSource<A, O, D, S> {
-    lazy: Arc<LazyWorkspace<A, O, D, S>>,
+    pub(super) lazy: Arc<LazyWorkspace<A, O, D, S>>,
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
     resolutions: Resolutions,
-    /// Directories the source was found without, each with the stamp
-    /// sampled before and the source it was read from: nothing beneath one
-    /// needs the source while the view records no change to its name.
     source_absent: SourceAbsentDirectories,
-    /// Directories the checkout was found to hold, each with the stamp
-    /// sampled before: one stays held while no component of its path is
-    /// rebound, which is the only way a directory leaves the checkout.
     authored_directories: Mutex<HashMap<MountPath, ViewStamp>>,
     unstaged: UnstagedIdentities,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
@@ -2739,13 +2596,7 @@ pub struct LazyMountSource<A, O, D, S> {
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
-    /// The source's reports of its own changes; `None` when it cannot make
-    /// them. Chosen once, when the view is created.
     source_watch: Option<NativeMountSourceWatchOwner>,
-    /// Source nodes seen with more than one name, which a host reports a
-    /// change to only under the name it was made through: one made through
-    /// a name outside the source goes unreported, so these are read afresh
-    /// and never cached, as an unwatched source's are.
     linked: Mutex<LinkedIdentities>,
     native_allocation: Option<crate::NativeAllocation>,
 }
@@ -2787,8 +2638,6 @@ where
         authored: Arc<CheckoutMountSource<A, O>>,
         root: String,
     ) -> Result<Self, super::NativeMountError> {
-        // Ordinary SDK startup owns service initialization outside a finite
-        // native preparation invocation; all source DATA uses the same engine.
         CallbackRuntime::create()?;
         let cancellation = authored.cancellation().clone();
         let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
@@ -2811,9 +2660,7 @@ where
         )
     }
 
-    /// Constructs the same source from actual guarded inputs, preserving its
-    /// original resource envelope. Uninitialized outer storage remains owned
-    /// by the caller on error; only an initialized Self receives its guard.
+    /// Constructs a source from guarded inputs.
     pub(crate) fn new_with_native_work(
         lazy: Arc<LazyWorkspace<A, O, D, S>>,
         authored: Arc<CheckoutMountSource<A, O>>,
@@ -2839,16 +2686,12 @@ where
             lazy, authored, root, super::adapter::NativeDemandCarrier::Native(work),
             true, Some(&original), Some(root_allocation),
         )?;
-        // Exclusive already-paid guards on one ledger were checked before
-        // startup. This transfer performs no admission or allocation, so an
-        // accepted physical watcher cannot be lost to a late storage denial.
         source.native_allocation.as_mut().expect("owned constructor root guard")
             .absorb(source_allocation).expect("prechecked exact same-ledger storage transfer");
         Ok(source)
     }
 
 
-    /// The root String and input Arcs are already owned by the caller's ledger.
     fn new_with_carrier(
         lazy: Arc<LazyWorkspace<A, O, D, S>>,
         authored: Arc<CheckoutMountSource<A, O>>,
@@ -2871,9 +2714,6 @@ where
         let result = (|| {
             macro_rules! owned_arc {
                 ($value:expr) => {{
-                    // These empty controls carry no owned logical DATA.
-                    // Admit their actual allocator call before Arc::new, and
-                    // never execute the operator under the original meter.
                     let value = $value;
                     if let Some(original) = original {
                         original.claim_allocation(0, 1).map_err(|error|
@@ -2890,8 +2730,6 @@ where
                     Arc::new(value)
                 }}
             }
-            // Every controlled ownership slot and its physical witness exist
-            // before the SDK starts the original native watcher.
             let runtime = owned_arc!(runtime);
             let unstaged = owned_arc!(UnstagedTable::default());
             let source_view = owned_arc!(SourceViewGate::new());
@@ -2924,8 +2762,6 @@ where
             }
             if native_watch {
                 let sink = Arc::clone(owner.sink.as_ref().expect("preallocated source sink"));
-                // SDK control/data allocations and every physical startup
-                // phase operate on this exact original ledger/resource view.
                 let watched = if let Some(original) = original {
                     lazy.watch_source_with_native_work(sink,
                         crate::demand::NativeSourceWork::from_native_materialization_work(original))
@@ -3024,8 +2860,6 @@ where
                     }
                     Err(failure) => {
                         carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
-                        // Import every completed prefix without replacing the
-                        // SDK's primary error with a later admission denial.
                         let _ = carrier.with_work(|work| work.merge_with_prior_live(*failure.work, prior_live));
                         return match failure.error {
                             LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure)) => {
@@ -3063,14 +2897,11 @@ where
             })
         })();
         if result.is_err() {
-            // Physical temporary owners have already retired. Cleanup cannot
-            // replace the original startup failure or its retained watch.
             let _ = carrier.with_work(|work| work.release(retained));
         }
         result
     }
 
-    /// Whether facts about `file_id` may be reused on the source's reports.
     fn reported(&self, file_id: FileId) -> bool {
         !self
             .linked
@@ -3099,15 +2930,12 @@ where
         Ok(true)
     }
 
-    /// Whether the source still reports every change made to it.
     fn source_observed(&self) -> bool {
         self.source_watch
             .as_ref()
             .is_some_and(|watch| watch.is_exact())
     }
 
-    /// A stamp at or after every change the view has recorded, while it is
-    /// stable.
     fn ledger_stamp(&self) -> Option<ViewStamp> {
         self.source_view
             .is_stable()
@@ -3147,10 +2975,7 @@ where
         &self, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), MountSourceError> {
         if self.physically_retired()? { return Ok(()); }
-        match wait {
-            Some(wait) => self.authored.cancel_with_cleanup_wait(wait)?,
-            None => self.authored.cancel_accepted_cleanup()?,
-        }
+        self.authored.cancel_cleanup(wait)?;
         self.cursors.clear_with_cleanup(wait)?;
         if let Some(watch) = &self.source_watch { watch.stop_with_cleanup(wait)?; }
         Ok(())
@@ -3170,8 +2995,6 @@ where
         if let Some(original) = carrier.original_native_work() {
             return self.cancel_with_cleanup_wait(original.cancellation());
         }
-        // The original capture gate serializes cancellation with installation,
-        // then waits for already-started producers to physically retire.
         self.authored.cancel_with_carrier(carrier)?;
         self.cursors.clear_with_carrier(carrier)?;
         let Some(watch) = self.source_watch.as_ref() else { return Ok(()); };
@@ -3307,8 +3130,6 @@ where
         Ok(())
     }
 
-    /// A detached identity's live state under the link count of the name
-    /// that resolved it, when the named node is detached.
     async fn detached_identity(
         &self,
         named: MountLookup,
@@ -3420,8 +3241,6 @@ where
             }
             entry.ready = true;
             entry.published_epoch = epoch;
-            // Keep the original immutable pin until every cleanup phase has
-            // completed; a denied cleanup resumes this published operation.
         }
         Ok(())
     }
@@ -3590,8 +3409,6 @@ where
             if let Some(custody) = custody {
                 if !custody.published {
                     if committed.is_none() {
-                        // A failed/ambiguous journal CAS never replaces the inputs
-                        // of the checkout candidate that was already installed.
                         let (paths, records) = self.frozen_mount_inputs(custody.operation, work)?;
                         let selected_inputs = SelectedInputsLoan::take(&self.removals, custody.operation, work)?;
                         if let Some(original) = native.as_ref() {
@@ -3649,9 +3466,6 @@ where
                 }
                 return self.finish_mount_custody(custody.operation, work).map_err(E::from);
             }
-            // A reopened source has no transient pins. Its existing journal and
-            // original authority decision, not an in-memory readiness flag, recover
-            // the durable identity. Uninstalled local preparations confer no rights.
             let retained = work.lock_checkout(&self.authored, cancellation.clone()).await?.has_retained_operation();
             if retained {
                 work.sync_authored_recovery_guarded(
@@ -3810,95 +3624,32 @@ where
         })
     }
 
-    /// Reads the actual mounted lazy identity, never an unpublished candidate.
-    pub async fn snapshot_measured(
-        &self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::LazySnapshotRef>, MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        let result = self.snapshot_with_work(&mut work, cancellation).await;
-        work.record(crate::WorkCounters::UNCHARGED).map_err(|error|
-            crate::OperationFailure::new(mount_demand_error(error), work.work))?;
-        result.map(|value| crate::OperationReceipt { value, work: work.work })
-            .map_err(|error| crate::OperationFailure::new(error, work.work))
-    }
-
-    pub(crate) async fn snapshot_with_work(
-        &self, original: &mut crate::demand::DemandWork, cancellation: &crate::CancellationToken,
-    ) -> Result<crate::LazySnapshotRef, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.snapshot_with_carrier(
-            super::adapter::NativeDemandCarrier::Borrowed(original), cancellation,
-        ).await
-    }
-
-    pub(crate) async fn snapshot_with_meter(
-        &self, meter: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::LazySnapshotRef, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.snapshot_with_carrier(
-            super::adapter::NativeDemandCarrier::Shared(meter), cancellation,
-        ).await
-    }
-
-    pub(crate) async fn snapshot_with_native_work(
-        &self, original: &super::NativeMountMeterWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::LazySnapshotRef, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.snapshot_with_carrier(
-            super::adapter::NativeDemandCarrier::Native(original), cancellation,
-        ).await
-    }
-
-    pub(crate) async fn publication_snapshot_with_native_work(
-        &self, original: &super::NativeMountMeterWork,
+    pub(super) async fn publication_snapshot(
+        &self, carrier: super::adapter::NativeDemandCarrier<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::NativePublicationSnapshot,
         (MountSourceError, Option<MountSourceError>)>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let (_, qualified) = self.snapshot_with_carrier_policy(
-            super::adapter::NativeDemandCarrier::Native(original), cancellation,
-            MountPublicationObservation::Qualified,
+        let (_, qualified) = self.capture_snapshot(
+            carrier, cancellation, MountPublicationObservation::Qualified,
         ).await?;
         qualified.ok_or((MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::MissingCustody,
         ), None))
     }
 
-    pub(crate) async fn validate_snapshot_with_native_work(
-        &self, frozen: crate::LazySnapshotRef, original: &crate::NativeMaterializationWork,
-    ) -> Result<(), LazyWorkspaceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.lazy.validate_snapshot_with_native_work(frozen, original).await
-    }
-
-    pub(crate) async fn lookup_at_snapshot_with_work(
-        &self, snapshot: crate::LazySnapshotRef, path: &str,
-        original: &crate::NativeMaterializationWork,
-    ) -> Result<(LazyLookup, crate::NativeAllocation),
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.lazy.lookup_at_snapshot_with_work(snapshot, path, original, original.cancellation()).await
-    }
-
-    async fn snapshot_with_carrier(
+    /// Reads the actual mounted lazy identity.
+    pub(super) async fn snapshot(
         &self, carrier: super::adapter::NativeDemandCarrier<'_>,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::LazySnapshotRef, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        self.snapshot_with_carrier_policy(
+        self.capture_snapshot(
             carrier, cancellation, MountPublicationObservation::Ordinary,
         ).await.map(|(snapshot, _)| snapshot).map_err(|(primary, _)| primary)
     }
 
-    async fn snapshot_with_carrier_policy(
+    async fn capture_snapshot(
         &self, carrier: super::adapter::NativeDemandCarrier<'_>,
         cancellation: &crate::CancellationToken, policy: MountPublicationObservation,
     ) -> Result<(crate::LazySnapshotRef, Option<crate::NativePublicationSnapshot>),
@@ -3977,8 +3728,6 @@ where
             }
             Ok((snapshot, qualified))
         }.await;
-        // Failed ordinary queries already carry their completed prefix. Native
-        // qualification reconciles even failure and returns both typed causes.
         let accounting = if policy == MountPublicationObservation::Qualified || result.is_ok() {
             work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)
         } else {
@@ -4019,10 +3768,7 @@ where
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
-    /// Publishes the mounted candidate and its existing removal journal under
-    /// one allowance, retaining completed work on every failure.
-    /// This filesystem-only policy does not verify an external task owner;
-    /// native task hosts must use `sync_async_with_permit_measured_guarded`.
+    /// Publishes the mounted candidate and removal journal with bounded work.
     pub async fn sync_async_with_permit_measured(
         &self,
         permit: crate::PublicationPermit,
@@ -4053,68 +3799,6 @@ where
         };
         result.map(|value| crate::OperationReceipt { value, work: work.work })
             .map_err(|error| crate::OperationFailure::new(error, work.work))
-    }
-
-    pub(crate) async fn sync_async_with_permit_work_guarded<F, Fut, E>(
-        &self, permit: crate::PublicationPermit,
-        original: &mut crate::demand::DemandWork, cancellation: &crate::CancellationToken,
-        before_publication: &mut F,
-    ) -> Result<(), E>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        super::adapter::BorrowedNativeDemandMeter::new(original)?
-            .run_async(|meter| async move {
-                self.sync_async_with_permit_meter_guarded(
-                    permit, &meter, cancellation, before_publication,
-                ).await
-            }).await
-    }
-
-    pub(crate) async fn sync_async_with_permit_meter_guarded<F, Fut, E>(
-        &self, permit: crate::PublicationPermit,
-        meter: &Arc<crate::demand::NativeDemandReadMeter>, cancellation: &crate::CancellationToken,
-        before_publication: &mut F,
-    ) -> Result<(), E>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        self.sync_async_with_permit_carrier_guarded(
-            permit, super::adapter::NativeDemandCarrier::Shared(meter), cancellation, before_publication,
-        ).await
-    }
-
-    pub(crate) async fn sync_async_with_permit_native_work_guarded<F, Fut, E>(
-        &self, permit: crate::PublicationPermit, original: &super::NativeMountMeterWork,
-        cancellation: &crate::CancellationToken, mut before_publication: F,
-    ) -> Result<(), E>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        self.sync_async_with_permit_carrier_guarded(
-            permit, super::adapter::NativeDemandCarrier::Native(original),
-            cancellation, &mut before_publication,
-        ).await
-    }
-
-    pub(crate) async fn sync_async_with_permit_qualified_native_work_guarded<F, Fut, E>(
-        &self, permit: crate::PublicationPermit, original: &super::NativeMountMeterWork,
-        cancellation: &crate::CancellationToken, before_publication: F,
-    ) -> Result<crate::NativePublicationSnapshot, (E, Option<MountSourceError>)>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        self.sync_async_with_permit_qualified_native_work_guarded_with_ack(
-            permit, original, cancellation, &mut None, before_publication,
-        ).await
     }
 
     pub(crate) async fn sync_async_with_permit_qualified_native_work_guarded_with_ack<F, Fut, E>(
@@ -4164,8 +3848,6 @@ where
     }
 
     /// Verifies the caller's original owner immediately before every SDK seal.
-    /// A failed guard retains the original candidate/journal and all spent work.
-    /// The callback supplies freshness, not a replacement filesystem permit.
     pub async fn sync_async_with_permit_measured_guarded<F, Fut, E>(
         &self,
         permit: crate::PublicationPermit,
@@ -4181,9 +3863,14 @@ where
         E: From<MountSourceError> + Send + 'static,
     {
         let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        let result = self.sync_async_with_permit_work_guarded(
-            permit, &mut work, cancellation, &mut before_publication,
-        ).await;
+        let result = async {
+            super::adapter::BorrowedNativeDemandMeter::new(&mut work).map_err(E::from)?
+                .run_async(|meter| async move {
+                    self.sync_async_with_permit_carrier_guarded(
+                        permit, super::adapter::NativeDemandCarrier::Shared(&meter), cancellation, &mut before_publication,
+                    ).await
+                }).await
+        }.await;
         let finalized = work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error);
         match (result, finalized) {
             (Ok(value), Ok(())) => Ok(crate::OperationReceipt { value, work: work.work }),
@@ -4214,8 +3901,6 @@ where
                 E::from(MountSourceError::NativeWork(error)), work.receipt(),
             ))?;
         let original = work.native_mount_work();
-        // The direct future owns the plan. It retires that physical input before
-        // the original allocation guard, including cancellation at an await.
         let result = async move {
             self.import_selected_meter_guarded(
                 destination, plan, operation, permit, &original,
@@ -4252,22 +3937,8 @@ where
         ).await?.ok_or_else(|| E::from(MountSourceError::OriginalSnapshotUnavailable))
     }
 
-    /// Reads only the acknowledged original selected publication.
-    pub(crate) async fn selected_import_snapshot_with_work(
-        &self,
-        operation: crate::OperationId,
-        original: &mut crate::demand::DemandWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        super::adapter::BorrowedNativeDemandMeter::new(original)?
-            .run_async(|meter| async move {
-                let original = super::NativeMountMeterWork::from_meter(meter);
-                self.selected_import_snapshot_with_meter(operation, &original, cancellation).await
-            }).await
-    }
-
-    pub(crate) async fn selected_import_snapshot_with_meter(
+    /// Reads the acknowledged selected publication.
+    pub(crate) async fn selected_import_snapshot(
         &self,
         operation: crate::OperationId,
         original: &super::NativeMountMeterWork,
@@ -4413,11 +4084,11 @@ where
             ).await.map_err(native_lazy_error)?;
             let original_records = records.value.iter().map(|(record, metadata)| (record, metadata));
             let selected_records = effects.records.iter().map(|(record, metadata)| (record, metadata));
-            let count = mount_record_union_with_carrier(
+            let count = mount_record_union(
                 original_records.clone(), selected_records.clone(), std::iter::empty(), None, &mut work.meter,
             )?;
             let mut merged = work.owned_vec(count)?;
-            mount_record_union_with_carrier(
+            mount_record_union(
                 original_records, selected_records, std::iter::empty(), Some(&mut merged.value), &mut work.meter,
             )?;
             records = merged;
@@ -4450,8 +4121,6 @@ where
                 retain_sync_buffer(Some(installed), installed_bytes, work)?
             };
             self.stage_detached_records_measured(&records.value, dirty, work, cancellation).await?;
-            // Finish all fallible local preparation before retaining the
-            // operation; then install before its journal CAS can be ambiguous.
             let custody_items = self.removals.lock().map_err(|_| MountSourceError::Stale)?.paths.len()
                 .checked_add(self.detached.lock().map_err(|_| MountSourceError::Stale)?.len())
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
@@ -4673,11 +4342,11 @@ where
             let captured_records = captured.records.values().map(|entry| (&entry.value.0, &entry.value.1));
             let candidate_records = identity_records.value.iter().map(|(record, metadata)| (record, metadata));
             let dirty_records = inputs.dirty.value.iter().map(|(_, record, metadata, _)| (record, metadata));
-            let count = mount_record_union_with_carrier(
+            let count = mount_record_union(
                 captured_records.clone(), candidate_records.clone(), dirty_records.clone(), None, &mut work.meter,
             )?;
             let mut records = work.owned_vec(count)?;
-            mount_record_union_with_carrier(
+            mount_record_union(
                 captured_records, candidate_records, dirty_records, Some(&mut records.value), &mut work.meter,
             )?;
             records
@@ -4747,11 +4416,7 @@ where
                 continue;
             }
             if lookup.record.kind != FileKind::Regular { return Err(MountSourceError::Stale); }
-            if let Some(mut original) = work.meter.original_native_work() {
-                mount_upsert_record(&mut records.value, (lookup.record, lookup.metadata), &mut original)?;
-            } else {
-                work.with_work(|meter| mount_upsert_record(&mut records.value, (lookup.record, lookup.metadata), meter))?;
-            }
+            mount_upsert_record(&mut records.value, (lookup.record, lookup.metadata), &mut work.meter)?;
             if let Some(original) = work.meter.original_native_work() {
                 let mut operations = work.owned_vec(1)?;
                 operations.absorb_buffer_guard(&mut namespace)?;
@@ -4772,8 +4437,6 @@ where
             work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
             drop(namespace);
         }
-        // Replace the surviving hard-linked identity directly, never by a
-        // source path that could re-read stale bytes.
         for index in 0..dirty.len() {
             let (file_id, record, _, _) = dirty[index];
             work.items(1)?;
@@ -4822,9 +4485,6 @@ where
         O: AsyncObjectStore,
     {
         let _writer = self.source_view.write().await;
-        // A binding to its source's current epoch reads the same after a
-        // rebind: the authored advance then records exactly what it changed,
-        // and nothing at all when head did not move.
         if self.lazy.binding().await.is_ok() {
             let result = self.authored.advance_to_head_async().await;
             self.cursors.clear();
@@ -5194,7 +4854,7 @@ where
     fn prepare_removed_path_with_carrier(
         &self,
         path: &MountPath,
-        key: MountPathText,
+        key: MountOwnedBuffer<String>,
         file_id: FileId,
         identity: Option<&PreparedMountedIdentity<A, O>>,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
@@ -5203,7 +4863,7 @@ where
         let (prior, changed, old_paths, new_paths, logical_bytes, final_work) = scratch.carrier.with_work(|work| {
             let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
             mount_items(work, 1)?;
-            let prior = removals.paths.get(key.text.as_str()).copied();
+            let prior = removals.paths.get(key.value.as_str()).copied();
             let changed = prior.map(|prior| prior.file_id) != Some(file_id);
             let mut paths_for = |id| -> Result<Option<usize>, MountSourceError> {
                 if let Some(identity) = identity.filter(|identity| identity.record.file_id == id) {
@@ -5240,7 +4900,7 @@ where
         scratch.carrier.with_work(|work| custody.retain_admitted(bytes, work)).map_err(mount_demand_error)?;
         scratch.keep(logical_bytes)?;
         let key = MountedRemovalPath {
-            text: key.text, custody: Some(custody), bytes, native_allocation: key.allocation,
+            text: key.value, custody: Some(custody), bytes, native_allocation: key.allocation,
         };
         Ok(PreparedMountedRemoval { key, file_id, prior, old_paths, new_paths, changed, final_work })
     }
@@ -5291,8 +4951,6 @@ where
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         }
         let mut completed = crate::WorkCounters::UNCHARGED;
-        // The source mutation lease preserves the prepared positions. Physical
-        // containers and their payload guards never move under the accounting leaf.
         let result = (|| {
             if let Some(identity) = identity {
                 let record_copies = if identity.captured.is_some() {
@@ -5385,13 +5043,13 @@ where
                 scratch.prepare_finalization()?;
                 let text = mount_path_text_with_carrier(&self.root, path, scratch.carrier)?;
                 scratch.track(text.legacy_owned_bytes())?;
-                let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, scratch.carrier).await?;
+                let resolution = self.resolve_with_carrier(path, &text, owner, scratch.carrier).await?;
                 let (file_id, authored) = match resolution {
                     Resolution::Absent => return Err(MountSourceError::NotFound),
                     Resolution::Authored(lookup) => (lookup.node.file_id, Some(lookup)),
                     Resolution::Unauthored(lookup, _, allocation) => {
-                        let owned = ScopedLazyLookup { lookup, allocation };
-                        (self.mutation_file_id_with_carrier(&text, &owned.lookup, scratch.carrier).await?, None)
+                        let owned = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
+                        (self.mutation_file_id_with_carrier(&text, &owned.value, scratch.carrier).await?, None)
                     }
                 };
                 if expected.is_some_and(|expected| expected != file_id) { return Err(MountSourceError::Stale); }
@@ -5443,9 +5101,9 @@ where
                 scratch.track(source_text.legacy_owned_bytes())?;
                 let destination_text = mount_path_text_with_carrier(&self.root, destination, scratch.carrier)?;
                 scratch.track(destination_text.legacy_owned_bytes())?;
-                let resolved = self.resolve_with_carrier(source, &source_text, owner, SourceProof::Lookup, scratch.carrier).await?;
+                let resolved = self.resolve_with_carrier(source, &source_text, owner, scratch.carrier).await?;
                 if matches!(resolved, Resolution::Absent) { return Err(MountSourceError::NotFound); }
-                if source_text.text == destination_text.text { return Ok(()); }
+                if source_text.value == destination_text.value { return Ok(()); }
                 if matches!(resolved, Resolution::Unauthored(LazyLookup::Source(SourceNode {
                     kind: SourceNodeKind::Directory, ..
                 }), _, _)) {
@@ -5457,7 +5115,7 @@ where
                 self.promote_parents_with_carrier(destination, owner, scratch.carrier).await?;
                 if self.authored.lookup_async_with_carrier(destination, owner, scratch.carrier).await?.is_none()
                     && !scratch.carrier.with_work(|work| self.is_removed_with_work(&destination_text, work))? {
-                    match self.resolve_with_carrier(destination, &destination_text, owner, SourceProof::Lookup, scratch.carrier).await? {
+                    match self.resolve_with_carrier(destination, &destination_text, owner, scratch.carrier).await? {
                         Resolution::Absent => {}
                         _ if replace => self.promote_with_carrier(destination, owner, scratch.carrier).await?,
                         _ => return Err(MountSourceError::AlreadyExists),
@@ -5512,7 +5170,7 @@ where
                 if detached_present {
                     let text = mount_path_text_with_carrier(&self.root, path, scratch.carrier)?;
                     scratch.track(text.legacy_owned_bytes())?;
-                    let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, scratch.carrier).await?;
+                    let resolution = self.resolve_with_carrier(path, &text, owner, scratch.carrier).await?;
                     if let Some(file) = self.content_detached_with_carrier(&resolution, &text, scratch.carrier).await? {
                         return file.set_attributes_async_with_carrier(metadata, logical_bytes, scratch.carrier).await;
                     }
@@ -5586,19 +5244,19 @@ where
         let path = mount_path_text_with_carrier(&self.root, mounted, scratch.carrier)?;
         scratch.track(path.legacy_owned_bytes())?;
         let resolution = self.resolve_with_carrier(
-            mounted, &path, owner, SourceProof::Lookup, scratch.carrier,
+            mounted, &path, owner, scratch.carrier,
         ).await?;
         let (lookup, _, allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Unauthored(lookup, source, allocation) => (lookup, source, allocation),
         };
-        let lookup = ScopedLazyLookup { lookup, allocation };
+        let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let owned = lookup.legacy_owned_bytes();
         scratch.track(owned)?;
         scratch.carrier.with_work(|work| work.record_adoption(owned)).map_err(mount_demand_error)?;
         let expected_source = self.mutation_file_id_with_carrier(
-            &path, &lookup.lookup, scratch.carrier,
+            &path, &lookup.value, scratch.carrier,
         ).await?;
         drop(lookup);
         scratch.release(owned)?;
@@ -5674,9 +5332,6 @@ where
         Ok(())
     }
 
-    /// Promotes the source directory at `path` and everything beneath it
-    /// that the view still reads from the source, directories before what
-    /// they hold.
     fn promote_subtree_locked(&self, path: &MountPath) -> Result<(), MountSourceError> {
         let mut work = crate::demand::DemandWork::new(
             crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
@@ -5697,8 +5352,6 @@ where
             super::adapter::NativeDemandCarrier::Native(original) =>
                 self.promote_subtree_with_original_work(path, owner, original).await,
             super::adapter::NativeDemandCarrier::Shared(original) => {
-                // Only the ordinary SDK raw-meter policy reaches this branch;
-                // installed native callbacks always retain their full context.
                 let original = crate::demand::OriginalDemandWork::from_meter(Arc::clone(original));
                 let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
                     .map_err(mount_demand_error)?;
@@ -5746,7 +5399,7 @@ where
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
-                    &original, cancellation, Some(&mut observation.observer()),
+                    &original, cancellation, Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value),
                     Some((&removed, opaque)), None,
                 ).await.map_err(native_lazy_error)?;
                 for entry in &page.entries {
@@ -5760,8 +5413,6 @@ where
                     promotion_push(&mut unresolved,
                         (child, entry.kind == SourceNodeKind::Directory), &mut scratch)?;
                 }
-                // The canonical cursor owns its own exact producer allocation;
-                // moving it does not borrow the page's entry-buffer guard.
                 cursor = page.next.take();
                 if cursor.is_none() { break; }
             }
@@ -5772,8 +5423,6 @@ where
             let unchanged = latest.2 == removal_epoch;
             drop(latest);
             if !unchanged { return Err(MountSourceError::Stale); }
-            // Finish the complete listing under its original source proof
-            // before writes; directories still precede their descendants.
             drop(source_lease);
             self.promote_with_carrier(&directory, owner, scratch.carrier).await?;
             for (child, is_directory) in unresolved.drain(..) {
@@ -5806,7 +5455,7 @@ where
         let _lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
         let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
         let result = async {
-            match self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await? {
+            match self.resolve_with_carrier(path, &text, owner, carrier).await? {
                 Resolution::Authored(lookup) =>
                     Ok(Some((self.project_authored_with_carrier(lookup, carrier).await?, None))),
                 Resolution::Absent => Ok(None),
@@ -5820,14 +5469,11 @@ where
         result
     }
 
-    /// The finite resolver performs the same authored-first inspection without
-    /// extending the optional remembered-answer optimization.
     async fn resolve_with_carrier(
         &self,
         path: &MountPath,
         text: &str,
         owner: super::view_gate::CallbackOwner,
-        _proof: SourceProof,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<Resolution, MountSourceError> {
         carrier.with_work(|work| work.check()).map_err(mount_demand_error)?;
@@ -5840,8 +5486,6 @@ where
         if carrier.with_work(|work| self.is_removed_with_work(text, work))? {
             return Ok(Resolution::Absent);
         }
-        // Only the ordinary, explicitly unbounded cache policy reuses a
-        // watched parent's absence; finite producers inspect actual source.
         if carrier.with_work(|work| work.budget == crate::WorkBudget::UNBOUNDED)
             && path.parent().as_ref().is_some_and(|parent| self.source_lacks(parent))
         {
@@ -5867,10 +5511,6 @@ where
         }
     }
 
-    /// Resolves `path` through the view: the authored checkout first, then
-    /// the lazy workspace, reusing a remembered answer while nothing it
-    /// depends on has changed and `proof` shows the source still names it.
-    /// The caller holds a source view lease.
     async fn resolve(
         &self,
         path: &MountPath,
@@ -5888,8 +5528,6 @@ where
                 if deferral.source == self.lazy.source_reference()
                     && self.unchanged_since(path, file_id, deferral.stamp)
                 {
-                    // A watched source reported any change since; an open at
-                    // the exact version proves a remembered node itself.
                     if self.source_observed()
                         || proof == SourceProof::Open && deferral.node.is_some()
                     {
@@ -5904,14 +5542,12 @@ where
                     }
                 }
             }
-            // Sampled first: a change to anything read below records a later
-            // position, so a remembered answer can never validate over it.
             let stamp = self.ledger_stamp();
             let source = self.lazy.source_reference();
             let mut work = crate::demand::DemandWork::new(
                 crate::WorkBudget::UNBOUNDED, self.authored.cancellation());
             let mut carrier = super::adapter::NativeDemandCarrier::Borrowed(&mut work);
-            let resolution = self.resolve_with_carrier(path, text, owner, proof, &mut carrier).await?;
+            let resolution = self.resolve_with_carrier(path, text, owner, &mut carrier).await?;
             if let Some(stamp) = stamp {
                 match &resolution {
                     Resolution::Unauthored(LazyLookup::Source(node), Some(source), _) => {
@@ -5933,8 +5569,6 @@ where
         .await
     }
 
-    /// Whether the checkout holds `directory`, as found after a stamp no
-    /// component of its path was rebound since.
     fn holds_authored_directory(&self, directory: &MountPath) -> bool {
         self.authored_directories
             .lock()
@@ -5947,8 +5581,6 @@ where
             })
     }
 
-    /// Whether the source lacks `directory`, as a watched source read after
-    /// a stamp the view records no change to the directory's name since.
     fn source_lacks(&self, directory: &MountPath) -> bool {
         self.source_observed()
             && self
@@ -5961,8 +5593,6 @@ where
                 })
     }
 
-    /// Remembers that the source lacks `directory`, which a name beneath it
-    /// was just found absent in after `stamp`, if the source says so.
     async fn observe_source_absence(
         &self,
         directory: &MountPath,
@@ -5989,9 +5619,6 @@ where
         Ok(())
     }
 
-    /// What a lookup reports for an authored `lookup`: a detached
-    /// identity's live state, or the checkout's. Listings report every
-    /// authored entry through this same projection.
     async fn project_authored(&self, lookup: MountLookup) -> Result<MountLookup, MountSourceError>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
@@ -6008,11 +5635,6 @@ where
         Ok(self.detached_identity_with_carrier(lookup, carrier).await?.unwrap_or(lookup))
     }
 
-    /// What a lookup of `path` reports for an unauthored `lookup` resolved
-    /// in `source`: its projected node and, for source content, the pin
-    /// promising exactly that content. Listings report every unauthored
-    /// entry through this same projection, so a listed entry is exactly
-    /// what a lookup of its path issues, pin included.
     async fn project_unauthored(
         &self,
         path: &str,
@@ -6038,7 +5660,7 @@ where
         allocation: Option<crate::NativeAllocation>,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
-        let lookup = ScopedLazyLookup { lookup, allocation };
+        let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
         let retained = lookup.legacy_owned_bytes();
         if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
             drop(lookup);
@@ -6046,18 +5668,18 @@ where
             return Err(mount_demand_error(error));
         }
         let result = async {
-        let file_id = self.mutation_file_id_with_carrier(path, &lookup.lookup, carrier).await?;
-        if let LazyLookup::Source(node) = &lookup.lookup
+        let file_id = self.mutation_file_id_with_carrier(path, &lookup.value, carrier).await?;
+        if let LazyLookup::Source(node) = &lookup.value
             && linked(node)
         {
             carrier.with_work(|work| self.remember_linked_with_work(file_id, work))?;
         }
-        let pin_source = match (&lookup.lookup, source) {
+        let pin_source = match (&lookup.value, source) {
             (LazyLookup::Source(node), Some(source)) if node.kind == SourceNodeKind::RegularFile =>
                 Some((source, *node)),
             _ => None,
         };
-        let projected = mount_lookup_ref(&lookup.lookup, file_id);
+        let projected = mount_lookup_ref(&lookup.value, file_id);
         if let Some(current) = self.detached_identity_with_carrier(projected, carrier).await? {
             return Ok((current, None));
         }
@@ -6070,8 +5692,6 @@ where
         result
     }
 
-    /// Lists one page of `path`, or fails stale when the view changed
-    /// while it was listed.
     fn directory_page(
         &self,
         path: &MountPath,
@@ -6099,15 +5719,13 @@ where
             if !self.authored.unchanged_since(path, None, stamp) {
                 return Err(MountSourceError::Stale);
             }
-            // Each listed source entry is resolved exactly as a lookup
-            // resolves it, so a later lookup or read reuses that deferral.
             let deferrals = self.source_view.is_stable();
             let (page, state) = {
                 let observation = self.authored.shared_checkout().observe(owner).await?;
                 observation.ensure_publication_resolved()?;
                 self.lazy
                     .list_directory_in_checkout(
-                        &mut observation.observer(),
+                        &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value,
                         &text,
                         cursor,
                         maximum_entries,
@@ -6245,13 +5863,11 @@ where
                 owner, scratch.carrier, &caller, Some(self.authored.cancellation()),
             ).await?;
             observation.ensure_publication_resolved()?;
-            // Both the state owner and the merged page retain their original
-            // allocation custody through all source and checkout awaits.
             let state = self.lazy.state_with_native_work(original, &caller).await
                 .map_err(directory_lazy_error)?;
             let page = self.lazy.list_directory_in_state_with_native_work(
                 state.as_state(), &text, cursor, maximum_entries, original, &caller,
-                Some(&mut observation.observer()), Some((&removed_children, opaque)), None,
+                Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value), Some((&removed_children, opaque)), None,
             ).await.map_err(directory_lazy_error)?;
             (page, state)
         };
@@ -6324,8 +5940,8 @@ where
         } else { None };
         scratch.keep(output_storage + output_names + cursor_bytes)?;
         Ok(match scratch.native_backing.take() {
-            Some(allocation) => MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation),
-            None => MountDirectoryPage::new(entries, next_cursor),
+            Some(allocation) => MountDirectoryPage::new(entries, next_cursor, Some(allocation)),
+            None => MountDirectoryPage::new(entries, next_cursor, None),
         })
     }
 
@@ -6502,7 +6118,7 @@ where
             self.runtime.wait_prepared(prepared, || async {
                 let lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
                 let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
-                let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await?;
+                let resolution = self.resolve_with_carrier(path, &text, owner, carrier).await?;
                 let detached = self.content_detached_with_carrier(&resolution, &text, carrier).await?;
                 let projected = match resolution {
                     Resolution::Absent => return Err(MountSourceError::NotFound),
@@ -6540,7 +6156,7 @@ where
                 let lease = self.source_mutation_lease_with_carrier(None, carrier).await?;
                 let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
                 let detached = if promote {
-                    let resolution = self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await?;
+                    let resolution = self.resolve_with_carrier(path, &text, owner, carrier).await?;
                     self.content_detached_with_carrier(&resolution, &text, carrier).await?
                 } else { None };
                 if let Some(source) = source { self.promote_with_carrier(source, owner, carrier).await?; }
@@ -6635,8 +6251,6 @@ struct LazyOpenFile<A, O, D, S> {
     path: String,
     mount_path: MountPath,
     expected_source: FileId,
-    /// The source file, held open and version-proven since the mount opened
-    /// it; unpromoted reads are served only through it.
     source_file: Box<dyn DemandFile>,
     source_node: SourceNode,
     source_generation: u64,
@@ -7293,8 +6907,6 @@ where
             let counters = crate::WorkCounters { items_returned: 1, ..crate::WorkCounters::UNCHARGED };
             original.admit(counters).map_err(MountSourceError::NativeWork)?;
             let span_bytes = std::mem::size_of::<super::MountSparseSpan>() as u64;
-            // Tuple field order keeps the actual span buffer ahead of its
-            // original guard on every allocation or late accounting failure.
             let mut packet = (
                 Vec::<super::MountSparseSpan>::new(),
                 original.claim_allocation(span_bytes, 1).map_err(MountSourceError::NativeWork)?,
@@ -7317,10 +6929,6 @@ where
         self.with_authored_with_meter(work, |file| file.write_sparse_range_with_meter(offset, range, work))
     }
 
-    /// A handle names one file, whose facts change with it as a native
-    /// `fstat` reports them: while the path still names the opened file, a
-    /// change made to it in place is what the handle reports; once the path
-    /// names another file, the handle keeps the facts it was opened with.
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
         let _lease = self.source_lease()?;
         if let Some(file) = self.current_authored()? {
@@ -7456,8 +7064,6 @@ where
 {
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         let mut lineage = self.authored.native_namespace_lineage()?;
-        // The authored checkout alone cannot identify a different lazy
-        // demand provider or a different selected source subtree.
         lineage.lazy_owner = Some(&self.lazy);
         lineage.lazy_root = Some(&self.root);
         Some(lineage)
@@ -7468,10 +7074,6 @@ where
     }
 
     fn native_original_work(&self) -> Result<Option<super::NativeMountMeterWork>, MountSourceError> {
-        // Source lifetime is checked by the canonical delegate. The callback's
-        // existing view/epoch lease still checks coherence at the actual read or
-        // mutation; neither this accounting handle nor a stable-view flag grants
-        // task or publication authority.
         self.authored.native_original_work()
     }
 
@@ -7491,8 +7093,6 @@ where
         self.source_view.is_stable()
     }
 
-    /// Only a view whose source reports every change can be cached: the
-    /// kernel keeps nothing of one whose source changes unseen.
     fn view_stamp(&self) -> Option<ViewStamp> {
         self.ledger_stamp().filter(|_| self.source_observed())
     }
@@ -7887,11 +7487,6 @@ where
         })
     }
 
-    /// A first page that a change interrupted is listed again: the change
-    /// precedes the page listed after it. An interrupted continuation fails
-    /// stale, since the pages before it described the view before the change.
-    /// A page is empty only where the listing ends: the source's names and
-    /// the checkout's are listed in turn, and either may have none.
     fn read_directory(
         &self,
         path: &MountPath,
@@ -8387,9 +7982,6 @@ where
                     ..
                 })
             ) {
-                // Its entries resolve through the source by their paths, which
-                // the rename changes: the subtree becomes authored first and
-                // moves as one directory.
                 self.promote_subtree_locked(source)?;
             }
         }
@@ -8548,7 +8140,6 @@ where
     S: LazyWorkspaceStore,
 {
     /// Records that another handle on the workspace changed each of
-    /// `paths` (workspace paths): every name at or beneath one reads afresh.
     pub(crate) fn changed_outside(&self, paths: &[String]) -> Result<(), MountSourceError> {
         let mut effect = ViewEffect::default();
         for path in paths {
@@ -8589,7 +8180,7 @@ where
             self.runtime.wait_prepared(prepared, || async {
                 let lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
                 let (resolution, source_file) = self.resolve_opened_with_carrier(
-                    path, &path_text, owner, SourceProof::Open, carrier,
+                    path, &path_text, owner, carrier,
                 ).await?;
                 Ok((lease, resolution, source_file))
             })
@@ -8607,15 +8198,15 @@ where
                     .map(|file| (file, None));
             }
             Resolution::Unauthored(lookup, source, allocation) => {
-                let lookup = ScopedLazyLookup { lookup, allocation };
-                match &lookup.lookup {
+                let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
+                match &lookup.value {
                     LazyLookup::Source(node) if node.kind == SourceNodeKind::RegularFile => {
                         let source_file = source.and(source_file).ok_or(MountSourceError::Stale)?;
                         let expected_source = self.lazy.source_file_id(node);
                         let (mount_path, mut mount_allocation, _) = mount_components_with_carrier(
                             path.components(), None, &mut carrier,
                         )?.into_parts();
-                        let MountPathText { text: path, allocation: mut input_allocation } = path_text;
+                        let MountOwnedBuffer { value: path, allocation: mut input_allocation, .. } = path_text;
                         if let (Some(input), Some(mount)) = (&mut input_allocation, &mut mount_allocation) {
                             input.absorb(mount).map_err(MountSourceError::NativeWork)?;
                         }
@@ -8692,9 +8283,6 @@ where
         })
     }
 
-    /// Whether `path` is answered from its source rather than the authored
-    /// checkout. A projected source node carries no named attributes, and
-    /// promotion stages none, so reading them never promotes.
     fn is_source_projection(&self, path: &MountPath) -> Result<bool, MountSourceError> {
         let text = self.path(path)?;
         let owner = SourceViewGate::callback_owner();
@@ -8725,11 +8313,6 @@ where
         self.wait(|| self.promote(path))
     }
 
-    /// Reads one range of a path's current content. A pin additionally
-    /// requires still source-backed content to be exactly the pinned
-    /// version; content authored through the mount since is its newer state.
-    /// Streams one range of `path`'s content through `sink`; with `pin`,
-    /// only the content that pin promised.
     fn read_content(
         &self,
         path: &MountPath,
@@ -8835,10 +8418,9 @@ where
         path: &MountPath,
         text: &str,
         owner: super::view_gate::CallbackOwner,
-        proof: SourceProof,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError> {
-        let resolution = self.resolve_with_carrier(path, text, owner, proof, carrier).await?;
+        let resolution = self.resolve_with_carrier(path, text, owner, carrier).await?;
         let retained = match &resolution {
             Resolution::Unauthored(lookup, _, allocation) =>
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
@@ -8871,8 +8453,7 @@ where
         sink: &mut super::NativeMountContentSink<'_>,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        let proof = if pin.is_some() { SourceProof::Open } else { SourceProof::Lookup };
-        let resolution = self.resolve_with_carrier(path, text, owner, proof, carrier).await?;
+        let resolution = self.resolve_with_carrier(path, text, owner, carrier).await?;
         let lookup_bytes = match &resolution {
             Resolution::Unauthored(lookup, _, allocation) =>
                 if allocation.is_none() { lookup.logical_owned_bytes() } else { 0 },
@@ -8927,9 +8508,7 @@ where
                         }
                     } else {
                         match &resolution {
-                            Resolution::Authored(_) => self.authored.read_range_owned_async_with_carrier(
-                                path, next, wanted, owner, carrier,
-                            ).await?,
+                            Resolution::Authored(_) => self.authored.read_bytes(path, Some(crate::ByteRange { offset: next, length: u64::from(wanted) }), owner, carrier).await?,
                             Resolution::Unauthored(lookup, source, _) => {
                                 let caller = carrier.cancellation();
                                 if let Some(original) = carrier.original_native_work() {
@@ -8963,8 +8542,6 @@ where
                         if read_length == 0 { break; }
                         return Err(mount_content_invalid_with_carrier(carrier, "source returned more than was asked")?);
                     }
-                    // The arbitrary sink owns the actual packet even on failure.
-                    // Retain its claim until an authoritative custody proof releases it.
                     sink(next, output)?;
                     next += read_length;
                     if read_length < u64::from(wanted) { break; }
@@ -8992,13 +8569,11 @@ where
         let _lease = self.source_read_lease_with_carrier(owner, None, carrier).await?;
         let text = mount_path_text_with_carrier(&self.root, path, carrier)?;
         let result = async {
-            match self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await? {
+            match self.resolve_with_carrier(path, &text, owner, carrier).await? {
                 Resolution::Absent => Err(MountSourceError::NotFound),
-                Resolution::Authored(_) => self.authored.read_link_owned_async_with_carrier(
-                    path, owner, carrier,
-                ).await,
+                Resolution::Authored(_) => self.authored.read_bytes(path, None, owner, carrier).await,
                 Resolution::Unauthored(lookup, source, allocation) => {
-                    let lookup = ScopedLazyLookup { lookup, allocation };
+                    let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
                     let lookup_bytes = lookup.legacy_owned_bytes();
                     if let Err(error) = carrier.with_work(|work| work.record_adoption(lookup_bytes)) {
                         drop(lookup);
@@ -9010,12 +8585,12 @@ where
                         if let Some(original) = carrier.original_native_work() {
                             let maximum = original.remaining().map_err(MountSourceError::NativeWork)?.output_bytes;
                             let read = self.lazy.read_unauthored_link_owned_with_native_work(
-                                &lookup.lookup, source, &text, maximum, &original, &caller,
+                                &lookup.value, source, &text, maximum, &original, &caller,
                             ).await;
                             return accept_native_content(read);
                         }
                         let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                        let read = self.lazy.read_unauthored_link_owned_measured(&lookup.lookup, source, &text, budget, &caller).await;
+                        let read = self.lazy.read_unauthored_link_owned_measured(&lookup.value, source, &text, budget, &caller).await;
                         let output = carrier.with_work(|work| mount_accept(work, read, lazy_error))?;
                         let retained = output.logical_owned_bytes;
                         if let Err(error) = carrier.with_work(|work| work.record_adoption(retained)) {
@@ -9038,10 +8613,6 @@ where
     }
 }
 
-/// Binds one source node's exact content version into an opaque pin.
-///
-/// The source epoch is deliberately excluded: a rebind that leaves a file's
-/// version unchanged leaves its content, and every promise about it, intact.
 fn source_content_pin(source: SourceReference, node: &SourceNode) -> MountContentPin {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-lazy-content-pin-v1\0");
@@ -9466,7 +9037,6 @@ mod tests {
         Ok(())
     }
 
-    /// Every view change a source reports.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[derive(Default)]
     struct Recorded(Mutex<Vec<ViewStamp>>);
@@ -9481,8 +9051,6 @@ mod tests {
         }
     }
 
-    /// A lazy view over a fresh native source holding `source-only`, which
-    /// reports its changes to the returned record.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     async fn recorded_view(
         source_root: &Path,
@@ -9609,11 +9177,12 @@ mod tests {
         assert!(failure.work.backend_read_operations >= rejected_prefix.3);
         assert_eq!(view.lazy.mount_removal_publication().await?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), original);
-        let snapshot_failure = view.snapshot_measured(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
+        let mut snapshot_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let snapshot_failure = view.snapshot(
+            super::super::adapter::NativeDemandCarrier::Borrowed(&mut snapshot_work), &cancellation,
         ).await.expect_err("an original prepared mounted operation is not a clean checkpoint");
-        assert!(matches!(snapshot_failure.error, MountSourceError::Stale));
-        assert!(snapshot_failure.work.items_examined > 0);
+        assert!(matches!(snapshot_failure, MountSourceError::Stale));
+        assert!(snapshot_work.work.items_examined > 0);
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let failure = view.sync_async_with_permit_measured_guarded(
@@ -9770,9 +9339,6 @@ mod tests {
         assert_eq!(failure.work.authority_records_appended, 0);
         let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing actual prepared binding")?;
-        // Real uncommitted-journal recovery can remove its intent while the
-        // mount still retains the original checkout. Replay that exact prepared
-        // value through the actual CAS, denying its required owned state copy.
         let recovered = view.lazy.finish_mount_removals_measured(
             crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
@@ -9844,8 +9410,6 @@ mod tests {
         ).await.expect_err("keep the original operation pending");
         let operation = view.removals.lock().map_err(|_| "poisoned removals")?
             .publication.ok_or("missing original custody")?.operation;
-        // Drive the real publication and durable-clear phases, then deny the
-        // first actual cache-cleanup item using this same spent-work ledger.
         let mut meter = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let mut work = MountSyncWork::new(
             &view.authored, super::super::adapter::NativeDemandCarrier::Borrowed(&mut meter),
@@ -9951,8 +9515,6 @@ mod tests {
             let acknowledged_generation = if let Some(operation) = original {
                 Some(lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not physically append the original operation")?)
             } else { None };
-            // A newly acquired fence is the retry's authority, not an old permit
-            // cached by the mounted preparation operation.
             let reservation = lazy.workspace().reserve_publication(crate::OperationId::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let permit = crate::PublicationPermit::Reservation {
                 operation_id: reservation.operation_id.into_bytes(),
@@ -9979,7 +9541,7 @@ mod tests {
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
-                fs.open_workspace("bounded-mount-fault").await?, demand, store,
+                fs.open_workspace("bounded-mount-fault", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, demand, store,
             ).await?;
             assert!(matches!(reopened.lookup("/a").await,
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -10373,8 +9935,6 @@ mod tests {
             Some(created.node.file_id)
         );
 
-        // A source file changed outside the view since it was remembered is
-        // opened at its current version, never served stale.
         std::fs::write(source_root.path().join("c"), b"first")?;
         let c = mounted(&["c"]);
         assert!(view.lookup(&c)?.is_some());
@@ -10438,9 +9998,6 @@ mod tests {
         let directory = MountPath::root().child(component("d"));
         let file = directory.child(component("f"));
         let other = MountPath::root().child(component("g"));
-        // NTFS reports a directory's write time, which creating an entry in
-        // it changed, only once the directory is next read; let the source
-        // report what reading it reports before the view is sampled.
         for path in [&directory, &file, &other] {
             view.lookup(path)?;
         }
@@ -10453,11 +10010,6 @@ mod tests {
         assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
         assert!(view.authored.lookup(&file)?.is_none());
 
-        // A promotion records only the nodes whose answer changed. A source
-        // watch may also report a conservative invalidation after the stamp
-        // (FSEvents has no delivery barrier), so an unchanged answer may be
-        // marked stale; the safety property is that a current answer never
-        // survives with a different lookup.
         view.promote_locked(&file)?;
         assert!(view.authored.lookup(&file)?.is_some());
         let after = [&directory, &file, &other].map(|path| view.lookup(path));
@@ -10889,7 +10441,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -10955,8 +10507,6 @@ mod tests {
                 key: MountedRemovalPath { text: text.text, custody: None, bytes: 0, native_allocation: text.allocation },
                 file_id, prior: None, old_paths: None, new_paths: Some(1), changed: true, final_work,
             };
-            // The real model fault removes the prepared record. Its path insertion
-            // still happens before that failed lookup; no rollback hides the effect.
             assert!(view.removals.lock().map_err(|_| "removals poisoned")?.records.is_empty());
             if fail_accounting {
                 original.with_original_leaf(|work| work.budget.allocation_operations = 0);
@@ -11051,7 +10601,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -11268,15 +10818,11 @@ mod tests {
         assert!(watch.is_exact());
 
         let cleanup = crate::CancellationToken::new();
-        // The source exists already: its old graph is borrowed, not adopted.
-        // Zero native writes denies the irreversible watch stop before I/O.
         let mut denied = crate::demand::DemandWork::new(finite_directory_budget(), &cleanup);
         assert!(matches!(view.cancel_with_work(&mut denied), Err(MountSourceError::Work(_))));
         assert!(view.authored.cancellation().is_cancelled());
         assert!(denied.work.items_examined > 0);
         assert_eq!(denied.work.backend_write_operations, 0);
-        // The canonical original-meter loan charges its actual new control
-        // allocations; it never adopts this already-owned source/watch graph.
         let mut loan_work = crate::demand::DemandWork::new(finite_directory_budget(), &cleanup);
         super::super::adapter::BorrowedNativeDemandMeter::new(&mut loan_work)?
             .run(|_| Ok::<(), MountSourceError>(()))?;
@@ -11301,7 +10847,6 @@ mod tests {
         Ok(())
     }
 
-    /// A lazy mount view over `source`, publishing only on sync.
     async fn mounted_view(
         source: &Path,
         name: &str,
@@ -11329,7 +10874,6 @@ mod tests {
         .await?)
     }
 
-    /// A lazy mount view over `demand`, publishing only on sync.
     async fn mounted_view_of<D: DemandSource + 'static>(
         demand: Arc<D>,
         name: &str,
@@ -11435,7 +10979,7 @@ mod tests {
             let original = native_control_work(finite_content_budget(), &caller)?;
             let native = original.native_mount_work();
             let live_before = original.live_allocation_bytes();
-            let publication = view.publication_snapshot_with_native_work(&native, &caller)
+            let publication = view.publication_snapshot(super::super::adapter::NativeDemandCarrier::Native(&native), &caller)
                 .await.map_err(|(primary, _)| primary)?;
             assert_eq!(publication.operation(), None, "READ must not manufacture a DATA operation");
             assert_eq!(publication.snapshot().workspace_id(), lazy.workspace().id());
@@ -11465,7 +11009,7 @@ mod tests {
                 }
                 _ => { demand.invalidate(); }
             }
-            let stopped_snapshot = view.publication_snapshot_with_native_work(&native, &caller).await
+            let stopped_snapshot = view.publication_snapshot(super::super::adapter::NativeDemandCarrier::Native(&native), &caller).await
                 .expect_err("pending directories, detached writes and changed source epochs are not readonly checkpoints");
             assert!(matches!(stopped_snapshot, (MountSourceError::Stale, None)));
             let unchanged = store.load_lazy_workspace(lazy.workspace().id()).await?
@@ -11542,8 +11086,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11573,8 +11116,6 @@ mod tests {
         let held = view.open_file(&mounted(&["file"]))?;
         held.write_range(0, Bytes::from_static(b"after"))?;
         let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        // This fixture exercises the installed SDK policy protocol, not an
-        // authenticated Harness task-owner or a fabricated namespace grant.
         let guard: Arc<dyn super::super::NativeMountCallbackGuard> =
             Arc::new(PublicationLifetimeGuard {
                 lifetime: crate::CancellationToken::new(),
@@ -11589,8 +11130,7 @@ mod tests {
             Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
         )?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11993,9 +11533,6 @@ mod tests {
         Ok(())
     }
 
-    /// The source changes outside the view and reports each change: once
-    /// the report is recorded, no remembered answer outlives what the
-    /// source names, and lookups agree with listings.
     #[test]
     fn lookups_follow_changes_made_to_the_source_outside_the_view()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -12040,8 +11577,6 @@ mod tests {
         Ok(())
     }
 
-    /// A source that counts the lookups it answers and, unless told
-    /// otherwise, reports its changes as the source it wraps does.
     struct Counted<D> {
         inner: D,
         lookups: AtomicU64,
@@ -12290,10 +11825,6 @@ mod tests {
         }
     }
 
-    /// A watched source is read once per name: a remembered answer, an
-    /// absence included, holds without reading the source again until the
-    /// source reports a change to the name, and then exactly that name is
-    /// read again.
     #[test]
     fn a_watched_source_is_read_again_only_for_what_it_reports_changed()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -12309,12 +11840,6 @@ mod tests {
             Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
         };
 
-        // Create the initial entries after the watch starts. Linux and
-        // Windows can fence these reports exactly. FSEvents has no delivery
-        // barrier, so wait for the names (or a conservative everything
-        // report) and then for its report stream to go quiet before reading
-        // the first answers. This keeps startup notifications out of the
-        // cache-counting assertion below.
         std::fs::write(source.path().join("a"), b"short")?;
         std::fs::write(source.path().join("b"), b"other")?;
         #[cfg(target_os = "macos")]
@@ -12353,8 +11878,6 @@ mod tests {
 
         std::fs::write(source.path().join("a"), b"much longer")?;
         std::fs::write(source.path().join("absent"), b"present")?;
-        // Waits for the reports themselves: a macOS fence would report
-        // everything and read every name again.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while (size(&a)?, size(&absent)?) != (Some(11), Some(7)) {
             assert!(
@@ -12366,9 +11889,6 @@ mod tests {
         let reread = demand.lookups();
         assert!(reread > read, "a reported change reads the source again");
         assert_eq!(size(&b)?, Some(5));
-        // FSEvents may coalesce these changes into one event on the root
-        // that names no item, which rightly reports everything; only the
-        // other hosts name each change exactly.
         #[cfg(not(target_os = "macos"))]
         assert_eq!(
             demand.lookups(),
@@ -12378,7 +11898,6 @@ mod tests {
         Ok(())
     }
 
-    /// Lost notifications invalidate every remembered answer.
     #[test]
     fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -12407,8 +11926,6 @@ mod tests {
         Ok(())
     }
 
-    /// A live lazy mount of `source` at `destination`, over a native source
-    /// in the host's own profile.
     async fn live_lazy_mount(
         source: &Path,
         destination: &Path,
@@ -12425,9 +11942,6 @@ mod tests {
         live_lazy_mount_of(open_native_source(source).await?, destination, name).await
     }
 
-    /// Whether a test's source reports its changes or, like a root the host
-    /// cannot watch, is read afresh. The live tests that run both ways mount
-    /// through FUSE or NFS.
     #[cfg(unix)]
     #[derive(Clone, Copy, Debug)]
     enum Watched {
@@ -12521,11 +12035,6 @@ mod tests {
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
     }
 
-    /// Every change made to the source outside the mount becomes visible
-    /// through it: to stat, lookup, listing, and read alike, whatever the
-    /// kernel cached before. Revalidation makes every change completed
-    /// before it visible at once; the source's own reports make each one
-    /// visible without it, shortly after.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
     async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>>
@@ -12577,10 +12086,6 @@ mod tests {
         Ok(())
     }
 
-    /// A source that reuses a removed file's identity for a new file under
-    /// another name gives the mount a new file: the new name resolves (it
-    /// once failed as a node with too many names), and the inode the kernel
-    /// still holds for the removed name cannot change the new file.
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -12655,11 +12160,6 @@ mod tests {
         Ok(())
     }
 
-    /// Source hard links stay one file through the mount, whichever name is
-    /// looked up or listed first: every name has the same inode and link
-    /// count, and a write through one name is read through the other. Each
-    /// such node is read afresh, so this also checks that reading it afresh
-    /// never takes its other names for names of a reused identity.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -12686,8 +12186,6 @@ mod tests {
         }
         let live = live_lazy_mount_over(&source, &mount, "live-hard-links", watched).await?;
         let same_file = |first: &str, second: &str| -> Result<(), Box<dyn std::error::Error>> {
-            // Keep the inode live while comparing names: an unwatched mount
-            // may receive FORGET between two otherwise independent stat calls.
             let _held = std::fs::File::open(mount.join(first))?;
             let (one, other) = (
                 std::fs::metadata(mount.join(first))?,
@@ -12742,9 +12240,6 @@ mod tests {
         Ok(())
     }
 
-    /// A file with a name outside the source changes unreported through that
-    /// name; the kernel keeps none of its facts or pages, so the mount shows
-    /// such a write at once, however often the file was read before.
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -12776,17 +12271,6 @@ mod tests {
         Ok(())
     }
 
-    /// Writers replace, remove, and create source files while readers stat,
-    /// list, and read them through the mount. Every read the mount serves is
-    /// one whole version some writer wrote, and once the writers stop and
-    /// the mount revalidates, the mount and the source agree name for name
-    /// and byte for byte.
-    ///
-    /// Not on macOS: under concurrent replacement its NFS client serves
-    /// sizes it cached against content read later, answers a replaced name
-    /// with a stale file handle even after revalidation (as often without a
-    /// source watch as with one), and has hung a `stat`; those belong to the
-    /// NFS client and its loopback server, not to the source's reports.
     #[cfg(not(target_os = "macos"))]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -12797,7 +12281,6 @@ mod tests {
         const READERS: usize = 4;
         const CHANGES: usize = 150;
 
-        /// A whole version: its own name, generation, and length, padded.
         fn version(name: usize, generation: usize) -> Vec<u8> {
             let mut bytes = format!("{name}:{generation}:").into_bytes();
             let length = 16 + (name * 7 + generation * 13) % 200;
@@ -12837,11 +12320,7 @@ mod tests {
                         let _ = std::fs::metadata(&replaced);
                         let _ = std::fs::metadata(&rewritten);
                         let _ = std::fs::read_dir(&mount).map(Iterator::count);
-                        // A file rewritten in place may be read mid-write,
-                        // natively too.
                         let _ = std::fs::read(&rewritten);
-                        // A read may fail while its file is replaced; one
-                        // that succeeds returns one whole version.
                         if let Ok(bytes) = std::fs::read(&replaced)
                             && !whole(&bytes)
                             && let Ok(mut torn) = torn.lock()
@@ -13123,8 +12602,6 @@ mod tests {
         Ok(())
     }
 
-    /// A listing's pages are empty only where it ends, so a driver never
-    /// mistakes an empty directory for a listing that stopped making progress.
     #[test]
     fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;
@@ -13154,9 +12631,6 @@ mod tests {
         Ok(())
     }
 
-    /// An open handle reports its file's facts as they are now, as a native
-    /// `fstat` does, while the path still names that file, and keeps the
-    /// facts it was opened with once the path names another.
     #[test]
     fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;
@@ -13182,9 +12656,6 @@ mod tests {
         Ok(())
     }
 
-    /// Dropping a watched view releases everything it holds before the drop
-    /// returns, however its source's notifications are delivered, so the
-    /// stores it wrote can be opened again at once.
     #[test]
     fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -13197,8 +12668,6 @@ mod tests {
         let state = tempfile::tempdir()?;
         let runtime = tokio::runtime::Runtime::new()?;
         let fs = Fs::memory();
-        // A store released late fails the very next open; the rounds only
-        // vary where the source change lands against the drop.
         for round in 0..24 {
             let store = LocalCoreStateStore::open_owned(state.path().join("core"))
                 .map_err(|error| format!("round {round}: {error}"))?;
@@ -13240,9 +12709,6 @@ mod tests {
         Ok(())
     }
 
-    /// A file with a name outside the watched root changes unreported when
-    /// written through that name, so the view reads it afresh, never from
-    /// what it remembered, and no driver may cache it.
     #[cfg(unix)]
     #[test]
     fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::error::Error>> {
@@ -13262,8 +12728,6 @@ mod tests {
         assert_eq!(linked_file.logical_bytes, 5);
         assert!(!view.unchanged_since(&linked_path, Some(linked_file.file_id), stamp));
         assert!(!view.node_unchanged_since(linked_file.file_id, stamp));
-        // Single-link files are observable; a delayed/coalesced watcher report
-        // may still invalidate the earlier stamp, especially with FSEvents.
         assert!(view.reports_changes_to(single_file.file_id));
 
         // Written in place through the name outside the source: unreported.
@@ -13279,8 +12743,6 @@ mod tests {
         Ok(())
     }
 
-    /// A source that cannot report its changes is read afresh behind every
-    /// remembered answer, and no driver may cache what the view answers.
     #[test]
     fn an_unwatched_source_is_read_afresh_and_never_cached()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -13306,10 +12768,6 @@ mod tests {
         Ok(())
     }
 
-    /// Promoting a name moves its answer from the source into the checkout,
-    /// which a listing merges separately, so a promotion changes its
-    /// directory's listing even where every name still resolves as it did:
-    /// a continuation begun before must not list the name a second time.
     #[test]
     fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;

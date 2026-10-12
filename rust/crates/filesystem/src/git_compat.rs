@@ -7118,8 +7118,8 @@ mod tests {
     async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-policy")
-            .await
+            .create_workspace("git-capture-policy", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7171,8 +7171,8 @@ mod tests {
     async fn capture_at_generation_excludes_later_workspace_updates() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-pinned-generation")
-            .await
+            .create_workspace("git-capture-pinned-generation", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x35; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("initial transaction");
@@ -7210,8 +7210,8 @@ mod tests {
     async fn capture_preserves_metadata_and_hard_links_through_public_fork_primitives() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-records")
-            .await
+            .create_workspace("git-capture-records", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x41; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7267,8 +7267,8 @@ mod tests {
     async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-nested-policy")
-            .await
+            .create_workspace("git-capture-nested-policy", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x49; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7308,8 +7308,8 @@ mod tests {
     async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-diff-policy")
-            .await
+            .create_workspace("git-diff-policy", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let before = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("baseline");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x4b; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -7363,8 +7363,8 @@ mod tests {
     async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-diff-deleted-policy")
-            .await
+            .create_workspace("git-diff-deleted-policy", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x4c; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("initial transaction");
@@ -7402,8 +7402,8 @@ mod tests {
     async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-ignored-parent")
-            .await
+            .create_workspace("git-ignored-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let before = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("before");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x4e; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -7453,8 +7453,8 @@ mod tests {
     async fn incremental_capture_honors_unchanged_nested_ignore() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-incremental-nested")
-            .await
+            .create_workspace("git-incremental-nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x65; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7517,8 +7517,8 @@ mod tests {
     async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-ignored-merge-paths")
-            .await
+            .create_workspace("git-ignored-merge-paths", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut initial = workspace.begin_transaction(IdempotencyKey::from_bytes([0x70; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("initial transaction");
@@ -7589,8 +7589,8 @@ mod tests {
     async fn filtered_capture_retry_keeps_original_fork_generation() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-retry")
-            .await
+            .create_workspace("git-capture-retry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x69; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7622,8 +7622,8 @@ mod tests {
     async fn filtered_commit_completes_and_clears_its_transition() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-filtered-commit")
-            .await
+            .create_workspace("git-filtered-commit", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x6b; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7755,8 +7755,8 @@ mod tests {
     async fn incremental_capture_applies_only_changed_eligible_paths() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-incremental")
-            .await
+            .create_workspace("git-capture-incremental", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x51; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7869,8 +7869,8 @@ mod tests {
     async fn nested_gitignore_change_forces_exact_capture() {
         let fs = Fs::memory();
         let workspace = fs
-            .create_workspace("git-capture-nested-ignore")
-            .await
+            .create_workspace("git-capture-nested-ignore", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x61; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7919,8 +7919,8 @@ mod tests {
     async fn tree_walk_and_grep_are_generation_bound_and_portable() {
         let fs = crate::Fs::memory();
         let workspace = fs
-            .create_workspace("git-inspection")
-            .await
+            .create_workspace("git-inspection", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x32; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
@@ -7978,7 +7978,7 @@ mod tests {
     #[tokio::test]
     async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         let fs = crate::Fs::memory();
-        let workspace = fs.create_workspace("git-patch").await.expect("workspace");
+        let workspace = fs.create_workspace("git-patch", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([0x33; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("transaction");
         transaction
