@@ -531,7 +531,7 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
     workspace.write_text("/before", "body").await?;
     let middle = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.rename("/before", "/after").await?;
+    transaction.rename("/before", "/after", true, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
     let TransactionCommit::Committed(end) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("rename did not commit".into());
     };
@@ -576,7 +576,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
     let before = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     let mut changed = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    changed.rename("/rename", "/renamed").await?;
+    changed.rename("/rename", "/renamed", true, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
     changed.remove("/remove", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     changed.hard_link("/linked", "/nested/link", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     changed
@@ -655,10 +655,10 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         let original = crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
         let (native_changes, diff_guard) = before.diff_to_with_native_work(&after, 64, &original, &cancellation)
-            .await.map_err(|(error, _)| error)?;
+            .await?;
         let retained_diff = original.live_allocation_bytes();
         let (native_paths, path_guard) = native_changes.changed_paths_with_native_work(64, &original, &cancellation)
-            .await.map_err(|(error, _)| error)?;
+            .await?;
         assert_eq!(native_paths, paths);
         let rename_before = native_paths.iter().find(|change|
             super::namespace_path_text(&change.path).is_ok_and(|path| path == "/rename"))
@@ -678,7 +678,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
             Err(failure) => failure,
             Ok(_) => return Err("native path bound unexpectedly succeeded".into()),
         };
-        assert!(matches!(failure.0, WorkspaceError::ChangedPathLimit));
+        assert!(matches!(failure, WorkspaceError::ChangedPathLimit));
         drop(failure);
         assert_eq!(original.live_allocation_bytes(), retained_diff);
         drop(native_changes);

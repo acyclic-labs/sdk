@@ -11,7 +11,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     let child = parent
         .fork(
             "scratch-child",
-            ForkOptions::from_generation(pinned.clone(), key).empty(),
+            ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
         crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -20,7 +20,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     let retried = parent
         .fork(
             "scratch-child",
-            ForkOptions::from_generation(pinned.clone(), key).empty(),
+            ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
         crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(retried.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), initial.id());
@@ -229,7 +229,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
     let child = parent
         .fork(
             "filtered-rebase-child",
-            ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).empty(),
+            ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).inherit_paths(Vec::new()),
         crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     child.write_text("/local", "child").await?;

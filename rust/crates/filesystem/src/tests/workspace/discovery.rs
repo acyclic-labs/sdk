@@ -8,9 +8,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
     workspace.write_text("/visible.txt", "visible").await?;
     let pinned = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
-    let before = list_generation_directory(
-        &workspace,
-        GenerationSelector::Exact(pinned.id()),
+    let before = pinned.list_directory(
         "/",
         None,
         1,
@@ -28,9 +26,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
     workspace
         .write_text("/late.txt", "not in pinned view")
         .await?;
-    let after = list_generation_directory(
-        &workspace,
-        GenerationSelector::Exact(pinned.id()),
+    let after = pinned.list_directory(
         "/",
         None,
         1,
