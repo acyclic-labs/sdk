@@ -26,7 +26,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<Self> {
         limits.validate(&mut None)?;
         let authorization = handle.authorization();
-        Self::require_directory_with_io(&host, &handle, "", &io)?;
+        host.require_private_directory(&handle.authorization().project, handle.grant(), "", Some(&io))?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
         Self::verify_owner(&owner, &io).await?;
         let workspace = bounded_io::open(&host, &reference, &io).await?;
@@ -36,28 +36,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Self::verify_owner(&owner, &io).await?;
         Ok(Self { host, owner, handle, generation, limits, io,
             serial: tokio::sync::Mutex::new(()) })
-    }
-
-    fn require_directory_with_io(
-        host: &FilesystemHost<A, O>, handle: &ProjectSourceReadHandle,
-        path: &str, io: &PreparationIo,
-    ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            work.remaining()?;
-            let project = &handle.authorization().project;
-            if project.provider() != &host.provider {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "private directory belongs to another provider or class",
-                });
-            }
-            if !path.is_empty() {
-                crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-            }
-            return handle.grant().require_directory_path(project, path, Some(&crate::filesystem::PreparationIo::from_native_work(work)?));
-        }
-        host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
 
     pub(super) fn authorization(&self) -> &ProjectSourceAuthorization { self.handle.authorization() }
@@ -84,7 +62,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
-        Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
+        self.host.require_private_directory(&self.handle.authorization().project, self.handle.grant(), "", Some(&io))?;
         if let Some(frozen) = frozen {
             if frozen.workspace_id != self.generation.workspace_id() || frozen.authored_generation != self.generation.id() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -111,10 +89,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         work.remaining()?;
         Ok(())
-    }
-
-    pub(super) async fn guard(&self) -> Result<()> {
-        Self::verify_owner(&self.owner, &self.io).await
     }
 
     async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
@@ -147,8 +121,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if prefix.len() > self.limits.path_bytes || path.len() > self.limits.path_bytes {
             return Err(Error::Invalid("selected path exceeds original caller limits".into()));
         }
-        self.host.require_private_directory(volume, self.handle.grant(), prefix)?;
-        self.host.require_private_directory(volume, self.handle.grant(), path)?;
+        self.host.require_private_directory(volume, self.handle.grant(), prefix, Some(&self.io))?;
+        self.host.require_private_directory(volume, self.handle.grant(), path, Some(&self.io))?;
         if !prefix.is_empty() && path != prefix
             && !path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/')) {
             return Err(Error::Unauthorized("selected path leaves its requested directory boundary".into()));
@@ -157,8 +131,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn file(&self, file: &FileRef) -> Result<()> {
-        self.limits.validate_file(file, &mut None)?;
-        self.handle.grant().require_file_read(file, None)?;
+        crate::executor::with_history_io(Some(&self.io), |work| self.limits.validate_file(file, work))?;
+        self.handle.grant().require_file_read(file, Some(&self.io))?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
         hex::decode_to_slice(file.version(), &mut generation)
@@ -170,18 +144,15 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn file_bytes(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.file(file)?;
-        self.guard().await?;
-        let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
-            self.io.remaining()?, self.io.cancellation()).await;
-        let result = self.io.receive_content(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
+        let result = self.host.read_pinned_io(file, self.limits.file_bytes, Some(&self.io)).await;
+        Self::verify_owner(&self.owner, &self.io).await?;
         result
     }
 
     pub(super) async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         self.file_bytes(file).await
     }
@@ -189,11 +160,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
         self.file(before)?;
         self.file(after)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         let _before_hold;
         let before_bytes = self.file_bytes(before).await?;
-        self.io.retain_owned(before_bytes.retained_capacity().unwrap_or(0) as u64)?;
         _before_hold = self.io.guard_bytes(&before_bytes)?;
         let after_bytes = self.file_bytes(after).await?;
         Ok(before_bytes != after_bytes)
@@ -206,26 +176,26 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if self.authorization().native_snapshot.is_some() {
             return Err(Error::Invalid("native selection requires its actual lazy snapshot reader".into()));
         }
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.read(&requested, self.limits.file_bytes,
             self.io.remaining()?, self.io.cancellation()).await;
         let bytes = self.io.receive(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let bytes = bytes?;
         self.io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
         let metadata_path = crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let metadata = self.generation.read(&metadata_path, self.io.remaining()?.source_bytes_read,
             self.io.remaining()?, self.io.cancellation()).await;
         let metadata = self.io.receive(metadata);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
@@ -254,7 +224,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = { let io = Some(&self.io); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
+        let reference = crate::executor::with_history_io(Some(&self.io), |work| FileRef::new(
+            volume.copy(work)?, bounded_io::clone_text(path, Some(&self.io))?,
+            bounded_io::clone_text(&version, Some(&self.io))?,
+            FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(),
+                bounded_io::clone_text(descriptor.media_type(), Some(&self.io))?)?,
+            bounded_io::clone_text(display_name, Some(&self.io))?, work))?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }
@@ -266,7 +241,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::Invalid("native selection requires its actual lazy directory reader".into()));
         }
         if maximum == 0 { return Err(Error::Invalid("selected directory page must be finite and positive".into())); }
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         let after = after.map(|name| {
             if name.len() > self.limits.path_bytes { return Err(Error::Invalid("selected cursor exceeds original path limits".into())); }
@@ -281,11 +256,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
         let engine_maximum = maximum.checked_add(u32::from(path.is_empty()))
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
             self.io.remaining()?, self.io.cancellation()).await;
         let page = self.io.receive(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
             .ok_or_else(|| Error::Invalid("selected directory ownership overflows".into()))?;

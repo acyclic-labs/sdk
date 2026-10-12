@@ -719,16 +719,16 @@ fn cache_io_miss(result: Result<(), PathIndexError>) -> Result<(), PathIndexErro
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-fn cache_name(
-    key: [u8; 32], temporary: bool, buffer: &mut [u8; 85],
+fn cache_name<'a>(
+    key: [u8; 32], temporary: bool, buffer: &'a mut [u8; 85],
     meter: &mut PathIndexWork<'_, '_>,
-) -> Result<usize, PathIndexError> {
+) -> Result<&'a std::path::Path, PathIndexError> {
     use std::io::Write as _;
     let pid = if temporary { std::process::id() } else { 0 };
     let length = 69 + if temporary { 1 + pid.checked_ilog10().unwrap_or(0) as usize + 1 } else { 0 };
     let delta = WorkCounters { bytes_encoded: length as u64, ..WorkCounters::UNCHARGED };
     meter.admit(delta)?;
-    let encoded = (|| {
+    let encoded: Result<usize, PathIndexError> = (|| {
         hex::encode_to_slice(key, &mut buffer[..64])
             .map_err(|_| PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?;
         // The fixed buffer holds the hex key, a u32 PID and either suffix.
@@ -737,13 +737,8 @@ fn cache_name(
         Ok(length)
     })();
     meter.record(delta)?;
-    encoded
-}
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-fn cache_leaf(buffer: &[u8]) -> Result<&std::path::Path, PathIndexError> {
-    Ok(std::path::Path::new(std::str::from_utf8(buffer)
-        .map_err(|_| PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?))
+    let length = encoded?;
+    Ok(std::path::Path::new(std::str::from_utf8(&buffer[..length]).expect("cache filenames are ASCII")))
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
@@ -763,8 +758,7 @@ fn evict_native_entries(
         let Some(&(oldest, _)) = state.entries.first() else { break; };
         meter.record(delta)?;
         let mut buffer = [0_u8; 85];
-        let length = cache_name(oldest, false, &mut buffer, meter)?;
-        let leaf = cache_leaf(buffer.get(..length).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?)?;
+        let leaf = cache_name(oldest, false, &mut buffer, meter)?;
         // A failed eviction remains a disposable disk entry, as before.
         cache_io_miss(crate::native_host::remove_leaf_with_work(directory, leaf, meter))?;
         let delta = cache_move(state.entries.len() - 1, std::mem::size_of::<([u8; 32], usize)>())?;
@@ -856,8 +850,7 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 let mut meter = PathIndexWork::new(accounting)?;
                 let directory = crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?;
                 let mut name = [0_u8; 85];
-                let length = cache_name(key, false, &mut name, &mut meter)?;
-                let leaf = cache_leaf(name.get(..length).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?)?;
+                let leaf = cache_name(key, false, &mut name, &mut meter)?;
                 let mut file = crate::native_host::open_leaf_with_work(&directory, leaf,
                     &crate::native_host::NativeOpenOptions::Read, &mut meter)?;
                 let metadata = crate::native_host::NativeHostWork::attempt_io(&mut meter, WorkCounters {
@@ -933,11 +926,8 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                 meter.admit(copied)?;
                 let mut name = [0_u8; 85];
                 let mut temporary = [0_u8; 85];
-                let name_length = cache_name(key, false, &mut name, &mut meter)?;
-                let temporary_length = cache_name(key, true, &mut temporary, &mut meter)?;
-                let leaf = cache_leaf(name.get(..name_length).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?)?;
-                let temporary_leaf = cache_leaf(temporary.get(..temporary_length)
-                    .ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?)?;
+                let leaf = cache_name(key, false, &mut name, &mut meter)?;
+                let temporary_leaf = cache_name(key, true, &mut temporary, &mut meter)?;
                 let stored = (|| {
                     let mut file = crate::native_host::open_leaf_with_work(&directory, temporary_leaf,
                         &crate::native_host::NativeOpenOptions::ReadWriteCreate, &mut meter)?;

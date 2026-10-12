@@ -428,7 +428,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 }
                 let merged_table = if mutations.value.is_empty() { request.ours.file_table } else {
                     apply_file_table_mutations_with_accounting(store, request.ours.file_table, &mutations.value,
-                        request.maximum_changes, limits, accounting, cancellation).await?.root
+                        request.maximum_changes, limits, accounting, cancellation).await?.value
                 };
                 let (parent, parent_id) = match request.ours_generation {
                     Some(object) if object.kind == ObjectKind::GenerationRoot => (object, GenerationId::new(object.digest)),
@@ -738,7 +738,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
             if conflicted { return Ok(None); }
             let entries = if mutations.value.is_empty() { ours_entries } else {
                 apply_tree_mutations_with_accounting(store, ours_entries, &mutations.value, maximum,
-                    limits, accounting, cancellation).await?.root
+                    limits, accounting, cancellation).await?.value
             };
             Ok(Some(FileRecord { file_id: directory_id, kind: super::FileKind::Directory, link_count, metadata,
                 payload: FilePayload::Directory { entries } }))

@@ -5,8 +5,7 @@ use super::{
     AsyncRebaseProbe, BlobReadError, DecodeLimits, Dependency, DependencyError, DependencyRegion,
     DependencyState, DirectoryReadError, ExtentKind, ExtentReadError, ExtentSeekRequest,
     ExtentSeekTarget, FilePayload, FileRecord, FileRecordReadError, GenerationRoot, ProbeReceipt,
-    RebaseProbe, TreeReadError, decode_generation_root, list_tree_entries,
-    lookup_file_record, lookup_tree_entry, plan_extent_range, read_blob_range, seek_extent,
+    TreeReadError, decode_generation_root,
 };
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::persistent_point::{Owned, retire_allocation};
@@ -15,8 +14,6 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{Digest, FileId, GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
-use std::collections::HashMap;
-use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -56,8 +53,6 @@ pub struct AuthenticatedGenerationProbe<'a, S> {
     store: &'a S,
     limits: ProbeLimits,
     data_custody: Option<&'a super::ProofDataCustody>,
-    generations: Mutex<HashMap<GenerationId, GenerationRoot>>,
-    records: Mutex<HashMap<(GenerationId, FileId), Option<FileRecord>>>,
     async_generations: Mutex<ProbeSummaryCache<GenerationId, ObjectId>>,
     async_records: Mutex<ProbeSummaryCache<(GenerationId, FileId), Option<FileRecord>>>,
 }
@@ -108,8 +103,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
             store,
             limits,
             data_custody: None,
-            generations: Mutex::new(HashMap::new()),
-            records: Mutex::new(HashMap::new()),
             async_generations: Mutex::new(ProbeSummaryCache::new()),
             async_records: Mutex::new(ProbeSummaryCache::new()),
         })
@@ -131,9 +124,7 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         self,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        let Self { generations, records, async_generations, async_records, .. } = self;
-        drop(generations);
-        drop(records);
+        let Self { async_generations, async_records, .. } = self;
         let generations = async_generations.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
         let records = async_records.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
         let generations = generations.retire(accounting);
@@ -145,11 +136,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
     pub(crate) fn with_data_custody(mut self, custody: Option<&'a super::ProofDataCustody>) -> Self {
         self.data_custody = custody;
         self
-    }
-
-    fn validate_region(&self, region: &DependencyRegion) -> Result<FileId, ProbeFailure> {
-        self.validate_region_shape(region)
-            .map_err(|error| failed(error, WorkCounters::UNCHARGED))
     }
 
     fn validate_region_shape(&self, region: &DependencyRegion) -> Result<FileId, AuthenticatedProbeError> {
@@ -176,90 +162,6 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
             DependencyRegion::DirectoryName { directory_id, .. }
             | DependencyRegion::DirectoryRange { directory_id, .. } => *directory_id,
         })
-    }
-}
-
-impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
-    fn generation(
-        &self,
-        generation: GenerationId,
-        budget: WorkBudget,
-    ) -> Result<(GenerationRoot, WorkCounters), ProbeFailure> {
-        if let Some(root) = self
-            .generations
-            .lock()
-            .map_err(|_| {
-                failed(
-                    AuthenticatedProbeError::CachePoisoned,
-                    WorkCounters::default(),
-                )
-            })?
-            .get(&generation)
-            .cloned()
-        {
-            return Ok((root, WorkCounters::default()));
-        }
-        let object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
-        let receipt = self
-            .store
-            .read(object, self.limits.decode.maximum_object_bytes, budget)
-            .map_err(|failure| failed(failure.error.into(), *failure.work))?;
-        let root = decode_generation_root(&receipt.value, self.limits.decode, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
-            .map_err(|error| failed(error.into(), receipt.work))?;
-        let mut generations = self
-            .generations
-            .lock()
-            .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, receipt.work))?;
-        clear_at_capacity(&mut generations, self.limits.maximum_cached_generations);
-        generations.insert(generation, root.clone());
-        Ok((root, receipt.work))
-    }
-
-    fn record(
-        &self,
-        generation: GenerationId,
-        file_id: FileId,
-        budget: WorkBudget,
-    ) -> Result<(Option<FileRecord>, WorkCounters), ProbeFailure> {
-        if let Some(record) = self
-            .records
-            .lock()
-            .map_err(|_| {
-                failed(
-                    AuthenticatedProbeError::CachePoisoned,
-                    WorkCounters::default(),
-                )
-            })?
-            .get(&(generation, file_id))
-            .copied()
-        {
-            return Ok((record, WorkCounters::default()));
-        }
-        let (root, mut work) = self.generation(generation, budget)?;
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let lookup = lookup_file_record(
-            self.store,
-            root.file_table,
-            file_id,
-            self.limits.decode,
-            remaining,
-        )
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(lookup.work)
-            .map_err(|error| failed(error.into(), work))?;
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| failed(AuthenticatedProbeError::CachePoisoned, work))?;
-        clear_at_capacity(&mut records, self.limits.maximum_cached_records);
-        records.insert((generation, file_id), lookup.record);
-        Ok((lookup.record, work))
     }
 }
 
@@ -536,251 +438,6 @@ fn capture_encoded_state(
     }
     let value = DependencyState::Present(semantic_digest(domain, &encoded.value));
     Ok(ProbeReceipt { value, work })
-}
-
-impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
-    fn content_state(
-        &self,
-        record: FileRecord,
-        offset: u64,
-        length: u64,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        if let FilePayload::InlineRegular(data) = record.payload {
-            return Self::inline_content_state(data, offset, length, budget, work);
-        }
-        let FilePayload::Regular {
-            logical_bytes,
-            extents,
-        } = record.payload
-        else {
-            return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
-        };
-        let range = ByteRange { offset, length };
-        let hash_work = WorkCounters {
-            bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len())
-                .saturating_add(8)
-                .saturating_add(length),
-            ..WorkCounters::default()
-        };
-        let reserved = work
-            .checked_add(hash_work)
-            .map_err(|error| failed(error.into(), work))?;
-        reserved
-            .verify(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let remaining = reserved
-            .remaining(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let plan = plan_extent_range(
-            self.store,
-            super::ExtentRangeRequest {
-                root: extents,
-                file_size: logical_bytes,
-                range,
-                maximum_spans: self.limits.maximum_extent_spans,
-                limits: self.limits.decode,
-                budget: remaining,
-            },
-        )
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(plan.work)
-            .map_err(|error| failed(error.into(), work))?;
-        self.hash_content_spans(plan.spans, length, hash_work, budget, work)
-    }
-
-    fn sparse_seek_state(
-        &self,
-        record: FileRecord,
-        offset: u64,
-        target: ExtentSeekTarget,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let result = match record.payload {
-            FilePayload::InlineRegular(data) => inline_seek_result(data, offset, target),
-            FilePayload::Regular {
-                logical_bytes,
-                extents,
-            } if offset <= logical_bytes => {
-                let receipt = seek_extent(
-                    self.store,
-                    ExtentSeekRequest {
-                        root: extents,
-                        file_size: logical_bytes,
-                        offset,
-                        target,
-                        limits: self.limits.decode,
-                        budget: work
-                            .remaining(budget)
-                            .map_err(|error| failed(error.into(), work))?,
-                    },
-                )
-                .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                work = work
-                    .checked_add(receipt.work)
-                    .map_err(|error| failed(error.into(), work))?;
-                receipt.value
-            }
-            FilePayload::Regular { .. } => None,
-            FilePayload::Directory { .. }
-            | FilePayload::SymbolicLink { .. }
-            | FilePayload::Empty
-            | FilePayload::Device { .. }
-            | FilePayload::ReparsePoint { .. } => {
-                return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
-            }
-        };
-        capture_sparse_seek_state(target, result, budget, work)
-    }
-}
-
-impl<S> AuthenticatedGenerationProbe<'_, S> {
-    fn inline_content_state(
-        data: super::InlineFileData,
-        offset: u64,
-        length: u64,
-        budget: WorkBudget,
-        work: WorkCounters,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let end = offset.checked_add(length).ok_or_else(|| {
-            failed(
-                AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange),
-                work,
-            )
-        })?;
-        let bytes = data.as_bytes();
-        if end > usize_to_u64(bytes.len()) {
-            return Err(failed(
-                AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange),
-                work,
-            ));
-        }
-        let start = usize::try_from(offset).map_err(|_| {
-            failed(
-                AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange),
-                work,
-            )
-        })?;
-        let end = usize::try_from(end).map_err(|_| {
-            failed(
-                AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange),
-                work,
-            )
-        })?;
-        // `end <= bytes.len()` was checked above (as u64) before the usize
-        // conversions, and `start <= end` since `end = offset + length` with
-        // `length >= 0`, so this range is always in bounds.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "end <= bytes.len() checked above; start <= end since end = offset + length"
-        )]
-        hash_content_range(&bytes[start..end], budget, work)
-    }
-}
-
-impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
-    fn hash_content_spans(
-        &self,
-        spans: Vec<super::ExtentSlice>,
-        length: u64,
-        hash_work: WorkCounters,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(CONTENT_RANGE_DOMAIN);
-        hasher.update(&length.to_le_bytes());
-        for span in spans {
-            match span.kind {
-                ExtentKind::Hole | ExtentKind::AllocatedZero => {
-                    let mut remaining_zeroes = span.length;
-                    while remaining_zeroes != 0 {
-                        let count = usize::try_from(
-                            remaining_zeroes.min(usize_to_u64(ZERO_HASH_BLOCK.len())),
-                        )
-                        .unwrap_or(ZERO_HASH_BLOCK.len());
-                        // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
-                        // as computed immediately above (the `unwrap_or` branch
-                        // is itself `ZERO_HASH_BLOCK.len()`), so `count <=
-                        // ZERO_HASH_BLOCK.len()` always holds.
-                        #[allow(
-                            clippy::indexing_slicing,
-                            reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
-                        )]
-                        hasher.update(&ZERO_HASH_BLOCK[..count]);
-                        remaining_zeroes -= usize_to_u64(count);
-                    }
-                }
-                ExtentKind::Content {
-                    object,
-                    object_offset,
-                } => {
-                    let reserved = work
-                        .checked_add(hash_work)
-                        .map_err(|error| failed(error.into(), work))?;
-                    let remaining = reserved
-                        .remaining(budget)
-                        .map_err(|error| failed(error.into(), work))?;
-                    let read = read_blob_range(
-                        self.store,
-                        object,
-                        ByteRange {
-                            offset: object_offset,
-                            length: span.length,
-                        },
-                        self.limits.decode,
-                        remaining,
-                    )
-                    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                    work = work
-                        .checked_add(read.work)
-                        .map_err(|error| failed(error.into(), work))?;
-                    hasher.update(&read.bytes);
-                }
-            }
-        }
-        work = work
-            .checked_add(hash_work)
-            .map_err(|error| failed(error.into(), work))?;
-        work.verify(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        Ok(ProbeReceipt {
-            value: DependencyState::Present(Digest::from_bytes(*hasher.finalize().as_bytes())),
-            work,
-        })
-    }
-
-    fn directory_page_state(
-        &self,
-        record: FileRecord,
-        after: Option<&super::LogicalName>,
-        maximum_entries: u32,
-        budget: WorkBudget,
-        mut work: WorkCounters,
-    ) -> Result<ProbeReceipt, ProbeFailure> {
-        let FilePayload::Directory { entries } = record.payload else {
-            return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
-        };
-        let remaining = work
-            .remaining(budget)
-            .map_err(|error| failed(error.into(), work))?;
-        let page = list_tree_entries(
-            self.store,
-            entries,
-            after,
-            maximum_entries,
-            self.limits.decode,
-            remaining,
-        )
-        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        work = work
-            .checked_add(page.work)
-            .map_err(|error| failed(error.into(), work))?;
-        capture_directory_page_encoding(page.entries, page.has_more, maximum_entries, budget, work, self.data_custody, None)
-    }
 }
 
 struct ProbeSummaryCache<K, V> {
@@ -1263,81 +920,6 @@ impl<S: AsyncObjectStore> AsyncRebaseProbe for AuthenticatedGenerationProbe<'_, 
     ) -> Result<ProbeReceipt, OperationFailure<Self::Error>> {
         AuthenticatedGenerationProbe::probe_async(self, generation, region, budget, cancellation)
             .await
-    }
-}
-
-impl<S: crate::ImmediateObjectStore> RebaseProbe for AuthenticatedGenerationProbe<'_, S> {
-    type Error = AuthenticatedProbeError;
-
-    fn probe(
-        &self,
-        generation: GenerationId,
-        region: &DependencyRegion,
-        budget: WorkBudget,
-    ) -> Result<ProbeReceipt, OperationFailure<Self::Error>> {
-        let file_id = self.validate_region(region)?;
-        let (record, mut work) = self.record(generation, file_id, budget)?;
-        let Some(record) = record else {
-            return Ok(ProbeReceipt {
-                value: DependencyState::Absent,
-                work,
-            });
-        };
-        let value = match region {
-            DependencyRegion::FileRecord(_) => {
-                return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
-            }
-            DependencyRegion::Metadata(_) => DependencyState::Present(record.metadata.digest),
-            DependencyRegion::FileLength(_) => {
-                return capture_file_length_state(record, budget, work, self.data_custody, None);
-            }
-            DependencyRegion::DirectoryName { name, .. } => {
-                let FilePayload::Directory { entries } = record.payload else {
-                    return capture_file_record_state(record, budget, work, self.data_custody, 0, None);
-                };
-                let remaining = work
-                    .remaining(budget)
-                    .map_err(|error| failed(error.into(), work))?;
-                let lookup =
-                    lookup_tree_entry(self.store, entries, name, self.limits.decode, remaining)
-                        .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-                work = work
-                    .checked_add(lookup.work)
-                    .map_err(|error| failed(error.into(), work))?;
-                match lookup.entry {
-                    None => DependencyState::Absent,
-                    Some(entry) => {
-                        return capture_directory_name_state(&entry, budget, work, self.data_custody, 0, None);
-                    }
-                }
-            }
-            DependencyRegion::ContentRange { offset, length, .. } => {
-                return self.content_state(record, *offset, *length, budget, work);
-            }
-            DependencyRegion::SparseSeek { offset, target, .. } => {
-                return self.sparse_seek_state(record, *offset, *target, budget, work);
-            }
-            DependencyRegion::DirectoryRange {
-                after,
-                maximum_entries,
-                ..
-            } => {
-                return self.directory_page_state(
-                    record,
-                    after.as_ref(),
-                    *maximum_entries,
-                    budget,
-                    work,
-                );
-            }
-        };
-        Ok(ProbeReceipt { value, work })
-    }
-}
-
-fn clear_at_capacity<K: Eq + Hash, V>(map: &mut HashMap<K, V>, maximum: u32) {
-    if u32::try_from(map.len()).unwrap_or(u32::MAX) >= maximum {
-        map.clear();
     }
 }
 

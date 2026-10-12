@@ -11,8 +11,8 @@ use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
+#[tokio::test]
+async fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?;
@@ -23,9 +23,9 @@ fn original_table_encoding_denial_precedes_native_payload_and_backend_write()
     ).map_err(|(error, _)| error)?;
     let live = work.live_allocation_bytes();
     let mut accounting = super::super::allocation::KernelAccounting::native(&work, &cancellation);
-    let error = crate::async_storage::poll_immediate(apply_file_table_mutations_with_accounting(
+    let error = apply_file_table_mutations_with_accounting(
         &store, root, &mutations, 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    )).expect_err("original canonical encoder must refuse before producing payload bytes");
+    ).await.expect_err("original canonical encoder must refuse before producing payload bytes");
     assert!(matches!(error, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | crate::FsError::Work(_)));
     assert_eq!(work.receipt().bytes_encoded, 0);
     assert_eq!(work.receipt().page_writes, 0);
@@ -119,7 +119,7 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let FileTablePage::Internal(children) =
         decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -152,7 +152,7 @@ async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically(
         &crate::CancellationToken::new(),
     ).await?;
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -184,7 +184,7 @@ async fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     ).await?;
-    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
@@ -260,7 +260,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
     ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(root_bytes.len() <= 120);
     let FileTablePage::Internal(children) = decode_file_table_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {

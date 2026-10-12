@@ -1,6 +1,7 @@
 //! Native lifetime ownership in the existing session actor and task journals.
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::distributed::WorkPull;
 use acyclic_harness::{Error, Result as RootResult};

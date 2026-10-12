@@ -7656,7 +7656,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     HostCaptureScope::Subtree => capture_subtrees_with_native_work(
                         &mut candidate.checkout,
                         std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
-                        options, &crate::CapturePolicy::allow_all(),
+                        options, &crate::CapturePolicy::default(),
                         cancellation, baseline, &work,
                     ).await,
                 }.map_err(|failure| capture_mount_error(failure.error))
@@ -10408,7 +10408,7 @@ mod tests {
             "DATA, ReadAllocation, cleanup credit, original_work and demand keeper are not operative jobs");
         assert_eq!(*data, *b"retained");
         assert_eq!(result.bytes.as_ref(), b"original");
-        assert_eq!(demand.counters()?.backend_read_operations, 1);
+        assert_eq!(demand.with_original_leaf(|work| work.work)?.backend_read_operations, 1);
         assert!(credit.remaining_work().items_examined > 0);
         assert!(!local_stop.is_cancelled());
         assert_eq!(root.receipt().source_bytes_read, 8);

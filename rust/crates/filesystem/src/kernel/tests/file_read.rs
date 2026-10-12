@@ -238,8 +238,8 @@ fn zero_length_inline_read_at_eof_is_allocation_free() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
+#[tokio::test]
+async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = build_blob(
@@ -252,7 +252,8 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             maximum_blob_bytes: 10,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let extents = ExtentPage::Leaf(vec![
         Extent {
             offset: 0,

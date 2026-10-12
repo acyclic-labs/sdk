@@ -329,7 +329,9 @@ export function createFilesystemAdapter(extensions: {
         return adaptTransaction(await raw.beginTransaction(idempotencyKey));
       },
       async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-        requirePositiveInteger(maximumChanges, "maximum changes");
+        if (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0) {
+          throw new RangeError("maximum changes must be a positive safe integer");
+        }
         return adaptChangeSet(
           await raw.diff(rawGeneration(from), rawGeneration(to), maximumChanges),
         );
@@ -361,12 +363,6 @@ export function createFilesystemAdapter(extensions: {
     const raw = workspaceHandles.get(workspace);
     if (raw === undefined) throw new TypeError("workspace belongs to another filesystem runtime");
     return raw;
-  }
-
-  function requirePositiveInteger(value: number, label: string): void {
-    if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new RangeError(`${label} must be a positive safe integer`);
-    }
   }
 
   return { adaptFs, adaptWorkspace, adaptGeneration, rawWorkspace, adaptOperationWindows };
