@@ -432,7 +432,8 @@ mod tests {
         use crate::store::history::{HistoryIo as _, HistoryWork};
         let receipt = field_copy_receipt()?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut io = HistoryWork::new(field_copy_budget(), &cancellation);
+        let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+            field_copy_budget(), &cancellation)?);
         let (copied, retained) = receipt.clone_with_work_and_custody(&mut Some(&mut io))?;
         assert_eq!(copied, receipt);
         assert!(retained > 0);
@@ -442,12 +443,15 @@ mod tests {
         assert!(observed.work.bytes_copied > 0);
         assert_eq!(observed.work.bytes_encoded, 0);
         assert_eq!(observed.work.bytes_hashed, 0);
-        let mut denied = HistoryWork::new(
-            acyclic_fs::WorkBudget { items_examined: 0, ..field_copy_budget() }, &cancellation);
+        let mut denied =
+            crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+            acyclic_fs::WorkBudget { items_examined: 0, ..field_copy_budget() }, &cancellation)?);
         assert!(receipt.validate_shape(&mut Some(&mut denied)).is_err());
-        let mut partial = HistoryWork::new(
+        let mut partial =
+            crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
             acyclic_fs::WorkBudget { bytes_copied: receipt.child.id.len() as u64, ..field_copy_budget() },
-            &cancellation);
+            &cancellation,
+            )?);
         assert!(receipt.clone_with_work_and_custody(&mut Some(&mut partial)).is_err());
         partial.admit_owned(field_copy_budget().peak_allocation_bytes)?;
         Ok(())
@@ -461,17 +465,21 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(field_copy_budget(), &cancellation)
             .expect("original merge ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original merge observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original merge observer"),
+        );
         let (copied, retained) = receipt.clone_with_work_and_custody(&mut Some(&mut io))?;
         assert_eq!(copied, receipt);
-        let guard = io.into_custody();
+        let guard = io.into_custody()?;
         assert_eq!(guard.bytes(), retained);
         assert!(guard.work().shares_ledger(&native));
         assert_eq!(native.receipt().bytes_encoded, 0);
         assert_eq!(native.receipt().bytes_hashed, 0);
         drop(copied);
         drop(guard);
-        let mut io = crate::store::history::native_work_io(&native).expect("same merge observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("same merge observer"),
+        );
         let mut malformed = receipt.clone();
         malformed.source_project = malformed.target_project.clone();
         let before = native.receipt();
@@ -483,7 +491,7 @@ mod tests {
         assert!(receipt.clone_with_work_and_custody(&mut Some(&mut io)).is_err());
         assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(native.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         Ok(())
     }
 
@@ -498,10 +506,12 @@ mod tests {
         let baseline_token = CancellationToken::new();
         let baseline = NativeMaterializationWork::new(field_copy_budget(), &baseline_token)
             .expect("validation-only original ledger");
-        let mut baseline_io = crate::store::history::native_work_io(&baseline).expect("validation observer");
+        let mut baseline_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&baseline).expect("validation observer"),
+        );
         receipt.validate_shape(&mut Some(&mut baseline_io))?;
         let validation_copies = baseline.receipt().bytes_copied;
-        assert_eq!(baseline_io.into_custody().bytes(), 0);
+        assert_eq!(baseline_io.into_custody()?.bytes(), 0);
         let cancellation = CancellationToken::new();
         let budget = acyclic_fs::WorkBudget {
             bytes_copied: validation_copies + 4 + receipt.child.id.len() as u64,
@@ -509,13 +519,15 @@ mod tests {
         };
         let native = NativeMaterializationWork::new(budget, &cancellation)
             .expect("partial merge original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("partial merge observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("partial merge observer"),
+        );
         let held = io.clone_text("held")?;
         assert!(matches!(receipt.clone_with_work_and_custody(&mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
         assert_eq!(native.receipt().bytes_copied, budget.bytes_copied);
-        let guard = io.into_custody();
+        let guard = io.into_custody()?;
         assert_eq!(guard.bytes(), held.capacity() as u64);
         drop(held);
         drop(guard);
