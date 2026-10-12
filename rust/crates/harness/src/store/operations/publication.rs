@@ -359,7 +359,7 @@ impl IndexedPublication {
                 expected: self.expected_tail,
             }),
             Err(error)
-                if *sdk_source(&error) == acyclic_stream::StreamError::NotFound
+                if error == acyclic_stream::StreamError::NotFound
                     && self.expected_tail == 0 =>
             {
                 drop(error);
@@ -367,7 +367,7 @@ impl IndexedPublication {
                     path: self.path.clone(),
                 })
             }
-            Err(error) => Err(sdk_error(error, work)),
+            Err(error) => Err(crate::store::operations::stream_error_with_work(error, work)),
         }
     }
 

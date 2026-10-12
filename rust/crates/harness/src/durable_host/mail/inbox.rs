@@ -29,8 +29,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let bounds =
             match operations::bounds_with_work(&self.stream, mailbox.0.path(), &mut work).await? {
                 Ok(bounds) => bounds,
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
-                Err(error) => return Err(sdk_error(error, &work)),
+                Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &work)),
             };
         if after > bounds.tail {
             return Err(boundary(
@@ -51,8 +51,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 .await?
             {
                 Ok(records) => records,
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
-                Err(error) => return Err(sdk_error(error, &work)),
+                Err(error) if error == StreamError::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &work)),
             };
         let mut expected = after;
         let mut items = Vec::new();

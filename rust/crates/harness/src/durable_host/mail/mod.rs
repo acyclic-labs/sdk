@@ -1,7 +1,6 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
-use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
 use crate::filesystem::PreparationRecord as MailRecord;
@@ -500,13 +499,13 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                             expected: bounds.tail,
                         },
                     ),
-                    Err(error) if *sdk_source(&error) == StreamError::NotFound => (
+                    Err(error) if error == StreamError::NotFound => (
                         0,
                         CommitCondition::Absent {
                             path: mailbox.0.path().clone(),
                         },
                     ),
-                    Err(error) => return Err(sdk_error(error, &work)),
+                    Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &work)),
                 };
             if let Some(observer) = work.as_deref_mut() {
                 observer.hashed_bytes(bytes.len() as u64)?;
@@ -679,8 +678,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut records =
             match operations::read_records(&self.stream, location.0.path(), 0, 2, &mut work).await? {
                 Ok(records) => records,
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
-                Err(error) => return Err(sdk_error(error, &work)),
+                Err(error) if error == StreamError::NotFound => return Ok(false),
+                Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &work)),
             };
         let record = records.next(&mut work).await?.ok_or_else(|| {
             boundary(
@@ -736,7 +735,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         .await?
         {
             Ok(records) => records,
-            Err(error) => return Err(sdk_error(error, &work)),
+            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &work)),
         };
         let original = originals.next(&mut work).await?.ok_or_else(|| {
             boundary(

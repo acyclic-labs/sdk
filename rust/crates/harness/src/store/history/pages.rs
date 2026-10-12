@@ -215,7 +215,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             &mut work,
         )
         .await?
-        .map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         loop {

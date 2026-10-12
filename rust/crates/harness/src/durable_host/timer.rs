@@ -192,8 +192,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .await?
             {
                 Ok(bounds) => bounds.tail,
-                Err(error) if *crate::distributed::sdk_source(&error) == StreamError::NotFound => 0,
-                Err(error) => return Err(crate::distributed::sdk_error(error, work)),
+                Err(error) if error == StreamError::NotFound => 0,
+                Err(error) => return Err(crate::store::operations::stream_error_with_work(error, work)),
             };
         let mut after = 0;
         let mut found = false;
@@ -206,7 +206,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 work,
             )
             .await?
-            .map_err(|error| crate::distributed::sdk_error(error, work))?;
+            .map_err(|error| crate::store::operations::stream_error_with_work(error, work))?;
             let mut count = 0;
             while let Some(record) = page.next(work).await? {
                 count += 1;

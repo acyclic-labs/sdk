@@ -48,7 +48,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let tail =
             crate::store::operations::bounds_with_work(&owner.stream(), workflow.path(), &mut work)
                 .await?
-                .map_err(|error| crate::distributed::sdk_error(error, &work))?
+                .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?
                 .tail;
         let index = tail.checked_sub(1).ok_or_else(|| {
             admission_boundary(
@@ -157,7 +157,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut work,
         )
         .await?
-        .map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| {
             admission_boundary(
                 &work,
@@ -257,7 +257,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut records =
             crate::store::operations::read_records(&self.stream, workflow.path(), index, 1, &mut work)
                 .await?
-                .map_err(|error| crate::distributed::sdk_error(error, &work))?;
+                .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| {
             admission_boundary(
                 &work,
