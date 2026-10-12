@@ -1,4 +1,5 @@
 //! Stock workflow command dispatch through existing journaled executors.
+use crate::runtime::TaskSpawner as _;
 
 use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, task_runtime::WorkerContext};
 use crate::runtime::TaskStateProvider;
@@ -611,7 +612,7 @@ where
             let work = io.original_native_work().ok_or_else(|| boundary(
                 Some(io), ErrorCode::Unsupported, "native prepared admission requires original work"))?;
             if reconciliation_only {
-                let retained = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
+                let retained = crate::runtime::TaskSpawner::reconcile_admission_with_native_work(
                     self.runtime.task_host().as_ref(), request.admission.operation_id, work,
                 )?.await?;
                 io.absorb_native_custody(retained.1)?;
@@ -625,7 +626,7 @@ where
                     Some(io), ErrorCode::Invalid, "prepared admission custody overflows"))?;
             let admission = (request.admission, io.take_native_custody(bytes)?);
             let fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-            let result = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
+            let result = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                 self.runtime.task_host().as_ref(), admission, fence, work,
             )?.await?;
             io.absorb_native_custody(result.1)?;
@@ -818,7 +819,7 @@ where
                     task, context.scope(), work,
                 )?;
                 if reconciliation_only {
-                    let (retained, retained_custody) = crate::runtime::DurableTaskHost::reconcile_admission_with_native_work(
+                    let (retained, retained_custody) = crate::runtime::TaskSpawner::reconcile_admission_with_native_work(
                         self.runtime.task_host().as_ref(), operation, work,
                     )?.await?;
                     io.absorb_native_custody(retained_custody)?;
@@ -828,7 +829,7 @@ where
                     return mail::reconciled(Some(io));
                 }
                 let paid_fence = super::task_runtime::observed::clone_fence_with_custody(fence, io)?;
-                let (result, custody) = crate::runtime::DurableTaskHost::admit_owned_with_native_work(
+                let (result, custody) = crate::runtime::TaskSpawner::admit_owned_with_native_work(
                     self.runtime.task_host().as_ref(), admission, paid_fence, work,
                 )?.await?;
                 io.absorb_native_custody(custody)?;

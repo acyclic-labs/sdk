@@ -2849,7 +2849,74 @@ mod tests {
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
         assert_eq!(cursor.after_revision, 9_997);
         #[cfg(feature = "filesystem")]
-        assert_measured_history_receipts(&provider, &reader, &cursor, limits, &first).await?;
+        {
+            use acyclic_fs::{CancellationToken, WorkBudget};
+            use std::sync::atomic::Ordering;
+            let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
+            let budget = WorkBudget {
+                authority_records_read: 8, authority_bytes_read: bytes,
+                backend_read_operations: 8, source_bytes_read: bytes,
+                bytes_copied: bytes, output_bytes: bytes,
+                items_examined: 8, items_returned: 8,
+                allocation_operations: 8, peak_allocation_bytes: bytes,
+                ..WorkBudget::default()
+            };
+            let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
+                budget: WorkBudget, cancellation: &CancellationToken| {
+                let mut work = HistoryWork::new(budget, cancellation);
+                let result = async {
+                    work.preflight()?;
+                    reader.read_page(cursor, limits, Some(&mut work)).await
+                }.await;
+                work.finish(result)
+            };
+            let cancellation = CancellationToken::new();
+            let page = read(&cursor, limits, budget, &cancellation).await
+                .map_err(|failure| failure.error)?;
+            assert_eq!(page.value, first);
+            for fault in 1..=6 {
+                provider.history_read_fault.store(fault, Ordering::SeqCst);
+                assert!(read(&cursor,
+                    HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
+                ).await.is_err());
+                assert_eq!(read(&cursor, limits, budget, &cancellation).await
+                    .map_err(|failure| failure.error)?.value, first);
+            }
+            for narrow in [
+                WorkBudget { backend_read_operations: 0, ..budget },
+                WorkBudget { authority_bytes_read: 0, ..budget },
+                WorkBudget { output_bytes: 0, ..budget },
+                WorkBudget { peak_allocation_bytes: 0, ..budget },
+            ] {
+                assert!(read(&cursor, limits, narrow, &cancellation).await.is_err());
+            }
+            let invalid = HistoryCursor {
+                authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
+            };
+            assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
+                Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            assert!(async {
+                let mut work = HistoryWork::new(budget, &cancelled);
+                work.preflight()?;
+                reader.pin(0, Some(&mut work)).await
+            }.await.is_err());
+            assert!(read(&cursor, limits, budget, &cancelled).await.is_err());
+            assert!(async {
+                let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
+                work.preflight()?;
+                reader.pin(0, Some(&mut work)).await
+            }.await.is_err());
+            let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
+            assert!(read(&terminal, limits, budget, &cancellation).await
+                .map_err(|failure| failure.error)?.value.events.is_empty());
+            let during_tail = CancellationToken::new();
+            *provider.history_cancel_after_tail.lock()
+                .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
+                Some(during_tail.clone());
+            assert!(read(&cursor, limits, budget, &during_tail).await.is_err());
+        }
         let encoded =
             serde_json::to_vec(&first.cursor).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(
@@ -2889,92 +2956,7 @@ mod tests {
             reader.read_page(&invalid, limits, None).await,
             Err(Error::Unauthorized(_))
         ));
-        assert_cold_operation_lookup(&reader, last).await?;
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    async fn assert_measured_history_receipts(
-        provider: &crate::test_stream::LostSessionAck<MemoryStream>,
-        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
-        cursor: &HistoryCursor,
-        limits: HistoryReadLimits,
-        expected: &HistoryPage,
-    ) -> Result<()> {
-        use acyclic_fs::{CancellationToken, WorkBudget};
-        use std::sync::atomic::Ordering;
-        let bytes = acyclic_stream::MAX_RECORD_BYTES as u64 * 4;
-        let budget = WorkBudget {
-            authority_records_read: 8, authority_bytes_read: bytes,
-            backend_read_operations: 8, source_bytes_read: bytes,
-            bytes_copied: bytes, output_bytes: bytes,
-            items_examined: 8, items_returned: 8,
-            allocation_operations: 8, peak_allocation_bytes: bytes,
-            ..WorkBudget::default()
-        };
-        let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
-            budget: WorkBudget, cancellation: &CancellationToken| {
-            let mut work = HistoryWork::new(budget, cancellation);
-            let result = async {
-                work.preflight()?;
-                reader.read_page(cursor, limits, Some(&mut work)).await
-            }.await;
-            work.finish(result)
-        };
-        let cancellation = CancellationToken::new();
-        let page = read(cursor, limits, budget, &cancellation).await
-            .map_err(|failure| failure.error)?;
-        assert_eq!(&page.value, expected);
-        for fault in 1..=6 {
-            provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(read(cursor,
-                HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
-            ).await.is_err());
-            assert_eq!(read(cursor, limits, budget, &cancellation).await
-                .map_err(|failure| failure.error)?.value, *expected);
-        }
-        for narrow in [
-            WorkBudget { backend_read_operations: 0, ..budget },
-            WorkBudget { authority_bytes_read: 0, ..budget },
-            WorkBudget { output_bytes: 0, ..budget },
-            WorkBudget { peak_allocation_bytes: 0, ..budget },
-        ] {
-            assert!(read(cursor, limits, narrow, &cancellation).await.is_err());
-        }
-        let invalid = HistoryCursor {
-            authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
-        };
-        assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
-            Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(async {
-            let mut work = HistoryWork::new(budget, &cancelled);
-            work.preflight()?;
-            reader.pin(0, Some(&mut work)).await
-        }.await.is_err());
-        assert!(read(cursor, limits, budget, &cancelled).await.is_err());
-        assert!(async {
-            let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            work.preflight()?;
-            reader.pin(0, Some(&mut work)).await
-        }.await.is_err());
-        let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
-        assert!(read(&terminal, limits, budget, &cancellation).await
-            .map_err(|failure| failure.error)?.value.events.is_empty());
-        let during_tail = CancellationToken::new();
-        *provider.history_cancel_after_tail.lock()
-            .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
-            Some(during_tail.clone());
-        assert!(read(cursor, limits, budget, &during_tail).await.is_err());
-        Ok(())
-    }
-
-    async fn assert_cold_operation_lookup(
-        reader: &HistoryReader<crate::test_stream::LostSessionAck<MemoryStream>>,
-        expected: crate::core::Event,
-    ) -> Result<()> {
-        assert_eq!(reader.operation_event(expected.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?, Some(expected));
+        assert_eq!(reader.operation_event(last.operation_id, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?, Some(last));
         assert!(reader.operation_event(OperationId::new(), 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?.is_none());
         Ok(())
     }
