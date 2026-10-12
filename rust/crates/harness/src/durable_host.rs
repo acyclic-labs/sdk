@@ -1295,14 +1295,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 #[cfg(target_arch = "wasm32")]
                 self.validate_input_file(checkpoint, None)?;
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(native) = native.as_ref() {
-                self.verify_with_native_work(false, native).await?;
+            if self.verify_original_read_witness()? {
+                self.verify_read_access(quota.work()).await?;
             } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(native) = native.as_ref() {
+                    self.verify_with_native_work(false, native).await?;
+                } else {
+                    self.verify(false, &mut None).await?;
+                }
+                #[cfg(target_arch = "wasm32")]
                 self.verify(false, &mut None).await?;
             }
-            #[cfg(target_arch = "wasm32")]
-            self.verify(false, &mut None).await?;
             self.host.coordinator.lock().await.scheduler()
                 .session_limits(self.operation_id(), &mut None)?.validate(quota.work())?;
             let admission = self.host.admission_with_work(self.operation_id(), quota.work()).await?;

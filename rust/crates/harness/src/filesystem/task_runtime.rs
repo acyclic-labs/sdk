@@ -1017,10 +1017,13 @@ where
         let (owner, request) = self.host.readonly_fork_journal_owner_with_native_work(
             &witness, query, claim, work,
         )?.await?;
-        let preparation = owner.resource_preparation_reconciliation_with_native_work(
-            query, request, work,
-        )?.await?;
-        Ok(Some(preparation))
+        let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native preparation has no original metadata custody",
+        })?.absorb(&mut header).map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+        Ok(Some(Arc::new(preparation)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
