@@ -85,7 +85,7 @@ async fn native_frozen_reader_pins_epoch_cursor_and_never_promotes_source() -> s
     assert!(workspace.read_at_snapshot_measured(forged, "/a.txt", 1, budget, &cancellation).await.is_err());
     workspace.workspace().write_text("/authored.txt", "immutable-authored").await?;
     let authored_frozen = workspace.snapshot().await?;
-    source.invalidate();
+    source.invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))?;
     assert!(workspace.read_at_snapshot_measured(frozen, "/a.txt", 1, budget, &cancellation).await.is_err());
     assert_eq!(workspace.read_at_snapshot_measured(authored_frozen, "/authored.txt", 1024,
         budget, &cancellation).await?.value.as_ref(), b"immutable-authored");
@@ -297,7 +297,7 @@ async fn selected_import_does_not_infer_deletion_from_a_stale_native_source() ->
     let portable = acyclic_fs::path::PortablePath::parse("/absent.txt", source.workspace().limits())?;
     let paths = [acyclic_fs::kernel::NamespacePath::from_portable_in_profile(&portable,
         source.workspace().profile(), source.workspace().limits())?];
-    native.invalidate();
+    native.invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))?;
     let cancellation = acyclic_fs::CancellationToken::new();
     assert!(source.prepare_selected_import_measured(frozen, &paths,
         crate::native_root_source::budget(), &cancellation).await.is_err());

@@ -16,12 +16,11 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
-use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::BTreeSet,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -32,7 +31,6 @@ mod finite_binding;
 mod drain;
 mod publication_observation;
 pub use drain::NativeProcessDrainProof;
-use drain::NativeCleanupControl;
 use finite_execution::execute;
 
 impl NativeProcessRequest {
@@ -130,8 +128,7 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
     plan: Arc<TaskEffectPlan>,
-    admission: NativeAdmission,
-    view: Option<Arc<dyn NativeProcessView<P>>>,
+    invocation: Option<Invocation<P>>,
     approval: InteractionId,
     authority: Arc<NativeProcessAuthority>,
     supervisor: Arc<NativeSupervisorControl>,
@@ -141,14 +138,11 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
 }
 
-enum NativeAdmission {
-    Executable {
-        request: Arc<NativeProcessRequest>,
-        result_schema: Arc<serde_json::Value>,
-        approval_digest: [u8; 32],
-    },
-    /// A protected past attempt is observable but never executable.
-    ReceiptOnly,
+struct Invocation<P: StreamProvider> {
+    view: Arc<dyn NativeProcessView<P>>,
+    request: Arc<NativeProcessRequest>,
+    result_schema: Arc<serde_json::Value>,
+    approval_digest: [u8; 32],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -163,7 +157,7 @@ enum NativeCapturePhase {
 
 struct NativeActiveAttempt {
     attempt: crate::EffectAttemptId,
-    stop_requested: AtomicBool,
+    stop_requested: bool,
     capture: NativeCapturePhase,
     completed: bool,
 }
@@ -187,17 +181,13 @@ impl NativeSupervisorControl {
     }
 
     fn settle_process(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-        cleanup: Option<&NativeCleanupControl<'_>>,
+        &self, original: &acyclic_fs::NativeMaterializationWork,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let mut retained = self.process.lock().map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason: "original supervisor process custody is poisoned",
         })?;
         if let Some(retained) = retained.as_mut() {
-            let original = match cleanup {
-                Some(control) => control.original_work_for(self, work)?,
-                None => work,
-            };
             if !retained._custody.work().shares_ledger(original) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "original supervisor tree belongs to another work family" });
@@ -220,7 +210,7 @@ impl NativeSupervisorControl {
             return Err(receipt_error("native provider already owns an original supervisor"));
         }
         *active = Some(NativeActiveAttempt {
-            attempt, stop_requested: AtomicBool::new(false),
+            attempt, stop_requested: false,
             capture: NativeCapturePhase::Pending, completed: false,
         });
         Ok(())
@@ -250,7 +240,7 @@ impl NativeSupervisorControl {
         let active = self.active.lock()
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
         let active = active.as_ref().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Other))?;
-        if active.stop_requested.load(Ordering::Acquire) {
+        if active.stop_requested {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
         Ok(())
@@ -402,14 +392,14 @@ where
             return Err(receipt_error("native stop requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, ||
-            self.signal_stop_original(attempt, work, cleanup_cancellation, None))?.await
+            self.signal_stop_original(attempt, work, cleanup_cancellation, work))?.await
     }
 
     async fn signal_stop_original(
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-        cleanup: Option<&NativeCleanupControl<'_>>,
+        original: &acyclic_fs::NativeMaterializationWork,
     ) -> std::result::Result<(), Error> {
         cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         work.charge(acyclic_fs::WorkCounters {
@@ -419,20 +409,20 @@ where
         self.authenticate_cleanup_owner(work).await?;
         cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         if completed {
-            self.supervisor.settle_process(work, cleanup)?;
+            self.supervisor.settle_process(original, work)?;
             return Ok(());
         }
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
         })?;
-        let active = self.supervisor.active.lock()
+        let mut active = self.supervisor.active.lock()
             .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
-        let active = active.as_ref()
+        let active = active.as_mut()
             .ok_or(receipt_error("original owned supervisor disappeared"))?;
         if active.attempt != attempt {
             return Err(receipt_error("stop attempt differs from the original owned supervisor"));
         }
-        if !active.completed { active.stop_requested.store(true, Ordering::Release); }
+        if !active.completed { active.stop_requested = true; }
         Ok(())
     }
 
@@ -446,7 +436,7 @@ where
             return Err(receipt_error("native stop wait requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async {
-            let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, None).await?;
+            let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, work).await?;
             let receipt = self.receipt(attempt, work, None).await?
                 .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
@@ -464,15 +454,10 @@ where
         attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-        cleanup: Option<&NativeCleanupControl<'_>>,
+        original: &acyclic_fs::NativeMaterializationWork,
     ) -> std::result::Result<NativeCapturePhase, Error> {
-        self.signal_stop_original(attempt, work, cleanup_cancellation, cleanup).await?;
-        let poll_ms = match &self.admission {
-            NativeAdmission::Executable { request, .. } => request.cancellation_poll_ms,
-            NativeAdmission::ReceiptOnly => return Err(receipt_error(
-                "receipt-only recovery owns no original supervisor",
-            )),
-        };
+        self.signal_stop_original(attempt, work, cleanup_cancellation, original).await?;
+        let poll_ms = self.invocation()?.request.cancellation_poll_ms;
         loop {
             let notified = self.supervisor.completion.notified();
             tokio::pin!(notified);
@@ -485,7 +470,7 @@ where
             if completed {
                 if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
                     self.authenticate_cleanup_owner(work).await?;
-                    self.supervisor.settle_process(work, cleanup)?;
+                    self.supervisor.settle_process(original, work)?;
                 }
                 return Ok(self.supervisor.snapshot(attempt)?.1);
             }
@@ -501,7 +486,7 @@ where
         &self,
         attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<crate::conversation::FileRef>> {
-        let (request, result_schema, _) = self.executable_admission()?;
+        let Invocation { request, result_schema, .. } = self.invocation()?;
         let Some(receipt) = self.receipt(attempt, work, None).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
         let reference = match receipt.effect.status {
@@ -520,7 +505,7 @@ where
             let bytes = self.authority.result_content.read_with_native_work(
                 reference, u64::from(request.maximum_result_bytes), work)?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
-            let value = io.decode_preparation_with_code::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
+            let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
             crate::contract::validate_json_schema_value(result_schema, &value.value,
                 "native process result", Some(&io))?;
         }
@@ -556,13 +541,11 @@ where
         finite_binding::require_family(Some(&self._native_work), work)
     }
 
-    fn executable_admission(&self) -> Result<(&Arc<NativeProcessRequest>, &Arc<serde_json::Value>, [u8; 32])> {
-        match &self.admission {
-            NativeAdmission::Executable { request, result_schema, approval_digest } =>
-                Ok((request, result_schema, *approval_digest)),
-            NativeAdmission::ReceiptOnly => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "receipt-only native recovery has no dispatch or result-loading capability" }),
-        }
+    fn invocation(&self) -> Result<&Invocation<P>> {
+        self.invocation.as_ref().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "receipt-only recovery owns no executable invocation",
+        })
     }
 
 }
@@ -604,10 +587,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (EffectObservation, acyclic_fs::NativeAllocation)>> {
         finite_dispatch::require_finite(work)?;
         self.require_work_family(work)?;
-        let view = self.view.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "receipt-only native recovery has no dispatch capability",
-        })?;
+        let view = &self.invocation()?.view;
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         let payload = finite_dispatch::dispatch_payload(request, work)?;

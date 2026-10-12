@@ -177,7 +177,7 @@ impl<'a> PiWorkflowHost<'a> {
         &self, mut checkpoint: (MachineCheckpoint, acyclic_fs::NativeAllocation),
         operation: acyclic_harness::OperationId,
     ) -> acyclic_harness::Result<Option<(Value, acyclic_fs::NativeAllocation)>> {
-        let mut parsed = pi_task::control_reply_owned(
+        let mut parsed = pi_task::control_reply(
             std::mem::take(&mut checkpoint.0.state), &self.work,
         )?;
         if let Err(cause) = checkpoint.1.absorb(&mut parsed.1) {

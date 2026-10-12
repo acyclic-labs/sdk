@@ -65,7 +65,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes)?.into_retained()); }
+    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -443,7 +443,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
+        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 

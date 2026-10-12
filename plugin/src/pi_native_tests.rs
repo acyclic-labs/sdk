@@ -474,7 +474,7 @@ fn actual_native_artifact_codec_keeps_original_ledger_and_stable_upload_identity
     assert!(work.receipt().bytes_copied >= encoded.bytes.len() as u64);
     assert_eq!(work.receipt().allocation_operations - before.allocation_operations, 1,
         "only the SDK's genuine output Vec reservation is an allocator operation");
-    let alias = work.native_mount_work().native_materialization_work();
+    let alias = work.clone();
     assert!(alias.retain_owned(0).unwrap().shares_ledger(&original));
     let command = OperationId::from_bytes([91; 16]);
     for role in ["request", "schema", "plan"] {
@@ -559,7 +559,7 @@ fn native_entry_identity_ordering_stops_on_the_original_error_without_allocator_
 async fn native_callback_preserves_the_whole_original_root_cause_and_denies_before_its_builder() {
     let cancellation = CancellationToken::new();
     let work = pi_meter(super::super::native_root_source::budget(), &cancellation).unwrap();
-    let header = work.native_mount_work();
+    let header = work.clone();
     let baseline = work.live_allocation_bytes();
     let denied = CancellationToken::new();
     denied.cancel();

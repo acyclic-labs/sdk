@@ -5,7 +5,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{McpToolTransport, callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
     conversation::Limits,
@@ -34,9 +34,7 @@ impl ModelProvider for ByteModel {
         let text = format!("recorded:{last:?}");
         Box::pin(futures::stream::iter([Ok(ModelEvent::Content { delta: text }), Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }

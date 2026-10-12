@@ -151,12 +151,7 @@ const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
         "recipient", "payload",
     ]);
 
-trait NativeMailboxDto: serde::de::DeserializeOwned {}
-impl NativeMailboxDto for PiMailEnvelope {}
-impl NativeMailboxDto for PiMailPayload {}
-impl NativeMailboxDto for MailSendTaskCommand {}
-
-fn decode<T: NativeMailboxDto>(
+fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,

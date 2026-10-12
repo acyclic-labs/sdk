@@ -1106,7 +1106,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 },
                 generation: generation.generation.clone_with_io(&io)?,
                 native_snapshot: match &chosen.native_snapshot {
-                    Some(value) => Some(crate::executor::stock_value_copy(value, Some(&io))?),
+                    Some(value) => Some(crate::model::clone_value(value, Some(&io))?),
                     None => None,
                 },
             };
@@ -1247,7 +1247,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     },
                     generation: generation.clone_with_io(&io)?,
                     native_snapshot: source_owner.native_snapshot.as_ref()
-                        .map(|value| crate::executor::stock_value_copy(value, Some(&io))).transpose()?,
+                        .map(|value| crate::model::clone_value(value, Some(&io))).transpose()?,
                 };
                 Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
                     arguments.source, context.operation_id(), &snapshot,
@@ -1385,7 +1385,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         };
         let retained = context.read_file_with_native_work(&source_checkpoint, work).await?;
-        let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref())?.into_retained();
+        let capture = io.decode_preparation::<SourceCheckpoint>(retained.as_ref(), crate::wire::ErrorCode::Storage)?.into_retained();
         if capture.caller != caller.task || capture.arguments != *arguments || capture.request != intent.request {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native published checkpoint differs from immutable source intent" });
@@ -1481,7 +1481,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
             let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
-            let capture = io.decode_preparation::<SourceCheckpoint>(&retained)?.into_retained();
+            let capture = io.decode_preparation::<SourceCheckpoint>(&retained, crate::wire::ErrorCode::Storage)?.into_retained();
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native preparation checkpoint changed original caller or request" });

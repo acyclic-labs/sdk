@@ -133,7 +133,7 @@ impl ExecutionSummary {
                 .and_then(Option::as_ref)
                 .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "model dispatch is already settled"))?
-                .validate_next_with_io(
+                .validate_next(
                     model.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Storage,
                         "model observation is missing"))?,
                     limits, io,
@@ -201,7 +201,7 @@ impl ExecutionSummary {
                     .as_mut()
                     .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                         "model dispatch is already settled"))?;
-                admission.observe_with_io(
+                admission.observe(
                     model.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Storage,
                         "model observation is missing"))?,
                     limits, io,
@@ -749,7 +749,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut history = io.map(PreparationIo::history_io);
         limits.validate_file_with_work(projection, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
-        let projection = crate::executor::load_preparation_json::<
+        let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
         crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
         let Some(reference) = &projection.checkpoint else {
@@ -762,9 +762,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut history = io.map(PreparationIo::history_io);
         limits.validate_file_with_work(reference, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
-        let envelope = crate::executor::load_preparation_json::<
+        let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
-        envelope.validate_with_io(limits, io)?;
+        envelope.validate(limits, io)?;
         if *step != 0
             || envelope.operation_id != operation_id
             || projection.canonical.as_ref() != Some(&envelope.source)
@@ -773,13 +773,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                 "canonical publication differs from its envelope"));
         }
-        let source = crate::executor::load_preparation_json::<crate::context::Context>(
+        let source = crate::executor::load_json::<crate::context::Context>(
             self, &envelope.source, io).await?;
-        let retained = crate::executor::load_preparation_json::<crate::context::Context>(
+        let retained = crate::executor::load_json::<crate::context::Context>(
             self, &envelope.retained, io).await?;
-        let proof = crate::executor::load_preparation_json::<crate::context::CompactionReference>(
+        let proof = crate::executor::load_json::<crate::context::CompactionReference>(
             self, compaction, io).await?;
-        envelope.validate_projection_with_io(&source, &retained, &proof, limits, io)?;
+        envelope.validate_projection(&source, &retained, &proof, limits, io)?;
         self.verify_canonical_source_with_io(&envelope, &source, limits, io).await?;
         self.verify_canonical_summary_with_io(operation_id, &envelope, &source, &proof, limits, io).await
     }
@@ -829,7 +829,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 drop(association_hold);
             }
             let previous = match &envelope.selection.checkpoint {
-                Some(reference) => Some(crate::executor::load_canonical_checkpoint_scoped(
+                Some(reference) => Some(crate::executor::load_canonical_checkpoint(
                     self, reference, limits, None, io).await?),
                 None => None,
             };
@@ -885,7 +885,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let delta = project_canonical_delta_with_io(
                 self, loaded, &envelope.selection, verifier.as_ref(), limits, io).await?;
             let expected = match previous {
-                Some((_, retained)) => crate::context::ContextPipeline::continue_base_with_io(
+                Some((_, retained)) => crate::context::ContextPipeline::continue_base(
                     retained, delta, limits, io)?,
                 None => delta,
             };
@@ -925,7 +925,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let summary = proof.summary.as_ref().filter(|summary| summary.step == 0)
                 .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                     "canonical summary belongs to another step"))?;
-            let (_, records) = crate::executor::replay_execution_with_io(
+            let (_, records) = crate::executor::replay_execution(
                 self, operation, limits.model_events_per_step.saturating_add(2),
                 |event| matches!(event,
                     ExecutionEvent::ContextPrepared { step: 0, .. }
@@ -941,17 +941,17 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 super::fork_preparer_io::item(io, 0)?;
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
-                        prepared = Some(crate::executor::load_preparation_json::<
+                        prepared = Some(crate::executor::load_json::<
                             crate::executor::ResponseProjection>(self, projection, io).await?);
                     }
                     ExecutionEvent::ModelStarted { request: reference, .. } => {
-                        request = Some(crate::executor::load_model_request_with_io(
+                        request = Some(crate::executor::load_model_request(
                             self, reference, limits, io).await?);
                     }
                     ExecutionEvent::Model { event, .. } => {
-                        let event = crate::executor::load_preparation_json::<ModelEvent>(
+                        let event = crate::executor::load_json::<ModelEvent>(
                             self, event, io).await?;
-                        admission.observe_with_io(&event, limits, io)?;
+                        admission.observe(&event, limits, io)?;
                         match &*event {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
@@ -986,7 +986,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     bytes
                 }
                 Some(io) => io.receive_content(self.load_measured(
-                    &summary.output, io.remaining()?, &io.cancellation).await)?,
+                    &summary.output, io.remaining()?, io.cancellation()).await)?,
                 None => self.load(&summary.output).await?,
             };
             if let Some(io) = io { io.check_cancellation()?; }
@@ -1017,9 +1017,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(tail), key, operation_id,
-                    "execution journal retry identity", &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(tail), key, operation_id, &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(tail), Some(key)).await
@@ -1570,7 +1569,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => io.decode_preparation::<Observation>(&record.value)?.into_retained(),
+                Some(io) => io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1712,7 +1711,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes)?;
+                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.value, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
@@ -2694,12 +2693,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         &history, selection.conversation_revision, selection, resolver,
         limits.context_messages, limits.attachments, limits.render_bytes, limits.attachments, io,
     ).await?;
-    let input = crate::model::model_content_clone_with_io(&selected.messages.last()
-        .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-            "canonical input is missing"))?.content, io)?;
+    let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&selected.messages.last().ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid, "canonical input is missing"))?.content, work).map(|(copy, _)| copy))?;
     let mut selected_delta = selected;
     selected_delta.selection.checkpoint = None;
-    crate::context::ContextPipeline::base_context_with_io(
+    crate::context::ContextPipeline::base_context(
         &crate::context::ContextInput {
             input, selected_context: Some(selected_delta), step: 0, prior_messages: Vec::new(),
         }, limits, io,
@@ -2791,7 +2788,7 @@ mod tests {
             reopened.replay(turn, 0, 1).await,
             Err(Error::Unauthorized(_))
         ));
-        let summary_operation = ModelPurpose::Summary.attempt_operation(operation);
+        let summary_operation = ModelPurpose::Summary.attempt_operation(operation, None)?;
         assert_ne!(summary_operation, operation);
         for mutation in [
             "wrong_execution",
@@ -3047,7 +3044,7 @@ mod tests {
                     step: 0,
                     prior_messages: Vec::new(),
                 },
-                limits,
+                limits, None,
             )
         }
         let history = aggregate
