@@ -703,7 +703,7 @@ fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
     )
 }
 
-fn object_fault(error: impl Into<String>) -> ObjectFailure {
+fn object_fault(error: &'static str) -> ObjectFailure {
     ObjectFailure::before_work(ObjectStoreError::Rejected(error.into()))
 }
 
@@ -758,16 +758,6 @@ fn intercept_authority(
     select_authority_fault(state, operation).map_err(AuthorityFailure::before_work)
 }
 
-fn intercept_object(
-    state: &Mutex<State>,
-    operation: SimulationOperation,
-) -> Result<Option<SimulationFault>, ObjectFailure> {
-    let mut state = state
-        .lock()
-        .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Corrupt))?;
-    state.intercept(operation).map_err(object_fault)
-}
-
 fn check_authority_fault(fault: Option<SimulationFault>) -> Result<(), AuthorityStoreError> {
     match fault {
         Some(SimulationFault::RejectBefore) => {
@@ -782,14 +772,6 @@ fn check_authority_fault(fault: Option<SimulationFault>) -> Result<(), Authority
 
 fn reject_authority(fault: Option<SimulationFault>) -> Result<(), AuthorityFailure> {
     check_authority_fault(fault).map_err(AuthorityFailure::before_work)
-}
-
-fn reject_object(fault: Option<SimulationFault>) -> Result<(), ObjectFailure> {
-    match fault {
-        Some(SimulationFault::RejectBefore) => Err(object_fault("scheduled rejection")),
-        Some(SimulationFault::PartitionBefore) => Err(object_fault("scheduled partition")),
-        _ => Ok(()),
-    }
 }
 
 impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
@@ -1571,8 +1553,16 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let fault = intercept_object(&self.state, SimulationOperation::ObjectContains)?;
-        reject_object(fault)?;
+        let fault = {
+            let mut state = self.state.lock()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Corrupt))?;
+            state.intercept(SimulationOperation::ObjectContains).map_err(object_fault)?
+        };
+        match fault {
+            Some(SimulationFault::RejectBefore) => return Err(object_fault("scheduled rejection")),
+            Some(SimulationFault::PartitionBefore) => return Err(object_fault("scheduled partition")),
+            _ => {}
+        }
         self.inner.contains(object_id, budget, cancellation).await
     }
 }

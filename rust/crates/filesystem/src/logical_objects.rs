@@ -180,15 +180,6 @@ fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) 
     ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow))
 }
 
-fn completed_read_bytes(result: &Result<Object, ObjectStoreError>) -> Result<u64, WorkError> {
-    match result {
-        Ok(value) => Ok(value.body().len() as u64),
-        #[cfg(not(target_arch = "wasm32"))]
-        Err(ObjectStoreError::NativeObjects(error)) => native_completed_read_bytes(error),
-        Err(_) => Ok(0),
-    }
-}
-
 fn read_retention(bytes: &OwnedBytes, accounting: &KernelAccounting<'_>) -> ObjectReadRetention {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = accounting.native_work() {
@@ -412,7 +403,12 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 result
             }
         };
-        let observed = completed_read_bytes(&result)?;
+        let observed = match &result {
+            Ok(value) => value.body().len() as u64,
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(ObjectStoreError::NativeObjects(error)) => native_completed_read_bytes(error)?,
+            Err(_) => 0,
+        };
         let read_completion = accounting.record_completed(WorkCounters {
             object_bytes_read: observed, ..WorkCounters::UNCHARGED
         });
@@ -965,14 +961,8 @@ fn read_request(
         &mut custody, bucket_bytes, bucket.name.capacity() as u64);
     copied?;
     reconciled?;
-    let mut family_storage = [0_u8; 3];
-    let mut family = std::io::Cursor::new(family_storage.as_mut_slice());
-    std::io::Write::write_fmt(&mut family, format_args!("{}", object_id.kind.canonical_tag()))
-        .map_err(ObjectStoreError::Io)?;
-    let family_bytes = family.position() as usize;
-    let family = std::str::from_utf8(&family.get_ref()[..family_bytes])
-        .map_err(|_| ObjectStoreError::Corrupt)?;
-    let key_bytes = "fs/v1/".len() + family.len() + "/".len() + 64;
+    let family = object_id.kind.canonical_tag();
+    let key_bytes = "fs/v1/".len() + family.ilog10() as usize + 1 + "/".len() + 64;
     let key_copy = WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED };
     accounting.admit(key_copy)?;
     let mut key_custody = accounting.claim_owned(key_bytes as u64, 1)?;
