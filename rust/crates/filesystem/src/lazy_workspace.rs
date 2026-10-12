@@ -5283,8 +5283,7 @@ where
                                     if let Some(source_used) = basis.source_used {
                                         source_used.store(true, std::sync::atomic::Ordering::Release);
                                     }
-                                    self.source.lookup_with_native_work(state.source, &path,
-                                        crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+                                    self.source.lookup(state.source, &path, original, cancellation).await
                                 },
                             ).await;
                             match result {
@@ -5597,7 +5596,8 @@ where
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         work: crate::demand::NativeSourceWork<'_>,
     ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
-        self.source.watch_with_native_work(sink, work).map_err(LazyWorkspaceError::from)
+        let original = work.materialization_work()?;
+        self.source.watch(sink, &original, original.cancellation()).map_err(LazyWorkspaceError::from)
     }
 
     /// Direct identity of the resolved fact.
@@ -6215,10 +6215,9 @@ where
             return Err((LazyWorkspaceError::NotRegularFile, None));
         }
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.open_file_with_native_work(
+            self.source.open_file(
                 source, &path, node.version,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await
+                original, cancellation).await
         }).await
     }
 
@@ -6366,7 +6365,7 @@ where
                     let receipt = self.source_request_measured(path, budget, cancellation, |path, budget| async move {
                         match range {
                             Some(range) => self.source.read_range(source, &path, node.version, range.offset, range.length, budget, cancellation).await,
-                            None => self.source.read_link(source, &path, node.version, budget, cancellation).await,
+                            None => self.source.read_link(source, &path, node.version, u64::MAX, budget, cancellation).await,
                         }
                     }).await;
                     accept_directory_work(receipt, &mut work, &allocations)?
@@ -6665,9 +6664,7 @@ where
                             Some(offset) => self.source.read_range(
                                 pinned.0, &path, pinned.1.version, offset, maximum_bytes, budget, cancellation,
                             ).await,
-                            None => self.source.read_link(
-                                pinned.0, &path, pinned.1.version, budget, cancellation,
-                            ).await,
+                            None => self.source.read_link(pinned.0, &path, pinned.1.version, u64::MAX, budget, cancellation).await,
                         }
                     },
                 ).await),
@@ -9891,10 +9888,8 @@ where
                                 let native = original;
                                 let result = self.source_request_with_work(
                                     &path, state.source, original, cancellation, |namespace| async move {
-                                        self.source.lookup_with_native_work(
-                                            state.source, &namespace,
-                                            crate::demand::NativeSourceWork::from_native_materialization_work(native),
-                                        ).await
+                                        self.source.lookup(
+                                            state.source, &namespace, native, cancellation).await
                                     },
                                 ).await;
                                 match result {
@@ -10471,10 +10466,8 @@ where
             |original| {
                 match self.source_request_with_work(
                     &path, state.source, original, cancellation, |namespace| async move {
-                        self.source.lookup_with_native_work(
-                            state.source, &namespace,
-                            crate::demand::NativeSourceWork::from_native_materialization_work(original),
-                        ).await
+                        self.source.lookup(
+                            state.source, &namespace, original, cancellation).await
                     },
                 ).await {
                     Ok((node, allocation)) => {
@@ -10896,8 +10889,8 @@ where
     ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.read_range_with_native_work(source, &path, expected, offset, length,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+            self.source.read_range(source, &path, expected, offset, length,
+                original, cancellation).await
         }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
@@ -10909,8 +10902,8 @@ where
     ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.read_link_with_native_work(source, &path, expected, maximum_bytes,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+            self.source.read_link(source, &path, expected, maximum_bytes,
+                original, cancellation).await
         }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
@@ -13926,9 +13919,8 @@ impl<'a> DirectoryProjectionWork<'a> {
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => source.lookup_with_native_work(
-                reference, path, crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await.map_err(LazyWorkspaceError::from),
+            Self::Native { original, .. } => source.lookup(
+                reference, path, *original, cancellation).await.map_err(LazyWorkspaceError::from),
         }
     }
 
@@ -13944,9 +13936,8 @@ impl<'a> DirectoryProjectionWork<'a> {
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => source.list_page_with_native_work(
-                reference, directory, cursor, maximum_entries, crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await.map_err(LazyWorkspaceError::from),
+            Self::Native { original, .. } => source.list_page(
+                reference, directory, cursor, maximum_entries, *original, cancellation).await.map_err(LazyWorkspaceError::from),
         }
     }
 
@@ -14573,121 +14564,161 @@ mod tests {
             }
         }
 
-        async fn lookup(
+        async fn lookup<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Option<SourceNode>> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.lookups.fetch_add(1, Ordering::Relaxed);
-            let (node, _) = self.resolve(source, None, &mut meter)?;
-            meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
-            meter.check(cancellation)?;
-            meter.receipt(Some(node))
+        ) -> W::Output<Option<SourceNode>, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.lookups.fetch_add(1, Ordering::Relaxed);
+                    let (node, _) = self.resolve(source, None, &mut meter)?;
+                    meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+                    meter.check(cancellation)?;
+                    meter.receipt(Some(node))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn list_page(
+        async fn list_page<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _directory: &NamespacePath,
             cursor: Option<SourceCursor>,
             maximum_entries: u32,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<SourceDirectoryPage> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.pages.fetch_add(1, Ordering::Relaxed);
-            if self.cancel_on_page.swap(false, Ordering::Relaxed) {
-                cancellation.cancel();
-                return Err(meter.failure(DemandError::Cancelled));
-            }
-            if cursor.is_some() {
-                return Err(meter.failure(DemandError::StaleCursor));
-            }
-            if self.directory_entries > maximum_entries as usize {
-                return Err(meter.failure(DemandError::InvalidRequest));
-            }
-            let start = 0;
-            let (node, _) = self.resolve(source, None, &mut meter)?;
-            let end = self.directory_entries;
-            meter.allocate::<SourceDirectoryEntry>(end - start)?;
-            let mut entries = Vec::with_capacity(end - start);
-            for index in start..end {
-                meter.check(cancellation)?;
-                meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let mut digits = 1_usize;
-                let mut quotient = index;
-                while quotient >= 10 {
-                    quotient /= 10;
-                    digits += 1;
-                }
-                let length = if self.directory_entries == 1 { 8 } else { 9 + digits.max(4) };
-                meter.allocate::<u8>(length)?;
-                meter.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() })?;
-                let mut name = Vec::with_capacity(length);
-                if self.directory_entries == 1 {
-                    name.extend_from_slice(b"file.txt");
-                } else {
-                    use std::io::Write as _;
-                    write!(&mut name, "file-{index:04}.txt").expect("bounded name buffer");
-                }
-                meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
-                entries.push(SourceDirectoryEntry::new(
-                    LogicalName::new(NameEncoding::Utf8, name, 255).expect("name"), node,
-                ));
-            }
-            meter.receipt(SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32])))
+        ) -> W::Output<SourceDirectoryPage, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.pages.fetch_add(1, Ordering::Relaxed);
+                    if self.cancel_on_page.swap(false, Ordering::Relaxed) {
+                        cancellation.cancel();
+                        return Err(meter.failure(DemandError::Cancelled));
+                    }
+                    if cursor.is_some() {
+                        return Err(meter.failure(DemandError::StaleCursor));
+                    }
+                    if self.directory_entries > maximum_entries as usize {
+                        return Err(meter.failure(DemandError::InvalidRequest));
+                    }
+                    let start = 0;
+                    let (node, _) = self.resolve(source, None, &mut meter)?;
+                    let end = self.directory_entries;
+                    meter.allocate::<SourceDirectoryEntry>(end - start)?;
+                    let mut entries = Vec::with_capacity(end - start);
+                    for index in start..end {
+                        meter.check(cancellation)?;
+                        meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                        let mut digits = 1_usize;
+                        let mut quotient = index;
+                        while quotient >= 10 {
+                            quotient /= 10;
+                            digits += 1;
+                        }
+                        let length = if self.directory_entries == 1 { 8 } else { 9 + digits.max(4) };
+                        meter.allocate::<u8>(length)?;
+                        meter.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() })?;
+                        let mut name = Vec::with_capacity(length);
+                        if self.directory_entries == 1 {
+                            name.extend_from_slice(b"file.txt");
+                        } else {
+                            use std::io::Write as _;
+                            write!(&mut name, "file-{index:04}.txt").expect("bounded name buffer");
+                        }
+                        meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+                        entries.push(SourceDirectoryEntry::new(
+                            LogicalName::new(NameEncoding::Utf8, name, 255).expect("name"), node,
+                        ));
+                    }
+                    meter.receipt(SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32])))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_range(
+        async fn read_range<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
             expected: SourceVersion,
             offset: u64,
             length: u64,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.ranges.fetch_add(1, Ordering::Relaxed);
-            let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
-            let value = meter.range(&bytes, offset, length)?;
-            if self.cancel_on_range.swap(false, Ordering::Relaxed) {
-                cancellation.cancel();
-            }
-            meter.check(cancellation)?;
-            meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.ranges.fetch_add(1, Ordering::Relaxed);
+                    let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
+                    let value = meter.range(&bytes, offset, length)?;
+                    if self.cancel_on_range.swap(false, Ordering::Relaxed) {
+                        cancellation.cancel();
+                    }
+                    meter.check(cancellation)?;
+                    meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
+                    meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn open_file(
+        async fn open_file<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
             expected: SourceVersion,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Box<dyn DemandFile>> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
-            meter.allocate::<PinnedFile>(1)?;
-            meter.check(cancellation)?;
-            meter.receipt(Box::new(PinnedFile(bytes)) as Box<dyn DemandFile>)
+        ) -> W::Output<Box<dyn DemandFile>, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
+                    meter.allocate::<PinnedFile>(1)?;
+                    meter.check(cancellation)?;
+                    meter.receipt(Box::new(PinnedFile(bytes)) as Box<dyn DemandFile>)
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_link(
+        async fn read_link<W: crate::facade::FsWork + Send>(
             &self,
             _source: SourceReference,
             _path: &NamespacePath,
-            _expected: SourceVersion,
-            budget: WorkBudget,
+            _expected: SourceVersion, _maximum_bytes: u64,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            Err(meter.failure(DemandError::InvalidRequest))
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    Err(meter.failure(DemandError::InvalidRequest))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
     }
 
@@ -14701,34 +14732,54 @@ mod tests {
     impl DemandSource for CancelAfterNativePage {
         fn reference(&self) -> SourceReference { self.inner.reference() }
 
-        async fn lookup(&self, source: SourceReference, path: &NamespacePath,
-            budget: WorkBudget, token: &CancellationToken) -> DemandResult<Option<SourceNode>> {
-            self.inner.lookup(source, path, budget, token).await
+        async fn lookup<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            work: W, token: &CancellationToken) -> W::Output<Option<SourceNode>, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.lookup(source, path, work, token).await
         }
 
-        async fn list_page(&self, source: SourceReference, path: &NamespacePath,
-            cursor: Option<SourceCursor>, maximum: u32, budget: WorkBudget,
-            token: &CancellationToken) -> DemandResult<SourceDirectoryPage> {
-            let receipt = self.inner.list_page(source, path, cursor, maximum, budget, token).await?;
-            if self.cancel.swap(false, Ordering::Relaxed) { token.cancel(); }
-            Ok(receipt)
+        async fn list_page<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            cursor: Option<SourceCursor>, maximum: u32, work: W,
+            token: &CancellationToken) -> W::Output<SourceDirectoryPage, DemandError> {
+            let mut accounting = work.accounting(token);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let receipt = self.inner.list_page(source, path, cursor, maximum, budget, token).await?;
+                    if self.cancel.swap(false, Ordering::Relaxed) { token.cancel(); }
+                    Ok(receipt)
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_range(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, offset: u64, length: u64, budget: WorkBudget,
-            token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            self.inner.read_range(source, path, version, offset, length, budget, token).await
+        async fn read_range<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, offset: u64, length: u64, work: W,
+            token: &CancellationToken) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.read_range(source, path, version, offset, length, work, token).await
         }
 
-        async fn open_file(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, budget: WorkBudget, token: &CancellationToken)
-            -> DemandResult<Box<dyn DemandFile>> {
-            self.inner.open_file(source, path, version, budget, token).await
+        async fn open_file<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, work: W, token: &CancellationToken)
+            -> W::Output<Box<dyn DemandFile>, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.open_file(source, path, version, work, token).await
         }
 
-        async fn read_link(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, budget: WorkBudget, token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            self.inner.read_link(source, path, version, budget, token).await
+        async fn read_link<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, maximum_bytes: u64, work: W, token: &CancellationToken) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.read_link(source, path, version, maximum_bytes, work, token).await
         }
     }
 
