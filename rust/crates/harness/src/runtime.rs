@@ -6864,9 +6864,18 @@ fn validate_task_dependencies(
         else {
             continue;
         };
-        let available = tools.get_version(name, version, io)?.is_some()
-            || resumable_tools.get(name, version, &mut io.map(|io| io.history_io()).as_mut()
-                .map(|io| io as &mut dyn crate::store::history::HistoryIo))?.is_some();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut history = io.map(|io| io.history_io());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let mut work = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let preparation = io;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let preparation = None;
+        let available = tools.get_version(name, version, preparation)?.is_some()
+            || resumable_tools.get(name, version, &mut work)?.is_some();
         if available {
             native_startup::item(io, std::mem::size_of::<(String, String)>())?;
             available_tools.insert((native_startup::text(name, io)?, native_startup::text(version, io)?));

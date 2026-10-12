@@ -767,9 +767,7 @@ impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for N
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             drop(self.read(reference, maximum_bytes, io)?.await?);
-            if let Some(work) = io.and_then(|io| io.original_native_work()) {
-                self.authorize_native(reference, maximum_bytes, work).await
-            } else { self.authorize(reference).await }
+            Ok(())
         })
     }
 
@@ -777,7 +775,9 @@ impl<P: acyclic_stream::StreamProvider + 'static> ContentResidencyVerifier for N
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if let Some(work) = io.and_then(|io| io.original_native_work()) {
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or_else(|| boundary(
+                    crate::wire::ErrorCode::Unsupported, "content reader requires original native work"))?;
                 self.authorize_native(reference, maximum_bytes, work).await?;
                 let bytes = self.context.context.read_file_with_native_work(reference, work).await?;
                 self.authorize_native(reference, maximum_bytes, work).await?;

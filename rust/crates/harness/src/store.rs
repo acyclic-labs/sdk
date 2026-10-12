@@ -1816,7 +1816,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
