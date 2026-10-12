@@ -777,7 +777,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     fixture.owner.verify_with_native_work(false, &work).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
-        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").native_mount_work())?;
+        .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
 }
 
@@ -865,10 +865,10 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     let guard = context.volume_callback_guard_with_native_work(&fixture.owner, &work).await?;
     let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?;
     let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?;
-    let mount_work = work.native_mount_work();
+    let mount_work = work.clone();
     assert!(callback.check(&mount_work).expect("original callback admission").await.is_ok());
     assert!(writable_callback.check(&mount_work).expect("original writable callback admission").await.is_ok());
-    let foreign_mount_work = foreign_work.native_mount_work();
+    let foreign_mount_work = foreign_work.clone();
     assert!(callback.check(&foreign_mount_work).expect("paid foreign callback frame").await.is_err());
     let before_guards = work.receipt();
     assert!(guard.for_volume(&fixture.owner, &fixture.source, true, &work).is_err());
@@ -1329,11 +1329,11 @@ where
                     A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),
-                    &volume_work.native_mount_work(), volume_work.cancellation(), Some(&volume_work))
+                    &volume_work, volume_work.cancellation(), Some(&volume_work))
                     .await?;
                 mount.retain_payload_allocation(&mut allocation)?;
                 let mount = Arc::new(mount);
-                let snapshot = mount.snapshot_with_work(&volume_work.native_mount_work(), volume_work.cancellation())
+                let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
                     .await?;
                 let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
                     Arc::clone(&lazy), work,

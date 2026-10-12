@@ -1,6 +1,5 @@
 /** Ref-only durable interaction values. Rust owns admission and schema validation. */
 import type { FileRef } from "./conversation.js";
-import { NativeContracts } from "./native-contracts.js";
 import type { OperationId, Scope } from "./index.js";
 import type { InteractionKind } from "./enums.js";
 export type { InteractionKind } from "./enums.js";
@@ -52,42 +51,8 @@ export interface ResolutionReceipt {
 
 /** Presentation and answer authority remain independent replaceable bindings. */
 export interface InteractionResolver {
-  inspect(scope: Scope, id: InteractionId): Promise<Readonly<{ ticket: InteractionTicket; resolution: InteractionResolution | null }> | null>;
   resolveAnswer(operationId: OperationId, scope: Scope, id: InteractionId, expectedVersion: bigint,
     response: Exclude<InteractionResponse, { type: "approval" }>): Promise<ResolutionReceipt>;
   resolveApproval(operationId: OperationId, scope: Scope, id: InteractionId, expectedVersion: bigint,
     approved: boolean, reason: string | null): Promise<ResolutionReceipt>;
-}
-
-/** Rust-canonical non-nil UUID for an addressable interaction. */
-export async function interactionId(value: string): Promise<InteractionId> {
-  return (await NativeContracts.create()).validateIdentity("interaction", value);
-}
-
-/** Validates and detaches one exact approval intent. */
-export async function approvalBinding(value: ApprovalBinding): Promise<ApprovalBinding> {
-  return (await NativeContracts.create()).validate("approval_binding", value);
-}
-
-export function responderGrant(ticket: Pick<InteractionTicket, "id">): string {
-  return `interaction:respond:${ticket.id}`;
-}
-
-export function viewerGrant(ticket: Pick<InteractionTicket, "id">): string {
-  return `interaction:view:${ticket.id}`;
-}
-
-/** Validates and detaches the metadata envelope; request bytes are checked by the owner. */
-export async function interactionTicket(value: InteractionTicket): Promise<InteractionTicket> {
-  return (await NativeContracts.create()).validate("interaction_ticket", value);
-}
-
-/** Validates a CAS resolution envelope; Rust checks the current version and grant. */
-export async function interactionResolution(value: InteractionResolution, ticket: InteractionTicket): Promise<InteractionResolution> {
-  return (await NativeContracts.create()).validate("interaction_resolution", value, ticket);
-}
-
-/** Admits an owner-returned receipt through the Rust v2 contract. */
-export async function resolutionReceipt(value: ResolutionReceipt): Promise<ResolutionReceipt> {
-  return (await NativeContracts.create()).validate("resolution_receipt", value);
 }

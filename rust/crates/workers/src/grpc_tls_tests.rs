@@ -1,7 +1,6 @@
 use super::*;
 
-// Native trust selection is process-wide and may be cached by the verifier.
-// Each scenario uses a fresh executable, never mutating the test runner's roots.
+// Test trust selection in fresh processes.
 #[tokio::test]
 async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     const FIXTURE: &str = "ACYCLIC_TLS_FIXTURE";

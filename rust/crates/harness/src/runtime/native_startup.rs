@@ -40,10 +40,6 @@ pub(super) fn text(value: &str, io: StartupIo<'_>) -> Result<String> {
     Ok(value.to_owned())
 }
 
-pub(super) fn key(value: &(String, String), io: StartupIo<'_>) -> Result<(String, String)> {
-    Ok((text(&value.0, io)?, text(&value.1, io)?))
-}
-
 pub(super) fn content_write(
     content: Option<&ContentBindings>, scope: &RuntimeScope, io: StartupIo<'_>,
 ) -> Result<bool> {

@@ -24,7 +24,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let authorization = handle.authorization();
         Self::require_directory_with_io(&host, &handle, "", &io)?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
@@ -78,13 +78,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source selection belongs to another original ledger" });
         }
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
-            selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
-        )?;
+        self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
         Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
@@ -110,7 +107,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         work.remaining()?;
         Ok(())
@@ -127,19 +124,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "selected source has no original invocation token",
             })?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             work.remaining()?;
             owner.verify_with_native_work(false, work).await?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             return Ok(());
         }
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
         owner.verify(false, &mut None).await?;
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
     fn path(&self, volume: &VolumeRef, prefix: &str, path: &str, generation: &GenerationRef) -> Result<()> {
@@ -160,7 +157,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn file(&self, file: &FileRef) -> Result<()> {
-        self.limits.validate_file(file)?;
+        self.limits.validate_file(file, &mut None)?;
         self.handle.grant().require_file_read(file)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
@@ -176,7 +173,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.file(file)?;
         self.guard().await?;
         let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let result = self.io.receive_content(result);
         self.guard().await?;
         result
@@ -205,7 +202,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn read_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         generation: &GenerationRef) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.path(volume, prefix, path, generation)?;
-        crate::conversation::validate_content_path(path)?;
+        crate::conversation::validate_content_path(path, &mut None)?;
         if self.authorization().native_snapshot.is_some() {
             return Err(Error::Invalid("native selection requires its actual lazy snapshot reader".into()));
         }
@@ -217,7 +214,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
         self.guard().await?;
         let result = self.generation.read(&requested, self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let bytes = self.io.receive(result);
         self.guard().await?;
         let bytes = bytes?;
@@ -226,7 +223,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         self.guard().await?;
         let metadata = self.generation.read(&metadata_path, self.io.remaining()?.source_bytes_read,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let metadata = self.io.receive(metadata);
         self.guard().await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
@@ -242,7 +239,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if staged.volume() != volume || staged.path() != path || staged.version() != "pending" {
                 return Err(Error::Storage("selected file metadata does not match immutable data".into()));
             }
-            staged.descriptor().verify(&bytes)?;
+            staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())
         } else {
@@ -286,7 +283,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
         self.guard().await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let page = self.io.receive(result);
         self.guard().await?;
         let page = page?;

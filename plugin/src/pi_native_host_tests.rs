@@ -1,4 +1,3 @@
-//! Native-host boundaries using the real filesystem, Stream and fork runtime.
 
 use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
 use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
@@ -16,15 +15,10 @@ fn native_host(fixture: &Fixture, replacement: Option<PiOwnerConfig>) -> acyclic
 }
 
 #[tokio::test]
-async fn native_host_rejects_missing_original_pinned_bootstrap() {
-    let fixture = Fixture::new().await;
+async fn native_host_rejects_missing_bootstrap_and_replacement_owner() {
+    let fixture = Fixture::new(None).await;
     assert!(native_host(&fixture, None).is_err());
-}
-
-#[tokio::test]
-async fn native_host_rejects_replacement_owner_before_opening_native_handles() {
-    let fixture = Fixture::new().await;
-    let replacement = PiOwnerConfig::new(fixture.owner.policy().clone()).unwrap();
+    let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
     assert!(fixture.runtime.verify_owner(&replacement).is_err());
     assert!(native_host(&fixture, Some(replacement)).is_err());
 }
@@ -53,25 +47,20 @@ fn installed_runtime() -> PiNativeHostRuntime {
 #[tokio::test]
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handles() {
-    let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
+    let fixture = Fixture::new(Some(installed_runtime())).await;
     let host = native_host(&fixture, None).unwrap();
-    let plan = fixture.plan().await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     let expected_binding = prepared.binding.clone();
     let expected_snapshot = prepared.native_lazy;
-    let expected_source = prepared.source.clone();
-    let original_work = prepared.original_work().unwrap().clone();
+    let original_work = prepared.original_work().clone();
     host.register_prepared(prepared).await.unwrap();
     let entry = host.find_entry(task).unwrap();
     assert!(entry.native_custody.work().shares_ledger(&original_work));
-    assert_eq!(entry.native_custody.bytes(),
-        (std::mem::size_of::<super::NativeEntry>()
-            + std::mem::size_of::<(acyclic_harness::TaskId, Arc<super::NativeEntry>)>()) as u64);
-    assert_eq!(host.binding(task), Some(expected_binding.clone()));
-    assert_eq!(host.source(task), Some(expected_source));
+    assert_eq!(host.binding(task, &original_work).unwrap().unwrap().0, expected_binding);
     assert_eq!(host.live_workspace(task).unwrap().workspace().id(), expected_snapshot.workspace_id);
     assert!(host.live_view(task).is_none());
     for volume in expected_binding.project_volumes.values() {
@@ -86,8 +75,6 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert!(host.cancel_child_with_native_work(task, &work).await.unwrap().is_none());
     assert!(fixture.runtime.runtime.task_host().observe_task(task).await.unwrap().cancellation_requested);
     assert!(host.recover_child(task).await.unwrap().0.is_none());
-    assert!(host.receipt(task).await.unwrap().is_none());
-    assert!(host.output(task).await.unwrap().is_none());
     assert!(host.live_view(task).is_none());
     for volume in expected_binding.project_volumes.values() {
         assert!(host.project_mount(task, volume).is_none());
@@ -98,9 +85,9 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
 #[tokio::test]
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn actual_registration_denial_never_allocates_a_native_entry() {
-    let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
+    let fixture = Fixture::new(Some(installed_runtime())).await;
     let host = native_host(&fixture, None).unwrap();
-    let plan = fixture.plan().await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
@@ -110,23 +97,19 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
     budget.allocation_operations = 1;
     let cancellation = CancellationToken::new();
     let denied = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
-    let before = denied.receipt().allocation_operations;
     let error = host.register_cold_locator_with_native_work(task, plan.commit.caller,
         &plan.commit.sdk_operation, root_key, fixture.source.clone(), &denied).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Work(
             acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
     }));
-    assert_eq!(denied.receipt().allocation_operations, before);
     assert!(host.find_entry(task).is_none());
-    let original = prepared.original_work().unwrap().clone();
+    let original = prepared.original_work().clone();
     original.cancellation().cancel();
-    let before = original.receipt().allocation_operations;
     let error = host.register_prepared(prepared).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
     }));
-    assert_eq!(original.receipt().allocation_operations, before);
     assert!(host.find_entry(task).is_none());
 }
 
@@ -135,8 +118,8 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
 async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     use acyclic_harness::{distributed::Worker, filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
         scheduler::{LeaseFence, ResourceSnapshot}};
-    let fixture = Fixture::new_with_native_runtime(Some(installed_runtime())).await;
-    let plan = fixture.plan().await;
+    let fixture = Fixture::new(Some(installed_runtime())).await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let original = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
@@ -165,11 +148,9 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     let context = fixture.runtime.runtime.task_context_with_native_work(task, &fence, &query_work).await.unwrap();
     host.hydrate_child(&context, &owner, &fence, crate::pi_root_provider::allocation_budget(),
         &query_cancellation, &query_work).await.unwrap();
-    assert_eq!(host.binding(task), Some(original.binding));
+    assert_eq!(host.binding(task, &query_work).unwrap().unwrap().0, original.binding);
     assert_eq!(host.frozen_source(task), Some(original.frozen_source));
     assert_eq!(host.source_frozen(task), Some(original.native_lazy));
     assert_eq!(host.live_workspace(task).unwrap().workspace().id(), original.workspace.workspace().id());
     assert!(host.live_view(task).is_none());
-    assert!(host.receipt(task).await.unwrap().is_none());
-    assert!(host.output(task).await.unwrap().is_none());
 }

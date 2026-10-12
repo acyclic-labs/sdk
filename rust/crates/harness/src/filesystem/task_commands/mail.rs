@@ -42,7 +42,7 @@ pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io:
     let encoded_hold;
     let encoded = io.encode(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
-    let decoded = io.decode_preparation::<T>(&encoded)?.into_retained();
+    let decoded = io.decode_preparation::<T>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
     drop(encoded);
     drop(encoded_hold);
     Ok(decoded)
@@ -65,7 +65,7 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
         let encoded_hold;
         let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
         encoded_hold = output.guard_bytes(&encoded)?;
-        let value = output.decode_preparation::<Value>(&encoded)?.into_retained();
+        let value = output.decode_preparation::<Value>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
         drop(encoded);
         drop(encoded_hold);
         let retained = output.owned_bytes()?;
@@ -109,7 +109,7 @@ where
                 let (items, custody) = self.runtime.task_host().inbox_with_native_work(task, input.after, 1, native).await?;
                 io.absorb_native_custody(custody)?;
                 let Some(item) = items.into_iter().next() else {
-                    return if select_only { mail_ready(Outcome::Succeeded(Value::Null), io) }
+                    return if select_only { mail_ready(Outcome::Succeeded(Value::Null), Some(io)) }
                         else { Ok(TaskCommandProgress::Pending) };
                 };
                 return mail_ready(Outcome::Succeeded(item), Some(io));

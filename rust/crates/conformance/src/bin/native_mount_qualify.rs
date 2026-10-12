@@ -1538,7 +1538,7 @@ fn replace(source: &Path, destination: &Path) -> Result<(), Failure> {
     acyclic_native_runtime::durable_rename(
         source,
         destination,
-        acyclic_native_runtime::RenameMode::Replace,
+        acyclic_native_runtime::RenameMode::Replace, None,
     )?;
     Ok(())
 }

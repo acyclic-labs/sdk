@@ -36,11 +36,7 @@ pub struct ResourceCreationProofRef {
 
 impl ResourceCreationProofRef {
     /// Validates reference structure without authenticating provider evidence.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -229,7 +225,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation_with_code::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = decoded.into_native_parts()?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
@@ -332,7 +328,7 @@ impl ResourcePreparationRequest {
             crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
-            checkpoint.validate_with_work(work)?;
+            checkpoint.validate(work)?;
             if checkpoint.descriptor().byte_length() > self.maximum_bytes {
                 return Err(Self::invalid("source checkpoint exceeds preparation byte bound", work));
             }
@@ -345,7 +341,7 @@ impl ResourcePreparationRequest {
             if let Some(observer) = work.as_deref_mut() {
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: index as u64 + 1 })?;
             }
-            file.validate_with_work(work)?;
+            file.validate(work)?;
             input_bytes = input_bytes.checked_add(file.descriptor().byte_length())
                 .ok_or_else(|| Self::invalid("child input reference byte bound overflow", work))?;
             if input_bytes > self.maximum_bytes || self.input_files[..index].contains(file) {
@@ -353,10 +349,10 @@ impl ResourcePreparationRequest {
             }
         }
         if let Some(authorization) = &self.read_authorization {
-            authorization.validate_with_work(work)?;
+            authorization.validate(work)?;
         }
         if let Some(command) = &self.command {
-            command.validate_with_work(work)?;
+            command.validate(work)?;
             if command.operation_id == self.child.operation_id {
                 return Err(Self::invalid(
                     "preparation effect and intended child identities must differ", work,
@@ -563,18 +559,6 @@ pub enum CreatedResourceOperation {
     WriteVolume(crate::conversation::VolumeRef),
     /// Exact immutable inherited-file read delegated by an authenticated creator.
     ReadFile(crate::conversation::FileRef),
-}
-
-/// Canonical request label for an operation on one created resource.
-pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> Result<String> {
-    resource.validate()?;
-    if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
-        || operation.chars().any(char::is_control)
-    {
-        return Err(Error::Invalid("created resource operation is invalid".into()));
-    }
-    let bytes = crate::contract::canonical_json_bytes(&(resource, operation))?;
-    Ok(format!("resource:created:{}", blake3::hash(&bytes).to_hex()))
 }
 
 /// Provider-authenticated content handles for an exact created volume.
@@ -787,7 +771,7 @@ impl CreatedResourceAccess {
                 created_access_step(work)?;
                 let label = match operation {
                     CreatedResourceOperation::Named(name) => {
-                        created_access_named_capability(&receipt.resource, name, work)?
+                        created_resource_capability(&receipt.resource, name, work)?
                     }
                     CreatedResourceOperation::ReadFile(file) => {
                         let label = created_access_file_capability(file, work)?;
@@ -1042,7 +1026,8 @@ fn created_access_receipt_temporary_bytes(receipt: &CreatedResourceReceipt) -> R
     Ok(bytes)
 }
 
-fn created_access_named_capability(
+/// Derives a created-resource capability on the caller's optional observer.
+pub fn created_resource_capability(
     resource: &ResourceRef, operation: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
@@ -1076,7 +1061,7 @@ fn created_access_file_capability(
     file: &crate::conversation::FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    file.validate_with_work(work)?;
+    file.validate(work)?;
     created_access_canonical_capability(file, "file:read:", work)
 }
 
@@ -1135,14 +1120,4 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger fence",
-        })
-    }
 }

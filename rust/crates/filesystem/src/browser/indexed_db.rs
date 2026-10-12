@@ -116,6 +116,7 @@ impl From<IndexedDbOpenError> for JsValue {
 /// Transactional `IndexedDB` immutable-object backend.
 pub struct IndexedDbObjectStore {
     database: Database,
+    // Validated at open; copying an admitted object twice fits in u64.
     maximum_object_bytes: u64,
 }
 
@@ -144,12 +145,8 @@ impl IndexedDbObjectStore {
         key.push(char::from(b'0' + object_id.kind.canonical_tag()));
         key.push(':');
         for byte in object_id.digest.as_bytes() {
-            key.push(char::from(
-                *HEX.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
-            ));
-            key.push(char::from(
-                *HEX.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
-            ));
+            key.push(char::from(HEX[usize::from(byte >> 4)]));
+            key.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         key
     }
@@ -165,19 +162,6 @@ impl IndexedDbObjectStore {
     fn backend(error: impl std::fmt::Display, work: WorkCounters) -> ObjectFailure {
         ObjectFailure::new(ObjectStoreError::Rejected(error.to_string()), work)
     }
-
-    fn doubled(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        length
-            .checked_mul(2)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
-    }
-
-    fn peak_with_key(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        OBJECT_KEY_BYTES
-            .checked_add(length)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
-    }
-
 
     async fn get_blob(
         objects: &indexed_db_futures::object_store::ObjectStore<'_>,
@@ -215,14 +199,28 @@ impl IndexedDbObjectStore {
         let buffer = await_cancellable(JsFuture::from(blob.array_buffer()), cancellation)
             .await
             .map_err(|error| match error {
-                CancellableError::Cancelled => ObjectFailure::new(ObjectStoreError::Cancelled, work),
-                CancellableError::Operation(error) => Self::backend(js_message(&error), work),
+                None => ObjectFailure::new(ObjectStoreError::Cancelled, work),
+                Some(error) => Self::backend(js_message(&error), work),
             })?;
         let array = Uint8Array::new(&buffer);
         if u64::from(array.length()) != expected_length {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
         Ok(OwnedBytes::from(array.to_vec()))
+    }
+
+    async fn read_blob(
+        object_id: ObjectId, blob: &Blob, length: u64,
+        cancellation: &CancellationToken, work: WorkCounters,
+    ) -> Result<ObjectRead, ObjectFailure> {
+        let bytes = Self::materialize_blob(blob, length, cancellation, work).await?;
+        if object_digest(object_id.kind, &bytes) != object_id.digest {
+            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
+        }
+        Ok(ObjectRead {
+            bytes,
+            retention: ObjectReadRetention::Owned { logical_bytes: length },
+        })
     }
 
     async fn metadata_length(
@@ -239,8 +237,8 @@ impl IndexedDbObjectStore {
             await_cancellable(request, cancellation)
                 .await
                 .map_err(|error| match error {
-                    CancellableError::Cancelled => ObjectFailure::new(ObjectStoreError::Cancelled, work),
-                    CancellableError::Operation(error) => Self::backend(error, work),
+                    None => ObjectFailure::new(ObjectStoreError::Cancelled, work),
+                    Some(error) => Self::backend(error, work),
                 })?;
         value
             .map(|value| {
@@ -317,7 +315,7 @@ impl IndexedDbObjectStore {
         state: &mut ObjectBatchState,
         cancellation: &CancellationToken,
     ) -> Result<ObjectRead, ObjectFailure> {
-        let copied = Self::doubled(length, state.work)?;
+        let copied = length * 2;
         let transient = OBJECT_KEY_BYTES.saturating_add(copied);
         state.work = state
             .work
@@ -338,21 +336,13 @@ impl IndexedDbObjectStore {
             .work
             .verify(state.budget)
             .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        let bytes = Self::materialize_blob(&stored_blob, length, cancellation, state.work).await?;
-        if object_digest(object_id.kind, &bytes) != object_id.digest {
-            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, state.work));
-        }
+        let value = Self::read_blob(object_id, &stored_blob, length, cancellation, state.work).await?;
         state.retained = state
             .retained
             .checked_add(length)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), state.work))?;
         state.work.peak_allocation_bytes = state.work.peak_allocation_bytes.max(state.retained);
-        Ok(ObjectRead {
-            bytes,
-            retention: ObjectReadRetention::Owned {
-                logical_bytes: length,
-            },
-        })
+        Ok(value)
     }
 
     /// Bounds and authenticates every write before any is stored.
@@ -403,8 +393,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<(Blob, WorkCounters), ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -456,8 +446,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -527,9 +517,6 @@ struct PreparedAppend {
 struct ReplayBlob {
     sequence: Sequence,
     blob: Blob,
-    encoded_length: u64,
-    payload_length: u64,
-    is_predecessor: bool,
 }
 
 impl IndexedDbAuthorityStore {
@@ -744,10 +731,10 @@ impl IndexedDbAuthorityStore {
         if !size.is_finite() || size < 0.0 || size.fract().abs() > f64::EPSILON {
             return Err(Self::corrupt("commit Blob has a non-integral size", work));
         }
-        let size_text = size.to_string();
-        size_text
-            .parse::<u64>()
-            .map_err(|_| Self::corrupt("commit Blob size is not representable", work))
+        if size >= u64::MAX as f64 || size.fract() != 0.0 {
+            return Err(Self::corrupt("commit Blob size is not representable", work));
+        }
+        Ok(size as u64)
     }
 
     async fn materialize_blob(
@@ -762,8 +749,8 @@ impl IndexedDbAuthorityStore {
         let buffer = await_cancellable(JsFuture::from(blob.array_buffer()), cancellation)
             .await
             .map_err(|error| match error {
-                CancellableError::Cancelled => AuthorityFailure::new(AuthorityStoreError::Cancelled, work),
-                CancellableError::Operation(error) => Self::backend(js_message(&error), work),
+                None => AuthorityFailure::new(AuthorityStoreError::Cancelled, work),
+                Some(error) => Self::backend(js_message(&error), work),
             })?;
         let array = Uint8Array::new(&buffer);
         if u64::from(array.length()) != expected_length {
@@ -774,10 +761,6 @@ impl IndexedDbAuthorityStore {
         }
         Ok(array.to_vec())
     }
-
-
-
-
 
     async fn write_record(
         store: &indexed_db_futures::object_store::ObjectStore<'_>,
@@ -1194,9 +1177,6 @@ impl IndexedDbAuthorityStore {
             blobs.push(ReplayBlob {
                 sequence,
                 blob,
-                encoded_length,
-                payload_length,
-                is_predecessor,
             });
         }
         drop(transaction);
@@ -1206,6 +1186,7 @@ impl IndexedDbAuthorityStore {
     async fn decode_replay_blobs(
         &self,
         authority_id: AuthorityId,
+        after: Sequence,
         blobs: Vec<ReplayBlob>,
         head: Head,
         budget: WorkBudget,
@@ -1237,8 +1218,10 @@ impl IndexedDbAuthorityStore {
             .map_err(|error| Self::backend(error, work))?;
         work = prospective;
         for replay in blobs {
+            let encoded_length = Self::blob_length(&replay.blob, work)?;
+            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
             let mut read_work =
-                authority_commit_read_work(replay.encoded_length, replay.payload_length)
+                authority_commit_read_work(encoded_length, payload_length)
                     .map_err(|error| AuthorityFailure::new(error.into(), work))?;
             read_work.peak_allocation_bytes = retained
                 .checked_add(read_work.peak_allocation_bytes)
@@ -1249,7 +1232,7 @@ impl IndexedDbAuthorityStore {
             Self::admit(prospective, budget)?;
             let encoded = Self::materialize_blob(
                 &replay.blob,
-                replay.encoded_length,
+                encoded_length,
                 cancellation,
                 prospective,
             )
@@ -1262,7 +1245,7 @@ impl IndexedDbAuthorityStore {
                     prospective,
                 ));
             }
-            if replay.is_predecessor {
+            if replay.sequence == after {
                 previous_digest = commit.digest;
             } else {
                 if commit.previous_digest != previous_digest {
@@ -1274,7 +1257,7 @@ impl IndexedDbAuthorityStore {
                 previous_digest = commit.digest;
                 // Bytes::slice retains the complete canonical encoded buffer.
                 retained = retained
-                    .checked_add(replay.encoded_length)
+                    .checked_add(encoded_length)
                     .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), prospective))?;
                 output.push(commit);
             }
@@ -1348,7 +1331,7 @@ impl IndexedDbAuthorityStore {
                 cancellation,
             )
             .await?;
-        self.decode_replay_blobs(authority_id, blobs, head, budget, cancellation, work)
+        self.decode_replay_blobs(authority_id, after, blobs, head, budget, cancellation, work)
             .await
     }
 }
@@ -2161,8 +2144,8 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 work,
             ));
         }
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
+        let copied = length * 2;
+        let peak_allocation_bytes = OBJECT_KEY_BYTES + copied;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_read_operations: 1,
@@ -2187,17 +2170,8 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         // Blob reads yield outside IndexedDB request callbacks. No transaction
         // may remain live across this materialization boundary.
         drop(transaction);
-        let bytes = Self::materialize_blob(&stored_blob, length, cancellation, prospective).await?;
-        if object_digest(object_id.kind, &bytes) != object_id.digest {
-            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, prospective));
-        }
         Ok(ObjectReceipt {
-            value: ObjectRead {
-                bytes,
-                retention: ObjectReadRetention::Owned {
-                    logical_bytes: length,
-                },
-            },
+            value: Self::read_blob(object_id, &stored_blob, length, cancellation, prospective).await?,
             work: prospective,
         })
     }
@@ -2418,30 +2392,25 @@ fn authority_append_work(
     })
 }
 
-enum CancellableError<E> {
-    Cancelled,
-    Operation(E),
-}
-
 fn cancellable_failure(
-    error: CancellableError<indexed_db_futures::error::Error>,
+    error: Option<indexed_db_futures::error::Error>,
     work: WorkCounters,
 ) -> ObjectFailure {
     match error {
-        CancellableError::Cancelled => ObjectFailure::new(ObjectStoreError::Cancelled, work),
-        CancellableError::Operation(error) => {
+        None => ObjectFailure::new(ObjectStoreError::Cancelled, work),
+        Some(error) => {
             ObjectFailure::new(ObjectStoreError::Rejected(error.to_string()), work)
         }
     }
 }
 
 fn authority_cancellable_failure(
-    error: CancellableError<indexed_db_futures::error::Error>,
+    error: Option<indexed_db_futures::error::Error>,
     work: WorkCounters,
 ) -> AuthorityFailure {
     match error {
-        CancellableError::Cancelled => AuthorityFailure::new(AuthorityStoreError::Cancelled, work),
-        CancellableError::Operation(error) => {
+        None => AuthorityFailure::new(AuthorityStoreError::Cancelled, work),
+        Some(error) => {
             AuthorityFailure::new(AuthorityStoreError::Rejected(error.to_string()), work)
         }
     }
@@ -2455,24 +2424,17 @@ fn js_message(value: &JsValue) -> String {
     }
 }
 
-async fn await_cancellable<F, T, E>(
-    operation: F,
+async fn await_cancellable<T, E>(
+    operation: impl Future<Output = Result<T, E>>,
     cancellation: &CancellationToken,
-) -> Result<T, CancellableError<E>>
-where
-    F: Future<Output = Result<T, E>>,
-{
+) -> Result<T, Option<E>> {
     let mut operation = std::pin::pin!(operation);
     let mut cancelled = std::pin::pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
-            return Poll::Ready(Err(CancellableError::Cancelled));
+            return Poll::Ready(Err(None));
         }
-        match operation.as_mut().poll(context) {
-            Poll::Ready(Ok(value)) => Poll::Ready(Ok(value)),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(CancellableError::Operation(error))),
-            Poll::Pending => Poll::Pending,
-        }
+        operation.as_mut().poll(context).map(|result| result.map_err(Some))
     })
     .await
 }

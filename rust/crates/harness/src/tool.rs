@@ -37,27 +37,9 @@ pub(crate) fn decode_with_native_work<T: crate::filesystem::UploadRecord>(
     Ok((value, custody))
 }
 
-/// Copies the actual Value graph, including literal serde-private map keys.
+/// Copies a Value under the original ledger and optional wire-size bound.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_value_with_native_work(
-    value: &Value,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    clone_value_with_native_bound(value, None, work)
-}
-
-/// Checks the same resident Value's wire-size bound before any owned copy.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_value_with_native_work_bounded(
-    value: &Value,
-    maximum_bytes: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    clone_value_with_native_bound(value, Some(maximum_bytes), work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_value_with_native_bound(
+pub(crate) fn clone_value(
     value: &Value,
     maximum_bytes: Option<u64>,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -92,55 +74,19 @@ fn clone_definition_with_native_work(
 
 /// Builds the canonical result tree through the existing bounded SDK codec.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_with_native_work<T: Serialize>(
-    value: &T,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    value_with_native_work_bounded(value, work.remaining()?.bytes_encoded, work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_with_native_work_bounded<T: Serialize>(
+pub(crate) fn value<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     let value = io.value_json(value, maximum_bytes)?;
-    let retained = value_owned_bytes(&value)?;
+    let retained = (std::mem::size_of::<Value>() as u64)
+        .checked_add(crate::contract::json_value_logical_owned_bytes(&value)?)
+        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+            reason: "tool JSON ownership overflow" })?;
     let custody = io.into_native_custody(retained)?;
     Ok((value, custody))
-}
-
-/// Logical SDK-owned Value slots and actual deep buffer capacities, not serde allocator nodes, provider metadata, or resident process memory.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_owned_bytes(value: &Value) -> Result<u64> {
-    fn add(left: u64, right: u64) -> Result<u64> {
-        left.checked_add(right).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "tool JSON ownership overflow",
-        })
-    }
-    fn deep(value: &Value) -> Result<u64> {
-        match value {
-            Value::String(text) => Ok(text.capacity() as u64),
-            Value::Array(values) => {
-                let slots = (values.capacity() as u64)
-                    .checked_mul(std::mem::size_of::<Value>() as u64)
-                    .ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "tool JSON array ownership overflow",
-                    })?;
-                values.iter().try_fold(slots, |bytes, value| add(bytes, deep(value)?))
-            }
-            Value::Object(values) => values.iter().try_fold(0, |bytes, (key, value)| {
-                add(add(add(bytes, std::mem::size_of::<(String, Value)>() as u64)?,
-                    key.capacity() as u64)?, deep(value)?)
-            }),
-            Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
-        }
-    }
-    add(std::mem::size_of::<Value>() as u64, deep(value)?)
 }
 
 /// Static labels of the closed tool DTO graphs, extending the SDK profile with their actual derived type and field names before serde constructs an error.
@@ -185,7 +131,7 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
             })?;
         }
         for value in [&self.input_schema, &self.output_schema, &self.projection_schema] {
-            bytes = bytes.checked_add(value_owned_bytes(value)? - std::mem::size_of::<Value>() as u64)
+            bytes = bytes.checked_add(crate::contract::json_value_logical_owned_bytes(value)?)
                 .ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "tool definition schema ownership overflow",
@@ -199,7 +145,7 @@ impl crate::filesystem::UploadRecord for ToolDefinition {
 impl crate::filesystem::UploadRecord for ToolInvocation {
     fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let deep = value_owned_bytes(&self.arguments)? - std::mem::size_of::<Value>() as u64;
+        let deep = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64)
             .checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(deep))
@@ -214,7 +160,7 @@ impl crate::filesystem::UploadRecord for ToolInvocation {
 impl crate::filesystem::UploadRecord for ToolResult {
     fn diagnostic_label_bytes() -> u64 { tool_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        Ok(value_owned_bytes(&self.value)? - std::mem::size_of::<Value>() as u64)
+        crate::contract::json_value_logical_owned_bytes(&self.value)
     }
 }
 
@@ -281,11 +227,11 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: io.decode_preparation_with_code::<Value>(
+            input_schema: io.decode_preparation::<Value>(
                 input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation_with_code::<Value>(
+            output_schema: io.decode_preparation::<Value>(
                 output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation_with_code::<Value>(
+            projection_schema: io.decode_preparation::<Value>(
                 projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
         };
         definition.validate_schemas_with_io(Some(&io))?;
@@ -860,12 +806,6 @@ impl PreparedToolRegistration {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeToolRegistration {
-    value: PreparedToolRegistration,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 impl ToolRegistry {
     /// Creates an empty registry.
     #[must_use]
@@ -948,10 +888,10 @@ impl ToolRegistry {
                     reason: "tool registry ownership overflow",
                 })?;
             let held = io.into_native_custody(extra)?;
-            let mut prepared = NativeToolRegistration { value: prepared, custody: held };
+            let mut prepared = (prepared, held);
             // Transfer every paid new field before the infallible publication.
-            custody.absorb(&mut prepared.custody)?;
-            self.publish_registration(prepared.value);
+            custody.absorb(&mut prepared.1)?;
+            self.publish_registration(prepared.0);
             published = true;
             // Old selection backing is physically gone before its refund.
             custody.substitute(retained)?;

@@ -190,7 +190,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     }
                     current_origin = Some(origin);
                 }
-                let volume = content.volume.clone_with_work(quota.work())?;
+                let volume = content.volume.copy(quota.work())?;
                 quota.adopt(volume.logical_owned_bytes()?)?;
                 let generation = copy_generation(&receipt.allocation_generation, quota.work())?;
                 quota.adopt(generation.logical_owned_bytes()?)?;

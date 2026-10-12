@@ -28,7 +28,7 @@ use acyclic_fs::{
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -69,7 +69,7 @@ pub struct MemoryHarnessStorage {
     write_capability: String,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: StreamClient<MemoryStream>,
+    stream: Arc<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -230,8 +230,8 @@ impl LocalListFilesTool {
         maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeListFilesResult> {
-        let (value, custody) = crate::tool::clone_value_with_native_work_bounded(
-            &result.value, maximum_bytes, work,
+        let (value, custody) = crate::tool::clone_value(
+            &result.value, Some(maximum_bytes), work,
         )?;
         Ok(NativeListFilesResult { result: ToolResult { value }, custody })
     }
@@ -295,7 +295,7 @@ impl LocalListFilesTool {
             )?.await?;
         let page = NativeListFilesPage { generation, page, _custody: custody };
         let wire = list_files_page_wire(&page.generation, &page.page)?;
-        let (value, custody) = crate::tool::value_with_native_work_bounded(
+        let (value, custody) = crate::tool::value(
             &wire, maximum_bytes, work,
         )?;
         let output = NativeListFilesResult { result: ToolResult { value }, custody };
@@ -526,7 +526,7 @@ impl ToolProjection for LocalListFilesTool {
             value: &'a Value,
         }
         self.supports_native_projection(work)?;
-        crate::tool::value_with_native_work(&Projection { kind: "json", value: &result.value }, work)
+        crate::tool::value(&Projection { kind: "json", value: &result.value }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
     }
 }
 
@@ -674,7 +674,7 @@ impl MemoryContentPublisher {
     ) -> Result<()> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference_with_io(persisted, bytes, true, io)?;
+            .retain_reference(persisted, bytes, true, Some(io))?;
         io.remaining()?;
         Ok(())
     }
@@ -682,7 +682,7 @@ impl MemoryContentPublisher {
     fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference(&persisted, bytes, true)?;
+            .retain_reference(&persisted, bytes, true, None)?;
         Ok(persisted)
     }
 }
@@ -692,7 +692,7 @@ impl MemoryHarnessStorage {
     pub fn default_tools(&self, limits: Limits, source: Option<Arc<dyn super::RecursiveDefaultToolSource<
         MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend,
     >>>) -> Result<ToolRegistry> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
@@ -792,7 +792,7 @@ impl MemoryHarnessStorage {
                 write_capability.clone(),
             ]),
         );
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
@@ -815,10 +815,12 @@ impl MemoryHarnessStorage {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                volume.clone(),
-                issuer.verifier(), crate::core::SchemaRegistry::new(),
-                scope.clone(),
+                &volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
                 maximum_file_bytes,
+                None,
             )?
             .with_input_verifier(input.clone()),
         );
@@ -1089,7 +1091,7 @@ impl MemoryHarnessStorage {
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &StreamClient<MemoryStream> {
+    pub fn stream(&self) -> &Arc<MemoryStream> {
         &self.stream
     }
 
@@ -1119,7 +1121,7 @@ mod tests {
     use crate::conversation::ContentGrant;
     use crate::{
         Outcome,
-        model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
+        model::{Model, ModelEvent, ModelProvider, ModelRequest},
         runtime::{TaskDefinition, TaskRegistry},
     };
     use futures::{
@@ -1514,12 +1516,7 @@ mod tests {
             ]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     async fn run_admitted_file_case<F, Fut>(
@@ -1576,11 +1573,8 @@ mod tests {
             self.0.generate(request, dispatch)
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
         }
     }
 
@@ -2001,12 +1995,7 @@ mod tests {
             }
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     #[tokio::test]
