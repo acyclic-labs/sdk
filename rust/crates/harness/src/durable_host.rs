@@ -7002,9 +7002,15 @@ pub(crate) mod tests {
         #[cfg(feature = "filesystem")]
         let mut workflow_prepare_io = None;
         #[cfg(feature = "filesystem")]
+        let mut replacement_workflow_prepare_io = None;
+        #[cfg(feature = "filesystem")]
         let mut execution_prepare_io = None;
         #[cfg(feature = "filesystem")]
+        let mut replacement_execution_prepare_io = None;
+        #[cfg(feature = "filesystem")]
         let mut approval_prepare_io = None;
+        #[cfg(feature = "filesystem")]
+        let mut replacement_approval_prepare_io = None;
         #[cfg(feature = "filesystem")]
         let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
             use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
@@ -7547,7 +7553,7 @@ pub(crate) mod tests {
                     &StreamKey::new(OwnedBytes::from_static(b"approval-before-cancellation"))?,
                     &OwnedBytes::from_static(b"must not publish"),
                     crate::distributed::JournalWrite::Fresh,
-                    &mut approval_prepare_io,
+                    &mut replacement_approval_prepare_io,
                 )
                 .await?;
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
@@ -7625,7 +7631,7 @@ pub(crate) mod tests {
                     &key,
                     &OwnedBytes::from_static(b"never published"),
                     crate::distributed::JournalWrite::Fresh,
-                    &mut workflow_prepare_io,
+                    &mut replacement_workflow_prepare_io,
                 )
                 .await?;
             let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
@@ -7680,7 +7686,7 @@ pub(crate) mod tests {
                         &key,
                         &bytes,
                         crate::distributed::JournalWrite::Fresh,
-                        &mut execution_prepare_io,
+                        &mut replacement_execution_prepare_io,
                     )
                     .await?
             };

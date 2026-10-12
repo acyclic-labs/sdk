@@ -18,15 +18,15 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
     let content = FileRef::new(
         VolumeRef::new(
             ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
-            "history-selection",
+            "history-selection".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?,
-        "message.json",
-        "1",
-        FileDescriptor::from_bytes(b"{}", "application/json")?,
-        "message.json",
-    )?;
+         &mut None)?,
+        "message.json".into(),
+        "1".into(),
+        FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+        "message.json".into(),
+     &mut None)?;
     let call = Uuid::new_v4();
     let result = Uuid::new_v4();
     let mut history = ConversationState::default();
@@ -44,7 +44,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
             reply_to,
             tool_call_id: Some("call".into()),
             extensions: Default::default(),
-        })?;
+        }, &mut None)?;
     }
     let wire = serde_json::to_vec(&history)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
@@ -99,7 +99,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
     candidate.append(selected.user_message.clone().ok_or_else(|| {
         acyclic_harness::Error::Invalid("new turn omitted its user message".into())
-    })?)?;
+    })?, &mut None)?;
     let orphan = bounded_model_context_selection(&candidate, selected.user_id, 2)
         .expect_err("explicit suffix admitted an orphan tool result");
     assert!(orphan.to_string().contains("splits a tool exchange"));

@@ -4489,7 +4489,7 @@ mod tests {
                 .is_err()
             );
         }
-        assert_ne!(first.version().into(), second.version());
+        assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
             acyclic_stream::OwnedBytes::from_static(b"one")
