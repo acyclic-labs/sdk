@@ -14,13 +14,6 @@ where
             .is_some_and(|watch| watch.is_exact())
     }
 
-    pub(super) fn ledger_stamp(&self) -> Option<ViewStamp> {
-        self.source_view
-            .is_stable()
-            .then(|| self.authored.view_stamp())
-            .flatten()
-    }
-
     pub(super) fn path(
         &self,
         path: &MountPath,
@@ -146,6 +139,7 @@ where
         record: FileRecord,
         metadata: FileMetadata,
         file: Arc<CheckoutDetachedFile<A, O>>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.detached
             .lock()
@@ -162,8 +156,11 @@ where
             .map_err(|_| MountSourceError::Stale)?
             .records
             .insert(record.file_id, (record, metadata));
-        self.authored
-            .record_projection_change(&ViewChange::Node(record.file_id));
+        self.authored.record_projection_change(
+            &ViewChange::Node(record.file_id),
+            &mut adapter::NativeDemandCarrier::Native(work),
+            || Ok(()),
+        )?;
         Ok(())
     }
 
@@ -266,7 +263,7 @@ where
         };
         let mut current = match original {
             Some(work) => file.lookup_with_meter(work)?,
-            None => file.lookup_async().await?,
+            None => file.lookup()?,
         };
         current.node.link_count = lookup.node.link_count;
         Ok(current)
@@ -279,9 +276,7 @@ where
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let pin = match &lookup {
-            LazyLookup::Source { node, source }
-                if node.kind == SourceNodeKind::RegularFile =>
-            {
+            LazyLookup::Source { node, source } if node.kind == SourceNodeKind::RegularFile => {
                 Some(source_content_pin(*source, node))
             }
             _ => None,
@@ -311,8 +306,7 @@ where
     ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError> {
         for _ in 0..2 {
             let resolution = self.resolve(path, text, owner, original).await?;
-            let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = resolution
-            else {
+            let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = resolution else {
                 return Ok((resolution, None));
             };
             if node.kind != SourceNodeKind::RegularFile {

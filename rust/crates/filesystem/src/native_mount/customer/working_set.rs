@@ -17,12 +17,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Exact generation admitted into the physical view.
-    #[must_use]
-    pub const fn generation_id(&self) -> GenerationId {
-        self.expected_generation
-    }
-
     /// Physical volume-root directory owned by this view.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -138,17 +132,15 @@ where
                 ));
             }
             let cancellation = work.cancellation();
-            let current = self
-                .source
-                .shared_checkout()
-                .lock_with_carrier(
-                    &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    cancellation,
-                    Some(self.source.cancellation()),
-                )
-                .await
-                .map_err(|cause| (E::from(cause), None))?
-                .generation_id();
+            let current = super::super::adapter::await_lock(
+                self.source.shared_checkout().lock(),
+                &mut super::super::adapter::NativeDemandCarrier::Native(work),
+                cancellation,
+                Some(self.source.cancellation()),
+            )
+            .await
+            .map_err(|cause| (E::from(cause), None))?
+            .generation_id();
             let head = self
                 .workspace
                 .head(work, cancellation)
@@ -189,16 +181,14 @@ where
         work: &NativeMaterializationWork,
     ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
         self.capture_host_subtree(&MountPath::root(), work).await?;
-        let pending = self
-            .source
-            .shared_checkout()
-            .lock_with_carrier(
-                &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                work.cancellation(),
-                Some(self.source.cancellation()),
-            )
-            .await?
-            .has_pending_mutations();
+        let pending = super::super::adapter::await_lock(
+            self.source.shared_checkout().lock(),
+            &mut super::super::adapter::NativeDemandCarrier::Native(work),
+            work.cancellation(),
+            Some(self.source.cancellation()),
+        )
+        .await?
+        .has_pending_mutations();
         if pending {
             return Err(MountLifecycleError::NativePolicy(
                 "native source view changed after admission",

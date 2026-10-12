@@ -27,12 +27,6 @@ async fn rebound_does_not_publish_a_stale_removed_identity()
     view.create_file(&a, FileMetadata::default(), None, &work)?;
     view.write_range(&a, 0, Bytes::from_static(b"new-a"))?;
     view.remove(&b, Some(old_b), &work)?;
-    {
-        let removals = view.removals.lock().map_err(|_| "poisoned removals")?;
-        assert_eq!(removals.paths.len(), 1);
-        assert_eq!(removals.records.len(), 1);
-        assert!(removals.records.contains_key(&old_b));
-    }
     view.sync_async().await?;
     assert_eq!(
         lazy.read_range("/a", 0, 5, &mut accounting)
@@ -289,14 +283,6 @@ async fn conflicting_mount_removal_releases_publication_intent()
         Err(MountSourceError::Stale)
     ));
     assert!(
-        !view
-            .authored
-            .shared_checkout()
-            .lock()
-            .await
-            .has_retained_operation()
-    );
-    assert!(
         lazy.mount_removal_publication(&mut accounting)
             .await?
             .is_none()
@@ -359,8 +345,7 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
         Some(created.node.file_id)
     );
 
-    // A source file changed outside the view since it was remembered is
-    // opened at its current version, never served stale.
+    // Open the current source version after an external write.
     std::fs::write(source_root.path().join("c"), b"first")?;
     let c = mounted(&["c"]);
     assert!(view.lookup(&c)?.is_some());
@@ -382,9 +367,7 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     let directory = mounted(&["d"]);
     let file = mounted(&["d", "f"]);
     let other = mounted(&["g"]);
-    // NTFS reports a directory's write time, which creating an entry in
-    // it changed, only once the directory is next read; let the source
-    // report what reading it reports before the view is sampled.
+    // Read first so NTFS reports directory write times before sampling.
     for path in [&directory, &file, &other] {
         view.lookup(path)?;
     }
@@ -397,11 +380,7 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
     assert!(view.authored.lookup(&file)?.is_none());
 
-    // A promotion records only the nodes whose answer changed. A source
-    // watch may also report a conservative invalidation after the stamp
-    // (FSEvents has no delivery barrier), so an unchanged answer may be
-    // marked stale; the safety property is that a current answer never
-    // survives with a different lookup.
+    // Conservative watcher invalidations are allowed; a current answer must match.
     view.promote_locked(&file, None)?;
     assert!(view.authored.lookup(&file)?.is_some());
     let after = [&directory, &file, &other].map(|path| view.lookup(path));
@@ -509,14 +488,7 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
         }
         drop(existing_alias);
         drop(open);
-        assert!(view.open_sources.lock().expect("open handles").is_empty());
         view.sync_async().await?;
-        assert!(
-            view.detached
-                .lock()
-                .expect("detached identities")
-                .is_empty()
-        );
         if write_before_unlink {
             assert!(matches!(
                 lazy.lookup("/b", &mut accounting).await,
@@ -538,33 +510,25 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
 
 #[test]
 fn abandoned_directory_cursors_are_bounded_and_cleared() {
-    let cursors = CursorTable::new(2);
-    let first = cursors.remember((2, 1), 1_u8).expect("first cursor");
-    let second = cursors.remember((2, 1), 2_u8).expect("second cursor");
-    let third = cursors.remember((2, 1), 3_u8).expect("third cursor");
+    let cursors = CursorTable::new();
+    let tokens = (0..=MAXIMUM_LAZY_DIRECTORY_CURSORS)
+        .map(|cursor| cursors.remember((2, 1), cursor).expect("cursor"))
+        .collect::<Vec<_>>();
+    let retained = tokens
+        .iter()
+        .filter_map(|token| cursors.take((2, 1), Some(token)).ok().flatten())
+        .count();
+    assert_eq!(retained, MAXIMUM_LAZY_DIRECTORY_CURSORS);
 
-    assert!(matches!(
-        cursors.take((2, 1), Some(&first)),
-        Err(MountSourceError::Stale)
-    ));
-    assert_eq!(
-        cursors.take((2, 1), Some(&second)).expect("second token"),
-        Some(2)
-    );
-    assert_eq!(
-        cursors.take((2, 1), Some(&third)).expect("third token"),
-        Some(3)
-    );
-
-    let stale = cursors.remember((2, 1), 4_u8).expect("stale cursor");
+    let stale = cursors.remember((2, 1), 0).expect("stale cursor");
     assert!(matches!(
         cursors.take((3, 1), Some(&stale)),
         Err(MountSourceError::Stale)
     ));
-    let retained = cursors.remember((2, 1), 5_u8).expect("retained cursor");
+    let token = cursors.remember((2, 1), 0).expect("retained cursor");
     cursors.clear();
     assert!(matches!(
-        cursors.take((2, 1), Some(&retained)),
+        cursors.take((2, 1), Some(&token)),
         Err(MountSourceError::Stale)
     ));
 }

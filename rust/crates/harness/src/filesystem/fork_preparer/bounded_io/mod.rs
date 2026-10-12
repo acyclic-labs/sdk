@@ -25,7 +25,7 @@ use records::{decode_allowance_error, decode_allowance_with_code};
 pub(in crate::filesystem) use sdk::publish_native;
 pub(in crate::filesystem) use sdk::{
     apply_generation, apply_generation_task_guarded, create, fork, generation, generation_ref,
-    open, operation_generation, publish_generation, read, resolve, retain,
+    mutation, open, operation_generation, publish_generation, read, resolve, retain,
 };
 
 /// Work and retained ownership for one preparation attempt.
@@ -110,7 +110,7 @@ impl PreparationIo {
         let mut custody = custody
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(cause) = custody.substitute(retained) {
+        if let Err(cause) = custody.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| custody.release(bytes)) {
             return Err(Error::NativeWork {
                 cause,
                 custody: Some(custody),
@@ -331,7 +331,7 @@ impl PreparationIo {
                     .bytes()
                     .checked_add(bytes)
                     .ok_or_else(|| self.invalid("preparation ownership overflow"))?;
-                custody.resize_retained(live).map_err(Into::into)
+                custody.resize(live).map_err(Into::into)
             }
         }
     }

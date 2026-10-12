@@ -1,11 +1,10 @@
 use super::*;
 
 impl<T> CursorTable<T> {
-    pub(super) fn new(maximum: usize) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             entries: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(1),
-            maximum,
         }
     }
 
@@ -19,13 +18,13 @@ impl<T> CursorTable<T> {
             token = self.next.fetch_add(1, Ordering::Relaxed);
         }
         let mut entries = self.entries.lock().map_err(|_| MountSourceError::Stale)?;
-        while entries.len() >= self.maximum {
+        while entries.len() >= MAXIMUM_LAZY_DIRECTORY_CURSORS {
             let Some(oldest) = entries.first_key_value().map(|(&key, _)| key) else {
                 break;
             };
             entries.remove(&oldest);
         }
-        entries.insert(token, StampedCursor { generation, cursor });
+        entries.insert(token, (generation, cursor));
         Ok(token.to_le_bytes())
     }
 
@@ -38,16 +37,16 @@ impl<T> CursorTable<T> {
             return Ok(None);
         };
         let bytes: [u8; 8] = cursor.try_into().map_err(|_| MountSourceError::Stale)?;
-        let stamped = self
+        let (recorded, cursor) = self
             .entries
             .lock()
             .map_err(|_| MountSourceError::Stale)?
             .remove(&u64::from_le_bytes(bytes))
             .ok_or(MountSourceError::Stale)?;
-        if stamped.generation != generation {
+        if recorded != generation {
             return Err(MountSourceError::Stale);
         }
-        Ok(Some(stamped.cursor))
+        Ok(Some(cursor))
     }
 
     pub(super) fn clear(&self) {

@@ -27,7 +27,7 @@ where
         E: From<MountSourceError> + Send + 'static,
     {
         use crate::lazy_workspace::NativeSnapshotContext;
-        use adapter::CaptureInputScratch;
+
         let mut accounting_failure = None;
         let result: Result<crate::NativePublicationSnapshot, E> = async {
             let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
@@ -50,15 +50,13 @@ where
                 }
             }
             let retained = {
-                let mut checkout = self
-                    .authored
-                    .shared_checkout()
-                    .lock_with_carrier(
-                        &mut carrier,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
+                let mut checkout = adapter::await_lock(
+                    self.authored.shared_checkout().lock(),
+                    &mut carrier,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                )
+                .await?;
                 checkout
                     .has_retained_operation()
                     .then(|| checkout.retained_operation_id())
@@ -80,7 +78,7 @@ where
                 let proof = remembered.and_then(|(_, proof)| proof).or(selected
                     .filter(|(_, _, requested)| *requested == operation)
                     .and(selected_proof));
-                let context = if let Some((destination, source, source_config, input)) = proof {
+                let context = if let Some((_, _, _, input)) = proof {
                     let (snapshot, original_input) = self
                         .lazy
                         .selected_snapshot(operation, generation, &mut accounting)
@@ -101,26 +99,35 @@ where
                     {
                         return Err(MountSourceError::Stale.into());
                     }
-                    let context = NativeSnapshotContext::Selected { cut, input };
-                    *acknowledged = Some(crate::NativePublicationSnapshot::published(
-                        context, operation, generation,
-                    ));
-                    if retained == Some(operation)
-                        && !self
-                            .authored
-                            .shared_checkout()
-                            .resolve_acknowledged_original_with_native_work(
-                                operation,
-                                generation,
-                                work,
-                                cancellation,
-                                Some(self.authored.cancellation()),
-                                self.authored.publication_guard(),
-                            )
-                            .await?
-                    {
-                        return Err(MountSourceError::Indeterminate.into());
-                    }
+                    NativeSnapshotContext::Selected { cut, input }
+                } else {
+                    NativeSnapshotContext::Lazy(
+                        self.lazy
+                            .publication_cut(Some(operation), &mut accounting)
+                            .await
+                            .map_err(lazy_error)?,
+                    )
+                };
+                *acknowledged = Some(crate::NativePublicationSnapshot::published(
+                    context, operation, generation,
+                ));
+                if retained == Some(operation)
+                    && !self
+                        .authored
+                        .shared_checkout()
+                        .resolve_acknowledged_original_with_native_work(
+                            operation,
+                            generation,
+                            work,
+                            cancellation,
+                            Some(self.authored.cancellation()),
+                            self.authored.callback_guard().cloned(),
+                        )
+                        .await?
+                {
+                    return Err(MountSourceError::Indeterminate.into());
+                }
+                if let Some((destination, source, source_config, input)) = proof {
                     self.lazy
                         .finish_selected_import(
                             operation,
@@ -133,45 +140,16 @@ where
                         )
                         .await
                         .map_err(lazy_error)?;
-                    context
-                } else {
-                    let context = NativeSnapshotContext::Lazy(
-                        self.lazy
-                            .publication_cut(Some(operation), &mut accounting)
-                            .await
-                            .map_err(lazy_error)?,
-                    );
-                    *acknowledged = Some(crate::NativePublicationSnapshot::published(
-                        context, operation, generation,
-                    ));
-                    if retained == Some(operation)
-                        && !self
-                            .authored
-                            .shared_checkout()
-                            .resolve_acknowledged_original_with_native_work(
-                                operation,
-                                generation,
-                                work,
-                                cancellation,
-                                Some(self.authored.cancellation()),
-                                self.authored.publication_guard(),
-                            )
-                            .await?
-                    {
-                        return Err(MountSourceError::Indeterminate.into());
-                    }
-                    if !self
-                        .lazy
-                        .finish_mount_removals(&mut accounting)
-                        .await
-                        .map_err(lazy_error)?
-                    {
-                        return Err(MountSourceError::Stale.into());
-                    }
-                    context
-                };
+                } else if !self
+                    .lazy
+                    .finish_mount_removals(&mut accounting)
+                    .await
+                    .map_err(lazy_error)?
+                {
+                    return Err(MountSourceError::Stale.into());
+                }
                 if remembered.is_some_and(|(id, _)| id == operation) {
-                    self.finish_detached_publication()?;
+                    self.finish_detached_publication(work)?;
                     self.clear_mount_removals()?;
                 }
                 return Ok(crate::NativePublicationSnapshot::published(
@@ -180,25 +158,14 @@ where
             }
             if let Some(operation) = operation {
                 if retained == Some(operation) {
-                    let context = self
-                        .authored
-                        .retained_publication_context_with_carrier(&mut carrier, cancellation)
-                        .await?;
-                    let context = match context {
-                        Some(context) => context,
-                        None => {
-                            let cut = self
-                                .lazy
-                                .publication_cut(Some(operation), &mut accounting)
-                                .await
-                                .map_err(lazy_error)?;
-                            match remembered.and_then(|(_, proof)| proof) {
-                                Some((_, _, _, input)) => {
-                                    NativeSnapshotContext::Selected { cut, input }
-                                }
-                                None => NativeSnapshotContext::Lazy(cut),
-                            }
-                        }
+                    let cut = self
+                        .lazy
+                        .publication_cut(Some(operation), &mut accounting)
+                        .await
+                        .map_err(lazy_error)?;
+                    let context = match remembered.and_then(|(_, proof)| proof) {
+                        Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
+                        None => NativeSnapshotContext::Lazy(cut),
                     };
                     let published = self
                         .authored
@@ -239,7 +206,7 @@ where
                     {
                         return Err(MountSourceError::Stale.into());
                     }
-                    self.finish_detached_publication()?;
+                    self.finish_detached_publication(work)?;
                     self.clear_mount_removals()?;
                     return Ok(published);
                 }
@@ -253,7 +220,8 @@ where
                     .map_err(|_| MountSourceError::Stale)?
                     .publication = None;
             }
-            let mut input = adapter::NativeCaptureScratchAllocation::new(work)?;
+            let mut input_carrier = adapter::NativeDemandCarrier::Native(work);
+            let mut input = adapter::InputBuffers::new(&mut input_carrier)?;
             let (removals, captured_records) = {
                 let state = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
                 let mut paths = input.vec(state.paths.len())?;
@@ -340,7 +308,7 @@ where
             records.extend(
                 dirty
                     .iter()
-                    .map(|(_, record, metadata, _)| (record.file_id, (*record, *metadata))),
+                    .map(|(record, metadata, _)| (record.file_id, (*record, *metadata))),
             );
             let records = records.into_values().collect::<Vec<_>>();
             if let Err(error) = self.stage_detached_records(&records, &dirty, work).await {
@@ -372,7 +340,9 @@ where
                 Some((_, _, _, input)) => NativeSnapshotContext::Selected { cut, input },
                 None => NativeSnapshotContext::Lazy(cut),
             };
-            let mut scratch = adapter::NativeCaptureScratchAllocation::new(work)?;
+            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
+            let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
+            let mut namespace_allocations = scratch.vec(paths.len())?;
             let mut namespaces = scratch.vec(paths.len())?;
             for path in &paths {
                 let namespace = self
@@ -387,7 +357,7 @@ where
                     )
                     .into());
                 };
-                scratch.absorb(allocation);
+                namespace_allocations.push(allocation);
                 namespaces.push(namespace.value);
             }
             let scope = match &effects {
@@ -405,7 +375,7 @@ where
             if self
                 .authored
                 .shared_checkout()
-                .finish_phase(
+                .install_candidate(
                     candidate,
                     epoch,
                     stamp,
@@ -418,6 +388,17 @@ where
                             &ViewChange::Effect(&installed),
                             carrier,
                         )
+                    },
+                    |checkout, candidate, prepared| {
+                        cancellation
+                            .commit_if_both_live(self.authored.cancellation(), || {
+                                checkout.adopt_prepared_candidate(
+                                    &candidate.base,
+                                    candidate.checkout,
+                                    prepared,
+                                )
+                            })
+                            .map_err(|_| MountSourceError::Cancelled)
                     },
                     Some(operation),
                     |_, state| state.retained_operation_id(),
@@ -464,7 +445,7 @@ where
             {
                 return Err(MountSourceError::Stale.into());
             }
-            self.finish_detached_publication()?;
+            self.finish_detached_publication(work)?;
             self.clear_mount_removals()?;
             Ok(published)
         }
@@ -472,16 +453,14 @@ where
         if result.is_err() {
             let cleanup: Result<(), MountSourceError> = async {
                 let mut carrier = adapter::NativeDemandCarrier::Native(work);
-                let retained = self
-                    .authored
-                    .shared_checkout()
-                    .lock_with_carrier(
-                        &mut carrier,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?
-                    .has_retained_operation();
+                let retained = adapter::await_lock(
+                    self.authored.shared_checkout().lock(),
+                    &mut carrier,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                )
+                .await?
+                .has_retained_operation();
                 let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
                 if !retained
                     && self
@@ -546,7 +525,8 @@ where
         let (mut transaction, epoch, stamp) = self
             .authored
             .shared_checkout()
-            .prepare_native_phase_with_carrier(
+            .candidate(
+                None,
                 &mut carrier,
                 work.cancellation(),
                 Some(self.authored.cancellation()),
@@ -597,9 +577,9 @@ where
         }
         // Update surviving hard links from the detached identity, without rereading the source.
         let mut replacements = Vec::new();
-        for (file_id, record, _, _) in dirty {
+        for (record, _, _) in dirty {
             let live = match candidate
-                .read_file_record_by_id(*file_id, work, work.cancellation())
+                .read_file_record_by_id(record.file_id, work, work.cancellation())
                 .await
             {
                 Ok(record) => Some(record),
@@ -611,7 +591,7 @@ where
                     return Err(MountSourceError::Stale);
                 }
                 replacements.push(Mutation::File {
-                    file_id: *file_id,
+                    file_id: record.file_id,
                     mutation: FileMutation::ReplaceRecord { record: *record },
                 });
             }

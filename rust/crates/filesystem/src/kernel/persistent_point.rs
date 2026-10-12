@@ -11,8 +11,10 @@ use crate::storage::ObjectId;
 
 pub(crate) type Failure = OperationFailure<Error>;
 
-pub(crate) struct Owned<T> {
-    pub(crate) value: T,
+/// A value with ownership charged to a kernel accounting context.
+pub struct Owned<T> {
+    /// The retained value.
+    pub value: T,
     pub(crate) bytes: u64,
     pub(crate) allocation: KernelOwnedAllocation,
 }
@@ -22,7 +24,8 @@ impl<T> Owned<T> {
         Self { value, allocation, bytes }
     }
 
-    pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    /// Drops the value and releases its accounted ownership.
+    pub fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let Self { value, allocation, bytes } = self;
         drop(value);
         retire_allocation(allocation, bytes, accounting)

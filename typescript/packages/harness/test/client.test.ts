@@ -922,12 +922,7 @@ test("page window coalesces same-direction loads and deduplicates items", async 
 });
 
 test("page reset fences an older in-flight response", async () => {
-  let release: ((page: {
-    generation: string;
-    items: readonly { id: string }[];
-    hasMoreBefore: boolean;
-    hasMoreAfter: boolean;
-  }) => void) | undefined;
+  let release: ((page: Page<{ id: string }, unknown>) => void) | undefined;
   const window = new PageWindow(
     (item: { id: string }) => item.id,
     () => new Promise<Page<{ id: string }, unknown>>(resolve => { release = resolve; }),

@@ -24,8 +24,14 @@ where
         }
         if !effect.is_empty() {
             self.cursors.clear();
-            self.authored
-                .record_projection_change(&ViewChange::Effect(&effect));
+            self.authored.record_projection_change(
+                &ViewChange::Effect(&effect),
+                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                    WorkBudget::UNBOUNDED,
+                    self.authored.cancellation(),
+                )),
+                || Ok(()),
+            )?;
         }
         Ok(())
     }
@@ -89,7 +95,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
         let (text, mut allocation) = self.path(path, Some(work))?;
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (lease, resolution, source_file) =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
@@ -229,7 +235,7 @@ where
         &self,
         expected: Option<u64>,
         original: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<SourceMutationLease, MountSourceError> {
+    ) -> Result<ViewMutationPhase, MountSourceError> {
         let Some(work) = original else {
             return self.runtime.wait(|| async {
                 self.source_view
@@ -258,8 +264,8 @@ where
         &self,
         expected: Option<u64>,
         original: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<SourceViewLease, MountSourceError> {
-        let owner = SourceViewGate::callback_owner();
+    ) -> Result<ViewReadLease, MountSourceError> {
+        let owner = ViewGate::callback_owner();
         let Some(work) = original else {
             return self
                 .runtime
@@ -281,7 +287,6 @@ where
         })
     }
 
-    /// Whether `path` is answered from its source rather than the authored
     pub(super) fn is_source_projection(
         &self,
         path: &MountPath,
@@ -290,7 +295,7 @@ where
         let (text, _allocation) = self.path(path, original)?;
         self.runtime.wait(|| async {
             match self
-                .resolve(path, &text, SourceViewGate::callback_owner(), original)
+                .resolve(path, &text, ViewGate::callback_owner(), original)
                 .await?
             {
                 Resolution::Absent => Err(MountSourceError::NotFound),
@@ -325,7 +330,7 @@ where
             .checked_add(length)
             .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
         let (text, _allocation) = self.path(path, Some(work))?;
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (_lease, resolution, source_file) =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {

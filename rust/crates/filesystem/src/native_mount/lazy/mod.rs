@@ -1,10 +1,7 @@
 //! Native projection of one demand-backed lazy workspace.
 
 use super::adapter::{CallbackRuntime, CheckoutCandidate, CheckoutDetachedFile, InstallScope};
-use super::view_gate::{
-    ViewGate as SourceViewGate, ViewMutationPhase as SourceMutationLease,
-    ViewReadLease as SourceViewLease,
-};
+use super::view_gate::{ViewGate, ViewMutationPhase, ViewReadLease};
 use super::view_ledger::{ViewChange, ViewEffect, ViewStamp};
 use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
@@ -32,8 +29,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-const MAXIMUM_PROMOTION_BYTES: u64 = u64::MAX;
-
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
 
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
@@ -42,15 +37,9 @@ const MAXIMUM_PROMOTION_RETRIES: usize = 3;
 
 const MAXIMUM_INTERRUPTED_LISTINGS: usize = 3;
 
-struct StampedCursor<T> {
-    generation: (u64, u64),
-    cursor: T,
-}
-
 struct CursorTable<T> {
-    entries: Mutex<BTreeMap<u64, StampedCursor<T>>>,
+    entries: Mutex<BTreeMap<u64, ((u64, u64), T)>>,
     next: AtomicU64,
-    maximum: usize,
 }
 
 enum Resolution {
@@ -99,7 +88,7 @@ type DetachedIdentities<A, O> = Arc<Mutex<BTreeMap<FileId, DetachedIdentity<A, O
 
 type OpenIdentityHandles = Arc<Mutex<BTreeMap<FileId, Vec<Weak<dyn MountOpenFile>>>>>;
 
-type DirtyDetachedRecord = (FileId, FileRecord, FileMetadata, u64);
+type DirtyDetachedRecord = (FileRecord, FileMetadata, u64);
 
 struct SourceChangeRecorder<A, O, D, S> {
     lazy: Weak<LazyWorkspace<A, O, D, S>>,
@@ -124,7 +113,7 @@ pub struct LazyMountSource<A, O, D, S> {
     root: String,
     runtime: Arc<CallbackRuntime>,
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
-    source_view: Arc<SourceViewGate>,
+    source_view: Arc<ViewGate>,
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
@@ -142,7 +131,7 @@ struct LazyOpenFile<A, O, D, S> {
     source_file: Box<dyn DemandFile>,
     source_node: SourceNode,
     source_generation: u64,
-    source_view: Arc<SourceViewGate>,
+    source_view: Arc<ViewGate>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
     _allocation: crate::NativeAllocation,
@@ -151,7 +140,7 @@ struct LazyOpenFile<A, O, D, S> {
 struct ViewBoundOpenFile<A, O> {
     inner: Arc<dyn MountOpenFile>,
     runtime: Arc<CallbackRuntime>,
-    source_view: Arc<SourceViewGate>,
+    source_view: Arc<ViewGate>,
     detached: DetachedIdentities<A, O>,
     open_sources: OpenIdentityHandles,
     file_id: Option<FileId>,

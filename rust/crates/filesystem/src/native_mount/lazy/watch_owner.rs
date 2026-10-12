@@ -1,7 +1,6 @@
 use super::*;
 
 /// Owns a watcher until physical cleanup completes.
-/// Physical custody of the original source watcher and its constructor sink.
 pub struct NativeMountSourceWatchOwner {
     pub(super) watch: Option<Box<dyn SourceWatch>>,
     pub(super) sink: Option<Arc<dyn SourceChangeSink>>,

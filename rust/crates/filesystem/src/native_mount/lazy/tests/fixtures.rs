@@ -9,8 +9,6 @@ impl ViewObserver for Recorded {
             .push(position);
     }
 }
-
-/// A lazy view over a fresh native source holding `source-only`, which
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 async fn recorded_view(
     source_root: &Path,
@@ -28,7 +26,8 @@ async fn recorded_view(
     Box<dyn std::error::Error>,
 > {
     std::fs::write(source_root.join("source-only"), b"source")?;
-    let demand = Arc::new(native_source(source_root).await?);
+    let demand =
+        Arc::new(native_source(source_root, crate::model::FilesystemProfile::Portable).await?);
     let view = mounted_view_of(
         Arc::clone(&demand),
         "recorded",
@@ -40,8 +39,6 @@ async fn recorded_view(
     view.observe_view(observer);
     Ok((demand, view, recorded))
 }
-
-/// A lazy mount view over `source`, publishing only on sync.
 async fn mounted_view(
     source: &Path,
     name: &str,
@@ -55,7 +52,7 @@ async fn mounted_view(
     Box<dyn std::error::Error>,
 > {
     mounted_view_of(
-        Arc::new(native_source(source).await?),
+        Arc::new(native_source(source, crate::model::FilesystemProfile::Portable).await?),
         name,
         crate::MemoryLazyWorkspaceStore::default(),
     )
@@ -64,12 +61,12 @@ async fn mounted_view(
 
 pub(super) async fn native_source(
     source: &Path,
+    profile: crate::model::FilesystemProfile,
 ) -> Result<crate::demand::native::NativeDemandSource, Box<dyn std::error::Error>> {
-    use crate::model::{FilesystemProfile, VolumeLimits};
     Ok(crate::demand::native::NativeDemandSource::open(
         std::borrow::Cow::Borrowed(source),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
+        profile,
+        crate::model::VolumeLimits::default(),
         None,
         None,
         WorkBudget::UNBOUNDED,
@@ -78,8 +75,6 @@ pub(super) async fn native_source(
     .await?
     .value)
 }
-
-/// A lazy mount view over `demand`, publishing only on sync.
 async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceStore>(
     demand: Arc<D>,
     name: &str,
@@ -154,67 +149,6 @@ pub(super) fn mounted(names: &[&str]) -> MountPath {
     })
 }
 
-/// A live lazy mount of `source` at `destination`, over a native source
-async fn live_lazy_mount(
-    source: &Path,
-    destination: &Path,
-    name: &str,
-) -> Result<
-    super::super::LazyMount<
-        impl AsyncAuthorityStore + Send + Sync + 'static,
-        impl AsyncObjectStore + Send + Sync + 'static,
-        crate::demand::native::NativeDemandSource,
-        crate::MemoryLazyWorkspaceStore,
-    >,
-    Box<dyn std::error::Error>,
-> {
-    live_lazy_mount_of(open_native_source(source).await?, destination, name).await
-}
-
-#[cfg(unix)]
-async fn live_lazy_mount_over(
-    source: &Path,
-    destination: &Path,
-    name: &str,
-    watched: Watched,
-) -> Result<
-    super::super::LazyMount<
-        impl AsyncAuthorityStore + Send + Sync + 'static,
-        impl AsyncObjectStore + Send + Sync + 'static,
-        crate::demand::native::NativeDemandSource,
-        crate::MemoryLazyWorkspaceStore,
-    >,
-    Box<dyn std::error::Error>,
-> {
-    let demand = open_native_source(source).await?;
-    let demand = match watched {
-        Watched::Yes => demand,
-        Watched::No => demand.unwatched(),
-    };
-    live_lazy_mount_of(demand, destination, name).await
-}
-
-pub(super) async fn open_native_source(
-    source: &Path,
-) -> Result<crate::demand::native::NativeDemandSource, Box<dyn std::error::Error>> {
-    let profile = if cfg!(windows) {
-        crate::model::FilesystemProfile::Windows
-    } else {
-        crate::model::FilesystemProfile::Posix
-    };
-    Ok(crate::demand::native::NativeDemandSource::open(
-        std::borrow::Cow::Borrowed(source),
-        profile,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await?
-    .value)
-}
-
 pub(super) async fn live_lazy_mount_of(
     demand: crate::demand::native::NativeDemandSource,
     destination: &Path,
@@ -268,14 +202,16 @@ pub(super) fn is_absent(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-async fn keeps_a_reused_identity_apart(watched: Watched) -> Result<(), Box<dyn std::error::Error>> {
+async fn keeps_a_reused_identity_apart(watched: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 
     let root = tempfile::tempdir()?;
     let (source, mount) = (root.path().join("source"), root.path().join("mount"));
     std::fs::create_dir_all(&source)?;
     std::fs::write(source.join("removed"), b"old")?;
-    let live = live_lazy_mount_over(&source, &mount, "live-reused-identity", watched).await?;
+    let demand = native_source(&source, crate::model::FilesystemProfile::Posix).await?;
+    let demand = if watched { demand } else { demand.unwatched() };
+    let live = live_lazy_mount_of(demand, &mount, "live-reused-identity").await?;
     assert_eq!(std::fs::metadata(mount.join("removed"))?.len(), 3);
     // Holds the removed name's inode without a file handle.
     let held = std::fs::OpenOptions::new()
@@ -330,7 +266,7 @@ async fn keeps_a_reused_identity_apart(watched: Watched) -> Result<(), Box<dyn s
 }
 
 #[cfg(unix)]
-async fn keeps_hard_links_one_file(watched: Watched) -> Result<(), Box<dyn std::error::Error>> {
+async fn keeps_hard_links_one_file(watched: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
 
     let root = tempfile::tempdir()?;
@@ -343,7 +279,9 @@ async fn keeps_hard_links_one_file(watched: Watched) -> Result<(), Box<dyn std::
         std::fs::write(source.join(first), first.as_bytes())?;
         std::fs::hard_link(source.join(first), source.join(second))?;
     }
-    let live = live_lazy_mount_over(&source, &mount, "live-hard-links", watched).await?;
+    let demand = native_source(&source, crate::model::FilesystemProfile::Posix).await?;
+    let demand = if watched { demand } else { demand.unwatched() };
+    let live = live_lazy_mount_of(demand, &mount, "live-hard-links").await?;
     let same_file = |first: &str, second: &str| -> Result<(), Box<dyn std::error::Error>> {
         // Keep the inode live while comparing names: an unwatched mount
         // may receive FORGET between two otherwise independent stat calls.

@@ -50,16 +50,6 @@ pub(crate) async fn configured_test_service_bootstrap(
     Ok((lock, configured, root, work))
 }
 
-pub(crate) async fn test_service_control(
-    data: PathBuf,
-) -> acyclic_harness::Result<(ServiceLock, ServiceControl)> {
-    let (lock, configured, root, work) = configured_test_service_bootstrap(&data).await?;
-    Ok((
-        lock,
-        ServiceControl::open(data, configured, root, &work).await?,
-    ))
-}
-
 pub(super) async fn test_concurrent_service(
     data: PathBuf,
 ) -> acyclic_harness::Result<(ServiceLock, ConcurrentServiceControl)> {

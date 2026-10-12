@@ -180,9 +180,11 @@ where
         self.source_view.is_stable()
     }
 
-    /// Only a view whose source reports every change can be cached: the
     fn view_stamp(&self) -> Option<ViewStamp> {
-        self.ledger_stamp().filter(|_| self.source_observed())
+        if !self.source_view.is_stable() || !self.source_observed() {
+            return None;
+        }
+        self.authored.view_stamp()
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
@@ -270,7 +272,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
         let (text, _allocation) = self.path(path, Some(work))?;
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -357,7 +359,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let (text, _allocation) = self.path(path, Some(work))?;
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -678,7 +680,7 @@ where
         let lease = self.view_lease(expected, Some(work))?;
         let allocation = work
             .claim(
-                std::mem::size_of::<(SourceViewLease, crate::NativeAllocation)>() as u64,
+                std::mem::size_of::<(ViewReadLease, crate::NativeAllocation)>() as u64,
                 1,
                 crate::WorkCounters::UNCHARGED,
             )

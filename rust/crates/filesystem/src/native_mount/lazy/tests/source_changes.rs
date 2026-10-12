@@ -1,6 +1,4 @@
 use super::*;
-
-/// The source changes outside the view and reports each change: once
 #[test]
 fn lookups_follow_changes_made_to_the_source_outside_the_view()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -44,8 +42,6 @@ fn lookups_follow_changes_made_to_the_source_outside_the_view()
     assert_eq!(size(&a)?, None);
     Ok(())
 }
-
-/// Lost notifications invalidate every remembered answer.
 #[test]
 fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
@@ -69,8 +65,6 @@ fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std:
     assert!(view.lookup(&a)?.is_some());
     Ok(())
 }
-
-/// A listing's pages are empty only where it ends, so a driver never
 #[test]
 fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let work =
@@ -103,8 +97,6 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(listed, 3, "a, b, and empty");
     Ok(())
 }
-
-/// An open handle reports its file's facts as they are now, as a native
 #[test]
 fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
@@ -129,8 +121,6 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     assert_eq!(facts.node.logical_bytes, 5);
     Ok(())
 }
-
-/// Dropping a watched view releases everything it holds before the drop
 #[test]
 fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>> {
     use crate::LocalCoreStateStore;
@@ -146,7 +136,9 @@ fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn st
             .map_err(|error| format!("round {round}: {error}"))?;
         let view = runtime.block_on(async {
             mounted_view_of(
-                Arc::new(native_source(source.path()).await?),
+                Arc::new(
+                    native_source(source.path(), crate::model::FilesystemProfile::Portable).await?,
+                ),
                 &format!("released-{round}"),
                 store,
             )
@@ -160,8 +152,6 @@ fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn st
     }
     Ok(())
 }
-
-/// A file with a name outside the watched root changes unreported when
 #[cfg(unix)]
 #[test]
 fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::error::Error>> {
@@ -197,14 +187,19 @@ fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::
     );
     Ok(())
 }
-
-/// A source that cannot report its changes is read afresh behind every
 #[test]
 fn an_unwatched_source_is_read_afresh_and_never_cached() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"short")?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let demand = Arc::new(runtime.block_on(native_source(source.path()))?.unwatched());
+    let demand = Arc::new(
+        runtime
+            .block_on(native_source(
+                source.path(),
+                crate::model::FilesystemProfile::Portable,
+            ))?
+            .unwatched(),
+    );
     let view = runtime.block_on(mounted_view_of(
         Arc::clone(&demand),
         "unwatched",
@@ -223,8 +218,6 @@ fn an_unwatched_source_is_read_afresh_and_never_cached() -> Result<(), Box<dyn s
     assert_eq!(size(&absent)?, Some(7));
     Ok(())
 }
-
-/// Promoting a name moves its answer from the source into the checkout,
 #[test]
 fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;

@@ -54,20 +54,10 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserDirectoryPageResult>, JsValue> {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let after = after
             .as_deref()
-            .map(|value| {
-                browser_name(
-                    value,
-                    self.engine.volume_config().profile,
-                    self.engine.volume_config().limits,
-                )
-            })
+            .map(|value| browser_name(value, self.engine.volume_config()))
             .transpose()?;
         let receipt = browser_call!(
             self,
@@ -100,20 +90,10 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserDirectoryRecordPageResult>, JsValue> {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let after = after
             .as_deref()
-            .map(|value| {
-                browser_name(
-                    value,
-                    self.engine.volume_config().profile,
-                    self.engine.volume_config().limits,
-                )
-            })
+            .map(|value| browser_name(value, self.engine.volume_config()))
             .transpose()?;
         let receipt = browser_call!(
             self,

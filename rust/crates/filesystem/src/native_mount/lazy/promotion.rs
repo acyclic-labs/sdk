@@ -18,11 +18,7 @@ where
         carrier.with_work(|work| mount_items(work, 1))?;
         let (mut candidate, epoch, stamp) = authored
             .shared_checkout()
-            .prepare_native_phase_with_carrier(
-                carrier,
-                &cancellation,
-                Some(authored.cancellation()),
-            )
+            .candidate(None, carrier, &cancellation, Some(authored.cancellation()))
             .await?;
         let original = carrier.original_native_work();
         let mut accounting = match &original {
@@ -40,7 +36,7 @@ where
                 None,
                 path,
                 expected_source,
-                MAXIMUM_PROMOTION_BYTES,
+                u64::MAX,
                 &mut accounting,
             )
             .await;
@@ -64,7 +60,7 @@ where
         .await?;
         let installed = authored
             .shared_checkout()
-            .finish_phase(
+            .install_candidate(
                 candidate,
                 epoch,
                 stamp,
@@ -77,6 +73,17 @@ where
                         &ViewChange::Effect(&installed),
                         carrier,
                     )
+                },
+                |checkout, candidate, prepared| {
+                    cancellation
+                        .commit_if_both_live(authored.cancellation(), || {
+                            checkout.adopt_prepared_candidate(
+                                &candidate.base,
+                                candidate.checkout,
+                                prepared,
+                            )
+                        })
+                        .map_err(|_| MountSourceError::Cancelled)
                 },
                 None,
                 |publication, _| publication,
@@ -111,7 +118,7 @@ where
     ) -> Result<(), MountSourceError> {
         let (path, _allocation) = self.path(mounted, original)?;
         let resolution = self
-            .resolve(mounted, &path, SourceViewGate::callback_owner(), original)
+            .resolve(mounted, &path, ViewGate::callback_owner(), original)
             .await?;
         let (lookup, _allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),

@@ -207,7 +207,7 @@ macro_rules! mutation_callbacks {
                 };
                 self.authored.remove(path, expected, work)?;
                 if let Some((record, metadata, file)) = removed_open {
-                    self.record_removed_identity(record, metadata, file)?;
+                    self.record_removed_identity(record, metadata, file, work)?;
                 }
                 authored.node.file_id
             } else {
@@ -238,7 +238,7 @@ macro_rules! mutation_callbacks {
                         .metadata;
                     let (record, file) = self.removed_open_file(file_id, metadata, work)?;
                     self.authored.remove(path, Some(file_id), work)?;
-                    self.record_removed_identity(record, metadata, file)?;
+                    self.record_removed_identity(record, metadata, file, work)?;
                 }
                 file_id
             };
@@ -293,9 +293,7 @@ macro_rules! mutation_callbacks {
                         ..
                     }
                 ) {
-                    // Its entries resolve through the source by their paths, which
-                    // the rename changes: the subtree becomes authored first and
-                    // moves as one directory.
+                    // Promote the subtree before renaming its source paths.
                     self.promote_subtree_locked(source, work)?;
                 }
             }
@@ -347,7 +345,7 @@ macro_rules! mutation_callbacks {
             };
             self.authored.rename(source, destination, replace, work)?;
             if let Some((record, metadata, file)) = replaced_open {
-                self.record_removed_identity(record, metadata, file)?;
+                self.record_removed_identity(record, metadata, file, work)?;
             }
             self.record_removed(source, source_id, work)?;
             self.record_rebound(&destination_text)
@@ -367,8 +365,7 @@ macro_rules! mutation_callbacks {
         }
 
         fn flush(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-            // The authored checkout's policy decides, as at its own native
-            // boundary: a manual mount publishes only through sync and unmount.
+            // Manual mounts publish only through sync and unmount.
             let authored = self.authored.shared_checkout();
             if !self
                 .runtime
@@ -379,8 +376,20 @@ macro_rules! mutation_callbacks {
             let _mutation = self.mutation_lease(None, Some(work))?;
 
             self.runtime.wait(|| async {
-                self.sync_staged_with_permit(crate::PublicationPermit::Unrestricted, work)
-                    .await
+                self.publish(
+                    crate::PublicationPermit::Unrestricted,
+                    work,
+                    work.cancellation(),
+                    &mut None,
+                    &mut adapter::source_publication_guard(
+                        self.authored.callback_guard().cloned(),
+                        Some(self.authored.cancellation().clone()),
+                    ),
+                    None,
+                )
+                .await
+                .map(drop)
+                .map_err(|(error, _)| error)
             })
         }
     };

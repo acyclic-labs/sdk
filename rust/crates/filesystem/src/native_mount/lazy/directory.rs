@@ -14,9 +14,8 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        use adapter::CaptureInputScratch;
         let (text, _allocation) = self.path(path, Some(work))?;
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
@@ -79,13 +78,22 @@ where
                     )
                     .await
                     .map_err(lazy_error)?;
-                let mut output = adapter::NativeCaptureScratchAllocation::new(work)?;
+                let mut output_carrier = adapter::NativeDemandCarrier::Native(work);
+                let mut output = adapter::InputBuffers::new(&mut output_carrier)?;
                 let mut entries = output.vec(page.entries.len())?;
+                let mut output_allocation =
+                    output.retain().ok_or(MountSourceError::NativeUnsupported)?;
                 for entry in &page.entries {
-                    output.items(1)?;
+                    work.charge(crate::WorkCounters {
+                        items_examined: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    })
+                    .map_err(MountSourceError::NativeWork)?;
                     let (name, allocation) = adapter::native_mount_name(&entry.name, carrier)?;
-                    if let Some(allocation) = allocation {
-                        output.absorb(allocation);
+                    if let Some(mut allocation) = allocation {
+                        output_allocation
+                            .absorb(&mut allocation)
+                            .map_err(MountSourceError::NativeWork)?;
                     }
                     let (child, _allocation) = copy_path(path.components(), Some(&name), work)?;
                     let (child_text, _text_allocation) = self.path(&child, Some(work))?;
@@ -139,7 +147,14 @@ where
                 }
                 let next_cursor = if let Some(cursor) = page.next.take() {
                     let token = self.cursors.remember(generation, (stamp, cursor))?;
-                    let mut bytes = output.vec(8)?;
+                    let mut continuation = adapter::InputBuffers::new(&mut output_carrier)?;
+                    let mut bytes = continuation.vec(8)?;
+                    let mut allocation = continuation
+                        .retain()
+                        .ok_or(MountSourceError::NativeUnsupported)?;
+                    output_allocation
+                        .absorb(&mut allocation)
+                        .map_err(MountSourceError::NativeWork)?;
                     bytes.extend_from_slice(&token);
                     Some(bytes)
                 } else {
@@ -148,7 +163,7 @@ where
                 Ok(MountDirectoryPage::new(
                     entries,
                     next_cursor,
-                    Some(output.retain()),
+                    Some(output_allocation),
                 ))
             })
         })

@@ -8,5 +8,5 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     if work.is_none() {
         return Ok(());
     }
-    crate::contract::count_trusted_json_bytes_with_work(source, u64::MAX, work).map(|_| ())
+    crate::contract::json_byte_length(source, u64::MAX, work).map(|_| ())
 }

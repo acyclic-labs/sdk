@@ -7,9 +7,6 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn lifetime(&self) -> &CancellationToken {
-        self.authored.cancellation()
-    }
     async fn current_authored(
         &self,
         owner: crate::native_mount::view_gate::CallbackOwner,
@@ -46,7 +43,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = SourceViewGate::callback_owner();
+                let owner = ViewGate::callback_owner();
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view
@@ -92,7 +89,7 @@ where
         let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = SourceViewGate::callback_owner();
+                let owner = ViewGate::callback_owner();
                 let caller = carrier.cancellation();
                 let _lease = self
                     .source_view
@@ -136,33 +133,16 @@ where
         &self,
         offset: u64,
         length: u64,
-        carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        if let Some(original) = carrier.original_native_work() {
-            return crate::demand::read_file(
-                &*self.source_file,
-                offset,
-                length,
-                &original,
-                original.cancellation(),
-            )
-            .map_err(mount_demand_error);
-        }
-        let budget = carrier
-            .with_work(|work| work.remaining())
-            .map_err(mount_demand_error)?;
-        let caller = carrier.cancellation();
-        let read = crate::demand::read_file(&*self.source_file, offset, length, budget, &caller);
-        let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
-        let retained = output.logical_owned_bytes;
-        if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
-            drop(output);
-            carrier
-                .with_work(|work| work.release(retained))
-                .map_err(mount_demand_error)?;
-            return Err(mount_demand_error(error));
-        }
-        Ok(output)
+        crate::demand::read_file(
+            &*self.source_file,
+            offset,
+            length,
+            work,
+            work.cancellation(),
+        )
+        .map_err(mount_demand_error)
     }
 }
 
@@ -197,9 +177,9 @@ where
         length: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        self.observe(work, false, |file, _, carrier| match file {
+        self.observe(work, false, |file, _, _| match file {
             Some(file) => file.read_range_with_meter(offset, length, work),
-            None => self.read_source(offset, u64::from(length), carrier),
+            None => self.read_source(offset, u64::from(length), work),
         })
     }
 
@@ -222,7 +202,7 @@ where
             if length == 0 {
                 return carrier.empty_source_chunk();
             }
-            self.read_source(offset, length, carrier)
+            self.read_source(offset, length, work)
         })
     }
 
@@ -386,48 +366,46 @@ where
                         logical_bytes,
                         spans: Vec::new(),
                     },
-                    work
-                        .claim(0, 0, crate::WorkCounters::UNCHARGED)
+                    work.claim(0, 0, crate::WorkCounters::UNCHARGED)
                         .map_err(MountSourceError::NativeWork)?,
                 ));
             }
-            let output = self.read_source(offset, data_length, carrier)?;
+            let output = self.read_source(offset, data_length, work)?;
             if output.bytes.len() as u64 != data_length {
                 return Err(MountSourceError::Stale);
             }
             if !output.is_intrinsic() {
                 return Err(MountSourceError::NativeUnsupported);
             }
-            work
-                .charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                })
-                .map_err(MountSourceError::NativeWork)?;
+            work.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(MountSourceError::NativeWork)?;
             let counters = crate::WorkCounters {
                 items_returned: 1,
                 ..crate::WorkCounters::UNCHARGED
             };
-            work
-                .admit(counters)
-                .map_err(MountSourceError::NativeWork)?;
-            use adapter::CaptureInputScratch;
-            let mut scratch = adapter::NativeCaptureScratchAllocation::new(work)?;
+            work.admit(counters).map_err(MountSourceError::NativeWork)?;
+
+            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
+            let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let mut spans = scratch.vec(1)?;
             let (bytes, _, _) = output.into_owned_parts();
             spans.push(crate::native_mount::MountSparseSpan {
                 relative_offset: 0,
                 bytes,
             });
-            work
-                .record_admitted(counters)
+            work.record_admitted(counters)
                 .map_err(MountSourceError::NativeWork)?;
             Ok((
                 crate::native_mount::MountSparseRange {
                     logical_bytes,
                     spans,
                 },
-                scratch.retain(),
+                scratch
+                    .retain()
+                    .ok_or(MountSourceError::NativeUnsupported)?,
             ))
         })
     }
@@ -444,27 +422,29 @@ where
         self.mutate(work, |file| file.write_sparse_range(offset, range, work))
     }
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| self.lookup_with_meter(work))
+        adapter::boundary(self.authored.cancellation(), |work| {
+            self.lookup_with_meter(work)
+        })
     }
     fn read_range(&self, offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.read_range_with_meter(offset, length, work)
                 .map(|packet| packet.bytes)
         })
     }
     fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<OwnedBytes, MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.read_up_to_with_meter(offset, maximum_bytes, work)
                 .map(|packet| packet.bytes)
         })
     }
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.seek_with_meter(offset, target, work)
         })
     }
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.write_range_with_meter(
                 offset,
                 crate::kernel::OwnedSourceChunk::claimed(bytes.into(), 0),
@@ -473,7 +453,7 @@ where
         })
     }
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.resize_with_meter(logical_bytes, work)
         })
     }
@@ -483,7 +463,7 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.allocate_range_with_meter(offset, length, operation, work)
         })
     }
@@ -492,7 +472,7 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        adapter::boundary(self.lifetime(), |work| {
+        adapter::boundary(self.authored.cancellation(), |work| {
             self.list_attributes_with_meter(cursor, maximum_entries, work)
                 .map(|(page, _)| page)
         })

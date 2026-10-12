@@ -63,7 +63,7 @@ where
                 self.with_view(Some(work), operation)
             });
         };
-        let owner = SourceViewGate::callback_owner();
+        let owner = ViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let lease =
             with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {

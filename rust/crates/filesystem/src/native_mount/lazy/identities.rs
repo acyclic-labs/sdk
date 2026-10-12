@@ -16,7 +16,7 @@ where
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || async {
-                let owner = SourceViewGate::callback_owner();
+                let owner = ViewGate::callback_owner();
                 let record = self.authored.record_by_id(id, owner, carrier).await?;
                 let file = self
                     .authored
@@ -27,7 +27,6 @@ where
         })
     }
 
-    /// Whether facts about `file_id` may be reused on the source's reports.
     pub(super) fn reported(&self, file_id: FileId) -> bool {
         !self
             .linked
@@ -106,12 +105,18 @@ where
         self.detached_by_id(file_id)
     }
 
-    pub(super) fn finish_detached_publication(&self) -> Result<(), MountSourceError> {
+    pub(super) fn finish_detached_publication(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
         for (file_id, entry) in identities.iter_mut() {
             if !entry.ready {
-                self.authored
-                    .record_projection_change(&ViewChange::Node(*file_id));
+                self.authored.record_projection_change(
+                    &ViewChange::Node(*file_id),
+                    &mut adapter::NativeDemandCarrier::Native(work),
+                    || Ok(()),
+                )?;
             }
             entry.ready = true;
             if let Some(epoch) = entry.pending_epoch.take() {
@@ -123,9 +128,7 @@ where
     }
 
     pub(super) fn prune_detached(&self) -> Result<(), MountSourceError> {
-        // Called only after a successful sync under the stable source-view gate.
-        // A source handle re-fetches this identity on every operation, while a
-        // shadow open holds the detached file directly. Keep either kind live.
+        // After sync, retain identities held by source or shadow handles.
         let mut open = self
             .open_sources
             .lock()
@@ -161,12 +164,12 @@ where
             .detached
             .lock()
             .map_err(|_| MountSourceError::Stale)?
-            .iter()
-            .filter(|(_, entry)| entry.ready && entry.pending_epoch.is_none())
-            .map(|(id, entry)| (*id, Arc::clone(&entry.file), entry.published_epoch))
+            .values()
+            .filter(|entry| entry.ready && entry.pending_epoch.is_none())
+            .map(|entry| (Arc::clone(&entry.file), entry.published_epoch))
             .collect::<Vec<_>>();
         let mut dirty = Vec::new();
-        for (id, file, published_epoch) in detached {
+        for (file, published_epoch) in detached {
             let (record, metadata, epoch) = file
                 .snapshot(
                     &mut adapter::NativeDemandCarrier::Native(work),
@@ -174,7 +177,7 @@ where
                 )
                 .await?;
             if epoch > published_epoch {
-                dirty.push((id, record, metadata, epoch));
+                dirty.push((record, metadata, epoch));
             }
         }
         Ok(dirty)
@@ -198,7 +201,7 @@ where
                     .detached_file_from_record(
                         *record,
                         *metadata,
-                        SourceViewGate::callback_owner(),
+                        ViewGate::callback_owner(),
                         &mut adapter::NativeDemandCarrier::Native(work),
                     )
                     .await?;
@@ -217,8 +220,10 @@ where
             }
         }
         let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        for (id, _, _, epoch) in dirty {
-            let entry = identities.get_mut(id).ok_or(MountSourceError::Stale)?;
+        for (record, _, epoch) in dirty {
+            let entry = identities
+                .get_mut(&record.file_id)
+                .ok_or(MountSourceError::Stale)?;
             entry.pending_epoch = Some(*epoch);
         }
         Ok(())

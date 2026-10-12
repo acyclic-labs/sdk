@@ -1,9 +1,11 @@
 //! Native lifetime ownership in the existing session actor and task journals.
 
 use super::*;
-use acyclic_harness::distributed::WorkPull;
-use acyclic_harness::filesystem::TaskWorkerAttempt;
+use TaskWorkerAttempt;
+use WorkPull;
 use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::store::HistoryIo;
+use acyclic_harness::store::native_work_io;
 use acyclic_harness::{Error, Result as RootResult};
 use std::future::Future;
 
@@ -55,7 +57,7 @@ impl PiSession {
         if let Some(host) = &self.native {
             return Ok(host.clone());
         }
-        let protected = pi_owner::PiOwnerConfig::load_with_native_work(
+        let protected = pi_owner::PiOwnerConfig::load(
             &self.resources.private_state_root,
             &self.relative_directory,
             work,
@@ -116,13 +118,8 @@ impl PiSession {
                     "Pi cancellation caller has no current original native owner".to_owned(),
                 )
             })?;
-            if &live.binding != self.binding(caller)?
-                || !live
-                    .context
-                    .context()
-                    .scope()
-                    .grants()
-                    .contains("operation:cancel")
+            if &live.prepared.binding != self.binding(caller)?
+                || !live.context.scope().grants().contains("operation:cancel")
             {
                 return Err(Error::Invalid(
                     "Pi cancellation caller differs from its current native authority".to_owned(),
@@ -190,13 +187,13 @@ impl PiSession {
                 );
             }
             if !self.native_jobs.contains_key(task) {
-                match (async {
-                    let mut io = acyclic_harness::store::native_work_io(&work)?;
-                    acyclic_harness::store::HistoryIo::retain_owned(
+                match async {
+                    let mut io = native_work_io(&work)?;
+                    HistoryIo::retain_owned(
                         &mut io,
-                        std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
-                            std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>(),
-                        ) as u64,
+                        std::mem::size_of::<WorkPull>()
+                            .max(std::mem::size_of::<TaskWorkerAttempt>())
+                            as u64,
                     )?;
                     let value = self
                         .runtime
@@ -205,7 +202,7 @@ impl PiSession {
                         .recover_work(*task, &mut Some(&mut io))
                         .await?;
                     Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
-                })
+                }
                 .await
                 {
                     Ok(observed) => match &observed.0 {
@@ -259,7 +256,7 @@ impl PiSession {
             return Ok(());
         }
         let native = self.native_host_with_native_work(query_work)?;
-        let protected = native.original_owner();
+        let protected = std::sync::Arc::clone(&native.protected);
         self.runtime
             .verify_owner_with_native_work(&protected, query_work)?;
         let root_task = protected.policy().root_task;
@@ -355,13 +352,12 @@ impl PiSession {
             if route.lifecycle.is_frozen() || self.native_jobs.contains_key(task) {
                 continue;
             }
-            let observed = (async {
-                let mut io = acyclic_harness::store::native_work_io(query_work)?;
-                acyclic_harness::store::HistoryIo::retain_owned(
+            let observed = {
+                let mut io = native_work_io(query_work)?;
+                HistoryIo::retain_owned(
                     &mut io,
-                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
-                        std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>(),
-                    ) as u64,
+                    std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
+                        as u64,
                 )?;
                 let value = self
                     .runtime
@@ -369,9 +365,8 @@ impl PiSession {
                     .task_host()
                     .recover_work(*task, &mut Some(&mut io))
                     .await?;
-                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
-            })
-            .await?;
+                (value, io.into_custody())
+            };
             match &observed.0 {
                 WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
                     let native = native.clone();
@@ -742,18 +737,15 @@ async fn original_native_first_dispatch_pending(
             "Pi first dispatch differs from its original sealed child admission".to_owned(),
         ));
     }
-    let reservation = (async {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        acyclic_harness::store::HistoryIo::retain_owned(
+    let reservation = {
+        let mut io = native_work_io(work)?;
+        HistoryIo::retain_owned(
             &mut io,
-            std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<
-                acyclic_harness::filesystem::TaskWorkerAttempt,
-            >()) as u64,
+            std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
         )?;
         let value = host.recover_work(task, &mut Some(&mut io)).await?;
-        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
-    })
-    .await?;
+        (value, io.into_custody())
+    };
     if !matches!(&reservation.0, WorkPull::Idle) {
         return Ok(false);
     }
@@ -778,25 +770,21 @@ async fn original_native_first_dispatch_pending(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let mut io = acyclic_harness::store::history::native_work_io(work)?;
         let value = conversation.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
-    let history = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let value = acyclic_harness::store::HistoryReader::new(
-            stream,
-            &conversation.0.0,
-            &verifier.0,
-            &mut Some(&mut io),
-        )?;
-        (value, io.into_custody())
-    };
+    let history = acyclic_harness::store::HistoryReader::new_with_native_work(
+        stream,
+        &conversation.0.0,
+        &verifier.0,
+        work,
+    )?;
     let pin = history.0.pin_with_native_work(0, work).await?;
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
         pi_fork::derived(plan.original, "native-effect", &work)?,
-        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+        &mut Some(&mut acyclic_harness::store::history::native_work_io(work)?),
     )?;
     let observed = history
         .0

@@ -53,11 +53,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserExtentPlanResult>, JsValue> {
         let maximum_spans = wasm_u32(&maximum_spans)?;
 
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             plan_file_extents(&path, ByteRange { offset, length }, maximum_spans,)
@@ -120,11 +116,7 @@ impl BrowserCheckout {
         offset: u64,
         target: String,
     ) -> Result<Ts<BrowserExtentSeekResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let target = extent_seek_target(&target)?;
         let receipt = browser_call!(self, seek_file_extent(&path, offset, target,))?;
         ts(BrowserExtentSeekResult {

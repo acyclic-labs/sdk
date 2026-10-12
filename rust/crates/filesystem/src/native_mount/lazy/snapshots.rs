@@ -33,7 +33,6 @@ where
     ) -> Result<crate::NativePublicationSnapshot, (MountSourceError, Option<MountSourceError>)>
     {
         let result = async {
-            use adapter::CaptureInputScratch;
             let original = carrier
                 .original_native_work()
                 .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
@@ -47,7 +46,8 @@ where
                 )
                 .await?
                 .into_mutation_phase();
-            let mut scratch = adapter::NativeCaptureScratchAllocation::new(&original)?;
+            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let detached = {
                 let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
                 if !removals.paths.is_empty() || removals.publication.is_some() {
@@ -69,15 +69,13 @@ where
                     return Err(MountSourceError::Stale);
                 }
             }
-            let checkout = self
-                .authored
-                .shared_checkout()
-                .lock_with_carrier(
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?;
+            let checkout = adapter::await_lock(
+                self.authored.shared_checkout().lock(),
+                &mut carrier,
+                cancellation,
+                Some(self.authored.cancellation()),
+            )
+            .await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations() || self.authored.captures_pending() {
                 return Err(MountSourceError::Stale);
@@ -94,15 +92,13 @@ where
                 .lazy_snapshot(&mut accounting)
                 .map_err(mount_engine_error)?
                 .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
-            let checkout = self
-                .authored
-                .shared_checkout()
-                .lock_with_carrier(
-                    &mut carrier,
-                    cancellation,
-                    Some(self.authored.cancellation()),
-                )
-                .await?;
+            let checkout = adapter::await_lock(
+                self.authored.shared_checkout().lock(),
+                &mut carrier,
+                cancellation,
+                Some(self.authored.cancellation()),
+            )
+            .await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations()
                 || self.authored.captures_pending()
@@ -168,15 +164,13 @@ where
             && id == operation
         {
             let retained = {
-                let mut checkout = self
-                    .authored
-                    .shared_checkout()
-                    .lock_with_carrier(
-                        &mut carrier,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
+                let mut checkout = adapter::await_lock(
+                    self.authored.shared_checkout().lock(),
+                    &mut carrier,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                )
+                .await?;
                 checkout
                     .has_retained_operation()
                     .then(|| checkout.retained_operation_id())
@@ -191,7 +185,7 @@ where
                         original,
                         cancellation,
                         Some(self.authored.cancellation()),
-                        self.authored.publication_guard(),
+                        self.authored.callback_guard().cloned(),
                     )
                     .await?
             {
@@ -209,7 +203,7 @@ where
                 )
                 .await
                 .map_err(lazy_error)?;
-            self.finish_detached_publication()?;
+            self.finish_detached_publication(original)?;
             self.clear_mount_removals()?;
         }
         Ok(Some(snapshot))

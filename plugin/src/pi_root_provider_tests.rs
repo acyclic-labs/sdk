@@ -24,10 +24,10 @@ pub(crate) struct Fixture {
     pub(crate) filesystem: Arc<Host>,
     stream: Arc<LocalStream>,
     pub(crate) owner: Arc<PiOwnerConfig>,
-    pub(crate) runtime: PiTaskRuntime<LocalStream>,
+    pub(crate) runtime: PiTaskRuntime,
     pub(crate) request: PiRootRequest,
     pub(crate) lease: acyclic_harness::distributed::WorkLease,
-    pub(crate) provider: Arc<PiRootProvider<LocalStream>>,
+    pub(crate) provider: Arc<PiRootProvider>,
     pub(crate) startup: NativeMaterializationWork,
     _lease_custody: NativeAllocation,
     pub(crate) _lock: crate::service_process::ServiceLock,
@@ -326,7 +326,7 @@ impl Fixture {
         }
     }
 
-    async fn reopen(&self) -> Arc<PiRootProvider<LocalStream>> {
+    async fn reopen(&self) -> Arc<PiRootProvider> {
         let owner = PiOwnerConfig::load_with_native_work(
             &self.resources.private_state_root,
             self.session.strip_prefix(&self.resources.data).unwrap(),
@@ -393,7 +393,6 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             .observe_resources_with_native_work(
                 dispatch.effect_id,
                 dispatch.attempt_id,
-                dispatch.request_digest,
                 &fixture.startup,
             )
             .await
@@ -539,7 +538,6 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                 .observe_resources_with_native_work(
                     dispatch.effect_id,
                     dispatch.attempt_id,
-                    dispatch.request_digest,
                     &fixture.startup,
                 )
                 .await
@@ -880,7 +878,6 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
         .observe_resources_with_native_work(
             dispatch.effect_id,
             dispatch.attempt_id,
-            dispatch.request_digest,
             &substituted.startup,
         )
         .await

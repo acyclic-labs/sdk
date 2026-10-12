@@ -10,35 +10,24 @@ where
 {
     /// Publishes pending authored writes.
     pub async fn sync_async(&self) -> Result<(), MountSourceError> {
-        self.sync_async_with_permit(crate::PublicationPermit::Unrestricted)
-            .await
-    }
-
-    /// Publishes pending authored writes under one authority permit.
-    pub async fn sync_async_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-    ) -> Result<(), MountSourceError> {
         let work = crate::NativeMaterializationWork::new(
             WorkBudget::UNBOUNDED,
             self.authored.cancellation(),
         )
         .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
         self.sync_async_with_permit_qualified_native_work_guarded_with_ack(
-            permit,
+            crate::PublicationPermit::Unrestricted,
             &work,
             work.cancellation(),
             &mut None,
-            self.authored.sdk_publication_policy(),
+            adapter::source_publication_guard(
+                self.authored.callback_guard().cloned(),
+                Some(self.authored.cancellation().clone()),
+            ),
         )
         .await
         .map(drop)
         .map_err(|(error, _)| error)
-    }
-
-    /// Publishes pending authored writes on the callback runtime.
-    pub fn sync(&self) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| self.sync_async())
     }
 
     pub(in crate::native_mount) async fn sync_async_with_permit_qualified_native_work_guarded_with_ack<
@@ -128,15 +117,13 @@ where
                 .map_err(|_| MountSourceError::Stale)?
                 .publication;
             let retained = {
-                let mut checkout = self
-                    .authored
-                    .shared_checkout()
-                    .lock_with_carrier(
-                        &mut carrier,
-                        cancellation,
-                        Some(self.authored.cancellation()),
-                    )
-                    .await?;
+                let mut checkout = adapter::await_lock(
+                    self.authored.shared_checkout().lock(),
+                    &mut carrier,
+                    cancellation,
+                    Some(self.authored.cancellation()),
+                )
+                .await?;
                 checkout
                     .has_retained_operation()
                     .then(|| checkout.retained_operation_id())
@@ -151,7 +138,7 @@ where
                         &work,
                         cancellation,
                         Some(self.authored.cancellation()),
-                        self.authored.publication_guard(),
+                        self.authored.callback_guard().cloned(),
                     )
                     .await?
             {
@@ -171,7 +158,7 @@ where
                 .await
                 .map_err(lazy_error)?;
             if remembered.is_some_and(|(id, _)| id == operation) {
-                self.finish_detached_publication()?;
+                self.finish_detached_publication(&work)?;
                 self.clear_mount_removals()?;
             }
             return Ok(snapshot);
@@ -194,23 +181,5 @@ where
             ))
             .map_err(mount_engine_error)?
             .ok_or_else(|| E::from(MountSourceError::OriginalSnapshotUnavailable))
-    }
-
-    pub(super) async fn sync_staged_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        self.publish(
-            permit,
-            work,
-            work.cancellation(),
-            &mut None,
-            &mut self.authored.sdk_publication_policy(),
-            None,
-        )
-        .await
-        .map(drop)
-        .map_err(|(error, _)| error)
     }
 }

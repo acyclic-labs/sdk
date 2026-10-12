@@ -201,7 +201,7 @@ impl<'a> AuthorityWork<'a> {
                 .check()
                 .map_err(|_| AuthorityStoreError::Cancelled)?;
             let buffer =
-                crate::native_host::native_buffer::<T>(capacity, original).map_err(|error| {
+                crate::native_host::buffer::<T, _>(capacity, &mut &*original).map_err(|error| {
                     match error {
                         crate::NativeTreeMaterializationError::AllocationFailed(_) => {
                             AuthorityStoreError::RejectedStatic("fork allocation failed")
@@ -212,7 +212,7 @@ impl<'a> AuthorityWork<'a> {
             self.cancellation
                 .check()
                 .map_err(|_| AuthorityStoreError::Cancelled)?;
-            return Ok((buffer.data, Some(buffer._allocation)));
+            return Ok((buffer.0, Some(buffer.1)));
         }
         if self.opaque_live_upper_bytes != 0 {
             let peak = self

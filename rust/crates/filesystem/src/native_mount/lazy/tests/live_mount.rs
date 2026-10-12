@@ -1,6 +1,4 @@
 use super::*;
-
-/// Every change made to the source outside the mount becomes visible
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>> {
@@ -8,7 +6,12 @@ async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std
     let (source, mount) = (root.path().join("source"), root.path().join("mount"));
     std::fs::create_dir_all(source.join("d"))?;
     std::fs::write(source.join("a"), b"short")?;
-    let live = live_lazy_mount(&source, &mount, "live-source-changes").await?;
+    let demand = native_source(
+        &source,
+        crate::VolumeConfig::native(crate::Lifecycle::Ephemeral).profile,
+    )
+    .await?;
+    let live = live_lazy_mount_of(demand, &mount, "live-source-changes").await?;
     // Let the kernel cache every fact the changes below supersede.
     for _ in 0..2 {
         assert_eq!(std::fs::metadata(mount.join("a"))?.len(), 5);
@@ -50,30 +53,24 @@ async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std
     live.unmount().await?;
     Ok(())
 }
-
-/// A source that reuses a removed file's identity for a new file under
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::error::Error>> {
-    for watched in [Watched::Yes, Watched::No] {
+    for watched in [true, false] {
         keeps_a_reused_identity_apart(watched).await?;
     }
     Ok(())
 }
-
-/// Source hard links stay one file through the mount, whichever name is
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
-    for watched in [Watched::Yes, Watched::No] {
+    for watched in [true, false] {
         keeps_hard_links_one_file(watched).await?;
     }
     Ok(())
 }
-
-/// A file with a name outside the source changes unreported through that
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -89,7 +86,12 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
     std::fs::create_dir_all(&outside)?;
     std::fs::write(source.join("linked"), b"before")?;
     std::fs::hard_link(source.join("linked"), outside.join("alias"))?;
-    let live = live_lazy_mount(&source, &mount, "live-linked-outside").await?;
+    let demand = native_source(
+        &source,
+        crate::VolumeConfig::native(crate::Lifecycle::Ephemeral).profile,
+    )
+    .await?;
+    let live = live_lazy_mount_of(demand, &mount, "live-linked-outside").await?;
     for _ in 0..3 {
         assert_eq!(std::fs::read(mount.join("linked"))?, b"before");
         assert_eq!(std::fs::metadata(mount.join("linked"))?.len(), 6);
@@ -104,8 +106,6 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
     live.unmount().await?;
     Ok(())
 }
-
-/// Writers replace, remove, and create source files while readers stat,
 #[cfg(not(target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -115,8 +115,6 @@ async fn live_mount_follows_concurrent_changes_to_its_source()
     const WRITERS: usize = 4;
     const READERS: usize = 4;
     const CHANGES: usize = 150;
-
-    /// A whole version: its own name, generation, and length, padded.
     fn version(name: usize, generation: usize) -> Vec<u8> {
         let mut bytes = format!("{name}:{generation}:").into_bytes();
         let length = 16 + (name * 7 + generation * 13) % 200;
@@ -141,7 +139,12 @@ async fn live_mount_follows_concurrent_changes_to_its_source()
         std::fs::write(source.join(format!("f{name}")), version(name, 0))?;
         std::fs::write(source.join(format!("g{name}")), version(name, 0))?;
     }
-    let live = live_lazy_mount(&source, &mount, "live-concurrent-changes").await?;
+    let demand = native_source(
+        &source,
+        crate::VolumeConfig::native(crate::Lifecycle::Ephemeral).profile,
+    )
+    .await?;
+    let live = live_lazy_mount_of(demand, &mount, "live-concurrent-changes").await?;
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let torn = Arc::new(Mutex::new(Vec::new()));
     let readers = (0..READERS)

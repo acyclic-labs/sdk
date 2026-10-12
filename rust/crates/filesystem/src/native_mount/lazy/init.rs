@@ -19,11 +19,7 @@ where
         if let Some(original) = &original {
             original
                 .admit(crate::WorkCounters::UNCHARGED)
-                .map_err(|error| {
-                    NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(
-                        error,
-                    )))
-                })?;
+                .map_err(MountSourceError::NativeWork)?;
         }
         let valid = match (&original, &allocations) {
             (Some(original), Some((root, source))) => {
@@ -37,9 +33,10 @@ where
             _ => false,
         };
         if !valid {
-            return Err(NativeMountError::Demand(DemandError::Mount(
-                MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout),
-            )));
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            )
+            .into());
         }
         let (root_allocation, source_allocation) =
             allocations.map_or((None, None), |(root, source)| (Some(root), Some(source)));
@@ -63,11 +60,7 @@ where
                     if let Some(original) = &original {
                         original
                             .claim(0, 1, crate::WorkCounters::UNCHARGED)
-                            .map_err(|error| {
-                                NativeMountError::Demand(DemandError::Mount(
-                                    MountSourceError::NativeWork(error),
-                                ))
-                            })?;
+                            .map_err(MountSourceError::NativeWork)?;
                     } else {
                         let bytes = std::mem::size_of_val(&value) as u64;
                         carrier
@@ -80,7 +73,7 @@ where
             }
             let runtime = owned_arc!(runtime);
 
-            let source_view = owned_arc!(SourceViewGate::new());
+            let source_view = owned_arc!(ViewGate::new());
             let detached = owned_arc!(Mutex::new(BTreeMap::new()));
             let open_sources = owned_arc!(Mutex::new(BTreeMap::new()));
             let sink_bytes = if original.is_some() {
@@ -110,71 +103,35 @@ where
                 owner.bytes = sink_bytes;
                 retained -= sink_bytes;
             }
-            if let Some(original) = &original {
-                let sink = Arc::clone(owner.sink.as_ref().expect("preallocated source sink"));
-                let watched = lazy.watch_source(
-                    sink,
-                    &mut crate::kernel::KernelAccounting::native(original, &cancellation),
-                );
-                match watched {
-                    Ok(watch) => {
-                        owner.watch = watch;
-
-                        let checked = crate::native_host::NativeHostWork::check(
-                            &mut crate::demand::NativeSourceWork::from_native_materialization_work(
-                                original,
-                            ),
-                        );
-                        if let Err(cause) = checked {
-                            if owner.watch.is_some() {
-                                return Err(NativeMountError::SourceWatchStartupFailed {
-                                    cause,
-                                    owner,
-                                });
-                            }
-                            return Err(NativeMountError::Demand(cause));
-                        }
-                    }
-                    Err(LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure))) => {
-                        owner.startup_failure = Some(Arc::clone(&failure));
-                        return Err(NativeMountError::SourceWatchStartupFailed {
-                            cause: DemandError::SourceWatchStartup(failure),
-                            owner,
-                        });
-                    }
-                    Err(LazyWorkspaceError::Demand(error)) => {
-                        return Err(NativeMountError::Demand(error));
-                    }
-                    Err(error) => {
-                        return Err(NativeMountError::Source(lazy_error(error)));
-                    }
-                }
-            } else {
+            let (prepared, budget, prior_live) = if original.is_none() {
                 let prepared = carrier
                     .with_work(|work| work.prepare_watch_custody())
                     .map_err(NativeMountError::Demand)?;
-                let remaining = carrier.with_work(|work| {
+                match carrier.with_work(|work| {
                     work.remaining()
                         .map(|budget| (budget, work.live_allocation_bytes()))
-                });
-                let (budget, prior_live) = match remaining {
-                    Ok(remaining) => remaining,
+                }) {
+                    Ok((budget, live)) => (Some(prepared), budget, live),
                     Err(error) => {
                         carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
                         return Err(NativeMountError::Demand(error));
                     }
-                };
-                let mut accounting =
-                    crate::kernel::KernelAccounting::standalone(budget, &cancellation);
-                let watched = lazy.watch_source(
-                    Arc::clone(owner.sink.as_ref().expect("preallocated source sink")),
-                    &mut accounting,
-                );
-                let watched = crate::facade::measured(watched, &accounting);
-                match watched {
+                }
+            } else {
+                (None, WorkBudget::UNBOUNDED, 0)
+            };
+            let mut accounting = match &original {
+                Some(work) => crate::kernel::KernelAccounting::native(work, &cancellation),
+                None => crate::kernel::KernelAccounting::standalone(budget, &cancellation),
+            };
+            let watched = lazy.watch_source(
+                Arc::clone(owner.sink.as_ref().expect("preallocated source sink")),
+                &mut accounting,
+            );
+            let watched_result = if let Some(prepared) = prepared {
+                match crate::facade::measured(watched, &accounting) {
                     Ok(receipt) => {
                         owner.watch = receipt.value;
-
                         let merged = carrier
                             .with_work(|work| work.merge_with_prior_live(receipt.work, prior_live));
                         if let Some(watch) = owner.watch.as_ref() {
@@ -220,26 +177,48 @@ where
                             carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
                             merged.map_err(NativeMountError::Demand)?;
                         }
+                        Ok(())
                     }
                     Err(failure) => {
                         carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
                         let _ = carrier.with_work(|work| {
                             work.merge_with_prior_live(*failure.work, prior_live)
                         });
-                        return match failure.error {
-                            LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(
-                                failure,
-                            )) => {
-                                owner.startup_failure = Some(Arc::clone(&failure));
-                                Err(NativeMountError::SourceWatchStartupFailed {
-                                    cause: DemandError::SourceWatchStartup(failure),
-                                    owner,
-                                })
-                            }
-                            error => Err(NativeMountError::Source(lazy_error(error))),
-                        };
+                        Err(failure.error)
                     }
                 }
+            } else {
+                match watched {
+                    Ok(watch) => {
+                        owner.watch = watch;
+                        if let Err(cause) = carrier.with_work(|work| work.check()) {
+                            if owner.watch.is_some() {
+                                return Err(NativeMountError::SourceWatchStartupFailed {
+                                    cause,
+                                    owner,
+                                });
+                            }
+                            return Err(NativeMountError::Demand(cause));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => Err(error),
+                }
+            };
+            if let Err(error) = watched_result {
+                return Err(match error {
+                    LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure)) => {
+                        owner.startup_failure = Some(Arc::clone(&failure));
+                        NativeMountError::SourceWatchStartupFailed {
+                            cause: DemandError::SourceWatchStartup(failure),
+                            owner,
+                        }
+                    }
+                    LazyWorkspaceError::Demand(error) if original.is_some() => {
+                        NativeMountError::Demand(error)
+                    }
+                    error => NativeMountError::Source(lazy_error(error)),
+                });
             }
             let (retained_lazy, root, native_allocation) = sink
                 .constructor_inputs
@@ -259,7 +238,7 @@ where
                 authored,
                 root,
                 runtime,
-                cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
+                cursors: CursorTable::new(),
                 source_view,
                 removals: Mutex::new(MountedRemovals::default()),
                 detached,
@@ -333,9 +312,8 @@ where
     pub(crate) fn native_source_io_lease(
         self: &Arc<Self>,
     ) -> Result<adapter::NativeSourceIoLease, MountSourceError> {
-        self.authored.native_source_io_lease_for_owner(
-            Arc::clone(self) as Arc<dyn adapter::NativeSourceIoRetirement>
-        )
+        self.authored
+            .native_source_io_lease_for_owner(Arc::clone(self) as Arc<dyn Send + Sync>)
     }
 
     /// Advances the authored checkout after an external publication.
@@ -363,8 +341,14 @@ where
                 .await
                 .map_err(lazy_error)?;
             // Every unauthored node may read differently from the new epoch.
-            self.authored
-                .record_projection_change(&ViewChange::Everything);
+            self.authored.record_projection_change(
+                &ViewChange::Everything,
+                &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                    WorkBudget::UNBOUNDED,
+                    self.authored.cancellation(),
+                )),
+                || Ok(()),
+            )?;
             self.cursors.clear();
             Ok(())
         }
@@ -374,16 +358,5 @@ where
             self.source_view.finish_transition();
         }
         result
-    }
-}
-
-impl<A, O, D, S> adapter::NativeSourceIoRetirement for LazyMountSource<A, O, D, S>
-where
-    Self: Send + Sync,
-    A: Send + Sync,
-    O: Send + Sync,
-{
-    fn release_native_source_io(&self) {
-        adapter::NativeSourceIoRetirement::release_native_source_io(self.authored.as_ref());
     }
 }
