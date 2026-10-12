@@ -228,7 +228,7 @@ impl LogicalName {
         accounting.record_completed(delta)
     }
 
-    pub(crate) fn read_cursor_borrowed<'a>(
+    pub(super) fn read_cursor_borrowed<'a>(
         decoder: &mut Decoder<'a>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
@@ -256,7 +256,7 @@ impl LogicalName {
         Ok((encoding, bytes))
     }
 
-    pub(crate) fn decode_cursor_with_accounting(
+    pub(super) fn decode_cursor_with_accounting(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
@@ -270,7 +270,7 @@ impl LogicalName {
         owned.finish(result)
     }
 
-    pub(crate) fn decode_cursor(
+    pub(super) fn decode_cursor(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
