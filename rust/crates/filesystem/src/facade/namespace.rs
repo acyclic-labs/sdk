@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
-
     /// Finds bounded sorted aliases using the canonical cached reverse traversal.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn paths_for_file_id_with_native_work(
@@ -16,7 +15,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         ).await?;
         Ok((paths, native_pinned_allocation(allocation) .map_err(WorkspaceError::Filesystem)?))
     }
-
 
     /// Projects only the first sorted alias; all reverse-query buffers keep
     #[cfg(not(target_arch = "wasm32"))]
@@ -33,7 +31,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok(Some((value, native_pinned_allocation(allocation).map_err(WorkspaceError::Filesystem)?)))
     }
 
-
     /// Resolves an exact no-follow path on the original native journal.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_record_with_native_work(
@@ -47,37 +44,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok(lookup.record)
     }
 
-
     pub(super) async fn resolve_file(
-        &self,
-        path: &NamespacePath,
-        budget: WorkBudget,
+        &self, path: &NamespacePath, accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> FsResult<FileRecord> {
-        let lookup = observe_path_edges_async(
-            &self.volume.fs.inner.objects,
-            &self.root,
-            path,
-            self.volume.config,
-            budget,
-            cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), FsError::Path))?;
-        let work = lookup.lookup.work;
-        let record = lookup
-            .lookup
-            .record
-            .ok_or_else(|| OperationFailure::new(FsError::NotFound, work))?;
-        Ok(FsReceipt {
-            value: record,
-            work,
-        })
+    ) -> Result<FileRecord, FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() { self.validate_native_work(original)?; }
+        lookup_path_async_with_accounting(
+            &self.volume.fs.inner.objects, &self.root, path, self.volume.config,
+            accounting, cancellation, None,
+        ).await?.record.ok_or(FsError::NotFound)
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Resolves an exact path without following links or scanning unrelated subtrees.
     pub async fn lookup_no_follow<W: FsWork>(
@@ -99,7 +79,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     /// Resolves one exact path and decodes its authenticated metadata without
     pub async fn lookup_no_follow_with_metadata<W: FsWork>(
         &mut self, path: &NamespacePath, budget: W, cancellation: &CancellationToken,
@@ -110,7 +89,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await;
         budget.finish(result, &accounting)
     }
-
 
     pub(crate) async fn lookup_no_follow_with_metadata_with_accounting(
         &mut self, path: &NamespacePath,
@@ -132,7 +110,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(Some(PathMetadataLookup { record, metadata }))
     }
-
 
     pub(crate) async fn lookup_no_follow_with_accounting(
         &mut self,
@@ -172,7 +149,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             (lookup, allocation)
         })
     }
-
 
     pub(crate) async fn lookup_no_follow_at_current_with_accounting(
         &mut self,
@@ -224,7 +200,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-
     pub(super) async fn observe_base_for_candidate_with_accounting(
         &self,
         path: &NamespacePath,
@@ -248,7 +223,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-
     /// Resolves a bounded path batch while sharing directory and file-table frontiers.
     pub async fn lookup_batch_no_follow(
         &mut self,
@@ -267,7 +241,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FsReceipt { value: lookup, work }
         }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(crate) async fn lookup_batch_no_follow_with_accounting(
         &mut self, paths: &[NamespacePath], selected_restore: bool,
@@ -371,7 +344,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result.map(|(mut lookup, allocation)| { lookup.work = accounting.spent(); (lookup, allocation) })
     }
 
-
     /// Resolves a bounded path batch on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn lookup_batch_no_follow_with_native_work(
@@ -384,7 +356,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ).await?;
         Ok((lookup, native_pinned_allocation(allocation)?))
     }
-
 
     pub(super) fn observe_staged_paths_with_accounting<'p>(
         &mut self, base: ObjectId, paths: impl IntoIterator<Item = &'p NamespacePath>,
@@ -410,7 +381,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.volume.config.limits.maximum_checkout_dependencies, work, budget, cancellation,
         )
     }
-
 
     pub(super) async fn lookup_file_record_by_id_with_accounting(
         &self, file_id: FileId, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,

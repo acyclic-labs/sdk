@@ -90,7 +90,6 @@ pub(super) fn removed_binding_id(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     pub(super) async fn admit_mutation_names_with_accounting(
         &mut self,
         operations: &mut [Mutation],
@@ -158,7 +157,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(super) fn name_binding_vector(
         length: usize,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -174,7 +172,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok((values, allocation))
     }
 
-
     pub(super) fn push_name_binding(
         bindings: &mut (Vec<(NamespacePath, FileId)>, crate::kernel::allocation::KernelOwnedAllocation),
         path: &NamespacePath,
@@ -188,7 +185,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(super) fn retain_name_bindings(
         bindings: &mut (Vec<(NamespacePath, FileId)>, crate::kernel::allocation::KernelOwnedAllocation),
         removed: &NamespacePath,
@@ -199,7 +195,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         bindings.0.retain(|(path, _)| path != removed);
         accounting.release_owned(&mut bindings.1, bytes)
     }
-
 
     pub(super) fn replace_name_path(
         path: &mut NamespacePath,
@@ -213,7 +208,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         accounting.release_owned(operations_allocation, old_bytes)?;
         accounting.check()
     }
-
 
     pub(super) async fn admit_binding_name(
         &mut self, path: &NamespacePath, pending: &[(NamespacePath, FileId)],
@@ -240,7 +234,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(super) async fn canonicalize_new_mutation_parents(
         &mut self,
         operation: &mut Mutation,
@@ -263,7 +256,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         retire_name_owned(resolved, bytes, accounting)?;
         Self::replace_name_path(path, replacement, operations_allocation, accounting)
     }
-
 
     pub(super) async fn canonicalize_existing_mutation(
         &mut self,
@@ -298,7 +290,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(super) async fn canonical_existing_path(
         &mut self,
         path: &NamespacePath,
@@ -323,7 +314,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.canonicalize_path_components(path.components(), pending, accounting, cancellation).await?
             .ok_or(FsError::NotFound)
     }
-
 
     pub(super) async fn canonicalize_path_components(
         &mut self,
@@ -383,7 +373,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(Some(canonical))
     }
 
-
     pub(super) async fn pending_or_existing_file_id(
         &mut self,
         path: &NamespacePath,
@@ -398,7 +387,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let lookup = self.lookup_no_follow_with_accounting(path, accounting, cancellation, true).await?;
         Ok(lookup.0.record.ok_or(FsError::NotFound)?.file_id)
     }
-
 
     pub(super) async fn admit_new_name_with_accounting(
         &mut self,
@@ -426,7 +414,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(())
     }
-
 
     pub(super) fn find_case_folded_sibling_with_accounting<'a, 'accounting>(
         &'a mut self,
