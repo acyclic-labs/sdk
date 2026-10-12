@@ -40,16 +40,6 @@ where
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
-        if mount
-            .native_original
-            .as_ref()
-            .is_some_and(|binding| !work.shares_allocation_context(binding))
-        {
-            return Err(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
-        }
         if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }

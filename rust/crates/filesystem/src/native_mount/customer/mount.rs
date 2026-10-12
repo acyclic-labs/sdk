@@ -93,16 +93,6 @@ where
             &crate::CancellationToken::new(),
         )?;
         let cancellation = work.cancellation();
-        if options
-            .native_original
-            .as_ref()
-            .is_some_and(|binding| !work.shares_allocation_context(binding))
-        {
-            return Err(super::super::MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
-        }
         if let Some(guard) = options.callback_guard.as_ref() {
             guard.check(&work)?.await?;
         }

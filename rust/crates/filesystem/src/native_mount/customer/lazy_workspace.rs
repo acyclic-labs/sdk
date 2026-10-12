@@ -142,16 +142,6 @@ where
             &crate::CancellationToken::new(),
         )?;
         let work = &work;
-        if options
-            .native_original
-            .as_ref()
-            .is_some_and(|binding| !work.shares_allocation_context(binding))
-        {
-            return Err(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
-        }
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;
