@@ -90,12 +90,6 @@ pub const GIT_COMPAT_PUBLIC_COMMAND_KINDS: &[(&str, &str)] = &[
     ("check-ignore", "CheckIgnore"),
 ];
 
-pub(super) fn public_git_command_variant(kind: &str) -> Option<&'static str> {
-    GIT_COMPAT_PUBLIC_COMMAND_KINDS
-        .iter()
-        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
-}
-
 /// Parses natural JavaScript command JSON into the canonical command.
 pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
     let mut value: serde_json::Value = serde_json::from_str(value)
@@ -107,7 +101,9 @@ pub fn parse_git_public_command(value: &str) -> Result<GitCommand, String> {
         .remove("kind")
         .and_then(|value| value.as_str().map(str::to_owned))
         .ok_or_else(|| "Git command kind must be a string".to_owned())?;
-    let variant = public_git_command_variant(&kind)
+    let variant = GIT_COMPAT_PUBLIC_COMMAND_KINDS
+        .iter()
+        .find_map(|(public, wire)| (*public == kind).then_some(*wire))
         .ok_or_else(|| format!("unknown Git command kind: {kind}"))?;
     object.retain(|_, value| !value.is_null());
     if let Some(mut value) = object.remove("authoredAtSeconds") {
