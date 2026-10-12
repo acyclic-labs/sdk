@@ -7,7 +7,6 @@ use crate::{
     model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey as StreamIdempotencyKey, MAX_RECORD_BYTES,
     ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -20,12 +19,11 @@ use std::{collections::BTreeMap, sync::Arc};
 mod accounting;
 pub use accounting::*;
 mod selection;
-pub(crate) use selection::place_messages_with_io;
 pub use selection::*;
 mod discovery;
 pub use discovery::*;
 mod compaction;
-pub(crate) use compaction::clone_context_prefix;
+pub(crate) use compaction::clone_context;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use compaction::clone_retention_native;
 pub use compaction::*;
@@ -37,7 +35,10 @@ pub use checkpoint::*;
 mod durable;
 pub use durable::*;
 mod validation;
-pub use validation::*;
+pub(crate) use validation::{
+    checked_compaction_budget, restrict_context_limits, validate_compaction,
+    validate_projected_context,
+};
 mod value;
 pub use value::*;
 mod pipeline;
@@ -48,12 +49,10 @@ mod compaction_stage;
 pub use compaction_stage::*;
 mod allocations;
 use allocations::append_context_messages;
-pub use allocations::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use allocations::{context_contract_native, reserve_context_vec_native};
-use durable::{context_stream_error, decode_context_json};
-use validation::validate_context_refs;
 pub(crate) use validation::verify_file;
+use validation::{validate_context_refs, validate_source_messages};
 use value::{BorrowedContext, ContextMessages};
 #[cfg(test)]
 mod tests;

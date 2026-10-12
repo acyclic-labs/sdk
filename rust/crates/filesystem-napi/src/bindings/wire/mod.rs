@@ -322,7 +322,7 @@ pub(in crate::bindings) fn native_storage_tier(value: &str) -> Result<StorageTie
 }
 
 pub(in crate::bindings) fn encode_checkpoint_receipt(
-    receipt: &acyclic_fs::FsReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
         generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),

@@ -217,7 +217,7 @@ impl super::native::NativeSession {
         }).collect::<Result<Vec<_>>>()?;
         let existing_lazy = request.view.volumes.iter().map(|_| None).collect::<Vec<_>>();
         let view = NativeVolumeView::prepare(&owner, &guards, &allocation, &request.view.options,
-            &volumes, &existing_lazy, &work)?.await?.into_arc_with_native_work(&work)?;
+            &volumes, &existing_lazy, &work)?.await?;
         let mut process_io = native_work_io(&work).map_err(Error::from)?;
         let process_verifier = verifier.copy(&mut Some(&mut process_io))?;
         let authority = NativeProcessAuthority {
@@ -229,7 +229,7 @@ impl super::native::NativeSession {
         let provider = NativeProcessProvider::new(owner.clone(), operation, &configured.plan,
             view, configured.approval, authority, &work)?.await?.into_arc_with_native_work(&work)?;
         let mut registry = EffectRegistry::new(Some(&work))?;
-        registry.register_with_native_work(provider, &work)?;
+        registry.register(provider, Some(&work))?;
         let mut authority_io = native_work_io(&work).map_err(Error::from)?;
         let authority = authority_io.clone_authority(&binding.authority)?;
         let issuer = issuer.copy(&mut Some(&mut authority_io))?;

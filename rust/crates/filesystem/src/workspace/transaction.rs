@@ -9,7 +9,7 @@ pub struct Transaction<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
-    pub(super) fn from_checkout(workspace: &Workspace<A, O>, mut checkout: Checkout<A, O>, idempotency_key: IdempotencyKey, requires_rebase: bool) -> Self {
+    pub(crate) fn from_checkout(workspace: &Workspace<A, O>, mut checkout: Checkout<A, O>, idempotency_key: IdempotencyKey, requires_rebase: bool) -> Self {
         checkout.bind_authored_operation(idempotency_key.operation_id());
         Self { workspace: workspace.clone(), checkout, idempotency_key, requires_rebase }
     }
@@ -32,7 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(super) fn mutation_path(&self, path: &str, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<crate::kernel::Owned<NamespacePath>, WorkspaceError> {
+    pub(crate) fn mutation_path(&self, path: &str, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<crate::kernel::Owned<NamespacePath>, WorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() { self.checkout.validate_native_work(original)?; }
         let (path, allocation) = customer_path_with_accounting(path, self.checkout.volume_config(), accounting, cancellation)?;
@@ -40,7 +40,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok(crate::kernel::Owned::new(path, allocation, bytes))
     }
 
-    pub(super) fn push_mutation<T>(operations: &mut crate::kernel::Owned<Vec<T>>, mut operation: crate::kernel::Owned<T>, accounting: &mut KernelAccounting<'_>) -> Result<(), WorkspaceError> {
+    pub(crate) fn push_mutation<T>(operations: &mut crate::kernel::Owned<Vec<T>>, mut operation: crate::kernel::Owned<T>, accounting: &mut KernelAccounting<'_>) -> Result<(), WorkspaceError> {
         let copied = crate::WorkCounters { bytes_copied: std::mem::size_of::<T>() as u64, ..crate::WorkCounters::UNCHARGED };
         accounting.admit(copied)?;
         operations.allocation.absorb(&mut operation.allocation)?;
@@ -50,12 +50,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         Ok(())
     }
 
-    pub(super) async fn apply_authored(&mut self, operations: crate::kernel::Owned<Vec<AuthoredMutation>>, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<(), WorkspaceError> {
+    pub(crate) async fn apply_authored(&mut self, operations: crate::kernel::Owned<Vec<AuthoredMutation>>, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<(), WorkspaceError> {
         self.checkout.apply_authored_transaction_with_accounting(operations, accounting, cancellation).await?
             .retire(accounting).map_err(WorkspaceError::from)
     }
 
-    pub(super) async fn mutate<W: crate::facade::FsWork>(
+    pub(crate) async fn mutate<W: crate::facade::FsWork>(
         &mut self, path: &str, build: impl FnOnce(NamespacePath) -> Result<AuthoredMutation, WorkspaceError>, work: W, cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
@@ -139,7 +139,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(super) async fn create_dirs(&mut self, path: &str, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<(), WorkspaceError> {
+    pub(crate) async fn create_dirs(&mut self, path: &str, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<(), WorkspaceError> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() { self.checkout.validate_native_work(original)?; }

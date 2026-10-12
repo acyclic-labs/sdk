@@ -1,7 +1,6 @@
 use super::*;
 
 /// Compares attributes while allowing ProjFS hydration marks to change.
-#[cfg(windows)]
 pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     const SPARSE: u32 = 0x0000_0200;
     const REPARSE_POINT: u32 = 0x0000_0400;
@@ -20,7 +19,6 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
 }
 
 /// Translates native status, treating a pending deletion as absent.
-#[cfg(windows)]
 pub(super) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
     const DELETE_PENDING: windows::Win32::Foundation::NTSTATUS =
         windows::Win32::Foundation::NTSTATUS(0xC000_0056_u32.cast_signed());
@@ -35,7 +33,6 @@ pub(super) fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::
     )
 }
 
-#[cfg(windows)]
 pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Result<usize, W::Error> {
     use std::os::windows::ffi::OsStrExt as _;
     let mut units = 0usize;
@@ -46,7 +43,6 @@ pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Resul
     Ok(units)
 }
 
-#[cfg(windows)]
 pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     path: &Path,
     work: &mut W,
@@ -78,7 +74,6 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
     result
 }
 
-#[cfg(windows)]
 pub(super) fn windows_wide_name<W: NativeHostWork>(
     path: &[u16],
     work: &mut W,
@@ -91,8 +86,7 @@ pub(super) fn windows_wide_name<W: NativeHostWork>(
     if path != [u16::from(b'.')] {
         let mut begin = 0usize;
         let item = ITEM;
-        work.admit(item)?;
-        work.record(item)?;
+        work.started_io(item)?;
         for (index, unit) in path.iter().enumerate() {
             work.admit(item)?;
             work.record(item)?;
@@ -129,20 +123,6 @@ pub(super) fn windows_wide_name<W: NativeHostWork>(
     }))
 }
 
-#[cfg(windows)]
-pub(super) fn stat_windows_wide_at<W: NativeHostWork>(
-    directory: &Dir,
-    path: &[u16],
-    volume: u32,
-    work: &mut W,
-) -> Result<Option<HostStat>, W::Error> {
-    match windows_wide_name(path, work, W::invalid_request)? {
-        Some(name) => stat_windows_name(directory, &name, volume, work),
-        None => Ok(None),
-    }
-}
-
-#[cfg(windows)]
 pub(super) fn stat_windows_name<W: NativeHostWork>(
     directory: &Dir,
     name: &windows::Win32::Foundation::UNICODE_STRING,
@@ -166,7 +146,7 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     };
     let mut block = IO_STATUS_BLOCK::default();
     let mut information = FILE_STAT_INFORMATION::default();
-    native_read(work)?;
+    work.started_io(READ)?;
     // SAFETY: held capability and fixed-size query storage outlive the call.
     let status = unsafe {
         NtQueryInformationByName(
@@ -189,7 +169,6 @@ pub(super) fn stat_windows_name<W: NativeHostWork>(
     Ok(Some(HostStat::from_stat_information(&information, volume)?))
 }
 
-#[cfg(windows)]
 pub(super) fn open_windows_wide_at<W: NativeHostWork>(
     directory: &Dir,
     path: &[u16],
@@ -203,7 +182,7 @@ pub(super) fn open_windows_wide_at<W: NativeHostWork>(
     let Some(name) = windows_wide_name(path, work, invalid_length)? else {
         return Ok(None);
     };
-    native_read(work)?;
+    work.started_io(READ)?;
     match open_windows_name(
         directory,
         &name,
@@ -218,7 +197,6 @@ pub(super) fn open_windows_wide_at<W: NativeHostWork>(
     }
 }
 
-#[cfg(windows)]
 pub(super) fn open_windows_name(
     directory: &Dir,
     name: &windows::Win32::Foundation::UNICODE_STRING,
@@ -265,7 +243,6 @@ pub(super) fn open_windows_name(
     Ok(unsafe { File::from_raw_handle(handle.0) })
 }
 
-#[cfg(windows)]
 pub(super) fn windows_stat_information<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
@@ -294,7 +271,6 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(super) fn stat_windows_file<W: NativeHostWork>(
     file: &impl std::os::windows::io::AsHandle,
     volume: u32,
@@ -306,7 +282,6 @@ pub(super) fn stat_windows_file<W: NativeHostWork>(
     )?)
 }
 
-#[cfg(windows)]
 pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     directory: &Dir,
     path: &[u16],
@@ -329,7 +304,6 @@ pub(crate) fn stat_windows_leaf<W: NativeHostWork>(
     stat_windows_file(&file, volume, work)
 }
 
-#[cfg(windows)]
 pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandError> {
     let (parent, leaf) = match path.iter().rposition(|unit| *unit == u16::from(b'\\')) {
         Some(index) => (&path[..index], &path[index + 1..]),
@@ -341,7 +315,6 @@ pub(super) fn wide_parent_leaf(path: &[u16]) -> Result<(&[u16], &[u16]), DemandE
     Ok((parent, leaf))
 }
 
-#[cfg(windows)]
 impl HostRoot {
     pub(crate) fn open_dir_held_wide<W: NativeHostWork>(
         &self,
@@ -355,8 +328,7 @@ impl HostRoot {
         }
         for component in path.split(|unit| *unit == u16::from(b'\\')) {
             let item = ITEM;
-            work.admit(item)?;
-            work.record(item)?;
+            work.started_io(item)?;
             let (next, next_identity) = self.open_dir_component_wide(&current, component, work)?;
             identity = next_identity;
             current = next;
@@ -411,8 +383,10 @@ impl HostRoot {
         if path.is_empty() {
             return stat_windows_file(&self.directory, volume, work);
         }
-        if let Some(stat) = stat_windows_wide_at(&self.directory, path, volume, work)? {
-            return Ok(stat);
+        if let Some(name) = windows_wide_name(path, work, W::invalid_request)? {
+            if let Some(stat) = stat_windows_name(&self.directory, &name, volume, work)? {
+                return Ok(stat);
+            }
         }
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
         let parent = self
@@ -485,7 +459,7 @@ impl HostRoot {
             work,
         )
     }
-    pub(crate) fn open_file_yielding_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_file_yielding_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
@@ -536,7 +510,7 @@ impl HostRoot {
             .map(|(directory, _)| directory)?;
         read_link_held_wide(&parent, leaf, maximum_bytes, work)
     }
-    pub(crate) fn read_source_link<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn read_source_link<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         maximum_bytes: u64,
@@ -550,7 +524,6 @@ impl HostRoot {
     }
 }
 
-#[cfg(windows)]
 pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     file: &impl std::os::windows::io::AsRawHandle,
     work: &mut W,
@@ -558,7 +531,7 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
     let mut name = [0_u16; 64];
-    native_read(work)?;
+    work.started_io(READ)?;
     // SAFETY: a live handle and an output buffer that outlives the call.
     unsafe {
         GetVolumeInformationByHandleW(

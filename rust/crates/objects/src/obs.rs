@@ -335,7 +335,7 @@ pub(crate) use record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]

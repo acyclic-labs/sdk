@@ -85,7 +85,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     use serde_json::json;
     let provider = ProviderRef::new("tool-context".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -483,7 +483,7 @@ impl ContentPublisher for OrdinaryPublisher {
 async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() -> Result<()> {
     let provider = ProviderRef::new("portable".into(), "filesystem".into(), "2".into(), &mut None)?;
     let filesystem = Fs::memory();
-    let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -580,7 +580,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
             &IdempotencyKey::new("user")?,
          None, None)
         .await?;
-    let host = FilesystemHost::new(filesystem, provider)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,
@@ -663,7 +663,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         let filesystem = Fs::local(options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(filesystem, provider.clone())?;
+        let host = FilesystemHost::new(filesystem, &provider, None)?;
         host.create_volume(&volume).await?;
         let source = host
             .put_content(
@@ -697,7 +697,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     let filesystem = Fs::local(options)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(filesystem, provider.clone())?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let workspace = workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace).await?.generation;
     for maximum_bytes in [0, u64::MAX] {
@@ -765,7 +765,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let cancellation = acyclic_fs::CancellationToken::new();
     {
         let fs = Fs::local(options.clone()).await.map_err(|error| Error::Storage(error.to_string()))?;
-        let host = FilesystemHost::new(fs, provider.clone())?;
+        let host = FilesystemHost::new(fs, &provider, None)?;
         host.create_volume(&volume).await?;
         let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
         let delivered = host.put_content(&volume, &write, "result.json", b"original",
@@ -778,7 +778,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             "later.txt", 64, &IdempotencyKey::new("later-content")?, None, Some(&io)).await?;
     }
     let fs = Fs::local(options).await.map_err(|error| Error::Storage(error.to_string()))?;
-    let host = FilesystemHost::new(fs, provider.clone())?;
+    let host = FilesystemHost::new(fs, &provider, None)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
     let recovered = host.content_for_operation(&volume, &write, &key, "result.json", 64, Some(&io)).await?;
     io.receipt().verify(CONTENT_WORK_BUDGET).map_err(|error| Error::Invalid(error.to_string()))?;

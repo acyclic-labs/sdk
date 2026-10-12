@@ -63,7 +63,7 @@ pub(super) fn execute_command(
             GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
         }
         GitCommand::Show { object } => {
-            let id = resolve_object(state, object.as_ref())?;
+            let id = resolve_object(state, object.as_deref())?;
             GitCommandOutput::Commits(vec![
                 state
                     .commits
@@ -160,7 +160,7 @@ pub(super) fn execute_command(
             )
         }
         GitCommand::Restore { source, paths } => {
-            let id = resolve_object(state, source.as_ref())?;
+            let id = resolve_object(state, source.as_deref())?;
             let commit = state.commits.get(&id).ok_or(GitCompatStateError::Invalid)?;
             GitCommandOutput::Action(GitFilesystemAction::RestorePaths {
                 tree: commit.tree,
@@ -353,7 +353,7 @@ pub(super) fn execute_command(
                 if delete {
                     state.tags.remove(&name);
                 } else {
-                    let id = resolve_object(state, target.as_ref())?;
+                    let id = resolve_object(state, target.as_deref())?;
                     state.tags.insert(name, id);
                 }
             }
@@ -393,7 +393,7 @@ pub(super) fn execute_command(
                 "--is-inside-work-tree" => "true".to_owned(),
                 "--abbrev-ref HEAD" => current.name,
                 "--symbolic-full-name HEAD" => format!("refs/heads/{}", current.name),
-                _ => resolve_object(state, Some(&GitObjectName(argument)))?.to_hex(),
+                _ => resolve_object(state, Some(&argument))?.to_hex(),
             };
             GitCommandOutput::Text(value)
         }

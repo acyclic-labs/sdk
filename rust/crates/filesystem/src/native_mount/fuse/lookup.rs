@@ -19,20 +19,17 @@ pub(super) fn resolve_path(
 
 pub(super) fn resolve_node(
     source: &dyn MountFilesystem,
-    facts: Result<Resolved, NodeFacts>,
+    facts: NodeFacts,
     work: &crate::NativeMaterializationWork,
 ) -> Result<Resolved, NativeMountError> {
     match facts {
-        Ok(current) => Ok(current),
-        Err(NodeFacts::Handle(open_file)) => {
-            let stamp = source.view_stamp_with_meter(work)?;
-            Ok(Resolved {
-                lookup: open_file.file(work)?.lookup_with_meter(work)?,
-                stamp,
-                through: None,
-            })
-        }
-        Err(NodeFacts::Names { file_id, mut paths }) => {
+        NodeFacts::Current(current) => Ok(current),
+        NodeFacts::Handle(open_file) => Ok(Resolved {
+            stamp: source.view_stamp_with_meter(work)?,
+            lookup: open_file.file(work)?.lookup_with_meter(work)?,
+            through: None,
+        }),
+        NodeFacts::Names { file_id, mut paths } => {
             for path in paths.drain(..) {
                 let (lookup, stamp) = resolve_path(source, &path, work)?;
                 if let Some(lookup) = lookup
@@ -51,51 +48,35 @@ pub(super) fn resolve_node(
 }
 
 impl FuseProjection {
-    pub(super) fn child(
+    pub(super) fn confirm_names(
         &self,
-        state: &ProjectionState,
-        parent: u64,
-        name: &OsStr,
+        path: &MountPath,
+        node: MountNode,
+        confirmed: &mut HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<ChildName, NativeMountError> {
-        Ok(ChildName::new(
-            self.core.source.as_ref(),
-            state.child_path(parent, name, work)?,
-            work,
-        )?)
-    }
-
-    pub(super) fn confirm_names<'a>(
-        &self,
-        mut confirmed: HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
-        resolved: impl IntoIterator<Item = (&'a MountPath, MountNode)>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError>
-    {
+    ) -> Result<(), NativeMountError> {
+        fuse_item(work)?;
+        if node.link_count <= 1 {
+            return Ok(());
+        }
         let source = self.core.source.as_ref();
-        for (path, node) in resolved {
-            fuse_item(work)?;
-            if node.link_count <= 1 {
-                continue;
-            }
-            let mut names = self
-                .core
-                .state()?
-                .unvouched_names(source, node.file_id, path, work)?;
-            for name in names.drain(..) {
-                match resolve_path(source, &name, work) {
-                    Ok((Some(found), stamp)) if found.node.file_id == node.file_id => {
-                        confirm_name(&mut confirmed, node.file_id, name, stamp, work)?;
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        self.core.record_handler_failure(work, error);
-                        confirm_name(&mut confirmed, node.file_id, name, None, work)?;
-                    }
+        let mut names = self
+            .core
+            .state()?
+            .unvouched_names(source, node.file_id, path, work)?;
+        for name in names.drain(..) {
+            match resolve_path(source, &name, work) {
+                Ok((Some(found), stamp)) if found.node.file_id == node.file_id => {
+                    confirm_name(confirmed, node.file_id, name, stamp, work)?;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.core.record_handler_failure(work, error);
+                    confirm_name(confirmed, node.file_id, name, None, work)?;
                 }
             }
         }
-        Ok(confirmed)
+        Ok(())
     }
 
     pub(super) fn lookup_entry(
@@ -108,7 +89,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let child = {
             let mut state = self.core.state()?;
-            let child = self.child(&state, parent, name, work)?;
+            let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
             let ProjectionState {
                 by_inode,
                 inode_by_path,
@@ -119,9 +100,7 @@ impl FuseProjection {
                 inode_by_path,
                 child.key(),
                 |file, stamp| {
-                    source
-                        .unchanged_since_with_meter(child.key(), Some(file), stamp, work)
-                        .map_err(NativeMountError::from)
+                    Ok(source.unchanged_since_with_meter(child.key(), Some(file), stamp, work)?)
                 },
                 work,
             )? {
@@ -129,25 +108,26 @@ impl FuseProjection {
                 let ttl = state.admit_entry(source, inode, &child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
             }
-            if let Some(empty) = state.empty_since(parent)
-                && child.is_exact()
+            if let Some(empty) = state
+                .by_inode
+                .get(&parent)
+                .and_then(|entry| entry.empty_since)
+                && child.folded.is_none()
                 && source.unchanged_since_with_meter(child.key(), None, empty, work)?
             {
-                return Ok(state.negative_entry(source, parent, &child, Some(empty), work)?);
+                return state.negative_entry(source, parent, &child, Some(empty), work);
             }
             child
         };
         let (found, stamp) = resolve_path(source, &child.spelled, work)?;
-        let confirmed = match found {
-            Some(lookup) => {
-                self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?
-            }
-            None => HashMap::new(),
-        };
+        let mut confirmed = HashMap::new();
+        if let Some(lookup) = found {
+            self.confirm_names(child.key(), lookup.node, &mut confirmed, work)?;
+        }
         let mut state = self.core.state()?;
         let Some(lookup) = found else {
             state.remove_path_cache(child.key(), work)?;
-            return Ok(state.negative_entry(source, parent, &child, stamp, work)?);
+            return state.negative_entry(source, parent, &child, stamp, work);
         };
         let inode = state.intern(
             source,
@@ -179,7 +159,7 @@ impl FuseProjection {
         let facts = {
             let mut state = self.core.state()?;
             match state.node_facts(source, inode, handle, work)? {
-                Ok(current) => {
+                NodeFacts::Current(current) => {
                     let attr = state.attr(inode, &current.lookup)?;
                     let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
                     return Ok((attr, ttl));
@@ -188,7 +168,7 @@ impl FuseProjection {
             }
         };
         let resolved = resolve_node(source, facts, work)?;
-        Ok(self.core.state()?.apply(source, inode, &resolved, work)?)
+        self.core.state()?.apply(source, inode, &resolved, work)
     }
 
     pub(super) fn create_node(
@@ -207,7 +187,7 @@ impl FuseProjection {
         let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name, work)?
+            ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
         let stamp = source.view_stamp_with_meter(work)?;
         let lookup = self.source_write(work, || create(&child.spelled, work))?;
@@ -224,8 +204,8 @@ impl FuseProjection {
         } else {
             None
         };
-        // A node just created has no recorded name to confirm.
-        let confirmed = self.confirm_names(HashMap::new(), [(child.key(), lookup.node)], work)?;
+        let mut confirmed = HashMap::new();
+        self.confirm_names(child.key(), lookup.node, &mut confirmed, work)?;
         let mut state = self.core.state()?;
         let inode = state.intern(
             source,
@@ -249,20 +229,44 @@ impl FuseProjection {
         Ok(Entry { attr, ttl })
     }
 
-    pub(super) fn hold_unopened(
+    fn detach_name(
         &self,
+        path: &MountPath,
         lookup: Option<&MountLookup>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        if !self.skips_open {
-            return Ok(());
-        }
-        let inode = self.core.state()?.unopened_referenced_inode(lookup);
+    ) -> Result<Option<(u64, FuseOpenFile)>, NativeMountError> {
         // The caller holds the names lock exclusively.
-        inode.map_or(Ok(()), |inode| {
-            self.reopen_implicit(inode, None, Access::Read, work)
-                .map(|_| ())
-        })
+        let (inode, unopened) = {
+            let state = self.core.state()?;
+            let inode = lookup
+                .filter(|lookup| {
+                    lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1
+                })
+                .and_then(|lookup| state.inode_by_file.get(&lookup.node.file_id))
+                .map(|(inode, _)| *inode);
+            let unopened = inode
+                .and_then(|inode| state.by_inode.get(&inode))
+                .is_some_and(|entry| entry.lookup_references != 0 && entry.open_handles == 0);
+            (inode, unopened)
+        };
+        if self.skips_open && unopened {
+            self.reopen_implicit(inode.ok_or(libc::ESTALE)?, None, AccessMode::ReadOnly, work)?;
+        }
+        let state = self.core.state()?;
+        let Some(inode) = inode.filter(|inode| {
+            state
+                .by_inode
+                .get(inode)
+                .is_some_and(|entry| entry.open_handles != 0)
+        }) else {
+            return Ok(None);
+        };
+        drop(state);
+        let detached = self.core.source.detach_file_with_meter(path, work)?;
+        Ok(Some((
+            inode,
+            FuseOpenFile::Source(fuse_open_file(detached, work)?),
+        )))
     }
 
     pub(super) fn remove_name(
@@ -277,33 +281,23 @@ impl FuseProjection {
         let child = {
             let state = self.core.state()?;
             state.admit_write()?;
-            self.child(&state, parent, name, work)?
+            ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
-        let path = &child.spelled;
-        let current = source.lookup_with_meter(path, work)?;
-        self.hold_unopened(current.as_ref(), work)?;
-        let detaching = self.core.state()?.detaching_inode(current.as_ref());
-        let detached = detaching
-            .map(|inode| {
-                let detached = source.detach_file_with_meter(path, work)?;
-                Ok::<_, NativeMountError>((
-                    inode,
-                    FuseOpenFile::Source(fuse_open_file(detached, work)?),
-                ))
-            })
-            .transpose()?;
+        let current = source.lookup_with_meter(&child.spelled, work)?;
+        let detached = self.detach_name(&child.spelled, current.as_ref(), work)?;
         let removed = self.source_write(work, || {
-            source
-                .remove(path, current.map(|lookup| lookup.node.file_id), work)
-                .map_err(NativeMountError::from)
+            Ok(source.remove(
+                &child.spelled,
+                current.map(|lookup| lookup.node.file_id),
+                work,
+            )?)
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
             state.retain_detached_handles(inode, &detached, work)?;
         }
         removed?;
-        state.remove_path_cache(child.key(), work)?;
-        Ok(())
+        state.remove_path_cache(child.key(), work)
     }
 
     pub(super) fn rename_name(
@@ -326,8 +320,8 @@ impl FuseProjection {
             let state = self.core.state()?;
             state.admit_write()?;
             (
-                self.child(&state, parent, name, work)?,
-                self.child(&state, new_parent, new_name, work)?,
+                ChildName::new(source, state.child_path(parent, name, work)?, work)?,
+                ChildName::new(source, state.child_path(new_parent, new_name, work)?, work)?,
             )
         };
         let replaced = if replace {
@@ -335,21 +329,9 @@ impl FuseProjection {
         } else {
             None
         };
-        self.hold_unopened(replaced.as_ref(), work)?;
-        let detaching = self.core.state()?.detaching_inode(replaced.as_ref());
-        let detached = detaching
-            .map(|inode| {
-                let detached = source.detach_file_with_meter(&to.spelled, work)?;
-                Ok::<_, NativeMountError>((
-                    inode,
-                    FuseOpenFile::Source(fuse_open_file(detached, work)?),
-                ))
-            })
-            .transpose()?;
+        let detached = self.detach_name(&to.spelled, replaced.as_ref(), work)?;
         let renamed = self.source_write(work, || {
-            source
-                .rename(&from.spelled, &to.spelled, replace, work)
-                .map_err(NativeMountError::from)
+            Ok(source.rename(&from.spelled, &to.spelled, replace, work)?)
         });
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
@@ -378,7 +360,7 @@ impl FuseProjection {
             state.admit_write()?;
             (
                 fuse_clone_path(state.path(inode)?, work)?,
-                self.child(&state, new_parent, new_name, work)?,
+                ChildName::new(source, state.child_path(new_parent, new_name, work)?, work)?,
                 state.node_facts(source, inode, None, work)?,
             )
         };
@@ -389,11 +371,7 @@ impl FuseProjection {
             .link_count
             .checked_add(1)
             .ok_or(libc::EMLINK)?;
-        self.source_write(work, || {
-            source
-                .hard_link(&from, &to.spelled, work)
-                .map_err(NativeMountError::from)
-        })?;
+        self.source_write(work, || Ok(source.hard_link(&from, &to.spelled, work)?))?;
         let mut state = self.core.state()?;
         let attr = state.attr(inode, &projected)?;
         let binding = {
@@ -430,7 +408,6 @@ impl FuseProjection {
         if let Some(binding) = binding {
             entry.bindings.push(binding);
         }
-        // Derived locally from the facts before the link, not read back.
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);

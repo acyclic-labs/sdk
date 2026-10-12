@@ -282,7 +282,7 @@ pub(in crate::bindings) fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Js
 }
 
 pub(in crate::bindings) fn encode_checkpoint_result(
-    receipt: &acyclic_fs::FsReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
     ts(BrowserCheckpointResult {
         generation_id: receipt.value.digest().into_bytes().to_vec(),

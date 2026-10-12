@@ -157,10 +157,10 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let fixture = crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
     let created = fixture.create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"]).await?;
     let stream_provider = crate::resources::ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
-    let verifier = Arc::new(CompositeForkVerifier::new(&[
+    let verifier = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     let mut original = StreamAggregate::open(
         &fixture.stream, created.seed.parent.clone(), created.parent_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_fork_verifier(verifier.clone());
     original.publish_fork_report(created.report.clone(), created.parent_scope.clone(), None, &mut None).await?;

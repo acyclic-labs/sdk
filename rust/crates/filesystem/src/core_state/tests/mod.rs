@@ -107,24 +107,22 @@ pub(super) fn materialization_journal(operation_id: OperationId) -> Materializat
 }
 
 /// Canonical root binding without original fork evidence.
-pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
-    let shadows = [3_u8; 32];
-    serde_json::from_value(serde_json::json!({
-        "schema_version": 10,
-        "revision": revision,
-        "workspace_id": workspace_id,
-        "parent_workspace_id": null,
-        "fork_origin": null,
-        "completed_selected_import": null,
-        "pending_write": null,
-        "completed_write": null,
-        "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
-        "overlay": LazyOverlayId::from_bytes([2; 32]),
-        "shadows": shadows,
-        "pending_remove": null,
-    }))
-    .expect("lazy binding fixture")
-}
+    pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorkspaceState {
+        let shadows = [3_u8; 32];
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 10,
+            "revision": revision,
+            "workspace_id": workspace_id,
+            "parent_workspace_id": null,
+            "fork_origin": null,
+            "completed_selected_import": null,
+            "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
+            "overlay": LazyOverlayId::from_bytes([2; 32]),
+            "shadows": shadows,
+            "pending_remove": null,
+        }))
+        .expect("lazy binding fixture")
+    }
 
 pub(super) fn is_ownership_conflict<T>(result: &Result<T, LocalCoreStateStoreError>) -> bool {
     matches!(result, Err(LocalCoreStateStoreError::OwnershipConflict(_)))
@@ -260,12 +258,9 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
             }
             4 => {
                 store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        0,
-                        lazy_state(CRASH_WORKSPACE, 1),
-                    )
+                    .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 0, lazy_state(CRASH_WORKSPACE, 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
+                    .map_err(LocalCoreStateStoreError::LazyWork)
             }
             5 => {
                 child.revision = 2;
@@ -276,12 +271,9 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
             }
             6 => {
                 store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        1,
-                        lazy_state(CRASH_WORKSPACE, 2),
-                    )
+                    .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 1, lazy_state(CRASH_WORKSPACE, 2), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
+                    .map_err(LocalCoreStateStoreError::LazyWork)
             }
             _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
                 .await
@@ -457,44 +449,33 @@ pub(super) fn linked_overlay(
     (id, node)
 }
 
-pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWorkspaceState {
-    let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
-    let (overlay, node) = linked_overlay("/original", empty, empty);
-    store
-        .put_lazy_overlay(overlay, node)
-        .await
-        .expect("original overlay");
-    let empty_shadows = crate::LazyShadowId::from_bytes(
-        content_address(&crate::LazyShadow::Empty).expect("empty shadows"),
-    );
-    let shadow = crate::LazyShadow::Node {
-        file_id: crate::FileId::from_bytes([0xa1; 16]),
-        priority: 0,
-        record: vec![1, 2, 3],
-        metadata: Box::new(crate::WorkspaceMetadata::from_engine(
-            crate::kernel::FileMetadata::default(),
-        )),
-        left: empty_shadows,
-        right: empty_shadows,
-    };
-    let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow"));
-    store
-        .put_lazy_shadow(shadows, shadow)
-        .await
-        .expect("original shadows");
-    let parent = LazyWorkspaceState {
-        overlay,
-        shadows,
-        ..lazy_state(WorkspaceId::from_bytes([0xa0; 16]), 1)
-    };
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(parent.workspace_id, 0, parent.clone(),)
-            .await
-            .expect("parent binding")
-    );
-    parent
-}
+    pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWorkspaceState {
+        let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
+        let (overlay, node) = linked_overlay("/original", empty, empty);
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = node; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; result }.await.expect("original overlay");
+        let empty_shadows = crate::LazyShadowId::from_bytes(
+            content_address(&crate::LazyShadow::Empty).expect("empty shadows"),
+        );
+        let shadow = crate::LazyShadow::Node {
+            file_id: crate::FileId::from_bytes([0xa1; 16]),
+            priority: 0,
+            record: vec![1, 2, 3],
+            metadata: Box::new(crate::WorkspaceMetadata::from_engine(
+                crate::kernel::FileMetadata::default(),
+            )),
+            left: empty_shadows,
+            right: empty_shadows,
+        };
+        let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow"));
+        async { let cancellation = &crate::CancellationToken::new(); let budget = crate::WorkBudget::UNBOUNDED; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = shadow; let allocation = accounting.claim_owned(value.owned_bytes(), 0)?; let result = store.put_lazy_shadow(shadows, (value, allocation), &mut accounting).await; result }.await.expect("original shadows");
+        let parent = LazyWorkspaceState {
+            overlay,
+            shadows,
+            ..lazy_state(WorkspaceId::from_bytes([0xa0; 16]), 1)
+        };
+        assert!(store.compare_and_swap_lazy_workspace(parent.workspace_id, 0, parent.clone(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.expect("parent binding"));
+        parent
+    }
 
 pub(super) fn prepared_origin_fixture(parent: &LazyWorkspaceState) -> LazyWorkspaceState {
     let snapshot = crate::LazySnapshotRef::new(

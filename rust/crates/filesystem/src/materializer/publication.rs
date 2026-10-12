@@ -76,10 +76,7 @@ pub async fn load_native_materialization_journal(
     let work = NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(cause, work)| (NativeWorkspacePublicationError::Native(cause), work))?;
     let result = async {
-        let journal = state
-            .materialization_with_work(work.clone())
-            .load(operation)
-            .await?;
+        let journal = state.materialization(work.clone()).load(operation).await?;
         if let Some(journal) = &journal {
             if !valid_journal(journal, operation) {
                 return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -142,7 +139,7 @@ where
 
 async fn verify_generation_source<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
     materializer: &JournaledMaterializer<
-        crate::core_state::MeasuredMaterializationStore<'_>,
+        crate::LocalCoreStateStore,
         Arc<NativeTreeMaterializationBackend>,
     >,
     operation: OperationId,
@@ -194,10 +191,7 @@ async fn prepare_generation<'a, A, O, F, Fut>(
     before_effect: &mut F,
 ) -> Result<
     (
-        JournaledMaterializer<
-            crate::core_state::MeasuredMaterializationStore<'a>,
-            Arc<NativeTreeMaterializationBackend>,
-        >,
+        JournaledMaterializer<crate::LocalCoreStateStore, Arc<NativeTreeMaterializationBackend>>,
         MaterializationJournal,
     ),
     NativeWorkspacePublicationError,
@@ -226,7 +220,7 @@ where
         }
         .into());
     }
-    let store = state.materialization_with_work(work.clone());
+    let store = state.materialization(work.clone());
     let mut journal = if let Some(journal) = store.load(request.operation_id).await? {
         if !valid_journal(&journal, request.operation_id)
             || journal.root_identity != Some(actual.to_bytes())
@@ -298,9 +292,8 @@ where
         let mut selections = Vec::new();
         for edit in &journal.plan.edits {
             if let MaterializationEdit::Install { path, .. } = edit {
-                let (absolute, mut allocation) = native_absolute_string(path, work)?;
-                storage.absorb(&mut allocation)?;
-                native_vec_push(&mut selections, absolute, &mut storage)?;
+                let relative = copy_string(path, &mut storage)?;
+                native_vec_push(&mut selections, relative, &mut storage)?;
             }
         }
         if !selections.is_empty() {

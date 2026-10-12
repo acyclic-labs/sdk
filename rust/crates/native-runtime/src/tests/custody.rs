@@ -1,5 +1,14 @@
 use super::*;
 
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+fn prepared_read_fixture() -> io::Result<(tempfile::TempDir, NativeFile)> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("prepared-read");
+    std::fs::write(&path, b"abc")?;
+    let file = bounded_write_file(&path, false)?;
+    Ok((directory, file))
+}
+
 #[test]
 fn ownership_release_barrier_waits_for_the_final_clone() {
     let anchor = OwnershipAnchor::new(());
@@ -46,7 +55,7 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
                 Vec::with_capacity(1),
             ]),
         )
-        .expect_err("caller cancels after physical stdout delivery");
+        .unwrap_err();
     assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(failure.stdout, b"out");
     assert!(b"err".starts_with(&failure.stderr));
@@ -166,11 +175,7 @@ fn denied_file_import_returns_original_handle_without_fabricated_io() -> io::Res
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-prefix");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     for (offset, expected) in [(0, 3), (3, 0)] {
         let meter = Arc::new(ReadBudgetMeter::new(8, 8));
         let storage = vec![0x55; 8];
@@ -185,23 +190,10 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
         assert_eq!(&storage[..filled], &b"abc"[..expected]);
         assert!(storage[filled..].iter().all(|byte| *byte == 0x55));
         assert_eq!(meter.read.load(Ordering::Acquire), expected as u64);
-        assert!(
-            file.health
-                .tail
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_none()
-        );
+        assert!(file.health.tail.lock().unwrap().is_none());
         let weak = Arc::downgrade(&meter);
         drop(meter);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while weak.upgrade().is_some() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(
-            weak.upgrade().is_none(),
-            "returned owner must not retain invocation custody"
-        );
+        wait_until(|| weak.upgrade().is_none());
         drop(storage);
     }
     Ok(())
@@ -210,11 +202,7 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-refusal");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     for (prepared, late_cancel) in [(true, false), (true, true), (false, true)] {
         let mut limits = ReadBudgetMeter::new(8, 8);
         limits.cancel_after_read = late_cancel;
@@ -239,11 +227,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
             }
         );
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
     }
     Ok(())
 }
@@ -251,11 +235,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
 fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Result<()> {
-    initialize_native_io_services()?;
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("prepared-panic");
-    std::fs::write(&path, b"abc")?;
-    let file = bounded_write_file(&path, false)?;
+    let (_directory, file) = prepared_read_fixture()?;
     let mut limits = ReadBudgetMeter::new(8, 3);
     limits.panic_after_read = true;
     let meter = Arc::new(limits);
@@ -264,7 +244,7 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
         let _blocking = InlineBlocking::enter();
         complete(&mut read)
     }))
-    .expect_err("prepared observer resumes original terminal panic");
+    .unwrap_err();
     assert_eq!(
         payload.downcast_ref::<u64>(),
         Some(&0x7072_6570_6172_6564_u64)
@@ -272,18 +252,8 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
     assert_eq!(meter.read.load(Ordering::Acquire), 3);
     drop(payload);
     drop(read);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while meter.memory.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    assert!(
-        file.health
-            .tail
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_none()
-    );
+    wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
+    assert!(file.health.tail.lock().unwrap().is_none());
     Ok(())
 }
 
@@ -306,88 +276,6 @@ fn bounded_read_byte_and_memory_refusals_precede_io() -> io::Result<()> {
         file.read_bounded_async(0, 3, memory_meter.clone(), false)
             .is_err()
     );
-    Ok(())
-}
-
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-#[test]
-fn bounded_write_custody_remains_with_admitted_job_after_observer_drop() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("custodied-detached");
-    File::create(&path)?;
-    let file = bounded_write_file(&path, true)?;
-    let per_request = if cfg!(windows) { 2 } else { 1 };
-    let meter = Arc::new(ReadBudgetMeter {
-        memory_limit: u64::MAX,
-        ..ReadBudgetMeter::new(per_request, 9)
-    });
-    let bytes_dropped = Arc::new(AtomicBool::new(false));
-    let retired = Arc::new(AtomicBool::new(false));
-    let bytes = Bytes::from_owner(ObservedWriteBytes {
-        bytes: b"persisted".to_vec(),
-        dropped: bytes_dropped.clone(),
-    });
-    let custody = ObservedWriteCustody {
-        bytes_dropped: bytes_dropped.clone(),
-        retired: retired.clone(),
-        meter: meter.clone(),
-        actual_prefix: 9,
-    };
-    let mut write = file.write_async(0, bytes, meter.clone(), custody)?;
-    let completed = write.state.as_ref().expect("pending write").clone();
-    let (sender, receiver) = mpsc::sync_channel(1);
-    sender
-        .try_send(write.pending.take().expect("the real write is pending"))
-        .map_err(|_| io::Error::other("write admission failed"))?;
-    drop(write);
-    assert!(!retired.load(Ordering::Acquire));
-    assert!(!bytes_dropped.load(Ordering::Acquire));
-    let _ = receiver
-        .recv()
-        .map_err(|_| io::Error::from(io::ErrorKind::Other))?
-        .run();
-    completed
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .result
-        .take()
-        .expect("real write completes")?;
-    assert!(retired.load(Ordering::Acquire));
-    assert_eq!(std::fs::read(&path)?, b"persisted");
-    drop(completed);
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    Ok(())
-}
-
-#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-#[test]
-fn bounded_write_cold_admission_drops_payload_before_custody() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let path = temporary.path().join("custodied-denied");
-    File::create(&path)?;
-    let file = bounded_write_file(&path, true)?;
-    let mut budget = ReadBudgetMeter {
-        memory_limit: u64::MAX,
-        ..ReadBudgetMeter::new(2, 9)
-    };
-    budget.memory_limit = 0;
-    let meter = Arc::new(budget);
-    let bytes_dropped = Arc::new(AtomicBool::new(false));
-    let retired = Arc::new(AtomicBool::new(false));
-    let bytes = Bytes::from_owner(ObservedWriteBytes {
-        bytes: b"persisted".to_vec(),
-        dropped: bytes_dropped.clone(),
-    });
-    let custody = ObservedWriteCustody {
-        bytes_dropped: bytes_dropped.clone(),
-        retired: retired.clone(),
-        meter: meter.clone(),
-        actual_prefix: 0,
-    };
-    assert!(file.write_async(0, bytes, meter.clone(), custody).is_err());
-    assert!(retired.load(Ordering::Acquire));
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-    assert_eq!(std::fs::read(&path)?, b"");
     Ok(())
 }
 
@@ -436,22 +324,39 @@ fn zero_bounded_read_needs_no_quota() -> io::Result<()> {
     limits.allocation_limit = 0;
     let meter = Arc::new(limits);
     let output = complete(file.read_bounded_async(u64::MAX, 0, meter.clone(), false)?)?;
-    assert!(output.bytes.is_empty());
+    assert!(output.0.is_empty());
     assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 #[test]
-fn bounded_write_cancellation_retires_custody_after_actual_prefix() -> io::Result<()> {
-    for payload in [b"persisted".to_vec(), vec![0x5a; 1024 * 1024 + 7]] {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("custodied-cancel");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let expected = payload[..payload.len().min(1024 * 1024)].to_vec();
-        let mut limits = ReadBudgetMeter::new(u64::MAX, payload.len() as u64);
-        limits.cancel_after_read = true;
+fn bounded_write_retains_custody_through_denial_drop_and_cancellation() -> io::Result<()> {
+    for (payload, denied, cancelled) in [
+        (b"persisted".to_vec(), true, false),
+        (b"persisted".to_vec(), false, false),
+        (b"persisted".to_vec(), false, true),
+        (vec![0x5a; 1024 * 1024 + 7], false, true),
+    ] {
+        let temporary = tempfile::NamedTempFile::new()?;
+        let file = bounded_write_file(temporary.path(), true)?;
+        let expected = if denied {
+            Vec::new()
+        } else {
+            payload[..payload.len().min(1024 * 1024)].to_vec()
+        };
+        let mut limits = ReadBudgetMeter::new(
+            if cancelled {
+                u64::MAX
+            } else if cfg!(windows) {
+                2
+            } else {
+                1
+            },
+            payload.len() as u64,
+        );
+        limits.memory_limit = if denied { 0 } else { u64::MAX };
+        limits.cancel_after_read = cancelled;
         let meter = Arc::new(limits);
         let bytes_dropped = Arc::new(AtomicBool::new(false));
         let retired = Arc::new(AtomicBool::new(false));
@@ -460,16 +365,38 @@ fn bounded_write_cancellation_retires_custody_after_actual_prefix() -> io::Resul
             dropped: bytes_dropped.clone(),
         });
         let custody = ObservedWriteCustody {
-            bytes_dropped,
+            bytes_dropped: bytes_dropped.clone(),
             retired: retired.clone(),
             meter: meter.clone(),
             actual_prefix: expected.len() as u64,
         };
-        let error = complete(file.write_async(0, bytes, meter.clone(), custody)?).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let completion = file.write_async(0, bytes, meter.clone(), custody);
+        if denied {
+            assert!(completion.is_err());
+        } else if cancelled {
+            assert_eq!(
+                complete(completion?).unwrap_err().kind(),
+                io::ErrorKind::Interrupted
+            );
+        } else {
+            let mut write = completion?;
+            let state = write.state.as_ref().unwrap().clone();
+            let job = write.pending.take().unwrap();
+            drop(write);
+            assert!(!retired.load(Ordering::Acquire));
+            assert!(!bytes_dropped.load(Ordering::Acquire));
+            let _ = job.run();
+            state
+                .lock()
+                .unwrap()
+                .result
+                .take()
+                .expect("terminal write")?;
+            drop(state);
+        }
         assert!(retired.load(Ordering::Acquire));
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        assert_eq!(std::fs::read(&path)?, expected);
+        assert_eq!(std::fs::read(temporary.path())?, expected);
     }
     Ok(())
 }

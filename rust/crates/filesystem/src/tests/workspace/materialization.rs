@@ -5,9 +5,30 @@ use super::*;
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("materialize-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_dir_all("/output/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let workspace = fs
+        .create_workspace(
+            "materialize-consumer",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    transaction
+        .create_dir_all(
+            "/output/nested",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     transaction
         .write_text("/output/nested/status", "ready")
         .await?;
@@ -18,9 +39,28 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             FileMetadata {
                 posix_mode: crate::kernel::MetadataField::Value(0o700),
                 ..FileMetadata::default()
-            }, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
+            },
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let TransactionCommit::Committed(generation) = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::default(),
+                })
+            },
+        )
+        .await?
+        .value
+    else {
         return Err("materialize fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
@@ -78,13 +118,57 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("materialize-paths-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_dir_all("/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let workspace = fs
+        .create_workspace(
+            "materialize-paths-consumer",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    transaction
+        .create_dir_all(
+            "/nested",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     transaction.write_text("/nested/a", "linked").await?;
-    transaction.hard_link("/nested/a", "/nested/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    transaction
+        .hard_link(
+            "/nested/a",
+            "/nested/b",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     transaction.write_text("/nested/c", "sibling").await?;
-    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
+    let TransactionCommit::Committed(generation) = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::default(),
+                })
+            },
+        )
+        .await?
+        .value
+    else {
         return Err("materialize fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
@@ -114,13 +198,49 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
 async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-host-consumer", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_dir_all("/nested", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let workspace = fs
+        .create_workspace(
+            "restore-host-consumer",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    transaction
+        .create_dir_all(
+            "/nested",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     transaction
         .write_text("/nested/file", "authenticated")
         .await?;
-    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
+    let TransactionCommit::Committed(generation) = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+            |_| async {
+                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::default(),
+                })
+            },
+        )
+        .await?
+        .value
+    else {
         return Err("restore fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
@@ -187,8 +307,21 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
 async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
 {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("restore-host-containment", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let workspace = fs
+        .create_workspace(
+            "restore-host-containment",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let generation = workspace
+        .head(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
     std::os::unix::fs::symlink(outside.path(), destination.path().join("escape"))?;
@@ -218,9 +351,20 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace("restore-host-containment-windows", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        .create_workspace(
+            "restore-host-containment-windows",
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
+    let generation = workspace
+        .head(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
     if let Err(error) =

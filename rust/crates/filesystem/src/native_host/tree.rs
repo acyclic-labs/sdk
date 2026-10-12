@@ -1,7 +1,7 @@
 use super::*;
 
 impl HostRoot {
-    pub(crate) fn open_child<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_child<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         work: &mut W,
@@ -10,22 +10,14 @@ impl HostRoot {
         let directory = open_unix_directory_path(&self.directory, name, false, work)?;
         #[cfg(windows)]
         let directory = { self.open_dir_held(name, work)? };
-        native_read(work)?;
+        work.started_io(READ)?;
         let identity = held_root_identity(&directory)?;
         Ok(HostRoot {
             directory,
             identity,
         })
     }
-    pub(crate) fn open_file_with<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        name: &Path,
-        options: &NativeOpenOptions,
-        work: &mut W,
-    ) -> Result<File, DemandError> {
-        open_leaf(&self.directory, name, options, work)
-    }
-    pub(crate) fn rename_to<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn rename_to<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         destination: &Self,
@@ -69,13 +61,7 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn sync<W: crate::demand::SourceDemandReadWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        sync_directory_held(&self.directory, work)
-    }
-    pub(crate) fn remove<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn remove<W: SourceDemandReadWork>(
         &self,
         name: &Path,
         work: &mut W,
@@ -85,19 +71,19 @@ impl HostRoot {
             Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        self.remove_identity(name, stat.identity()?, work)
+        self.remove_identity(name, stat.identity(), work)
     }
-    pub(crate) fn remove_identity<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn remove_identity<W: SourceDemandReadWork>(
         &self,
         name: &Path,
-        expected: crate::NativeRootIdentity,
+        expected: NativeRootIdentity,
         work: &mut W,
     ) -> Result<(), DemandError> {
         require_leaf(name)?;
         #[cfg(unix)]
         {
             let stat = self.stat(name, work)?;
-            if stat.identity()? != expected {
+            if stat.identity() != expected {
                 return Err(DemandError::StaleVersion);
             }
             if stat.file_type().is_dir() && !stat.file_type().is_symlink() {
@@ -121,7 +107,7 @@ impl HostRoot {
                 result?;
                 drop(child);
             }
-            if self.stat(name, work)?.identity()? != expected {
+            if self.stat(name, work)?.identity() != expected {
                 return Err(DemandError::StaleVersion);
             }
             remove_leaf(
@@ -139,15 +125,15 @@ impl HostRoot {
         }
     }
     #[cfg(windows)]
-    pub(super) fn remove_identity_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(super) fn remove_identity_wide<W: SourceDemandReadWork>(
         &self,
         name: &[u16],
-        expected: crate::NativeRootIdentity,
+        expected: NativeRootIdentity,
         work: &mut W,
     ) -> Result<(), DemandError> {
         let root = self;
         let stat = root.stat_wide(name, work)?;
-        if stat.identity()? != expected {
+        if stat.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
         let real_directory = stat.is_dir()
@@ -172,7 +158,7 @@ impl HostRoot {
                 while let Some((entry, bytes)) = reader.next_wide(work)? {
                     let result = (|| {
                         let stat = child_root.stat_wide(&entry.name, work)?;
-                        child.remove_identity_wide(&entry.name, stat.identity()?, work)
+                        child.remove_identity_wide(&entry.name, stat.identity(), work)
                     })();
                     drop(entry);
                     work.release(bytes)?;
@@ -184,7 +170,7 @@ impl HostRoot {
             work.release(bytes)?;
             result?;
         }
-        if root.stat_wide(name, work)?.identity()? != expected {
+        if root.stat_wide(name, work)?.identity() != expected {
             return Err(DemandError::StaleVersion);
         }
         remove_windows_leaf(&self.directory, name, stat.is_dir(), None, work)
