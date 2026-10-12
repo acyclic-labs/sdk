@@ -2045,7 +2045,7 @@ where
                 let source_identity = prepare_root_identity_with_work(
                     &source_root.0, &selected_root.0, meter, expected_root_identity,
                 )?;
-                let baseline = NativeViewBaseline::new_with_native_work(
+                let baseline = NativeViewBaseline::new(
                     source_identity, !mount.writable, original,
                 )?;
                 let shared = SharedCheckout::with_publication_meter(

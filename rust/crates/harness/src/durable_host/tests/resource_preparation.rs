@@ -261,7 +261,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
-            false, &mut None,
+            false, None, &mut None,
         )
         .await?;
     assert!(token.verify_creation().await.is_err());

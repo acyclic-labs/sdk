@@ -227,7 +227,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
             write!(&mut text, "task-cancel:{}", self.operation).expect("writing into String");
             coordinator.cancel_operation(
                 self.verifier.audience(), &self.scope, &self.verifier, self.operation,
-                IdempotencyKey::new(text)?, true, work,
+                IdempotencyKey::new(text)?, true, None, work,
             ).await?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_deref().and_then(|io| io.original_native_work()).is_some() {
@@ -468,7 +468,7 @@ pub struct TaskJournalOwner<P> {
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
     invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
-    readonly_original: Option<(OperationSpec, LeaseFence)>,
+    readonly_original: Option<OperationSpec>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_shared: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -599,9 +599,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(extensions) = &self.extensions { add(extensions.logical_owned_bytes()?)?; }
         if self.root_binding.is_some() { add(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?; }
         if let Some(original) = &self.readonly_original {
-            add(original.0.logical_owned_bytes()?)?;
-            add(original.1.reservation_id.capacity() as u64)?;
-            add(original.1.placement.capacity() as u64)?;
+            add(original.logical_owned_bytes()?)?;
         }
         Ok(bytes)
     }
@@ -1104,8 +1102,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     fn verify_original_read_witness(&self) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &self.readonly_original {
-            if original.0.operation_id != self.operation_id()
-                || &original.1 != &self.fence {
+            if original.operation_id != self.operation_id() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "READ owner differs from its protected original reservation",
@@ -2067,7 +2064,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut key, "task-cancel:{operation_id}").expect("writing into String");
         self.coordinator.lock().await.cancel_operation(
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id,
-            IdempotencyKey::new(key)?, true, &mut work,
+            IdempotencyKey::new(key)?, true, None, &mut work,
         ).await?;
         Ok(())
     }
@@ -2118,7 +2115,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.verifier,
             request.control.operation_id,
             request.idempotency_key.clone(),
-            request.recursive, &mut None,
+            request.recursive, None, &mut None,
         ).await?;
         Ok(state)
     }
@@ -2223,7 +2220,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ))?;
         let fence = fence.clone_with_work(work)?;
         coordinator.apply(
-            operation_id,
             IdempotencyKey::new(key)?,
             crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
                 operation_id, attempt_id, step, request_digest, fence, ceiling,
@@ -2597,8 +2593,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let event: MailEvent = mail::decode(&record.value, io)?;
         let mut message = [0; 36];
-        let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
-        if record.sequence.checked_add(1) != Some(item.sequence) || &*message != item.message_id || event.payload != item.payload
+        let message: &str = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
+        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
             return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "parcel differs from its retained mailbox item"));
@@ -2684,12 +2680,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         use std::fmt::Write as _;
         write!(&mut key, "task-child-cancel:{parent}:{operation}").expect("writing into String");
-        coordinator.cancel_child_operation(
-            self.verifier.audience(), &self.owner_scope, &self.verifier,
-            OperationId::from_bytes(child.into_bytes()),
-            IdempotencyKey::new(key)?,
-            OperationId::from_bytes(parent.into_bytes()), fence,
-         work,).await
+        coordinator.cancel_operation(
+                self.verifier.audience(),
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(child.into_bytes()),
+                IdempotencyKey::new(key)?,
+                true,
+                Some((OperationId::from_bytes(parent.into_bytes()), fence)),
+                work,
+            ).await.map(|(_, state)| state)
     }
 
     /// Starts or reattaches the exact already-admitted lease.
@@ -2739,7 +2739,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             crate::scheduler::SchedulerEvent::Started { operation_id, fence }
         };
-        coordinator.apply(operation_id, key, event, &mut work).await?;
+        coordinator.apply(key, event, &mut work).await?;
         drop(admission);
         Ok(())
     }
@@ -2775,7 +2775,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )
                 .await?;
         } else {
-            coordinator.apply(operation_id, key, event, work).await?;
+            coordinator.apply(key, event, work).await?;
         }
         let current = coordinator.observe_operation(
             self.verifier.audience(),
@@ -3116,7 +3116,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             write!(&mut text, "task-cancel:{operation_id}").expect("writing into String");
             coordinator.cancel_operation(
                 self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id,
-                IdempotencyKey::new(text)?, true, work,
+                IdempotencyKey::new(text)?, true, None, work,
             ).await?;
             return Err(Error::Indeterminate(operation_id));
         }
@@ -3124,8 +3124,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id, work,
         )?;
         crate::scheduler::require_execution_owner(current, &fence, settlement, &mut None)?;
-        coordinator.apply(
-            operation_id, key,
+        coordinator.apply( key,
             crate::scheduler::SchedulerEvent::Completed {
                 operation_id, outcome, fence: Some(fence), execution_duration_ns: None,
             },
@@ -3254,7 +3253,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
-        &self, original: &(OperationSpec, LeaseFence),
+        &self, original: &(OperationSpec, &LeaseFence),
         root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
@@ -3265,7 +3264,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
-            || binding.fence() != &original.1
+            || binding.fence() != original.1
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
@@ -3558,7 +3557,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn journal_owner_with_work(
         self: &Arc<Self>, task_id: TaskId,
         fence: std::borrow::Cow<'_, crate::scheduler::LeaseFence>,
-        original: Option<(OperationSpec, LeaseFence)>,
+        original: Option<(OperationSpec, &LeaseFence)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskJournalOwner<P>> {
         let operation = OperationId::from_bytes(task_id.into_bytes());
@@ -3573,7 +3572,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
-            if original.0.operation_id != operation || &original.1 != fence.as_ref() {
+            if original.0.operation_id != operation || original.1 != fence.as_ref() {
                 return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "original READ reservation differs from its protected native preparation"));
             }
@@ -3681,7 +3680,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             extension_runtime: self.root_scope.extension_runtime(),
             invocation_cancellation: None,
             #[cfg(not(target_arch = "wasm32"))]
-            readonly_original: original,
+            readonly_original: original.map(|(declaration, _)| declaration),
             #[cfg(not(target_arch = "wasm32"))]
             _native_shared: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -3884,7 +3883,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut text, "task-cancel:{operation}").expect("writing into String");
         coordinator.cancel_operation(
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation,
-            IdempotencyKey::new(text)?, true, work,
+            IdempotencyKey::new(text)?, true, None, work,
         ).await?;
         Ok(())
     }
@@ -6360,7 +6359,7 @@ pub(crate) mod tests {
                         .declare_operation(authority, signed, &verifier, *spec, key, None, &mut None)
                         .await?;
                 } else {
-                    coordinator.apply(operation, key, event, &mut None).await?;
+                    coordinator.apply(key, event, &mut None).await?;
                 }
             }
         }
@@ -6370,7 +6369,6 @@ pub(crate) mod tests {
         };
         coordinator
             .apply(
-                OperationId::from_bytes([3; 16]),
                 IdempotencyKey::new("discovery-cancel-3")?,
                 cancel(3), &mut None,
             )
@@ -6388,7 +6386,6 @@ pub(crate) mod tests {
             .lock()
             .await
             .apply(
-                OperationId::from_bytes([17; 16]),
                 IdempotencyKey::new("discovery-cancel-17")?,
                 cancel(17), &mut None,
             )
@@ -7438,7 +7435,6 @@ pub(crate) mod tests {
             let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-start")?,
                     crate::scheduler::SchedulerEvent::Started {
                         operation_id,
@@ -7942,7 +7938,6 @@ pub(crate) mod tests {
             let mut coordinator = host.coordinator.lock().await;
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-release")?,
                     crate::scheduler::SchedulerEvent::LeaseReleased {
                         operation_id,
@@ -7961,7 +7956,6 @@ pub(crate) mod tests {
             let replacement = crate::scheduler::LeaseFence::from(&lease.reservation);
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-restart")?,
                     crate::scheduler::SchedulerEvent::Started {
                         operation_id,
@@ -8151,7 +8145,7 @@ pub(crate) mod tests {
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 IdempotencyKey::new("model-cancel")?,
-                false, &mut None,
+                false, None, &mut None,
             )
             .await?;
         host.verify_execution_owner(task_id, fence.clone()).await?;
@@ -8582,7 +8576,7 @@ pub(crate) mod tests {
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation_id,
                     IdempotencyKey::new("renewal-parent-cancel")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             let cancelled_revision = reopened.coordinator.lock().await.revision();
