@@ -1898,19 +1898,13 @@ mod tests {
     struct InteractionContent(std::collections::BTreeMap<String, Vec<u8>>);
 
     impl ContentResidencyVerifier for InteractionContent {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(|_| ()) })
-        }
-
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .get(reference.path())
@@ -2002,19 +1996,13 @@ mod tests {
     }
 
     impl ContentResidencyVerifier for MigrationContentStore {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(|_| ()) })
-        }
-
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .lock()
@@ -2040,9 +2028,10 @@ mod tests {
             bytes: &'a [u8],
             media_type: &'a str,
             display_name: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<FileRef>> + Send + 'a>>
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>>
         {
-            Box::pin(async move {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 if bytes != EXTENSION_BYTES || media_type != "application/json" {
                     return Err(Error::Invalid("unexpected migration output".into()));
                 }
@@ -2056,25 +2045,19 @@ mod tests {
                     display_name,
                 )?;
                 self.files.insert(&reference, bytes)?;
-                Ok(reference)
+                Ok((reference, None))
             })
         }
     }
 
     impl ContentResidencyVerifier for TestContent {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES, &mut None) })
-        }
-
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
-        {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 reference.descriptor().verify(EXTENSION_BYTES, &mut None)?;
                 Ok(acyclic_stream::OwnedBytes::from_static(EXTENSION_BYTES))
             })

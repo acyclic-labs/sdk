@@ -1683,7 +1683,7 @@ mod tests {
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
             None).await, Err(Error::Unauthorized(_))));
-        let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
+        let denied_ref = crate::filesystem::workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
         assert!(host.resolve(&denied_ref).await.is_err());
         assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
             None, &IdempotencyKey::new("wrong-generation")?, None, None,

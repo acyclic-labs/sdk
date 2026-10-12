@@ -627,17 +627,13 @@ mod tests {
 
     struct ResultResolver;
     impl ContentResidencyVerifier for ResultResolver {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(drop) })
-        }
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = if reference.descriptor().media_type() == "application/schema+json" {
                     serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
                         .map_err(|error| Error::Invalid(error.to_string()))?

@@ -1,4 +1,5 @@
-//! Canonical resource controls use real Stream/Filesystem allocation and IO.
+//! Canonical resource controls use crate::wire::ErrorCode;
+use real Stream/Filesystem allocation and IO.
 
 use super::*;
 use crate::runtime::TaskStateProvider;

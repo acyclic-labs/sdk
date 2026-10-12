@@ -661,7 +661,7 @@ mod native_effect_paid_point_tests {
         let client = Arc::new(MemoryStream::default());
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
-            IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?, &mut None).await?.0;
+            IdempotencyKey::new(bytes::Bytes::from_static(b"paid-effect-point"))?, &mut None).await?.0;
         let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
             panic!("original atomic effect publication");
         };
@@ -680,7 +680,7 @@ mod native_effect_paid_point_tests {
         }, &cancellation).expect("same original finite effect point ledger");
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
-        let (events, paid) = read(
+        let (events, paid) = effect_events(
             &client, &issuer.verifier(&mut None).expect("verifier copy"), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),

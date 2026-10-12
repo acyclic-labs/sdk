@@ -6237,15 +6237,13 @@ pub(crate) mod tests {
     }
 
     impl ContentResidencyVerifier for MemoryPayloads {
-        fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
-                self.read(reference).await?;
-                Ok(())
-            })
-        }
-
-        fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 if reference.volume() != &self.volume {
                     return Err(Error::Unauthorized(
                         "payload belongs to another owner".into(),

@@ -1402,7 +1402,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 mod tests {
     use super::*;
     use crate::conversation::{VolumeClass, VolumeOwner};
-    use crate::core::AggregateKind;
+    use crate::{AgentId, core::AggregateKind};
 
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
