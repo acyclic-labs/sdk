@@ -265,8 +265,7 @@ impl NativeWorkspaceTransaction {
                 },
             )
             .await
-            .map(|receipt| receipt.value)
-            .map(workspace_commit)
+            .map(|receipt| workspace_commit(receipt.value))
             .map_err(|failure| napi_error(failure.error))
     }
 
@@ -382,10 +381,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = Some(NativeWorkspaceName {
-                encoding: name.encoding().as_str().to_owned(),
-                bytes: Buffer::from(name.as_bytes().to_vec()),
-            });
+            result.name = Some(native_workspace_name_value(name));
         }
         DependencyRegion::DirectoryRange {
             directory_id,
@@ -394,10 +390,7 @@ pub(in crate::bindings) fn native_transaction_conflict(
         } => {
             "directory-range".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
-            result.name = after.map(|name| NativeWorkspaceName {
-                encoding: name.encoding().as_str().to_owned(),
-                bytes: Buffer::from(name.as_bytes().to_vec()),
-            });
+            result.name = after.map(native_workspace_name_value);
             result.maximum_entries = Some(maximum_entries);
         }
     }
