@@ -108,7 +108,7 @@ impl<F> NativeCoreLogSource<F> {
             namespace: Namespace {
                 root: root.path,
                 durability: if matches!(admission, Admission::Owned(_)) && self.frame.deferral.as_ref().is_some_and(|deferral| deferral.load(Ordering::Acquire)) { Durability::Deferred } else { Durability::Flushed },
-                admission,
+                admission, _allocation: None,
             },
             _allocation: root.allocation,
         };
