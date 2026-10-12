@@ -479,8 +479,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         self.writer.as_ref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no declared publication authority"))
     }
 
-    fn publication_lease(&self) -> Result<&dyn crate::resource_preparation::CreatedTaskLease> {
-        self.allocation.publication_lease.as_deref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no current publication lease"))
+    fn publication_lease(&self) -> Result<&Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
+        self.allocation.publication_lease.as_ref().ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "original Root content has no current publication lease"))
     }
 
     fn authorize_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
@@ -716,7 +716,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let lease = self.publication_lease()?;
         let volume = source.map_or(&self.allocation.request.volume, FileRef::volume);
         match io {
-            Some(io) => io.verify_publication_lease(lease).await?,
+            Some(io) => io.verify_publication_lease(lease.as_ref()).await?,
             None => lease.verify().await?,
         }
         self.authenticate(volume, io).await?;
@@ -887,7 +887,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             format_args!("fork:{}:{}:{suffix}", fork.operation_id, blake3::Hash::from(digest)), Some(io))?)?;
         let key = bounded_io::operation_key(&creation_key, Some(io))?;
         let initial = bounded_io::filesystem_call!(io, original,
-            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, io.cancellation()),
+            async { original_workspace.operation_generation(key, original, io.cancellation()).await.map_err(|error| (error, None)) },
             original_workspace.operation_generation(key, io.remaining()?, io.cancellation()))?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
@@ -1493,7 +1493,7 @@ mod tests {
         let (scope, retained) = fixture.root_scope.with_created_access_with_work(&admission, Some(access), &mut Some(&mut io))?;
         scope_custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
         assert_eq!(scope.grants(), fixture.root_scope.grants());
-        assert_eq!(scope.current_created_private_volume_with_native_work(&work)?, Some(&scratch.request.volume));
+        assert_eq!(scope.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&scratch.request.volume));
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;

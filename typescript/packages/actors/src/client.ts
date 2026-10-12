@@ -81,18 +81,18 @@ export class ActorsClient {
 
   get transport(): Promise<string | undefined> { return this.#connection().then(client => client.transport); }
 
-  async #call<Request, Response>(method: ActorsMethod, request: Request, options?: ActorsCallOptions): Promise<Response> {
+  async #call(method: ActorsMethod, request: unknown, options?: ActorsCallOptions): Promise<unknown> {
     const operation = method.localName as Operation;
     requireBigIntCodec();
-      const encoded = toBinary(method.input, create(method.input, toWireSemantic(request) as MessageShape<typeof method.input>));
+    const encoded = toBinary(method.input, create(method.input, structuredClone(request) as MessageShape<typeof method.input>));
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(options?.signal);
       const client = await this.#connection(options?.signal);
       const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
-      return canonicalSemantic(fromBinary(method.output, response)) as Response;
-    }) as Promise<Response>;
+      return canonicalSemantic(fromBinary(method.output, response));
+    });
   }
 
   #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
@@ -117,38 +117,23 @@ export class ActorsClient {
     }
     const pending = this.#client;
     this.#connectWaiters += 1;
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
+    return abortable(pending, signal).finally(() => {
       this.#connectWaiters -= 1;
       if (this.#connectWaiters === 0 && this.#client === pending && this.#connectAbort !== undefined) {
-        // Evict before aborting. A bridge may reject asynchronously after the
-        // abort; a new caller must be able to start a fresh connection during
-        // that interval, and the old rejection must not clear the replacement.
+        // Evict before abort so late rejection cannot clear a new connection.
         const controller = this.#connectAbort;
         this.#client = undefined;
         this.#connectAbort = undefined;
         controller.abort();
       }
-    };
-    return abortable(pending, signal).finally(release);
+    });
   }
 }
 
 export interface ActorsClient extends ActorsClientMethods {}
 
-/** Compatibility name retained while callers migrate to `ActorsClient`. */
-export class HttpActorsClient extends ActorsClient {}
-
-/** Snapshot the readonly semantic view before Buf's mutable wire encoder sees it. */
-function toWireSemantic(value: unknown): unknown {
-  return structuredClone(value);
-}
-
 function defaultBinding(): ActorsRustBinding {
-  const scope = globalThis as { process?: { versions?: { node?: string } } };
-  return scope.process?.versions?.node === undefined ? wasmBinding() : nativeBinding();
+  return isNodeRuntime() ? nativeBinding() : wasmBinding();
 }
 
 function nativeBinding(): ActorsRustBinding {

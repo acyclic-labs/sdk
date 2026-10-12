@@ -228,30 +228,9 @@ pub(crate) fn kind(error: &io::Error) -> &'static str {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use acyclic_grpc_observability::test_support::Capture;
     use std::task::{Context, Poll, Waker};
     use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
-
-    // Worker ancestry, caller mutation, and caller retirement.
-    struct Capture(Arc<[AtomicBool; 3]>);
-    impl<S> tracing_subscriber::Layer<S> for Capture
-    where S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a> {
-        fn on_new_span(
-            &self, attributes: &tracing::span::Attributes<'_>, id: &tracing::span::Id,
-            context: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if attributes.metadata().name() == "test.worker_nested" {
-                self.0[0].store(context.span(id).unwrap().scope()
-                    .any(|span| span.name() == "test.caller"), Ordering::Release);
-            }
-        }
-        fn on_record(&self, id: &tracing::span::Id, _: &tracing::span::Record<'_>, context: tracing_subscriber::layer::Context<'_, S>) {
-            if context.span(id).unwrap().name() == "test.caller" { self.0[1].store(true, Ordering::Release); }
-        }
-        fn on_close(&self, id: tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
-            if context.span(&id).unwrap().name() == "test.caller" { self.0[2].store(true, Ordering::Release); }
-        }
-    }
 
     #[test]
     fn admitted_work_keeps_observation_after_observer_drop() {
@@ -260,8 +239,8 @@ mod tests {
             let temporary = tempfile::tempfile().unwrap();
             let native = crate::NativeFile::from_file(temporary.try_clone().unwrap(), None)
                 .map_err(|(error, _)| error).unwrap();
-            let seen = Arc::new(std::array::from_fn(|_| AtomicBool::new(false)));
-            let origin = tracing::Dispatch::new(tracing_subscriber::registry().with(Capture(seen.clone()).with_filter(
+            let seen = Capture::default();
+            let origin = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone().with_filter(
                 tracing_subscriber::filter::filter_fn(move |metadata| !filtered || *metadata.level() == tracing::Level::INFO))));
             let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
             let (started_tx, started_rx) = std::sync::mpsc::channel();
@@ -291,12 +270,12 @@ mod tests {
             tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
             done_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while !seen[2].load(Ordering::Acquire) {
+            while seen.closed("test.caller") == 0 {
                 assert!(std::time::Instant::now() < deadline);
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            assert!(seen[0].load(Ordering::Acquire));
-            assert!(!seen[1].load(Ordering::Acquire));
+            assert!(seen.has_ancestor("test.worker_nested", "test.caller"));
+            assert!(!seen.0.lock().unwrap().records.iter().any(|(name, _, _)| name == "test.caller"));
             if native_control { assert_eq!(temporary.metadata().unwrap().len(), 73); }
         }
     }

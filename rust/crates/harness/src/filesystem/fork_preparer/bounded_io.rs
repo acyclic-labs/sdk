@@ -1140,7 +1140,7 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
     let workspace = open(host, reference, io).await?;
     let operation = operation_key(key, Some(io))?;
     filesystem_call!(io, original,
-        workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, io.cancellation()),
+        async { workspace.operation_generation(operation, original, io.cancellation()).await.map_err(|error| (error, None)) },
         workspace.operation_generation(operation, io.remaining()?, io.cancellation()))
 }
 
@@ -1174,7 +1174,7 @@ pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1189,7 +1189,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1237,7 +1237,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
                 let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
                 let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let resource = ResourceRef::new(reference.kind(), provider, key, version, quota.work())?;
                 let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
                 quota.transfer();
                 workspace
@@ -1609,7 +1609,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 let work = work.clone();
                 async move { guard.verify_creation_with_native_work(&work)?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+            workspace.fork_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
         } else {
             io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?
@@ -1617,7 +1617,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         #[cfg(target_arch = "wasm32")]
         let forked = io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?;
         let initial = filesystem_call!(io, original,
-            forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, io.cancellation()),
+            async { forked.operation_generation(operation, original, io.cancellation()).await.map_err(|error| (error, None)) },
             forked.operation_generation(operation, io.remaining()?, io.cancellation()))?;
         let initial = initial.ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Storage,
             "fork creation has no durable original generation"))?;
@@ -1656,7 +1656,7 @@ mod tests {
 
     #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("ordinary-owner-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
             VolumeOwner::Project("ordinary-owner-control".into()))?;
@@ -1689,7 +1689,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("source-read-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()));

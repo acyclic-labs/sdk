@@ -19,7 +19,7 @@ pub struct ExactTextReplacement {
     pub new_text: String,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Edits one immutable source under separate verified read/write grants.
     #[allow(
         clippy::too_many_arguments,

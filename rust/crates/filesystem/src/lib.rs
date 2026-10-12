@@ -77,8 +77,6 @@ pub mod distributed;
 mod logical_objects;
 #[cfg(feature = "distributed")]
 pub use logical_objects::LogicalObjectStore;
-#[cfg(feature = "distributed")]
-mod distributed_fs;
 pub mod facade;
 #[macro_use]
 pub mod foundation;
@@ -175,8 +173,6 @@ pub use core_state::{
 };
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
-#[cfg(feature = "distributed")]
-pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
     CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
@@ -220,6 +216,8 @@ pub use hosted::{
     MINIMUM_HANDSHAKE_RESPONSE_BYTES,
 };
 pub use kernel::{
+    DirectoryPage, TreeEntry,
+    DependencyRegion, DependencyState, DependencyUse, ExtentSeekTarget, RebaseConflict,
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
 };
@@ -289,9 +287,9 @@ pub use multi_root::{
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
-    capture_baseline, capture_baseline_with_policy, capture_paths,
+    capture_baseline, capture_paths,
     capture_root_identity, capture_subtree,
-    capture_watch_batch, capture_watch_batch_with_policy,
+    capture_watch_batch,
     host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -311,7 +309,7 @@ pub use native_mount::{
     MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
     MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
-    MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
@@ -329,8 +327,8 @@ pub use native_mount::{
     seal_checkout_with_permit,
 };
 pub use notification::{
-    AsyncNotificationStore, ImmediateNotificationStore, MemoryNotificationStore, NotificationError,
-    NotificationPoll, NotificationResult, NotificationStore,
+    AsyncNotificationStore, MemoryNotificationStore, NotificationError,
+    NotificationPoll, NotificationResult,
 };
 pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,
@@ -370,10 +368,10 @@ pub use speculation::{
     StorePromotionExecutorError, execute_promotion, execute_residency,
 };
 pub use storage::{
-    AppendOutcome, AuthorityFailure, AuthorityReceipt, AuthorityResult, AuthorityStore,
+    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStore,
     AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
-    ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
+    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStore,
     ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,
 };
@@ -383,9 +381,8 @@ pub use streams_record::{
 };
 #[cfg(feature = "native-watch")]
 pub use watch::{
-    NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
-    WatchBatch, WatchBatchOriginal, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
-    native_watch_capabilities,
+    NativeWatch, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
+    WatchBatch, WatchBatchOriginal, WatchChange, WatchInvalidationReason, native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 pub use windows_usn::{
@@ -395,9 +392,8 @@ pub use windows_usn::{
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
     IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
-    JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
-    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
-    WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
+    JoinPlan, Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete,
+    WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
     WorkspaceRestore, WorkspaceStat,

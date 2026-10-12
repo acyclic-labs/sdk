@@ -132,7 +132,7 @@ async fn start(
 
 #[tokio::test]
 async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> {
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,

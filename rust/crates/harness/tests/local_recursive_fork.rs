@@ -187,7 +187,7 @@ where
     });
     let model = Model::new("example", if level >= 3 { "alternate" } else { "exact" },
         if level == 2 { "2" } else { "1" }, Value::Null)?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
@@ -448,8 +448,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("local-recursive-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("local-recursive-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("local-recursive-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-recursive-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let mut host = Arc::new(FilesystemHost::new(
         Fs::local(fs_options.clone())
             .await
@@ -1270,8 +1270,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("local-deep-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("local-deep-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("local-deep-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-deep-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(
         Fs::local(fs_options)
             .await
