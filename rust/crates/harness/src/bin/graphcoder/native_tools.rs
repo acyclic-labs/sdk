@@ -183,7 +183,7 @@ impl super::native::NativeSession {
                 || !binding.scope.capabilities().contains("interaction:resolve") {
                 return Err(Error::Unauthorized("native command approval route is unavailable".into()));
             }
-            let (ticket, _) = approvals.read(configured.approval).await?
+            let (ticket, _) = approvals.read(configured.approval, None).await?
                 .ok_or_else(|| Error::NotFound("native command approval".into()))?;
             let scope = issuer.root_for_agent(binding.scope.agent()
                 .ok_or_else(|| Error::Invalid("native command caller agent".into()))?,
