@@ -79,15 +79,28 @@ pub(super) fn read_at(file: &File, offset: u64, destination: &mut [u8]) -> io::R
 }
 
 #[allow(unsafe_code)]
-pub(super) fn read_at_validated(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
+pub(super) fn read_at_validated(
+    file: &File,
+    offset: u64,
+    destination: &mut [u8],
+) -> io::Result<usize> {
     use std::os::fd::AsRawFd as _;
     let length = destination.len().min(MAX_IO_BYTES);
     // SAFETY: validation precedes this call; the descriptor and writable buffer
     // remain live for the single syscall, which never exceeds the buffer.
     let result = unsafe {
-        libc::pread(file.as_raw_fd(), destination.as_mut_ptr().cast(), length, offset as libc::off_t)
+        libc::pread(
+            file.as_raw_fd(),
+            destination.as_mut_ptr().cast(),
+            length,
+            offset as libc::off_t,
+        )
     };
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result as usize) }
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result as usize)
+    }
 }
 
 pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
@@ -99,8 +112,11 @@ pub(super) fn write_all_at(file: &File, offset: u64, bytes: &[u8]) -> io::Result
 pub(super) fn sync_once(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: fsync only acts on the live descriptor.
-    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { Ok(()) }
-    else { Err(io::Error::last_os_error()) }
+    if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Result<OwnedWrite>> {
@@ -130,7 +146,9 @@ fn chunk_owned_writes(writes: Vec<OwnedWrite>) -> impl Iterator<Item = io::Resul
 
 pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
     let length = u64::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
-    let end = offset.checked_add(length).ok_or(io::ErrorKind::InvalidInput)?;
+    let end = offset
+        .checked_add(length)
+        .ok_or(io::ErrorKind::InvalidInput)?;
     if offset > libc::off_t::MAX as u64 || end > libc::off_t::MAX as u64 {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -222,7 +240,8 @@ impl OwnerPool {
                 }
             }
         }
-        self.senders[start].send(job)
+        self.senders[start]
+            .send(job)
             .map_err(|_| io::Error::other("native I/O owner stopped before admission"))
     }
 }
@@ -371,7 +390,11 @@ impl Owner {
         uncertain_completion(error)
     }
 
-    fn read_batch(&mut self, file: &Arc<NativeFilePayload>, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
+    fn read_batch(
+        &mut self,
+        file: &Arc<NativeFilePayload>,
+        reads: &[OwnedRead],
+    ) -> io::Result<Vec<Bytes>> {
         let mut output = Vec::with_capacity(reads.len());
         let mut remaining = reads;
         while let Some(first) = remaining.first() {
@@ -491,9 +514,16 @@ impl Owner {
                 continue;
             }
             let length = (read.length - count).min(MAX_IO_BYTES * IO_ENTRIES);
-            let window = self.read_window(file, &[OwnedRead {
-                offset: read.offset + count as u64, length,
-            }])?.pop().ok_or_else(|| io::Error::other("missing native read completion"))?;
+            let window = self
+                .read_window(
+                    file,
+                    &[OwnedRead {
+                        offset: read.offset + count as u64,
+                        length,
+                    }],
+                )?
+                .pop()
+                .ok_or_else(|| io::Error::other("missing native read completion"))?;
             let eof = window.len() < length;
             count += window.len();
             if bytes.is_empty() && (eof || count == read.length) {
@@ -570,7 +600,11 @@ impl Owner {
         Ok(first_error)
     }
 
-    fn write_batch(&mut self, file: &Arc<NativeFilePayload>, writes: Vec<OwnedWrite>) -> io::Result<()> {
+    fn write_batch(
+        &mut self,
+        file: &Arc<NativeFilePayload>,
+        writes: Vec<OwnedWrite>,
+    ) -> io::Result<()> {
         let mut chunks = chunk_owned_writes(writes);
         loop {
             let window: Vec<_> = chunks
@@ -727,8 +761,6 @@ fn record_owned_read(
 mod tests {
     use super::*;
 
-
-
     #[test]
     fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result<()> {
         let mut owner = Owner::new();
@@ -736,13 +768,14 @@ mod tests {
             return Ok(());
         }
         let temporary = tempfile::tempdir()?;
-        let affected = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
+        let affected = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .open(temporary.path().join("affected"))?,
-        ));
+            _allocation: None,
+        });
         affected.set_len(MAX_IO_BYTES as u64)?;
         let op = ReadAt::new(
             SharedFd::new(Arc::clone(&affected)),
@@ -766,13 +799,14 @@ mod tests {
         assert_eq!(owner.retired.len(), 1);
         assert!(!owner.ensure_driver()?);
 
-        let unrelated = Arc::new(NativeFilePayload::unmetered(
-            std::fs::OpenOptions::new()
+        let unrelated = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create_new(true)
                 .open(temporary.path().join("unrelated"))?,
-        ));
+            _allocation: None,
+        });
         owner.write_batch(
             &unrelated,
             vec![OwnedWrite {
@@ -816,13 +850,14 @@ mod tests {
         };
         if std::env::var_os(CHILD).is_some() {
             let temporary = tempfile::tempdir()?;
-            let file = Arc::new(NativeFilePayload::unmetered(
-                std::fs::OpenOptions::new()
+            let file = Arc::new(NativeFilePayload {
+                file: std::fs::OpenOptions::new()
                     .read(true)
                     .write(true)
                     .create_new(true)
                     .open(temporary.path().join("pending"))?,
-            ));
+                _allocation: None,
+            });
             file.set_len(MAX_IO_BYTES as u64)?;
             let op = ReadAt::new(
                 SharedFd::new(file),

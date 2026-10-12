@@ -1,6 +1,6 @@
-use crate::async_storage::AsyncObjectStore;
-use super::*;
 use super::super::allocation::AllocationLedger;
+use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
@@ -107,7 +107,19 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    AsyncObjectStore::put(store, object, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -121,54 +133,125 @@ impl AsyncObjectStore for CancellingStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let receipt = AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await?;
+        let receipt = {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }?;
         if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
             cancellation.cancel();
         }
         Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -182,9 +265,15 @@ impl AsyncObjectStore for OwnedRetentionStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -198,16 +287,35 @@ impl AsyncObjectStore for OwnedRetentionStore {
                 },
             ));
         }
-        AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -221,7 +329,17 @@ impl AsyncObjectStore for OwnedRetentionStore {
                 },
             ));
         }
-        let receipt = AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await?;
+        let receipt = {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }?;
         let logical_bytes = u64::try_from(receipt.value.bytes.len()).map_err(|_| {
             ObjectFailure::new(ObjectStoreError::Work(WorkError::Overflow), receipt.work)
         })?;
@@ -244,25 +362,51 @@ impl AsyncObjectStore for OwnedRetentionStore {
             work,
         })
     }
+        .await;
+        context.accept(result)
+    }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -276,7 +420,17 @@ impl AsyncObjectStore for OwnedRetentionStore {
                 },
             ));
         }
-        AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -936,20 +1090,33 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &cached_bytes),
     };
-    AsyncObjectStore::put(&inner, cached, cached_bytes.clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            cached,
+            cached_bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&inner, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let store = OwnedRetentionStore {
         inner,
         fail: AtomicBool::new(false),
     };
     let (cache, _) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
-    let cold = (AsyncObjectStore::read(
-        &cache,
-        cached,
-        u64::MAX,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let cold = (async {
+        let __object_args = (cached, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert!(matches!(
         cold.value.retention,
         ObjectReadRetention::Shared
@@ -967,26 +1134,30 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &write_bytes),
     };
-    let put_failure = (AsyncObjectStore::put(
-        &cache,
-        write_id,
-        write_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let put_failure = (async {
+        let __object_args = (write_id, write_bytes, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(
+        &cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("failing cache write unexpectedly succeeded")?;
     assert!(matches!(put_failure.error, ObjectStoreError::Corrupt));
     assert_eq!(put_failure.work.backend_write_operations, 1);
     assert_eq!(put_failure.work.peak_allocation_bytes, resident + 17);
 
-    let read_failure = (AsyncObjectStore::read(
-        &cache,
-        absent,
-        u64::MAX,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let read_failure = (async {
+        let __object_args = (absent, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(
+        &cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("failing cache read unexpectedly succeeded")?;
     assert!(matches!(read_failure.error, ObjectStoreError::Corrupt));
@@ -994,12 +1165,14 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
     assert!(read_failure.work.items_examined > 0);
     assert_eq!(read_failure.work.peak_allocation_bytes, resident + 17);
 
-    let contains_failure = (AsyncObjectStore::contains(
-        &cache,
-        absent,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let contains_failure = (async {
+        let __object_args = (absent, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::contains(
+        &cache, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("failing cache presence probe unexpectedly succeeded")?;
     assert!(matches!(contains_failure.error, ObjectStoreError::Corrupt));
@@ -1016,12 +1189,14 @@ async fn operation_cache_preserves_backend_failures_resident_peak_and_poison_rec
     }));
     assert!(poisoned.is_err());
     store.fail.store(false, Ordering::Relaxed);
-    let recovered = (AsyncObjectStore::contains(
-        &cache,
-        cached,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let recovered = (async {
+        let __object_args = (cached, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::contains(
+        &cache, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert!(recovered.value);
     assert_eq!(recovered.work.backend_read_operations, 0);
     Ok(())
@@ -1036,50 +1211,84 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
     };
-    AsyncObjectStore::put(&store, object_id, bytes.clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id,
+            bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let (cache, setup) = setup_cache(&store, 2, WorkBudget::UNBOUNDED, None)?;
     assert_eq!(setup.allocation_operations, 1);
     assert!(setup.peak_allocation_bytes > 0);
     let cancellation = CancellationToken::new();
 
-    let cold = (AsyncObjectStore::read(
-        &cache,
-        object_id,
-        u64::try_from(bytes.len())?,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let cold = (async {
+        let __object_args = (
+            object_id,
+            u64::try_from(bytes.len())?,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     assert_eq!(cold.value.bytes, bytes);
     assert_eq!(cold.work.backend_read_operations, 1);
 
-    let warm = (AsyncObjectStore::read(
-        &cache,
-        object_id,
-        u64::try_from(bytes.len())?,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let warm = (async {
+        let __object_args = (
+            object_id,
+            u64::try_from(bytes.len())?,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     assert_eq!(warm.value.bytes, bytes);
     assert_eq!(warm.value.retention, ObjectReadRetention::Shared);
     assert_eq!(warm.work.backend_read_operations, 0);
     assert!(warm.work.items_examined > 0);
 
-    let present = (AsyncObjectStore::contains(
-        &cache,
-        object_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let present = (async {
+        let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::contains(&cache, __object_args.0, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     assert!(present.value);
     assert_eq!(present.work.backend_read_operations, 0);
 
-    let too_small = (AsyncObjectStore::read(
-        &cache,
-        object_id,
-        u64::try_from(bytes.len())?.saturating_sub(1),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
+    let too_small = (async {
+        let __object_args = (
+            object_id,
+            u64::try_from(bytes.len())?.saturating_sub(1),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("cache hit ignored maximum bytes")?;
     assert!(matches!(too_small.error, ObjectStoreError::TooLarge { .. }));
@@ -1088,13 +1297,15 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
 
     let mut zero_items = WorkBudget::UNBOUNDED;
     zero_items.items_examined = 0;
-    let unadmitted = (AsyncObjectStore::read(
-        &cache,
-        object_id,
-        u64::MAX,
-        zero_items,
-        &cancellation,
-    )).await
+    let unadmitted = (async {
+        let __object_args = (object_id, u64::MAX, zero_items, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(
+        &cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await
     .err()
     .ok_or("cache hit exceeded work budget")?;
     assert!(matches!(
@@ -1186,28 +1397,60 @@ async fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &second_bytes),
     };
-    AsyncObjectStore::put(&store, first, first_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
-    AsyncObjectStore::put(&store, second, second_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            first,
+            first_bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
+    {
+        let __object_args = (
+            second,
+            second_bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let (cache, _) = setup_cache(&store, 1, WorkBudget::UNBOUNDED, None)?;
     let cancellation = CancellationToken::new();
 
     for object_id in [first, second, second] {
-        let receipt = (AsyncObjectStore::read(
+        let receipt = (async {
+            let __object_args = (object_id, u64::MAX, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &cache,
-            object_id,
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        })
+        .await?;
+        assert_eq!(receipt.work.backend_read_operations, 1);
+    }
+    let warm_first = (async {
+        let __object_args = (first,
             u64::MAX,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
-        assert_eq!(receipt.work.backend_read_operations, 1);
-    }
-    let warm_first = (AsyncObjectStore::read(
-        &cache,
-        first,
-        u64::MAX,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&cache, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(warm_first.work.backend_read_operations, 0);
     Ok(())
 }
@@ -1523,9 +1766,9 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
         let examined = if path.depth() > usize::from(candidate.limits.maximum_path_depth) {
             0
         } else {
-            u64::try_from(path.components().iter().position(|component|
-                component.as_bytes().len() > usize::try_from(candidate.limits.maximum_component_bytes).unwrap_or(usize::MAX)
-            ).ok_or("component-bound fixture no longer rejects a reached component")? + 1)?
+            u64::try_from(path.components().iter().position(|component| {
+                        component.as_bytes().len() > usize::try_from(candidate.limits.maximum_component_bytes).unwrap_or(usize::MAX)
+                    }).ok_or("component-bound fixture no longer rejects a reached component")? + 1)?
         };
         let failure = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
@@ -1749,9 +1992,11 @@ async fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_r
     assert_eq!(custody.take_completed_data_work(), completed);
     let next_observer = |event| custody.record_heap_future_event(event);
     let next = (crate::heap_future::in_heap_measured(
-        |_| std::future::ready(Ok::<_, PathLookupFailure>(crate::OperationReceipt {
+        |_| {
+            std::future::ready(Ok::<_, PathLookupFailure>(crate::OperationReceipt {
             value: (), work: WorkCounters::default(),
-        })),
+        }))
+        },
         WorkBudget::UNBOUNDED, &cancellation,
         PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
     )).await?;

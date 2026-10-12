@@ -363,9 +363,8 @@ async fn assert_fork_lineage_exact(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+        .await?
+        .value
         .id();
     let mut expected = if independent {
         Vec::new()
@@ -400,9 +399,8 @@ async fn assert_fork_lineage_exact(
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?,
+                .await?
+                .value,
                 IdempotencyKey::from_bytes([0x71; 16]),
             ),
             crate::PublicationPermit::Unrestricted,
@@ -415,9 +413,8 @@ async fn assert_fork_lineage_exact(
                 }))
             },
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     if inherits_base {
         assert_eq!(
             grandchild
@@ -427,9 +424,8 @@ async fn assert_fork_lineage_exact(
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new()
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?,
+                .await?
+                .value,
             OwnedBytes::from_static(b"base")
         );
     } else {
@@ -483,9 +479,8 @@ async fn fork_through_every_cut(
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+                .await?
+                .value;
             main.write_text("/base.txt", "base").await?;
             main.write_text("/excluded.txt", "excluded").await?;
             let source = main
@@ -493,9 +488,8 @@ async fn fork_through_every_cut(
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+                .await?
+                .value;
             if advance_source {
                 main.write_text("/later.txt", "later").await?;
             }
@@ -565,9 +559,8 @@ async fn fork_through_every_cut(
                         }))
                     },
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+                .await?
+                .value;
             assert_eq!(retried.id(), destination);
             if inherits_base {
                 assert_eq!(
@@ -578,9 +571,8 @@ async fn fork_through_every_cut(
                             crate::WorkBudget::UNBOUNDED,
                             &crate::CancellationToken::new()
                         )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)?,
+                        .await?
+                        .value,
                     OwnedBytes::from_static(b"base")
                 );
             } else {
@@ -604,18 +596,16 @@ async fn fork_through_every_cut(
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new()
                     )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?
+                    .await?
+                    .value
                     .matches_fork_selection(
                         &source,
                         paths.clone(),
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new()
                     )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?
+                    .await?
+                    .value
             );
             if paths.is_some() {
                 assert!(
@@ -650,27 +640,24 @@ async fn fork_through_every_cut(
                         }))
                     },
                 )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
+                .await?
+                .value;
             assert_eq!(
                 again
                     .head(
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new()
                     )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?
+                    .await?
+                    .value
                     .id(),
                 retried
                     .head(
                         crate::WorkBudget::UNBOUNDED,
                         &crate::CancellationToken::new()
                     )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)?
+                    .await?
+                    .value
                     .id()
             );
             assert_fork_lineage_exact(

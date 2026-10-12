@@ -41,7 +41,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -96,7 +96,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -223,7 +223,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })

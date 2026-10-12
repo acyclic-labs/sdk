@@ -350,9 +350,8 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace
         .write_text("/source", "real detached stream")
         .await?;

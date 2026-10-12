@@ -11,9 +11,8 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let cancellation = CancellationToken::new();
     let mut live = workspace
         .checkout(

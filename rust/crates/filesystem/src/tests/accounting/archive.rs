@@ -10,9 +10,8 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace.write_text("/file", "original").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let original_records = records(&authority, authority_id).await?;
@@ -27,9 +26,8 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+            .await?
+            .value
             .id(),
     );
     // Capture the actual original root and complete proof before advancing head.
@@ -74,9 +72,8 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+            .await?
+            .value
             .id(),
     );
     assert_ne!(current_root, original_root);
@@ -106,14 +103,32 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     };
     let cancellation = CancellationToken::new();
     assert!(
-        !crate::AsyncObjectStore::contains(&archive.inner, original_root, BUDGET, &cancellation,)
-            .await?
-            .value
+        !{
+            let __object_args = (original_root, BUDGET, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = crate::AsyncObjectStore::contains(
+                &archive.inner,
+                __object_args.0,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
     );
     assert!(
-        !crate::AsyncObjectStore::contains(&archive.inner, current_root, BUDGET, &cancellation,)
-            .await?
-            .value
+        !{
+            let __object_args = (current_root, BUDGET, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = crate::AsyncObjectStore::contains(
+                &archive.inner,
+                __object_args.0,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
     );
     let cursor = AccountingCursor {
         sequence: initial.sequence,
@@ -176,9 +191,8 @@ async fn original_initial_and_retention_evidence_bind_actual_stream_records_and_
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let initial = records(&authority, authority_id).await?.remove(0);
     let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| {

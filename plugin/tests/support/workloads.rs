@@ -84,7 +84,24 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
             .expect("fixture file in SDK workspace");
     }
     assert!(matches!(
-        transaction.commit().await.expect("commit fixture"),
+        transaction
+            .commit(
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+                |_| async {
+                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                        acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        },
+                    )
+                },
+            )
+            .await
+            .expect("commit fixture")
+            .value,
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)
     ));
     let mount = workspace

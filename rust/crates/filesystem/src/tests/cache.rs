@@ -1,7 +1,7 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
+use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
@@ -32,15 +32,50 @@ async fn cache_is_bounded_lru_authenticated_and_physically_observable()
     let (first_id, first_bytes) = object(b"first");
     let (second_id, second_bytes) = object(b"second");
     for (object_id, bytes) in [(first_id, first_bytes), (second_id, second_bytes)] {
-        (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+            let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
     let cached = CachedObjectStore::new(inner, options(1, 8))?;
-    let first = (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let warm = (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let first = (async {
+        let __object_args = (first_id, 5, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let warm = (async {
+        let __object_args = (first_id, 5, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let second =
-        (cached.read(second_id, 6, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+        let __object_args = (second_id, 6, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let reloaded =
-        (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+        let __object_args = (first_id, 5, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(first.value.bytes, warm.value.bytes);
     assert_eq!(second.value.bytes.as_ref(), b"second");
     assert_eq!(reloaded.value.bytes.as_ref(), b"first");
@@ -77,17 +112,38 @@ async fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
     let inner = MemoryObjectStore::default();
     let (object_id, bytes) = object(b"bounded");
     let active = CancellationToken::new();
-    (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &active)).await?;
+    (async {
+        let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &active);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = inner
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let cached = CachedObjectStore::new(inner, options(1, 16))?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = (cached.read(object_id, 7, WorkBudget::UNBOUNDED, &cancelled)).await
+    let failure = (async {
+        let __object_args = (object_id, 7, WorkBudget::UNBOUNDED, &cancelled);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await
         .err()
         .ok_or("cancelled cache read succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(cached.stats()?, ObjectCacheStats::default());
-    (cached.read(object_id, 7, WorkBudget::UNBOUNDED, &active)).await?;
+    (async {
+        let __object_args = (object_id, 7, WorkBudget::UNBOUNDED, &active);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     cached.clear()?;
     assert_eq!(cached.stats()?.resident_entries, 0);
     assert_eq!(cached.stats()?.resident_bytes, 0);
@@ -101,27 +157,43 @@ async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
     let cached = CachedObjectStore::new(inner, options(2, 64))?;
     let cancellation = CancellationToken::new();
     let (canonical_id, canonical_bytes) = object(b"canonical");
-    (cached.put(
-        canonical_id,
-        canonical_bytes,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (
+            canonical_id,
+            canonical_bytes,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert!(
         (
             cached
-                .inner()
-                .contains(canonical_id, WorkBudget::UNBOUNDED, &cancellation,)
+                .inner(canonical_id, WorkBudget::UNBOUNDED, &cancellation,)
         ).await?
         .value
     );
     assert!(
-        (cached.contains(canonical_id, WorkBudget::UNBOUNDED, &cancellation,)).await?
+        (async {
+            let __object_args = (canonical_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = cached.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }).await?
             .value
     );
     let (missing_id, _) = object(b"missing");
     assert!(
-        !(cached.contains(missing_id, WorkBudget::UNBOUNDED, &cancellation)).await?
+        !(async {
+            let __object_args = (missing_id, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = cached.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }).await?
             .value
     );
 
@@ -194,18 +266,32 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (present_id, present_bytes) = object(b"present");
-    (inner.put(
-        present_id,
-        present_bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (
+            present_id,
+            present_bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = inner
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let (missing_id, _) = object(b"absent");
     let cached = CachedObjectStore::new(inner, options(4, 64))?;
 
     for _ in 0..2 {
         assert!(
-            (cached.read(missing_id, 6, WorkBudget::UNBOUNDED, &cancellation,)).await
+            (async {
+                let __object_args = (missing_id, 6, WorkBudget::UNBOUNDED, &cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = cached
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }).await
                 .is_err()
         );
         assert_eq!(cached.stats()?.in_flight, 0);
@@ -221,15 +307,38 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         },
     ];
     assert!(
-        (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (async {
+            let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = cached
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        }).await
             .is_err()
     );
     assert_eq!(cached.stats()?.in_flight, 0);
     let retry =
-        (cached.read(present_id, 7, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+        let __object_args = (present_id, 7, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(retry.value.bytes, present_bytes);
 
-    let empty = (cached.read_many(&[], WorkBudget::UNBOUNDED, &cancellation)).await
+    let empty = (async {
+        let __object_args = (&[], WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = cached
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await
         .err()
         .ok_or("empty cache batch succeeded")?;
     assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
@@ -304,60 +413,141 @@ impl AsyncObjectStore for CountingStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.put(object_id, bytes, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
-        self.inner
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_with_native_work(
-        &self, object_id: ObjectId, maximum_bytes: u64,
-        work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        self.scalar_reads.fetch_add(1, Ordering::AcqRel);
-        self.inner.read_with_native_work(object_id, maximum_bytes, work, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                self.scalar_reads.fetch_add(1, Ordering::AcqRel);
+                {
+                    let __object_args = (object_id, maximum_bytes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .inner
+                        .read(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            self.scalar_reads.fetch_add(1, Ordering::AcqRel);
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        self.batch_reads.fetch_add(1, Ordering::AcqRel);
-        self.inner.read_many(requests, budget, cancellation).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_many_with_native_work(
-        &self, requests: &[ObjectReadRequest],
-        work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        self.batch_reads.fetch_add(1, Ordering::AcqRel);
-        self.inner.read_many_with_native_work(requests, work, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
+                self.batch_reads.fetch_add(1, Ordering::AcqRel);
+                {
+                    let __object_args = (requests, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .read_many(__object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, allocation)| {
+                            (values, allocation.expect("native batch allocation"))
+                        });
+                    __object_result
+                }
+            }
+            .await
+            .map(|(values, allocation)| (values, Some(allocation)));
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            self.batch_reads.fetch_add(1, Ordering::AcqRel);
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        self.inner.contains(object_id, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -366,42 +556,107 @@ impl AsyncObjectStore for ShortBatchStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.put(object_id, bytes, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        self.inner
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        self.inner
-            .read_many(&requests[..1], budget, cancellation)
-            .await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (&requests[..1], budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        self.inner.contains(object_id, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -424,42 +679,94 @@ impl AsyncObjectStore for GatedStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        self.inner.put(object_id, bytes, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.reads.fetch_add(1, Ordering::AcqRel);
         self.gate.wait().await;
-        self.inner
-            .read(object_id, maximum_bytes, budget, cancellation)
-            .await
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        crate::async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        crate::async_storage::read_many_sequential(self, requests, context).await
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        self.inner.contains(object_id, budget, cancellation).await
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -469,12 +776,19 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"single-flight");
-    (inner.put(
-        object_id,
-        bytes.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (
+            object_id,
+            bytes.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = inner
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let gate = Arc::new(Gate::new());
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
@@ -486,8 +800,22 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
         options(4, 64),
     )?;
     let (first, second) = (async {
-        let first = cached.read(object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
-        let second = cached.read(object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
+        let first = async {
+            let __object_args = (object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = cached
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
+        let second = async {
+            let __object_args = (object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = cached
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let release = async {
             while reads.load(Ordering::Acquire) == 0 {
                 tokio::task::yield_now().await;
@@ -521,12 +849,19 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
         let cancellation = CancellationToken::new();
         let (identity, bytes) = body;
         if object_id == 0 {
-            (inner.put(
-                identity,
-                bytes.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )).await?;
+            (async {
+                let __object_args = (
+                    identity,
+                    bytes.clone(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }).await?;
         }
         let gate = Arc::new(Gate::new());
         let reads = Arc::new(AtomicUsize::new(0));
@@ -543,13 +878,31 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
             maximum_bytes: u64::try_from(bytes.len())?,
         }];
         let (scalar, batch) = (async {
-            let scalar = cached.read(
-                identity,
-                u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            let scalar = async {
+                let __object_args = (
+                    identity,
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = cached
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            };
+            let batch = async {
+                let __object_args = (&requests,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             );
-            let batch = cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = cached
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            };
             let release = async {
                 while reads.load(Ordering::Acquire) == 0 {
                     tokio::task::yield_now().await;
@@ -581,19 +934,34 @@ async fn malformed_backend_batch_cardinality_releases_all_flights()
     let cancellation = CancellationToken::new();
     let objects = [object(b"first-short"), object(b"second-short")];
     for (object_id, bytes) in &objects {
-        (inner.put(
+        (async {
+            let __object_args = (
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
     let cached = CachedObjectStore::new(ShortBatchStore { inner }, options(4, 64))?;
     let requests = objects.map(|(object_id, bytes)| ObjectReadRequest {
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let failure = (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await
+    let failure = (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = cached
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await
         .err()
         .ok_or("short backend batch was accepted")?;
     assert!(matches!(failure.error, ObjectStoreError::Corrupt));
@@ -608,16 +976,30 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
     let cancellation = CancellationToken::new();
     let objects = [object(b"warm"), object(b"second"), object(b"third")];
     for (object_id, bytes) in &objects {
-        (inner.put(
+        (async {
+            let __object_args = (
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(8, 128))?;
-    (cached.read(objects[0].0, 4, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (async {
+        let __object_args = (objects[0].0, 4, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     let requests = [
         ObjectReadRequest {
             object_id: objects[0].0,
@@ -637,7 +1019,15 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
         },
     ];
     let receipt =
-        (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = cached
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(
         receipt
             .value
@@ -660,7 +1050,15 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
             maximum_bytes: 6,
         },
     ];
-    let failure = (cached.read_many(&unequal, WorkBudget::UNBOUNDED, &cancellation)).await
+    let failure = (async {
+        let __object_args = (&unequal, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = cached
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await
         .err()
         .ok_or("per-request byte limit was ignored")?;
     assert!(matches!(
@@ -682,16 +1080,52 @@ async fn oversized_objects_bypass_residency_while_clones_share_warm_entries()
     let (small_id, small_bytes) = object(b"small");
     let (large_id, large_bytes) = object(b"larger-than-cache");
     for (object_id, bytes) in [(small_id, small_bytes), (large_id, large_bytes)] {
-        (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (async {
+            let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
     let (counting, scalar_reads, _) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(4, 8))?;
     let clone = cached.clone();
-    (cached.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let warm = (clone.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (async {
+        let __object_args = (small_id, 5, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
+    let warm = (async {
+        let __object_args = (small_id, 5, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = clone
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(warm.work.backend_read_operations, 0);
-    (cached.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    (clone.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (async {
+        let __object_args = (large_id, 17, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = cached
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
+    (async {
+        let __object_args = (large_id, 17, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = clone
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(scalar_reads.load(Ordering::Acquire), 3);
     assert_eq!(cached.stats()?.resident_entries, 1);
     assert_eq!(cached.stats()?.resident_bytes, 5);
@@ -705,12 +1139,19 @@ async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_i
     let cancellation = CancellationToken::new();
     let objects = [object(b"one"), object(b"two")];
     for (object_id, bytes) in &objects {
-        (inner.put(
+        (async {
+            let __object_args = (
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(
@@ -726,7 +1167,15 @@ async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_i
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let failure = (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await
+    let failure = (async {
+        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = cached
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }).await
         .err()
         .ok_or("over-capacity batch unexpectedly succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
@@ -857,12 +1306,19 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         } else {
             b"scalar-retry"
         });
-        (inner.put(
-            object_id,
-            bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?;
+        (async {
+            let __object_args = (
+                object_id,
+                bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }).await?;
         let cached = CachedObjectStore::new(inner, options(4, 64))?;
         let abandoned = Arc::new(Flight::new(1));
         abandoned.finish(None);
@@ -872,22 +1328,37 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         }
 
         if batch {
-            let receipt = (cached.read_many(
+            let receipt = (async {
+                let __object_args = (
                 &[ObjectReadRequest {
                     object_id,
                     maximum_bytes: u64::try_from(bytes.len())?,
                 }],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await?;
+            );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = cached
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }).await?;
             assert_eq!(receipt.value[0].bytes, bytes);
         } else {
-            let receipt = (cached.read(
-                object_id,
-                u64::try_from(bytes.len())?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )).await?;
+            let receipt = (async {
+                let __object_args = (
+                    object_id,
+                    u64::try_from(bytes.len())?,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = cached
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }).await?;
             assert_eq!(receipt.value.bytes, bytes);
         }
         assert_eq!(cached.stats()?.coalesced_reads, 1);
@@ -925,17 +1396,22 @@ mod native_cache {
         let copy = work.reserve_work(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(source.len())
-            .map_err(|error| ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error)))?;
+            .map_err(|error| {
+            ObjectStoreError::Native(NativeTreeMaterializationError::AllocationFailed(error))
+        })?;
         allocation.reconcile_capacity(bytes.capacity() as u64)?;
         bytes.resize(bytes.capacity(), 0);
         let mut prepared = acyclic_stream::PreparedOwnedBytes::new(
             bytes, allocation, work.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => work.runtime_error(error).into(),
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            =>
-                ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
-        })?;
+            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        work.runtime_error(error).into()
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+            => {
+                        ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)
+                    }
+                })?;
         prepared.writable()[..source.len()].copy_from_slice(source);
         { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         prepared.freeze(source.len()).map_err(|_| ObjectStoreError::Corrupt)
@@ -951,78 +1427,192 @@ mod native_cache {
 
     impl AsyncObjectStore for OwnedNativeStore {
         async fn put(
-            &self, id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, token: &CancellationToken,
-        ) -> ObjectResult<()> {
-            self.inner.put(id, bytes, budget, token).await
+            &self, id: ObjectId, bytes: OwnedBytes,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(), crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let token = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, bytes, budget, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .inner
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn read(
-            &self, id: ObjectId, maximum: u64, budget: WorkBudget, token: &CancellationToken,
-        ) -> ObjectResult<ObjectRead> {
-            self.inner.read(id, maximum, budget, token).await
+            &self, id: ObjectId, maximum: u64,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = context.original {
+                let token = context.cancellation;
+                return async {
+                    let source = {
+                        let __object_args = (id, maximum, work, token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = self
+                            .inner
+                            .read(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_result
+                    }?;
+                    let bytes = copied_native_bytes(&source.bytes, work)?;
+                    let logical_bytes =
+                        bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
+                    let read = crate::async_storage::owned_read(
+                        ObjectRead {
+                    bytes,
+                    retention: ObjectReadRetention::Owned { logical_bytes },
+                },
+                        work,
+                    )?;
+                    match self.finish {
+                        Finish::Return => {}
+                        Finish::Error => {
+                            return Err(ObjectStoreError::Native(
+                                NativeTreeMaterializationError::InvalidLayout,
+                            ));
+                        }
+                        Finish::Panic => panic!("native producer unwinds after its actual copy"),
+                        Finish::Pending => std::future::pending::<()>().await,
+                    }
+                    Ok(read)
+                }
+                .await;
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let token = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, maximum, budget, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .inner
+                        .read(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn contains(
-            &self, id: ObjectId, budget: WorkBudget, token: &CancellationToken,
-        ) -> ObjectResult<bool> {
-            self.inner.contains(id, budget, token).await
+            &self, id: ObjectId,
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<bool, crate::ObjectStoreError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.original.is_some() {
+                return Err(crate::ObjectStoreError::NativeUnavailable);
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let token = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (id, budget, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .contains(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result)
         }
 
         async fn read_many(
-            &self, requests: &[ObjectReadRequest], budget: WorkBudget, token: &CancellationToken,
-        ) -> ObjectResult<Vec<ObjectRead>> {
-            self.inner.read_many(requests, budget, token).await
-        }
-
-        async fn read_with_native_work(
-            &self, id: ObjectId, maximum: u64, work: &NativeMaterializationWork, token: &CancellationToken,
-        ) -> Result<ObjectRead, ObjectStoreError> {
-            let source = self.inner.read_with_native_work(id, maximum, work, token).await?;
-            let bytes = copied_native_bytes(&source.bytes, work)?;
+            &self, requests: &[ObjectReadRequest],
+            context: &mut crate::AuthorityWork<'_>,
+        ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = context.original {
+                let token = context.cancellation;
+                return async {
+                    let source = {
+                        let __object_args = (requests, work, token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                        let __object_result = self
+                            .inner
+                            .read_many(__object_args.0, &mut __object_work)
+                            .await
+                            .map(|(values, allocation)| {
+                                (values, allocation.expect("native batch allocation"))
+                            });
+                        __object_result
+                    }?;
+                    let (values, allocation) = source;
+                    let mut buffer = BatchBuffer {
+                values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
+            };
+                    for value in &mut buffer.values {
+                let bytes = copied_native_bytes(&value.bytes, work)?;
             let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
-            let read = crate::async_storage::owned_read(ObjectRead {
+                *value = crate::async_storage::owned_read(ObjectRead {
                 bytes,
                 retention: ObjectReadRetention::Owned { logical_bytes },
             }, work)?;
-            match self.finish {
-                Finish::Return => {}
-                Finish::Error => return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)),
-                Finish::Panic => panic!("native producer unwinds after its actual copy"),
-                Finish::Pending => std::future::pending::<()>().await,
             }
-            Ok(read)
-        }
-
-        async fn read_many_with_native_work(
-            &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, token: &CancellationToken,
-        ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-            let source = self.inner.read_many_with_native_work(requests, work, token).await?;
-            let (values, allocation) = source;
-            let mut buffer = BatchBuffer {
-                values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
-            };
-            for value in &mut buffer.values {
-                let bytes = copied_native_bytes(&value.bytes, work)?;
-                let logical_bytes = bytes.retained_capacity().ok_or(ObjectStoreError::Corrupt)? as u64;
-                *value = crate::async_storage::owned_read(ObjectRead {
-                    bytes,
-                    retention: ObjectReadRetention::Owned { logical_bytes },
-                }, work)?;
-            }
-            match self.finish {
+                    match self.finish {
                 Finish::Return => {}
-                Finish::Error => return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)),
-                Finish::Panic => panic!("native batch producer unwinds after its actual copy"),
-                Finish::Pending => std::future::pending::<()>().await,
+                Finish::Error => {
+                            return Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout));
+                        }
+                        Finish::Panic => {
+                            panic!("native batch producer unwinds after its actual copy")
+                        }
+                        Finish::Pending => std::future::pending::<()>().await,
             }
             let BatchBuffer { values, allocation } = buffer;
             match allocation {
-                Some(KernelOwnedAllocation::NativeOriginal(allocation)) => crate::async_storage::native_read_batch(values, allocation),
-                _ => {
+                Some(KernelOwnedAllocation::NativeOriginal(allocation)) => {
+                            crate::async_storage::native_read_batch(values, allocation)
+                        }
+                        _ => {
                     drop(values);
                     Err(ObjectStoreError::Corrupt)
                 }
             }
+                }
+                .await
+                .map(|(values, allocation)| (values, Some(allocation)));
+            }
+            let budget = context.work.remaining(context.budget)?;
+            let token = context.cancellation;
+            let result = async {
+                {
+                    let __object_args = (requests, budget, token);
+                    let mut __object_work =
+                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .read_many(__object_args.0, &mut __object_work)
+                        .await
+                        .map(|(values, _allocation)| values);
+                    __object_work.receipt(__object_result)
+                }
+            }
+            .await;
+            context.accept(result).map(|values| (values, None))
         }
     }
 
@@ -1030,7 +1620,14 @@ mod native_cache {
     -> Result<(CachedObjectStore<OwnedNativeStore>, ObjectId), Box<dyn std::error::Error>> {
         let inner = MemoryObjectStore::default();
         let (id, bytes) = object(b"owned");
-        inner.put(id, bytes, WorkBudget::UNBOUNDED, token).await?;
+        {
+            let __object_args = (id, bytes, WorkBudget::UNBOUNDED, token);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = inner
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         Ok((CachedObjectStore::new(OwnedNativeStore { inner, finish }, options(2, 64))?, id))
     }
 
@@ -1040,13 +1637,27 @@ mod native_cache {
         let token = CancellationToken::new();
         let (cached, id) = owned_cache(Finish::Return, &token).await?;
         let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
-        let read = cached.read_with_native_work(id, 5, &work, &token).await?;
+        let read = {
+            let __object_args = (id, 5, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = cached
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?;
         let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         assert!(held > NativeMaterializationWork::accounting_state_bytes() + 5);
         drop(read);
         assert_eq!(work.live_allocation_bytes(), held);
-        drop(cached.read_with_native_work(id, 5, &work, &token).await?);
+        drop({
+            let __object_args = (id, 5, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+            let __object_result = cached
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_result
+        }?);
         cached.clear()?;
         assert_eq!(work.live_allocation_bytes(), held);
         assert_eq!(alias.as_ref(), b"owned");
@@ -1063,7 +1674,16 @@ mod native_cache {
         let mut denied_budget = budget();
         denied_budget.backend_read_operations = 0;
         let denied = NativeMaterializationWork::new(denied_budget, &token).map_err(|(error, _)| error)?;
-        assert!(matches!(cached.read_with_native_work(id, 5, &denied, &token).await,
+        assert!(matches!(
+            {
+                let __object_args = (id, 5, &denied, &token);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                let __object_result = cached
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_result
+            },
             Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
                 crate::WorkError::BudgetExceeded { counter: "backend_read_operations", .. })))));
         assert_eq!(denied.receipt().backend_read_operations, 0);
@@ -1074,12 +1694,40 @@ mod native_cache {
             let (cached, id) = owned_cache(finish, &token).await?;
             let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
             match finish {
-                Finish::Error => assert!(matches!(cached.read_with_native_work(id, 5, &work, &token).await,
+                Finish::Error => assert!(matches!(
+                    {
+                        let __object_args = (id, 5, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = cached
+                            .read(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_result
+                    },
                     Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)))),
-                Finish::Panic => assert!(std::panic::AssertUnwindSafe(
-                    cached.read_with_native_work(id, 5, &work, &token)).catch_unwind().await.is_err()),
+                Finish::Panic => assert!(std::panic::AssertUnwindSafe(async {
+                        let __object_args = (id, 5, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = cached
+                            .read(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_result
+                    })
+                    .catch_unwind()
+                    .await
+                    .is_err()
+                ),
                 Finish::Pending => {
-                    let mut future = Box::pin(cached.read_with_native_work(id, 5, &work, &token));
+                    let mut future = Box::pin(async {
+                        let __object_args = (id, 5, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                        let __object_result = cached
+                            .read(__object_args.0, __object_args.1, &mut __object_work)
+                            .await;
+                        __object_result
+                    });
                     assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
                     assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
                     drop(future);
@@ -1099,7 +1747,15 @@ mod native_cache {
         let (cached, id) = owned_cache(Finish::Return, &token).await?;
         let requests = [ObjectReadRequest { object_id: id, maximum_bytes: 5 }; 2];
         let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
-        let batch = cached.read_many_with_native_work(&requests, &work, &token).await?;
+        let batch = {
+            let __object_args = (&requests, &work, &token);
+            let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+            let __object_result = cached
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, allocation)| (values, allocation.expect("native batch allocation")));
+            __object_result
+        }?;
         let alias = batch.0[0].bytes.clone();
         drop(batch);
         let held = work.live_allocation_bytes();
@@ -1113,12 +1769,49 @@ mod native_cache {
             let requests = [ObjectReadRequest { object_id: id, maximum_bytes: 5 }; 2];
             let work = NativeMaterializationWork::new(budget(), &token).map_err(|(error, _)| error)?;
             match finish {
-                Finish::Error => assert!(matches!(cached.read_many_with_native_work(&requests, &work, &token).await,
+                Finish::Error => assert!(matches!(
+                    {
+                        let __object_args = (&requests, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                        let __object_result = cached
+                            .read_many(__object_args.0, &mut __object_work)
+                            .await
+                            .map(|(values, allocation)| {
+                                (values, allocation.expect("native batch allocation"))
+                            });
+                        __object_result
+                    },
                     Err(ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout)))),
-                Finish::Panic => assert!(std::panic::AssertUnwindSafe(
-                    cached.read_many_with_native_work(&requests, &work, &token)).catch_unwind().await.is_err()),
+                Finish::Panic => assert!(std::panic::AssertUnwindSafe(async {
+                        let __object_args = (&requests, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                        let __object_result = cached
+                            .read_many(__object_args.0, &mut __object_work)
+                            .await
+                            .map(|(values, allocation)| {
+                                (values, allocation.expect("native batch allocation"))
+                            });
+                        __object_result
+                    })
+                    .catch_unwind()
+                    .await
+                    .is_err()
+                ),
                 Finish::Pending => {
-                    let mut future = Box::pin(cached.read_many_with_native_work(&requests, &work, &token));
+                    let mut future = Box::pin(async {
+                        let __object_args = (&requests, &work, &token);
+                        let mut __object_work =
+                            crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                        let __object_result = cached
+                            .read_many(__object_args.0, &mut __object_work)
+                            .await
+                            .map(|(values, allocation)| {
+                                (values, allocation.expect("native batch allocation"))
+                            });
+                        __object_result
+                    });
                     assert!(future.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
                     drop(future);
                 }
@@ -1131,9 +1824,21 @@ mod native_cache {
         let mut limit = budget();
         limit.allocation_operations = 1;
         let work = NativeMaterializationWork::new(limit, &token).map_err(|(error, _)| error)?;
-        assert!(matches!(cached.read_many_with_native_work(
+        assert!(matches!(
+            {
+                let __object_args = (
             &[ObjectReadRequest { object_id: id, maximum_bytes: 5 }], &work, &token,
-        ).await, Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
+        );
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = cached
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, allocation)| {
+                        (values, allocation.expect("native batch allocation"))
+                    });
+                __object_result
+            }, Err(ObjectStoreError::Native(NativeTreeMaterializationError::Work(
             crate::WorkError::BudgetExceeded { counter: "allocation_operations", .. })))));
         assert_eq!(work.receipt().backend_read_operations, 0);
         assert_eq!(work.receipt().bytes_copied, 0);

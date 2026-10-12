@@ -12,9 +12,8 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace
         .write_text("/source", "actual source bytes")
         .await?;

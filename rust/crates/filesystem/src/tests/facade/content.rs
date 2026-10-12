@@ -687,9 +687,8 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace
         .write_text("/source", "authenticated source bytes")
         .await?;

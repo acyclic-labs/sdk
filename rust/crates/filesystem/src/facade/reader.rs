@@ -102,9 +102,9 @@ impl<A, O> Checkout<A, O> {
         if !self
             .dependencies
             .data_custody
-            .is_native_original(work.native_read_meter())
+            .is_native_original(&work.state)
             || !work.owns_native_checkout_token(&self.dependencies.data_custody)
-            || !self.root.same_original_scope(work.native_read_meter())
+            || !self.root.same_original_scope(&work.state)
         {
             return Err(FsError::NativeKernel(
                 NativeTreeMaterializationError::InvalidLayout,
@@ -143,9 +143,9 @@ impl<A, O> Checkout<A, O> {
         if !self
             .dependencies
             .data_custody
-            .is_native_original(work.native_read_meter())
+            .is_native_original(&work.state)
             || !work.owns_native_checkout_token(&self.dependencies.data_custody)
-            || !self.root.same_original_scope(work.native_read_meter())
+            || !self.root.same_original_scope(&work.state)
         {
             return Err(FsError::NativeKernel(
                 NativeTreeMaterializationError::InvalidLayout,
@@ -193,9 +193,7 @@ impl<A, O> PinnedReader<A, O> {
                 NativeTreeMaterializationError::InvalidLayout,
             ));
         };
-        if !carrier.1.work().shares_ledger(work)
-            || !carrier.0.same_original_scope(work.native_read_meter())
-        {
+        if !carrier.1.work().shares_ledger(work) || !carrier.0.same_original_scope(&work.state) {
             return Err(FsError::NativeKernel(
                 NativeTreeMaterializationError::InvalidLayout,
             ));

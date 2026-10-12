@@ -79,15 +79,11 @@ pub(crate) fn with_wide_path<W: NativeHostWork, T>(
 }
 
 #[cfg(windows)]
-pub(super) fn windows_wide_name<W: NativeHostWork, T>(
+pub(super) fn windows_wide_name<W: NativeHostWork>(
     path: &[u16],
     work: &mut W,
     invalid_length: impl FnOnce() -> W::Error,
-    operation: impl FnOnce(
-        &mut windows::Win32::Foundation::UNICODE_STRING,
-        &mut W,
-    ) -> Result<T, W::Error>,
-) -> Result<Option<T>, W::Error> {
+) -> Result<Option<windows::Win32::Foundation::UNICODE_STRING>, W::Error> {
     work.check()?;
     if path.is_empty() {
         return Ok(None);
@@ -126,12 +122,11 @@ pub(super) fn windows_wide_name<W: NativeHostWork, T>(
             .ok_or(crate::WorkError::Overflow)?,
     )
     .map_err(|_| invalid_length())?;
-    let mut string = windows::Win32::Foundation::UNICODE_STRING {
+    Ok(Some(windows::Win32::Foundation::UNICODE_STRING {
         Length: length,
         MaximumLength: length,
         Buffer: windows::core::PWSTR(path.as_ptr().cast_mut()),
-    };
-    operation(&mut string, work).map(Some)
+    }))
 }
 
 #[cfg(windows)]
@@ -141,12 +136,10 @@ pub(super) fn stat_windows_wide_at<W: NativeHostWork>(
     volume: u32,
     work: &mut W,
 ) -> Result<Option<HostStat>, W::Error> {
-    Ok(
-        windows_wide_name(path, work, W::invalid_request, |name, work| {
-            stat_windows_name(directory, name, volume, work)
-        })?
-        .flatten(),
-    )
+    match windows_wide_name(path, work, W::invalid_request)? {
+        Some(name) => stat_windows_name(directory, &name, volume, work),
+        None => Ok(None),
+    }
 }
 
 #[cfg(windows)]
@@ -207,22 +200,22 @@ pub(super) fn open_windows_wide_at<W: NativeHostWork>(
 ) -> Result<Option<cap_std::fs::File>, W::Error> {
     use windows::Win32::Foundation::{NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE};
     const REPARSE: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
-    Ok(windows_wide_name(path, work, invalid_length, |name, work| {
-        native_read(work)?;
-        match open_windows_name(
-            directory,
-            name,
-            access,
-            windows::Wdk::Storage::FileSystem::FILE_OPEN,
-            options,
-            OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-        ) {
-            Ok(file) => Ok(Some(cap_std::fs::File::from_std(file))),
-            Err(REPARSE) => Ok(None),
-            Err(status) => Err(status_error(status).into()),
-        }
-    })?
-    .flatten())
+    let Some(name) = windows_wide_name(path, work, invalid_length)? else {
+        return Ok(None);
+    };
+    native_read(work)?;
+    match open_windows_name(
+        directory,
+        &name,
+        access,
+        windows::Wdk::Storage::FileSystem::FILE_OPEN,
+        options,
+        OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
+    ) {
+        Ok(file) => Ok(Some(cap_std::fs::File::from_std(file))),
+        Err(REPARSE) => Ok(None),
+        Err(status) => Err(status_error(status).into()),
+    }
 }
 
 #[cfg(windows)]

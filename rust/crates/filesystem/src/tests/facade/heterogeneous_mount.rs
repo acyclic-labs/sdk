@@ -26,14 +26,18 @@ macro_rules! delegate {
         };
 
         ($trait:ident, $field:ident, {$($extra:item)*},
-            $(fn $method:ident($($argument:ident: $type:ty),*) -> $result:ty;)*
+            $(fn $method:ident($context:ident: $context_type:ty $(, $argument:ident: $type:ty)*) -> $result:ty;)*
         ) => {
             impl $trait for Stores {
                 $($extra)*
-                $(async fn $method(&self, $($argument: $type),*) -> $result {
+                $(async fn $method(&self, $($argument: $type,)* $context: $context_type) -> $result {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if $context.original.is_some() {
+                        return Err(crate::ObjectStoreError::NativeUnavailable);
+                    }
                     match self {
-                        Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
-                        Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                        Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument,)* $context).await,
+                        Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument,)* $context).await,
                     }
                 })*
             }
@@ -214,37 +218,31 @@ delegate!(
         }
     },
     fn put(
+        context: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()>;,
+    ) -> Result<(), crate::ObjectStoreError>;,
     fn put_many(
+        context: &mut crate::AuthorityWork<'_>,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()>;,
+    ) -> Result<(), crate::ObjectStoreError>;,
     fn read(
+        context: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
         maximum: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead>;,
+    ) -> Result<ObjectRead, crate::ObjectStoreError>;,
     fn read_many(
+        context: &mut crate::AuthorityWork<'_>,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>>;,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>;,
     fn contains(
+        context: &mut crate::AuthorityWork<'_>,
         id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool>;,
+    ) -> Result<bool, crate::ObjectStoreError>;,
     fn flush_before_publish(
+        context: &mut crate::AuthorityWork<'_>,
         scope: crate::PublicationScope<'_>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<crate::PublicationHold>;
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
 );
 
 #[tokio::test]
@@ -266,14 +264,12 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
     );
     let root = memory
         .create_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let scratch = disk
         .create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     root.write_text("/file", "memory").await?;
     scratch.write_text("/file", "disk").await?;
     let root_head = root
@@ -343,9 +339,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                     }))
                 },
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
+            .await?
+            .value;
         fork.write_text("/file", "child only").await?;
         assert_eq!(
             workspace

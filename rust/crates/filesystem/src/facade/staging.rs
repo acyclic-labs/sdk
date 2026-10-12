@@ -39,28 +39,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::PublicationHold, FsError> {
         accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return self
-                .inner
-                .objects
-                .flush_before_publish_with_native_work(scope, original, cancellation)
-                .await
-                .map_err(Into::into);
-        }
+        let mut work = authority_work(accounting, cancellation)?;
         let result = self
             .inner
             .objects
-            .flush_before_publish(scope, accounting.remaining()?, cancellation)
+            .flush_before_publish(scope, &mut work)
             .await;
-        let work = match &result {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_creation_backend_work(accounting, work)?;
-        result
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error.into())
+        record_authority_work(accounting, &work)?;
+        result.map_err(FsError::from)
     }
     pub(crate) async fn make_records_durable<W: FsWork>(
         &self,
@@ -299,10 +285,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 cancellation,
             )?;
             let object = hashed.object_id();
-            self.inner
-                .objects
-                .put_hashed_with_native_work(hashed, original, cancellation)
-                .await?;
+            let mut work = authority_work(accounting, cancellation)?;
+            self.inner.objects.put_hashed(hashed, &mut work).await?;
             return Ok(object);
         }
         let capacity = encoded.0.capacity() as u64;
@@ -329,15 +313,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
         let object = hashed.object_id();
-        let receipt = self
+        let mut object_work = authority_work(accounting, cancellation)?;
+        let result = self
             .inner
             .objects
-            .put_hashed(hashed, accounting.remaining()?, cancellation)
+            .put_hashed(hashed, &mut object_work)
             .await;
-        let spent = match &receipt {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
+        let spent = object_work.spent();
         let (allocations, work, budget, _) = accounting
             .standalone_parts()
             .ok_or(FsError::HandleAllocationFailed)?;
@@ -346,7 +328,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .release(capacity)
             .map_err(|error| error.into_work_or(FsError::PendingMutationAllocationFailed))?;
         work.verify(budget)?;
-        receipt.map_err(|failure| FsError::from(failure.error))?;
+        result.map_err(FsError::from)?;
         Ok(object)
     }
     pub(super) async fn put_generation_root(

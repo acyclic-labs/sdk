@@ -110,9 +110,13 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
         crate::ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"body"),
     );
-    let result =
-        AsyncObjectStore::put_hashed_with_native_work(&store, object.clone(), &work, &cancellation)
-            .await;
+    let result = {
+        let __object_args = (object.clone(), &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&store, __object_args.0, &mut __object_work).await;
+        __object_result
+    };
     assert!(matches!(
         result,
         Err(ObjectStoreError::Native(
@@ -127,14 +131,17 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
     assert_eq!(work.receipt().bytes_hashed, 0);
     assert_eq!(work.receipt().object_bytes_written, 0);
     assert!(
-        !store
-            .contains(
+        !{
+            let __object_args = (
                 object.object_id(),
                 WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
     );
     assert!(
         store
@@ -178,7 +185,14 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     );
     let id = object.object_id();
     let store = Arc::new(MemoryObjectStore::default());
-    (AsyncObjectStore::put_hashed_with_native_work(&store, object, &work, &cancellation)).await?;
+    (async {
+        let __object_args = (object, &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&store, __object_args.0, &mut __object_work).await;
+        __object_result
+    })
+    .await?;
     assert_eq!(
         work.receipt().bytes_hashed,
         4 + OBJECT_DIGEST_ENVELOPE_BYTES
@@ -186,20 +200,39 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert_eq!(work.receipt().object_bytes_written, 4);
     let body_live = work.live_allocation_bytes();
-    let view = AsyncObjectStore::read(
-        &*store,
-        id,
-        4,
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
+    let view = {
+        let __object_args = (
+            id,
+            4,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(
+            &*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    }?
     .value;
     let reader = NativeMaterializationWork::new(native_object_budget(), &cancellation)
         .map_err(|(error, _)| error)?;
     let reader_before = reader.receipt();
-    let native_view =
-        AsyncObjectStore::read_with_native_work(&*store, id, 4, &reader, &cancellation).await?;
+    let native_view = {
+        let __object_args = (id, 4, &reader, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(
+            &*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_result
+    }?;
     assert_eq!(
         reader.receipt().allocation_operations,
         reader_before.allocation_operations
@@ -210,15 +243,18 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let alias = native_view.bytes.clone();
     assert_eq!(work.receipt(), alias_before);
     assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
-    // A duplicate ordinary input leaves the original resident carrier intact.
-    AsyncObjectStore::put(
-        &*store,
-        id,
-        OwnedBytes::from_static(b"body"),
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?;
+    {
+        let __object_args = (
+            id,
+            OwnedBytes::from_static(b"body"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = // A duplicate ordinary input leaves the original resident carrier intact.
+    AsyncObjectStore::put(&*store, __object_args.0, __object_args.1, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(work.live_allocation_bytes(), body_live);
     drop(native_view);
     // Table growth moves the carrier without replacing its payload controls.
@@ -226,15 +262,30 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
         crate::ObjectKind::BlobChunk,
         OwnedBytes::from_static(b"second"),
     );
-    AsyncObjectStore::put_hashed_with_native_work(&*store, second, &work, &cancellation).await?;
-    let resident = AsyncObjectStore::read(
-        &*store,
-        id,
-        4,
-        WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
+    {
+        let __object_args = (second, &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&*store, __object_args.0, &mut __object_work).await;
+        __object_result
+    }?;
+    let resident = {
+        let __object_args = (
+            id,
+            4,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(
+            &*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    }?
     .value;
     assert_eq!(resident.bytes.as_ptr(), alias.as_ptr());
     drop(resident);

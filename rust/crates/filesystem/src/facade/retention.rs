@@ -148,7 +148,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         publication: &VerifiedPublication<A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<bool, WorkspaceError> {
+    ) -> Result<bool, FsError> {
         let _hold = self
             .flush_publication(
                 crate::PublicationScope::Closure {
@@ -166,9 +166,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .create_first_record(authority_id, commit, &mut authority, None::<&mut ()>)
             .await;
         record_authority_work(accounting, &authority)?;
-        result.map_err(|error| {
-            WorkspaceError::from(FsError::from(error.into_error(std::convert::identity)))
-        })
+        result.map_err(|error| FsError::from(error.into_error(std::convert::identity)))
     }
 }
 

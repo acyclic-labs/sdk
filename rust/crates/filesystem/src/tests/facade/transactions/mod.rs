@@ -178,9 +178,8 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace
         .write_text("/source", "transaction source")
         .await?;
