@@ -7200,7 +7200,7 @@ mod tests {
 
         // The provider is already stopped, so no callback can authenticate or publish this write.
         assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7259,7 +7259,7 @@ mod tests {
             crate::kernel::MetadataField::Value(978_307_200_000_000_000),
             "the edit made after the boundary was lost"
         );
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7290,7 +7290,7 @@ mod tests {
         assert!(source.lookup(&seed)?.is_none());
         let moved = windows_path("moved.txt");
         assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7329,7 +7329,7 @@ mod tests {
         external("del linked.txt")?;
         session.flush_callbacks()?;
         assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7352,7 +7352,7 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
         assert!(source.lookup(&windows_path("b.txt"))?.is_none());
         assert!(source.lookup(&windows_path("c.txt"))?.is_some());
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7380,7 +7380,7 @@ mod tests {
         source.remove(&link, None)?;
         session.revalidate()?;
         assert!(sorted_names(&destination)?.is_empty());
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7465,7 +7465,7 @@ mod tests {
             }
         }
         assert!(lost.is_empty(), "times lost: {lost:?}");
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7487,7 +7487,7 @@ mod tests {
         source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
         session.revalidate()?;
         assert_eq!(std::fs::read(&projected)?, b"after!");
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7511,7 +7511,7 @@ mod tests {
             source.read_range(&kept, 0, 15)?.as_ref(),
             b"source and user"
         );
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7540,7 +7540,7 @@ mod tests {
                 .is_symlink_dir()
         );
         assert_eq!(std::fs::read(link.join("inner.txt"))?, b"inner");
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7584,7 +7584,7 @@ mod tests {
             } else {
                 assert!(sorted_names(&destination)?.is_empty());
             }
-            session.stop(&CancellationToken::new())?;
+            session.stop()?;
         }
         Ok(())
     }
@@ -7610,7 +7610,7 @@ mod tests {
         source.remove(&link, None)?;
         session.revalidate()?;
         assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 
@@ -7648,7 +7648,7 @@ mod tests {
             std::fs::metadata(destination.join("invalidated.txt"))?.len(),
             0
         );
-        session.stop(&CancellationToken::new())?;
+        session.stop()?;
         Ok(())
     }
 

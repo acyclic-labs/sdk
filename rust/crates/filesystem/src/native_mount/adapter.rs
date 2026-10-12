@@ -11447,7 +11447,7 @@ mod tests {
     fn a_grouped_failure_reuses_its_original_admission_without_a_cycle() {
         let cancellation = CancellationToken::new();
         let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let admission = GroupedAdmission::new_measured(&mut work).expect("unbounded admission");
+        let admission = GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work)).expect("unbounded admission");
         let original = admission.retain_failure(MountSourceError::Filesystem(FsError::NotFound));
         let retained = admission.retain_failure(MountSourceError::Retained(Arc::clone(&original)));
         assert!(Arc::ptr_eq(&original, &retained));
@@ -11475,7 +11475,7 @@ mod tests {
             }
             requests.push(GroupedRequest {
                 change: pending.begin_applying_measured(source.limits, &mut work, &mut claimed)?.ok_or("creation did not prepare")?,
-                admission: GroupedAdmission::new_measured(&mut work)?, reply: Arc::clone(pending),
+                admission: GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work))?, reply: Arc::clone(pending),
             });
         }
         let batch = source.runtime.block_on(|| async {
@@ -11529,7 +11529,7 @@ mod tests {
         for target in [&first_target, &second_target] {
             let path = source.namespace_path(target, &mut NativeDemandCarrier::Borrowed(&mut setup))?.0;
             let pending = source.new_pending_with_carrier(&path, FileId::new(), metadata(), &mut NativeDemandCarrier::Borrowed(&mut setup))?;
-            let admission = GroupedAdmission::new_measured(&mut setup)?;
+            let admission = GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut setup))?;
             requests.push(GroupedRequest {
                 change: pending.begin_applying_measured(source.limits, &mut setup, &mut claimed)?.ok_or("creation did not prepare")?,
                 admission: Arc::clone(&admission), reply: Arc::clone(&pending),
@@ -11628,7 +11628,7 @@ mod tests {
             let pending = source.new_pending_with_carrier(&path, FileId::new(), metadata(), &mut NativeDemandCarrier::Borrowed(&mut work))?;
             requests.push(GroupedRequest {
                 change: pending.begin_applying_measured(source.limits, &mut work, &mut claimed)?.ok_or("creation did not prepare")?,
-                admission: GroupedAdmission::new_measured(&mut work)?, reply: pending,
+                admission: GroupedAdmission::new(&mut NativeDemandCarrier::Borrowed(&mut work))?, reply: pending,
             });
         }
         let kept_request = requests.pop().ok_or("missing kept request")?;
