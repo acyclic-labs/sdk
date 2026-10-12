@@ -10,7 +10,7 @@ import { type ProjectWorkspaceProvider } from "./project.js";
 import { type InteractionId, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { pinForkParentSnapshot } from "./content.js";
 import { type ForkParentSnapshot, type ForkReport, type ForkPublisher, type ForkSeed } from "./fork.js";
-import { TaskContext, ToolContext } from "./task-context.js";
+import { TaskContext } from "./task-context.js";
 import { type GroupPolicy } from "./enums.js";
 import { TaskGroup } from "./task-group.js";
 import { validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm, validateModelContent, prepareModelRequest as prepareModelRequestWasm, type ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -496,8 +496,10 @@ export class AgentHarness {
     const registered = (erased as unknown as RegisteredTool<Input, Output>);
     if (registered.handle !== tool) throw new Error("tool definition is not registered or no longer active");
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
-    if (registered.definition.handler) return { invocation,
-      value: publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput)) };
+    if (registered.definition.handler) {
+      const context = Object.assign(new TaskContext(this, signal, taskId, false), { callId, operationId: invocation.operationId });
+      return { invocation, value: publishOutput(await registered.definition.handler(context, parsedInput)) };
+    }
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
     return { invocation, value: publishOutput((await registered.executor.execute(invocation)).value) };
   }

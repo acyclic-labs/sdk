@@ -35,9 +35,7 @@ export class TaskContext {
   task<Input, Output>(definition: TaskDefinition<Input, Output>): TaskRef<Input, Output>;
   task(name: string): TaskRef<unknown, unknown>;
   task<Input, Output>(value: string | TaskDefinition<Input, Output>): TaskRef<Input, Output> {
-    const definition = this.#harness.task(value as TaskDefinition<Input, Output>) as unknown as TaskDefinition<never, unknown>;
-    this.#assertTask(definition);
-    return publicTaskHandle(definition) as unknown as TaskRef<Input, Output>;
+    return publicTaskHandle(this.#assertTask(value));
   }
   tool<Input, Output>(definition: ToolDefinition<Input, Output>): ToolRef<Input, Output>;
   tool(name: string): ToolRef<unknown, unknown>;
@@ -45,12 +43,13 @@ export class TaskContext {
     const tool = this.#harness.tool(value as ToolDefinition<Input, Output>);
     const capability = `tool:call:${tool.definition.name}`;
     if (!this.#harness.scope.grants.includes(capability)) throw new Error(`task scope lacks ${capability}`);
-    return (tool as unknown as ToolRef<Input, Output>);
+    return tool;
   }
-  #assertTask(definition: TaskDefinition<never, unknown>): void {
-    this.#harness.task(definition);
+  #assertTask<Input, Output>(value: string | TaskDefinition<Input, Output>): TaskDefinition<Input, Output> {
+    const definition = this.#harness.task(value as TaskDefinition<Input, Output>);
     const capability = `task:spawn:${componentKey(definition.name, definition.revision)}`;
     if (!this.#harness.scope.grants.includes(capability)) throw new Error(`task scope lacks ${capability}`);
+    return definition;
   }
   /** Resolve exact bytes through the owner's authenticated provider. A ref is not a grant. */
   async readFile(reference: FileRef): Promise<Uint8Array> {
@@ -194,20 +193,18 @@ export class TaskContext {
   }
   spawn<Input, Output>(task: TaskRef<Input, Output>, input: Input): Task<Output> {
     if (this.durable) throw new Error("durable descendants require admitted tasks and stable operation IDs");
-    const definition = registeredTaskDefinition(task);
-    this.#assertTask((definition as unknown as TaskDefinition<never, unknown>));
+    const definition = this.#assertTask(registeredTaskDefinition(task));
     return this.#harness.spawn(definition, input);
   }
   admit<Input, Output>(task: TaskRef<Input, Output>, input: Input, operationId: string): Promise<Admission<Output>> {
     if (!this.durable || !this.taskId) throw new Error("a live task cannot claim durable descendant ownership");
-    const definition = registeredTaskDefinition(task);
-    this.#assertTask((definition as unknown as TaskDefinition<never, unknown>));
+    const definition = this.#assertTask(registeredTaskDefinition(task));
     return this.#harness.admit(definition, input, operationId, this.taskId);
   }
   group<Output>(policy: GroupPolicy, id?: GroupId): TaskGroup<Output, "scoped"> {
     if (this.durable && (!this.taskId || !id)) throw new Error("durable task groups require stable group and parent identities");
     return new TaskGroup<Output, "scoped">(this.#harness, policy, id, this.durable ? this.taskId : undefined,
-      definition => this.#assertTask((definition as unknown as TaskDefinition<never, unknown>)));
+      definition => this.#assertTask(definition));
   }
   async interact(interaction: Interaction): Promise<Answer> {
     if (this.durable) {
@@ -283,4 +280,7 @@ export class TaskContext {
   }
 }
 
-export class ToolContext extends TaskContext { constructor(harness: AgentHarness, signal: AbortSignal, readonly callId: string, taskId?: TaskId, durable = harness.components.state !== undefined, readonly operationId?: string) { super(harness, signal, taskId, durable); } }
+export interface ToolContext extends TaskContext {
+  readonly callId: string;
+  readonly operationId: string;
+}

@@ -2,7 +2,7 @@ import { fromBinary } from "@bufbuild/protobuf";
 import { is_stream_error_code, projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
+  ReadResponseSchema, TailResponseSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { ensureStreamWasm, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
@@ -107,18 +107,6 @@ class RustStreamProvider implements StreamProvider {
     }
   }
 
-  async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> {
-    await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    const request = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) });
-    let values: Uint8Array[];
-    try { values = await (await this.#inner).children(request); }
-    catch (error) { throw streamError(error, "children"); }
-    for (const value of values) {
-      const response = fromBinary(ChildrenResponseSchema, value);
-      if (response.child === undefined) throw new StreamError("invalid_response", "Rust children response omitted its child");
-      yield { path: response.child.path };
-    }
-  }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") {
       throw new StreamError("invalid_argument", "children page request must be an object");
