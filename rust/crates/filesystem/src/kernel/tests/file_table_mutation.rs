@@ -93,8 +93,8 @@ fn three_leaf_table(
     Ok((root, leaves))
 }
 
-#[test]
-fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
+#[tokio::test]
+async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_table(&store)?;
@@ -114,7 +114,8 @@ fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &crate::CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
@@ -131,8 +132,8 @@ fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
     Ok(())
 }
 
-#[test]
-fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
+#[tokio::test]
+async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8)?;
@@ -148,7 +149,8 @@ fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &crate::CancellationToken::new(),
+    ).await?;
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
@@ -166,8 +168,8 @@ fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically()
     Ok(())
 }
 
-#[test]
-fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_table(&store)?;
     let receipt = apply_file_table_mutations(
@@ -180,7 +182,8 @@ fn record_noop_preserves_root_with_zero_writes() -> Result<(), Box<dyn std::erro
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &crate::CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.root, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -209,8 +212,8 @@ fn remove_validation_requires_the_exact_file_identity() {
     );
 }
 
-#[test]
-fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_table(&store)?;
     let failure = apply_file_table_mutations(
@@ -223,7 +226,9 @@ fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("stale record unexpectedly replaced")?;
     assert!(matches!(
@@ -235,8 +240,8 @@ fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[test]
-fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8)?;
     let limits = DecodeLimits {
@@ -251,7 +256,8 @@ fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::
         1,
         limits,
         WorkBudget::UNBOUNDED,
-    )?;
+        &crate::CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
@@ -274,8 +280,8 @@ fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[test]
-fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8)?;
     let failure = apply_file_table_mutations(
@@ -288,7 +294,9 @@ fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<dyn std
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("oversized file-table item unexpectedly succeeded")?;
     assert!(matches!(
