@@ -426,7 +426,7 @@ impl ResumableMachine for RecursiveToolMachine {
         -> Result<(Value, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
-        let custody = io.take_native_custody(recursive_value_owned_bytes(&state, Some(&io))?)?;
+        let custody = io.take_native_custody(recursive_value_owned_bytes(&state)?)?;
         Ok((state, custody))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -921,34 +921,34 @@ impl Serialize for RecursiveConflictKeys<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn recursive_owned_add(left: u64, right: u64, io: Option<&super::PreparationIo>) -> Result<u64> {
-    left.checked_add(right).ok_or_else(|| recursive_reject(
-        io, crate::wire::ErrorCode::Invalid, "recursive payload ownership overflow"))
+fn recursive_owned_add(left: u64, right: u64) -> Result<u64> {
+    left.checked_add(right).ok_or(Error::NativeBoundary {
+        code: crate::wire::ErrorCode::Invalid, reason: "recursive payload ownership overflow" })
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn recursive_value_owned_bytes(value: &Value, io: Option<&super::PreparationIo>) -> Result<u64> {
+pub(super) fn recursive_value_owned_bytes(value: &Value) -> Result<u64> {
     recursive_owned_add(std::mem::size_of::<Value>() as u64,
-        crate::contract::json_value_logical_owned_bytes(value)?, io)
+        crate::contract::json_value_logical_owned_bytes(value)?)
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn recursive_transition_owned_bytes(transition: &MachineTransition, io: &super::PreparationIo) -> Result<u64> {
     let mut bytes = recursive_owned_add(std::mem::size_of::<MachineTransition>() as u64,
-        crate::contract::json_value_logical_owned_bytes(&transition.state)?, Some(io))?;
+        crate::contract::json_value_logical_owned_bytes(&transition.state)?)?;
     let slots = (transition.commands.capacity() as u64)
         .checked_mul(std::mem::size_of::<WorkflowCommand>() as u64)
         .ok_or_else(|| recursive_reject(Some(io), crate::wire::ErrorCode::Invalid, "recursive outbox ownership overflow"))?;
-    bytes = recursive_owned_add(bytes, slots, Some(io))?;
+    bytes = recursive_owned_add(bytes, slots)?;
     for command in &transition.commands {
         recursive_inspect(Some(io), 1)?;
-        bytes = recursive_owned_add(bytes, command.kind.capacity() as u64, Some(io))?;
-        bytes = recursive_owned_add(bytes, command.payload.logical_owned_bytes()?, Some(io))?;
+        bytes = recursive_owned_add(bytes, command.kind.capacity() as u64)?;
+        bytes = recursive_owned_add(bytes, command.payload.logical_owned_bytes()?)?;
     }
     let status = match &transition.status {
         MachineStatus::Suspended => 0,
         MachineStatus::Completed { value } => crate::contract::json_value_logical_owned_bytes(value)?,
         MachineStatus::Failed { message } => message.capacity() as u64,
     };
-    recursive_owned_add(bytes, status, Some(io))
+    recursive_owned_add(bytes, status)
 }
 
 struct RecursiveExecutor<P, A, O> {
@@ -1945,7 +1945,8 @@ async fn retained_payload(
         return Ok(io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained());
     }
     let _ = io;
-    let bytes = read(context.task(), file, maximum, cancellation).await?;
+    let bytes = context.task().read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
+        .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
@@ -1972,10 +1973,6 @@ async fn stage(context: &ToolContext, operation: OperationId, label: &str, value
     io.receive_content(context.stage_file_once_measured(operation,
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)
-}
-async fn read(context: &TaskContext, file: &FileRef, maximum: u64, cancellation: &CancellationToken) -> Result<acyclic_stream::OwnedBytes> {
-    context.read_file_measured(file, finite_budget(maximum, maximum), cancellation).await
-        .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 pub(crate) fn finite_budget(work: u64, bytes: u64) -> WorkBudget {
     WorkBudget {
@@ -2204,12 +2201,9 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
 fn recursive_effective_scope<'a>(
     context: &'a ToolContext, io: Option<&super::PreparationIo>,
 ) -> &'a RuntimeScope {
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.is_some_and(|io| io.original_native_work().is_some()) {
-        return context.effective_scope();
-    }
-    let _ = io;
-    context.scope()
+    if io.is_some_and(super::PreparationIo::uses_native_work) {
+        context.effective_scope()
+    } else { context.scope() }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {

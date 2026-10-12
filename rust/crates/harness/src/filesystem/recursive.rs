@@ -768,7 +768,7 @@ impl ResumableMachine for ForkPreparationMachine {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
         let custody = io.take_native_custody(
-            super::default_tools::recursive_value_owned_bytes(&state, Some(&io))?,
+            super::default_tools::recursive_value_owned_bytes(&state)?,
         )?;
         Ok((state, custody))
     }
