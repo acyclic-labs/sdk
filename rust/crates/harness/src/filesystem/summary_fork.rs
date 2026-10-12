@@ -29,7 +29,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
         .chain(prepared.context().metadata.values()) {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let key = super::task_runtime::observed::digest(file, io, u64::MAX)?;
-        let file = fork_preparer_io::clone_file(file, io)?;
+        let file = crate::executor::with_history_io(io, |work| file.copy(work))?;
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
             if !file.path().starts_with(".system/execution/") {
@@ -44,7 +44,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
     fn replace(file: &mut FileRef, replacements: &References, io: Option<&PreparationIo>) -> Result<()> {
         if let Some(copy) = replacements.get(&super::task_runtime::observed::digest(file, io, u64::MAX)?) {
-            *file = fork_preparer_io::clone_file(copy, io)?;
+            *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
         Ok(())
     }
@@ -98,7 +98,7 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
 
 pub(super) fn clone_selection(selection: &crate::fork::SummaryForkSelection, io: Option<&PreparationIo>) -> Result<crate::fork::SummaryForkSelection> {
     Ok(crate::fork::SummaryForkSelection {
-        checkpoint: fork_preparer_io::clone_file(&selection.checkpoint, io)?,
+        checkpoint: crate::executor::with_history_io(io, |work| selection.checkpoint.copy(work))?,
         limits: selection.limits,
         history_limits: selection.history_limits,
     })
@@ -112,7 +112,7 @@ fn into_files(references: References, io: Option<&PreparationIo>) -> Result<Vec<
 
 fn cloned_files(references: &References, io: Option<&PreparationIo>) -> Result<Vec<FileRef>> {
     let mut files = fork_preparer_io::vector(references.len(), io)?;
-    for file in references.values() { files.push(fork_preparer_io::clone_file(file, io)?); }
+    for file in references.values() { files.push(crate::executor::with_history_io(io, |work| file.copy(work))?); }
     Ok(files)
 }
 
@@ -187,8 +187,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 return Err(fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "summary fork scope lacks original publication authority"));
             }
         } else { self.require("fork:publish", VolumeOperation::Read)?; }
-        if parent.authority() != &self.parent
-            || prepared.parent() != &self.parent
+        if parent.authority() != self.verifier.audience()
+            || prepared.parent() != self.verifier.audience()
             || prepared.parent_revision() != parent.revision()
             || parent.conversation().and_then(|state| state.agent) != self.scope.agent()
             || prepared.through_sequence()
@@ -196,7 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     .conversation()
                     .and_then(|state| state.messages().last())
                     .map_or(0, |message| message.sequence)
-            || journal.canonical_authority() != Some(&self.parent)
+            || journal.canonical_authority() != Some(self.verifier.audience())
             || child_private.provider() != &self.host.provider
             || child_private.class() != VolumeClass::AgentPrivate
             || !matches!(child_private.owner(), VolumeOwner::Agent(_))

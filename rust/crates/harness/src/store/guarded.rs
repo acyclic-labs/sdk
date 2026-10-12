@@ -92,7 +92,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
-        owner.retain_root_binding(proof)?;
+        owner.retain_root_binding(proof, None)?;
         drop(gate);
         Ok(result)
     }
@@ -173,8 +173,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let request = publication.request(
                 &self.client, key.take().expect("publication key"), transient.work()).await?;
             let (outcome, retained) = crate::distributed::commit(
-                request, &self.client, Some(command.operation_id), Some(&mut append_phase), None, None,
-            ).await?;
+                request, &self.client, Some(command.operation_id), Some(&mut append_phase)).await?;
             let mut acknowledged = crate::wire_codec::CodecQuota::from_retained(transient.work(), retained);
             match outcome {
                 CommitOutcome::Committed(envelope) => {

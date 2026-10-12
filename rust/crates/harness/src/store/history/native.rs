@@ -1,6 +1,7 @@
 //! SDK boundaries on the original native ledger, without another budget/meter.
 
-use super::HistoryIo;
+use super::{HistoryCursor, HistoryIo, HistoryPage, HistoryReadLimits, HistoryReader};
+use acyclic_stream::StreamProvider;
 use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, NativeWorkReservation, WorkCounters};
 use std::mem::size_of;
@@ -25,7 +26,7 @@ pub fn native_work_io(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<NativeHistoryIo<'_>, NativeTreeMaterializationError> {
     Ok(NativeHistoryIo {
-        work, custody: work.retain_owned(0)?, staged_bytes: 0, staged_items: 0,
+        work, custody: work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?, staged_bytes: 0, staged_items: 0,
     })
 }
 
@@ -643,7 +644,7 @@ mod tests {
             .expect("distinct original ledger");
         let mut io = native_work_io(&work).expect("original observer");
         assert!(std::ptr::eq(io.original_native_work().expect("native ledger borrow"), &work));
-        let incoming = foreign.retain_owned(16).expect("foreign held allowance");
+        let incoming = foreign.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("foreign held allowance");
         let prefix = work.receipt();
         let rejection = io.absorb_native_custody(incoming).expect_err("distinct ledger rejects");
         let Error::NativeWork {
@@ -654,7 +655,7 @@ mod tests {
         assert_eq!(io.custody.bytes(), 0);
         assert_eq!(work.receipt(), prefix);
         drop(guard);
-        let incoming = work.retain_owned(16).expect("same-ledger held allowance");
+        let incoming = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("same-ledger held allowance");
         let prefix = work.receipt();
         io.absorb_native_custody(incoming).expect("same-ledger transfer");
         assert_eq!(io.custody.bytes(), 16);
@@ -684,7 +685,7 @@ mod tests {
         original: &NativeMaterializationWork,
         dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> acyclic_stream::NativeStreamOutput<RuntimeOutputDropWitness> {
-        let meter = original.runtime_meter_owner();
+        let meter = original.runtime_meter();
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter, 8)
             .expect("pre-admitted concrete byte allocation");
         let mut bytes = Vec::new();
@@ -919,7 +920,7 @@ mod tests {
             .expect("original ledger");
         let mut ordinary = native_work_io(&work).expect("ordinary observer before acceptance");
         let reservation = work.reserve_work(maximum).expect("pre-action additive credit");
-        let pool = work.retain_owned(16).expect("pre-action allocation pool");
+        let pool = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("pre-action allocation pool");
         let durable = WorkCounters { materializations: 4, ..WorkCounters::default() };
         work.set_original_work(durable);
         let prefix = work.receipt();
@@ -968,7 +969,7 @@ mod tests {
         let work = NativeMaterializationWork::new(completion_budget(maximum, 16), &cancellation)
             .expect("original ledger");
         let reservation = work.reserve_work(maximum).expect("owned copy credit");
-        let pool = work.retain_owned(16).expect("preheld pool");
+        let pool = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("preheld pool");
         assert!(matches!(work.charge(WorkCounters {
             bytes_copied: 1, ..WorkCounters::default()
         }), Err(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
@@ -1003,7 +1004,7 @@ mod tests {
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
         let foreign = NativeMaterializationWork::new(budget, &cancellation).expect("foreign ledger");
         let foreign_token = foreign.reserve_work(maximum).expect("foreign owned credit");
-        let pool = work.retain_owned(16).expect("original guard");
+        let pool = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("original guard");
         let prefix = work.receipt();
         let rejection = AcceptedCompletionIo::new(&work, foreign_token, pool)
             .err().expect("foreign token denied");
@@ -1016,7 +1017,7 @@ mod tests {
         drop(pool);
 
         let token = work.reserve_work(maximum).expect("original token");
-        let foreign_pool = foreign.retain_owned(16).expect("foreign guard");
+        let foreign_pool = foreign.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("foreign guard");
         let rejection = AcceptedCompletionIo::new(&work, token, foreign_pool)
             .err().expect("foreign guard denied");
         let Error::NativeWork {
@@ -1027,9 +1028,9 @@ mod tests {
         drop(pool);
 
         let token = work.reserve_work(maximum).expect("refunded original token");
-        let pool = work.retain_owned(16).expect("original pool");
+        let pool = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("original pool");
         let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
-        let foreign_guard = foreign.retain_owned(16).expect("foreign buffer guard");
+        let foreign_guard = foreign.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("foreign buffer guard");
         let rejection = io.absorb_native_custody(foreign_guard).expect_err("closed pool denies adoption");
         let Error::NativeWork {
             cause: NativeTreeMaterializationError::InvalidLayout, custody: Some(guard),
@@ -1049,7 +1050,7 @@ mod tests {
         budget.allocation_operations += 1;
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
         let token = work.reserve_work(maximum).expect("pre-action authority receive credit");
-        let pool = work.retain_owned(32).expect("closed completion prefix pool");
+        let pool = work.claim(32, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("closed completion prefix pool");
         let mut preparation = native_work_io(&work).expect("pre-action original SDK buffer allocator");
         assert!(!preparation.requires_prepared_native_dispatch(), "ordinary dispatch is unchanged");
         let mut sdk_bytes = Vec::new();
@@ -1092,7 +1093,7 @@ mod tests {
         budget.allocation_operations += 2;
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
         let token = work.reserve_work(WorkCounters::default()).expect("pre-action zero token");
-        let pool = work.retain_owned(8).expect("closed eight-byte completion pool");
+        let pool = work.claim(8, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("closed eight-byte completion pool");
         let mut oversized_preparation = native_work_io(&work).expect("first original SDK allocator");
         let mut oversized = Vec::new();
         oversized_preparation.reserve_bytes(&mut oversized, 16).expect("real oversized SDK backing");
@@ -1139,7 +1140,7 @@ mod tests {
         let work = NativeMaterializationWork::new(completion_budget(maximum, 8), &cancellation)
             .expect("original ledger");
         let token = work.reserve_work(maximum).expect("pre-action receiver credit");
-        let pool = work.retain_owned(8).expect("pool can cover the actual raw record");
+        let pool = work.claim(8, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("pool can cover the actual raw record");
         let prefix = work.receipt();
         let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
         cancellation.cancel();
@@ -1167,7 +1168,7 @@ mod tests {
         let work = NativeMaterializationWork::new(completion_budget(maximum, 4), &cancellation)
             .expect("original ledger");
         let token = work.reserve_work(maximum).expect("owned raw receiver credit");
-        let pool = work.retain_owned(4).expect("closed four-byte pool");
+        let pool = work.claim(4, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("closed four-byte pool");
         let prefix = work.receipt();
         let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
         assert!(matches!(io.receive_record(5), Err(Error::NativeBoundary {
@@ -1201,7 +1202,7 @@ mod tests {
         io.adopt_preheld(16).expect("already-paid request ownership");
         io.release_owned(16).expect("virtual SDK request retirement");
         assert_eq!(io.custody.bytes(), 16);
-        assert!(matches!(work.retain_owned(1), Err(NativeTreeMaterializationError::Work(
+        assert!(matches!(work.claim(1, 0, acyclic_fs::WorkCounters::UNCHARGED), Err(NativeTreeMaterializationError::Work(
             WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
         ))), "virtual release cannot fund another live allocation");
         io.retain_owned(16).expect("returned DTO draws the same pool");
@@ -1212,10 +1213,10 @@ mod tests {
         assert_eq!(dto_guard.bytes(), 16);
         assert_eq!(work.receipt(), prefix, "transfer is not a new allocation or work event");
         drop(io);
-        assert!(work.retain_owned(1).is_err(), "DTO's genuine claim survives observer drop");
+        assert!(work.claim(1, 0, acyclic_fs::WorkCounters::UNCHARGED).is_err(), "DTO's genuine claim survives observer drop");
         drop(dto);
         drop(dto_guard);
-        work.retain_owned(16).expect("only real guard retirement frees the original allowance");
+        work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("only real guard retirement frees the original allowance");
     }
 
     #[test]
@@ -1224,7 +1225,7 @@ mod tests {
         let work = NativeMaterializationWork::new(completion_budget(WorkCounters::default(), 16), &cancellation)
             .expect("original ledger");
         let token = work.reserve_work(WorkCounters::default()).expect("zero additive token");
-        let pool = work.retain_owned(16).expect("preheld pool");
+        let pool = work.claim(16, 0, acyclic_fs::WorkCounters::UNCHARGED).expect("preheld pool");
         let mut io = AcceptedCompletionIo::new(&work, token, pool).expect("accepted observer");
         let prefix = work.receipt();
         let mut bytes = Vec::new();
@@ -1257,4 +1258,64 @@ mod tests {
         assert_eq!(io.custody.bytes(), 16);
         assert_eq!(work.receipt(), prefix);
     }
+}
+
+impl<P: StreamProvider> HistoryReader<P> {
+    /// Pins the original committed cut using the caller's native ledger.
+    pub async fn pin_with_native_work(
+        &self,
+        after_revision: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
+        Ok((cursor, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated bounded page on the same native ledger.
+    pub async fn read_page_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let page = self.read_page(cursor, limits, Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((page, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated immutable operation locator and event.
+    pub async fn operation_event_bounded_with_native_work(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<Event>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (event, _) = self.operation_event(operation, maximum_bytes, &mut Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((event, native_io.into_custody()))
+    }
+
+    /// Projects the archived effect through the original bounded state engine.
+    pub async fn effect_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let state = self.effect(
+            cursor, effect, limits, Some(&mut native_io),
+        ).await?.map(|(state, _)| state);
+        native_io.return_staged_output()?;
+        Ok((state, native_io.into_custody()))
+    }
+
 }

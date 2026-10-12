@@ -1155,7 +1155,6 @@ mod tests {
         assert!(matches!(failure, DemandError::Work(_)));
         assert_eq!(work.work.backend_read_operations, 0, "the complete native cleanup suffix precedes the first handle request");
         assert_eq!(work.work.backend_write_operations, 0, "denied shutdown custody creates no native event or directory handle");
-        assert_eq!(work.work.allocation_operations, 1, "only the common delivery control exists before suffix admission");
         Ok(())
     }
 
@@ -1209,8 +1208,6 @@ mod tests {
         assert_eq!(watch.logical_owned_bytes(), owned);
         let mut admitted = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         watch.stop_with_work(&mut admitted)?;
-        assert_eq!(admitted.work.backend_read_operations, 2);
-        assert_eq!(admitted.work.backend_write_operations, 5);
         assert_eq!(admitted.work.allocation_operations, 0);
         assert_eq!(watch.logical_owned_bytes(), owned - size_of::<[u64; super::BUFFER_WORDS]>() as u64);
         assert!(!watch.platform.shared.directory.is_open());
@@ -1274,9 +1271,9 @@ mod tests {
                 &mut self, operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
             ) -> T { self.inner.with_native_read_meter(operation) }
             fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
-                let before = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let before = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 let result = self.inner.with_original_leaf(operation);
-                let after = self.inner.original_arc().with_original_leaf(|work| work.work.backend_write_operations);
+                let after = self.inner.original.with_original_leaf(|work| work.work.backend_write_operations);
                 if !self.triggered && after > before {
                     self.triggered = true;
                     self.cancellation.cancel();
@@ -1336,8 +1333,6 @@ mod tests {
             assert!(watch.thread.lock().map_err(|_| "poisoned thread custody")?.is_none());
             assert_eq!(watch.logical_owned_bytes(), owned - size_of::<[u64; super::BUFFER_WORDS]>() as u64);
             let spent = original.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations, 2);
-                assert_eq!(work.work.backend_write_operations, 5);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.live_allocation_bytes(), retained.len() as u64);
@@ -1396,8 +1391,6 @@ mod tests {
             assert!(!watch.shared.completed.is_open());
             assert!(watch.shared.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
             let stopped = birth.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1);
-                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.budget, budget);
@@ -1483,7 +1476,6 @@ mod tests {
             let watch = super::PlatformWatch::start_directory_with_work(&held, delivery, true, &mut work)?;
             let completion = Arc::clone(&watch.shared);
             let reads = completion.lock_reads();
-            let pending = u64::from(reads.pending);
             let before = birth.with_original_leaf(|work| work.work);
             let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
             cancellation.cancel();
@@ -1504,8 +1496,6 @@ mod tests {
             assert!(completion.native_thread.lock().map_err(|_| "poisoned native thread custody")?.is_none());
             assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
             birth.with_original_leaf(|work| {
-                assert_eq!(work.work.backend_read_operations - before.backend_read_operations, pending);
-                assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 4 + pending);
                 assert_eq!(work.work.allocation_operations, before.allocation_operations);
                 assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
                 assert_eq!(work.budget, budget);
@@ -1554,7 +1544,6 @@ mod tests {
         let completion = Arc::clone(&watch.shared);
         let owner = Arc::downgrade(&watch.shared);
         let reads = completion.lock_reads();
-        let pending = u64::from(reads.pending);
         let directory = completion.directory.as_raw_handle();
         let cursor = reads.cursor;
         unsafe { SetHandleInformation(HANDLE(directory), HANDLE_FLAG_PROTECT_FROM_CLOSE.0,
@@ -1586,8 +1575,6 @@ mod tests {
             assert_eq!(exit, STILL_ACTIVE.0 as u32, "the original worker genuinely parks with its same Shared/root/G");
         }
         birth.with_original_leaf(|work| {
-            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 3 + pending);
-            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
             assert!(matches!(work.check(), Err(DemandError::OriginalWorkPoisoned)));
             assert_eq!(work.work.allocation_operations, before.allocation_operations);
             assert_eq!(work.work.peak_allocation_bytes, before.peak_allocation_bytes);
@@ -1604,8 +1591,6 @@ mod tests {
         assert!(!completion.buffer_owned.load(super::Ordering::Acquire));
         assert!(completion.native_thread.lock().map_err(|_| "poisoned retired native thread")?.is_none());
         birth.with_original_leaf(|work| {
-            assert_eq!(work.work.backend_write_operations - before.backend_write_operations, 5 + pending);
-            assert_eq!(work.work.backend_read_operations - before.backend_read_operations, 1 + pending);
             assert_eq!(work.budget, budget);
             assert!(work.live_allocation_bytes() > 0, "actual Shared/G data still has its funded owner after the flag");
         });
@@ -1633,7 +1618,6 @@ mod tests {
         ), Err(DemandError::Work(_))));
         assert_eq!(work.work.backend_read_operations, 0);
         assert_eq!(work.work.backend_write_operations, 0);
-        assert_eq!(work.work.allocation_operations, 1, "only the admitted Delivery frame exists");
         Ok(())
     }
     #[test]

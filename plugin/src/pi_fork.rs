@@ -146,10 +146,8 @@ pub(crate) struct PreparedPiFork {
 }
 
 impl PreparedPiFork {
-    pub(crate) fn original_work(&self) -> &NativeMaterializationWork { self._metadata_custody.work() }
-
     pub(crate) fn into_native_shared(mut self) -> Result<Arc<Self>> {
-        let mut slot = self.original_work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = { let claim_bytes = (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64; self._metadata_custody.work().claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self._metadata_custody.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(self))
@@ -485,8 +483,8 @@ impl PiForkCoordinator {
         let preparation = prepared_admission.0;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-            + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let container = { let claim_bytes = (std::mem::size_of::<acyclic_fs::NativeAllocation>()
+            + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }.map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan { original, commit, preparation, request,
             source: snapshot, frozen, history_limits, project_creation,
@@ -522,8 +520,8 @@ impl PiForkCoordinator {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi original plan locator changed" }); }
         { let work = &self.work;
-            let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-                + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let container = { let claim_bytes = (std::mem::size_of::<acyclic_fs::NativeAllocation>()
+                + 2 * std::mem::size_of::<usize>()) as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED) }.map_err(|cause| Error::NativeWork { cause, custody: None })?;
             drop(reference.0);
             decoded.0._input_allocations = Some(Arc::new(container));
             let allocations = Arc::get_mut(decoded.0._input_allocations.as_mut().expect("loaded plan custody")).expect("unshared loaded plan");
@@ -916,7 +914,9 @@ impl PiForkCoordinator {
                 &[filesystem, history, capture], work)?.into_native_shared(work)?;
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
-            let mut parent_value = parent.0.with_limits(context.scope().limits())?.with_fork_verifier(forks);
+            let mut parent_value = parent.0;
+            parent_value.set_limits(context.scope().limits())?;
+            parent_value = parent_value.with_fork_verifier(forks);
             {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -939,7 +939,8 @@ impl PiForkCoordinator {
             let child_verifier = child_authority.0.1.verifier_with_native_work(work)?;
             let child = StreamAggregate::open_with_native_work(&self.stream, child_authority.0.0, child_verifier.0,
                 SchemaRegistry::new(), work).await?;
-            let mut child_value = child.0.with_limits(plan.request.child.limits)?;
+            let mut child_value = child.0;
+            child_value.set_limits(plan.request.child.limits)?;
             {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;

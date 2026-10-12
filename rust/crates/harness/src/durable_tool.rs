@@ -184,9 +184,22 @@ impl ResumableTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<WorkflowAdmission> {
-        self.validate(None)?;
-        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
+        #[cfg(feature = "filesystem")]
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
+        #[cfg(not(feature = "filesystem"))]
+        let native = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = native {
+            if !context.native_metadata_matches(work) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "resumable tool context lacks original native custody" });
+            }
+        }
+        self.validate(native)?;
+        crate::executor::with_history_io(io, |work|
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
         if invocation.name != self.definition.name {
             return Err(Error::Conflict("resumable tool invocation names another definition".into()));
         }
@@ -199,27 +212,49 @@ impl ResumableTool {
             ));
         }
         let scope = context.effective_scope();
-        let required = capability::tool_call(&self.definition.name);
+        let required = crate::contract::preparation_format(format_args!("tool:call:{}", self.definition.name), io)?;
+        #[cfg(feature = "filesystem")]
+        let _required = io.map(|io| io.guard_owned(required.capacity() as u64)).transpose()?;
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
-        let initial = MachineCheckpoint {
-            machine: self.machine.identity().clone(),
-            revision: 0,
-            state: self.machine.initialize(&invocation.arguments)?,
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let identity = match native {
+            Some(work) => self.machine.identity_with_native_work(work)?,
+            None => self.machine.identity(),
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let identity = self.machine.identity();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let state = match native {
+            Some(work) => {
+                let (state, custody) = self.machine.initialize_with_native_work(&invocation.arguments, work)?;
+                io.expect("original funding").absorb_native_custody(custody)?;
+                io.expect("original funding").retain_owned(
+                    (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
+                state
+            }
+            None => self.machine.initialize(&invocation.arguments)?,
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let state = self.machine.initialize(&invocation.arguments)?;
+        let initial = MachineCheckpoint {
+            machine: crate::workflow::workflow_copy_identity(identity, io)?,
+            revision: 0,
+            state,
+        };
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", io)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
-            request_digest: crate::contract::canonical_json_digest(&(
+            request_digest: crate::executor::preparation_digest(&(
                 context.task().durable_task_id(), scope.grants(), scope.limits(),
                 scope.run_limits(), scope.extensions(), &self.definition,
-                invocation, self.machine.identity(),
-            ))?,
+                invocation, identity,
+            ), io)?,
             initial,
         };
-        admission.validate(None)?;
+        admission.validate(io)?;
         Ok(admission)
     }
 
@@ -230,7 +265,7 @@ impl ResumableTool {
         invocation: ToolInvocation,
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<ResumableToolSession> {
-        let admission = self.workflow_admission(&context, &invocation)?;
+        let admission = self.workflow_admission(&context, &invocation, None)?;
         if let Some(operation) = context.task().authorize_tool(&self.definition, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }
@@ -289,8 +324,8 @@ impl ResumableTool {
         let mut state_hold;
         let (state, hold) = registry.initialize_with_native_work(identity, &invocation.arguments, work)?;
         state_hold = hold;
-        admission_custody = work.retain_owned(
-            (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
+        admission_custody = work.claim(
+            (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         admission_custody.absorb(&mut state_hold)?;
         let mut name_hold;
         let (name, hold) = work.display(&identity.name)?;
@@ -351,7 +386,7 @@ impl ResumableTool {
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
-            let metadata_custody = work.retain_owned(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64)?;
+            let metadata_custody = work.claim(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let host = DurableWorkflowHost::open_with_native_work(
                 built.1, built.0.value.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
@@ -553,7 +588,7 @@ impl DurableToolRunner {
                 reason: "tool journal has no native execution producer" });
         }
         let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
-        let mut custody = work.retain_owned(metadata)?;
+        let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut tools_custody;
         let (tools, hold) = tools.clone_with_native_work(work)?;
         tools_custody = hold;
@@ -646,8 +681,8 @@ impl DurableToolRunner {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let mut custody = work.retain_owned(
-                (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>()) as u64)?;
+            let mut custody = work.claim(
+                (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let mut call_hold;
             let (call_id, hold) = work.display(&context.call_id())?;
             call_hold = hold;
@@ -941,14 +976,14 @@ impl DurableToolRunner {
                 self.journal.as_ref(), reference, work)?.await?;
             return Ok(ToolPayload::native(value, custody));
         }
-        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.into_retained()))
+        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.0))
     }
 
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     async fn load<T: crate::executor::PreparationRecord + Send>(
         &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ToolPayload<T>> {
-        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.into_retained()))
+        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.0))
     }
 
     async fn stage<T: serde::Serialize + Sync>(
@@ -1040,7 +1075,7 @@ fn tool_propagate(error: &Error, io: Option<&crate::executor::PreparationIo>) ->
 fn tool_metadata<T>(io: Option<&crate::executor::PreparationIo>) -> Result<ToolPayload<()>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return Ok(ToolPayload::native((), work.retain_owned(std::mem::size_of::<T>() as u64)?));
+        return Ok(ToolPayload::native((), work.claim(std::mem::size_of::<T>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
     }
     Ok(ToolPayload::ordinary(()))
 }
@@ -1149,7 +1184,7 @@ fn tool_outcome(
 ) -> Result<ToolPayload<Outcome<Value>>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let mut custody = work.retain_owned(std::mem::size_of::<Outcome<Value>>() as u64)?;
+        let mut custody = work.claim(std::mem::size_of::<Outcome<Value>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         if let Some(reason) = failure {
             let (message, mut hold) = work.display(reason.message())?;
             custody.absorb(&mut hold)?;

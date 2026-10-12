@@ -140,20 +140,6 @@ impl NamespacePath {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    pub(crate) fn validate_in_profile_with_work(
-        path: &str,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(usize, NameEncoding, u32), NamespacePathError> {
-        Self::validate_in_profile_with_steps(path, profile, limits, cancellation, || {
-            work.charge(&WorkCounters { source_path_components: 1, items_examined: 1,
-                ..WorkCounters::default() }, &budget).map_err(NamespacePathError::Work)
-        })
-    }
-
     pub(crate) fn validate_in_profile_with_accounting(
         path: &str,
         profile: FilesystemProfile,
@@ -404,23 +390,6 @@ impl NamespacePath {
         let mut owned = NamespacePathAccounting::new(accounting)?;
         let result = self.unicode_text_with_steps(cancellation, &mut |step| owned.observe(step));
         owned.finish(result)
-    }
-
-    pub(crate) fn unicode_text_with_ledger(
-        &self,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<String, NamespacePathError> {
-        let initial_live = ledger.live_bytes();
-        let result = self.unicode_text_with_steps(
-            cancellation, &mut |step| observe_path_ledger(step, ledger, work, budget),
-        );
-        if result.is_err() {
-            ledger.release(ledger.live_bytes() - initial_live).map_err(allocation_error)?;
-        }
-        result
     }
 
     fn unicode_text_with_steps<E: From<NamespacePathError>>(

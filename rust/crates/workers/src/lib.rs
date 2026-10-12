@@ -57,12 +57,13 @@ export interface WorkerModule {
 }
 "#;
 
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
+/// Largest accepted bearer credential, in bytes.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Bearer credentials must be nonblank, bounded and header-safe.
-fn valid_token(token: &str) -> bool {
+pub fn valid_token(token: &str) -> bool {
     !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
+        && !token.contains(['\r', '\n', '\0'])
 }
 
 /// Rust-owned route names used by the TypeScript transport generator.
@@ -358,7 +359,7 @@ mod tests {
     /// Serves one RPC whose OK headers precede a 50 ms body ending in an UNAVAILABLE trailer.
     #[cfg(not(target_arch = "wasm32"))]
     async fn slow_status_server() -> std::io::Result<std::net::SocketAddr> {
-        use std::{future::Future as _, pin::Pin, task::Poll};
+        use std::task::Poll;
 
         #[derive(Clone)]
         struct SlowStatus;
@@ -379,27 +380,8 @@ mod tests {
                 &mut self,
                 _: tonic::codegen::http::Request<tonic::body::Body>,
             ) -> Self::Future {
-                let sleep = tokio::time::sleep(std::time::Duration::from_millis(50));
-                let body = tonic::body::Body::new(Trailers(Some(Box::pin(sleep))));
+                let body = acyclic_grpc_observability::test_support::delayed_unavailable_body();
                 std::future::ready(Ok(tonic::codegen::http::Response::new(body)))
-            }
-        }
-        struct Trailers(Option<Pin<Box<tokio::time::Sleep>>>);
-        impl http_body::Body for Trailers {
-            type Data = tonic::codegen::Bytes;
-            type Error = std::convert::Infallible;
-            fn poll_frame(
-                mut self: Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-                let Some(sleep) = self.0.as_mut() else {
-                    return Poll::Ready(None);
-                };
-                std::task::ready!(sleep.as_mut().poll(cx));
-                self.0 = None;
-                let mut trailers = tonic::codegen::http::HeaderMap::new();
-                trailers.insert("grpc-status", 14.into());
-                Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
             }
         }
         let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;

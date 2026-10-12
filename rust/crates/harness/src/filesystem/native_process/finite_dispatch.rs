@@ -75,7 +75,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {
         check(work)?;
-        self.owner.verify_with_native_work(false, work).await?;
+        self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let mut io = crate::store::history::native_work_io(work)?;
         let cursor = self.history.pin(0,
             Some(&mut io)).await?;
@@ -112,14 +112,12 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 self.authority.approvals.verify_with_native_work(
                     self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
-                    self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                        crate::conversation::VolumeOperation::Read, work)?;
+                    self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     if mapping.writable {
-                        self.owner.require_volume_grant_with_native_work(&mapping.volume,
-                            crate::conversation::VolumeOperation::Write, work)?;
+                        self.owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     }
                 }
-                self.owner.verify_with_native_work(false, work).await?;
+                self.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             }
         check(work)
     }
@@ -169,7 +167,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let _provider_custody = provider_custody;
             let _completion = NativeSupervisorCompletion(Arc::clone(&supervisor));
             let work = &original_work;
-            let (execution, mut execution_custody) = execute(&owner, view.as_ref(), &authority,
+            let ((status, diagnostic, published), mut execution_custody) = execute(&owner, view.as_ref(), &authority,
                 &request, &dispatch, &schema, &supervisor, work).await?;
             let mut custody = custody;
             custody.absorb(&mut execution_custody)?;
@@ -177,10 +175,10 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let observed = ObservedWrite {
                 effect: EffectWrite { provider: &dispatch.provider, effect_id: dispatch.effect_id,
                     attempt_id: dispatch.attempt_id, request_digest: dispatch.request_digest,
-                    guarantee: dispatch.guarantee, status: &execution.status },
-                diagnostic: &execution.diagnostic, publication_failure: &None,
+                    guarantee: dispatch.guarantee, status: &status },
+                diagnostic: &diagnostic, publication_failure: &None,
                 invocation_failure: &None, work: &completed_work,
-                published: &execution.published,
+                published: &published,
             };
             if !append_receipt(&owner, &path, 1,
                 &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
@@ -206,8 +204,8 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             drop(effect_kind);
             drop(request);
             let effect = EffectObservation { provider, effect_id, attempt_id, request_digest,
-                guarantee, status: execution.status };
-            drop((execution.diagnostic, execution.published));
+                guarantee, status };
+            drop((diagnostic, published));
             custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
 
             drop(execution_custody);
@@ -229,7 +227,7 @@ async fn append_receipt<P: StreamProvider, L: Serialize, O: Serialize>(
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        key_bytes, key_custody, work.runtime_meter_owner(),
+        key_bytes, key_custody, work.runtime_meter(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
     owner.append(path.clone(), tail, &key, bytes, write,

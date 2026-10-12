@@ -1,7 +1,6 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
-use crate::runtime::TaskStateProvider;
 use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
@@ -267,8 +266,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         Ok((items, custody))
     }
 
+    /// Publishes mail under the sender's exact uncancelled lease.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn send_owned_with_io(self: &Arc<Self>, sender: TaskId,
+    pub async fn send_mail(self: &Arc<Self>, sender: TaskId,
         fence: &crate::scheduler::LeaseFence, recipient: TaskId, message: OperationId,
         payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
@@ -413,7 +413,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
             crate::distributed::add_record(&mut request, mailbox.0.path().clone(), bytes.clone())?;
             crate::distributed::add_record(&mut request, intent.0.path().clone(), location_bytes)?;
-            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
+            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }

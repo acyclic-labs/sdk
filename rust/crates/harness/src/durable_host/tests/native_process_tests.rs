@@ -703,7 +703,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let before = work.receipt().source_bytes_read;
     let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
     assert_eq!(project.as_slice(), b"genuine cold project");
-    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
+    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
     issued.verify_with_native_work(&work)?.await?;
@@ -721,7 +721,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let foreign = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
     assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
-    fixture.owner.verify_with_native_work(false, &work).await?;
+    fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
         .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
@@ -1022,7 +1022,7 @@ where
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
         let mut metadata = crate::store::history::native_work_io(original)?;
-        metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64)?;
+        metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut authority = (metadata.clone_authority(issuer.audience())?, metadata.into_custody());
         let mut copied_issuer = issuer.clone_with_native_work(original)?;
         authority.1.absorb(&mut copied_issuer.1)?;
@@ -1243,7 +1243,7 @@ where
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
+            let custody = work.claim(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1256,9 +1256,9 @@ where
                 std::fs::create_dir(&physical).map_err(|error| Error::Storage(error.to_string()))?;
                 std::fs::write(physical.join("cold.txt"), b"genuine cold project")
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
-                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None)
-                    .await.map_err(|error| Error::Storage(error.to_string()))?);
+                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&physical).to_path_buf()),
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?);
                 let workspace = files.open_volume_with_native_work(&source, work).await?;
                 let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
                     acyclic_fs::MemoryLazyWorkspaceStore::default()).await
@@ -1268,7 +1268,7 @@ where
                 let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
-                let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
+                let mut allocation = volume_work.claim(std::mem::size_of::<acyclic_fs::LazyMount<
                     A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, Default::default())?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),
@@ -1776,7 +1776,7 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     )?;
     assert!(fixture.owner
-        .require_volume_grant_with_native_work(&seed.source, VolumeOperation::Write, &work).is_err());
+        .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(&work)?)).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
         assert!(view.write_builtin_file(&fixture.owner, OperationId::from_bytes([212; 16]),
             Path::new(path), "forbidden", true, None, &work).await.is_err());

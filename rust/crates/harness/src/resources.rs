@@ -115,7 +115,7 @@ impl ProviderRef {
         Self::validate_fields_with_work(&self.namespace, &self.family, &self.version, work)
     }
 
-    fn validation_reason(&self) -> Option<&'static str> {
+    pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.parts().into_iter().any(|part| part.is_empty() || part.chars().any(char::is_control))
             .then_some("provider identity is invalid")
     }
@@ -147,10 +147,6 @@ impl ProviderRef {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn validation_error(&self) -> Option<&'static str> {
-        self.validation_reason()
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -458,7 +454,7 @@ impl GenerationRef {
             io.preflight(inspection)?;
             io.charge(inspection)?;
         }
-        if let Some(reason) = provider.validation_reason() {
+        if let Some(reason) = provider.validation_error() {
             return Err(io.invalid(reason));
         }
         let provider = provider.clone_with_io(io)?;
@@ -585,7 +581,7 @@ mod tests {
         assert_eq!(custody.bytes(), provider.logical_owned_bytes()?);
         drop(provider);
         drop(custody);
-        drop(work.retain_owned(budget.peak_allocation_bytes)
+        drop(work.claim(budget.peak_allocation_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .expect("all original provider custody retired"));
         let invalid = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("invalid provider ledger");
@@ -596,7 +592,7 @@ mod tests {
             acyclic_fs::WorkBudget { bytes_copied: 7, ..budget }, &cancellation)
             .expect("partial provider ledger");
         assert!(ProviderRef::new_with_native_work("acyclic", "filesystem", "2", &denied).is_err());
-        drop(denied.retain_owned(budget.peak_allocation_bytes)
+        drop(denied.claim(budget.peak_allocation_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .expect("partial field copies physically retired"));
         Ok(())
     }

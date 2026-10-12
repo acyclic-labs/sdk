@@ -445,9 +445,12 @@ fn pi_scoped_native_response_keeps_original_ledger_and_exact_caller_identity() {
             &json!({"operation":"sdk-original","files":["selected/a","selected/b"]}),
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, &work,
         ).unwrap();
-        let response = crate::service_session::guarded_scoped_reply(
-            "root-original", "native-child-original", caller, original, acknowledgement,
-        ).unwrap();
+        let response = if acknowledgement {
+            crate::service_session::guarded_scoped_reply("root-original", "native-child-original", caller,
+                (crate::service_session::PiAcknowledgement { acknowledgement: original.0 }, original.1))
+        } else {
+            crate::service_session::guarded_scoped_reply("root-original", "native-child-original", caller, original)
+        }.unwrap();
         assert_eq!(response.0["session"], "root-original");
         assert_eq!(response.0["native_session"], "native-child-original");
         assert_eq!(response.0["caller_task"], serde_json::to_value(caller).unwrap());
@@ -467,12 +470,12 @@ fn pi_scoped_native_response_cannot_reset_an_exhausted_original_quota() {
         &json!({"operation":"already-owned-sdk-body"}),
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, &work,
     ).unwrap();
-    let mut blocker = work.retain_owned(0).unwrap();
+    let mut blocker = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
     let remaining = work.remaining().unwrap().peak_allocation_bytes;
     blocker.resize_retained(remaining).unwrap();
     let error = crate::service_session::guarded_scoped_reply(
         "root-original", "native-original", acyclic_harness::TaskId::from_bytes([8; 16]),
-        original, false,
+        original,
     ).unwrap_err();
     let acyclic_harness::Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded { .. }),
