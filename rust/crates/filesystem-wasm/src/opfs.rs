@@ -250,9 +250,15 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -274,13 +280,22 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             .map_err(|error| ObjectFailure::new(error, work))?;
         Ok(acyclic_fs::OperationReceipt { value: (), work })
     }
+        .await;
+        context.accept(result)
+    }
 
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         if writes.is_empty() {
             return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
                 "object write batch is empty".to_owned(),
@@ -293,18 +308,36 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 admitted = combine_parallel_window(admitted, put_work(&write.bytes))
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
             }
-            let mut futures = window.iter().map(|write| {
-                self.put(write.object_id, write.bytes.clone(), put_work(&write.bytes), cancellation)
-            });
-            let first = futures.next().ok_or_else(|| ObjectFailure::new(
-                ObjectStoreError::Rejected("OPFS write window is empty".to_owned()), total,
-            ))?;
-            let frames = join_frames_bytes(&first, window.len())
-                .and_then(|bytes| bytes.checked_add(allocation_bytes::<ObjectResult<()>>(window.len())?)
-                    .ok_or(acyclic_fs::WorkError::Overflow))
+            let mut futures = window.iter().map(|write| async {
+                    let __object_args = (
+                        write.object_id,
+                        write.bytes.clone(),
+                        put_work(&write.bytes),
+                        cancellation,
+                    );
+                    let mut __object_work =
+                        acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+                    let __object_result = self
+                        .put(__object_args.0, __object_args.1, &mut __object_work)
+                        .await;
+                    __object_work.receipt(__object_result)
+                });
+                let first = futures.next().ok_or_else(|| {
+                    ObjectFailure::new(
+                        ObjectStoreError::Rejected("OPFS write window is empty".to_owned()),
+                        total,
+                    )
+                })?;
+                let frames = join_frames_bytes(&first, window.len())
+                    .and_then(|bytes| {
+                        bytes.checked_add(allocation_bytes::<ObjectResult<()>>(window.len())?)
+                    .ok_or(acyclic_fs::WorkError::Overflow)
+                    })
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
             admitted.peak_allocation_bytes = admitted.peak_allocation_bytes.checked_add(frames)
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             let frame_work = WorkCounters {
                 allocation_operations: 2,
                 peak_allocation_bytes: admitted.peak_allocation_bytes,
@@ -324,25 +357,46 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             value: (),
             work: total,
         })
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         self.read_exact(object_id, maximum_bytes, budget, cancellation)
             .await
+    }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<
+        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
+        acyclic_fs::ObjectStoreError,
+    > {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         if requests.is_empty() {
             return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
                 "object read batch is empty".to_owned(),
@@ -373,7 +427,9 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
             let live = retained.checked_add(handles_bytes)
                 .and_then(|value| value.checked_add(results_bytes))
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             let prospective = total.checked_add(WorkCounters {
                 allocation_operations: 2,
                 peak_allocation_bytes: live,
@@ -402,7 +458,9 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 })?;
                 let mut work = prepared.work;
                 work.peak_allocation_bytes = live.checked_add(work.peak_allocation_bytes)
-                    .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                    .ok_or_else(|| {
+                            ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                        })?;
                 total = total.checked_add(work)
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
                 let (blob, length) = prepared.value;
@@ -415,22 +473,32 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                     .map_err(|error| ObjectFailure::new(error.into(), total))?)
                     .map_err(|error| ObjectFailure::new(error.into(), total))?;
                 window_retained = window_retained.checked_add(*length)
-                    .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                    .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             }
             let mut futures = handles.into_iter().map(|(object_id, blob, length)| {
                 Self::materialize_read(object_id, blob, length, WorkCounters::default(), cancellation)
             });
-            let first = futures.next().ok_or_else(|| ObjectFailure::new(
+            let first = futures.next().ok_or_else(|| {
+                    ObjectFailure::new(
                 ObjectStoreError::Rejected("OPFS read window is empty".to_owned()), total,
-            ))?;
+            )
+                })?;
             let frames = join_frames_bytes(&first, window.len())
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
             window_work.allocation_operations = window_work.allocation_operations.checked_add(1)
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             window_work.peak_allocation_bytes = window_work.peak_allocation_bytes.checked_add(frames)
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             window_work.peak_allocation_bytes = live.checked_add(window_work.peak_allocation_bytes)
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                    })?;
             let admitted = total.checked_add(window_work)
                 .map_err(|error| ObjectFailure::new(error.into(), total))?;
             admitted.verify(budget)
@@ -451,20 +519,31 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 return Err(ObjectFailure::new(error, total));
             }
             retained = retained.checked_add(window_retained)
-                .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
+                .ok_or_else(|| {
+                    ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
+                })?;
         }
         Ok(acyclic_fs::OperationReceipt {
             value: values,
             work: total,
         })
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<bool, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -489,6 +568,9 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             .check()
             .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
         Ok(acyclic_fs::OperationReceipt { value, work })
+    }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -668,28 +750,40 @@ mod tests {
             .unwrap_or_else(|error| unreachable!("OPFS open failed: {error}"));
         let (object_id, bytes) = object(b"persistent-opfs-body");
         let cancellation = CancellationToken::new();
-        AsyncObjectStore::put(
-            &store,
-            object_id,
-            bytes.clone(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+        {
+            let __object_args = (
+                object_id,
+                bytes.clone(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            );
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result =
+                AsyncObjectStore::put(
+            &store, __object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+            __object_work.receipt(__object_result)
+        }
         .unwrap_or_else(|failure| unreachable!("OPFS put failed: {}", failure.error));
         drop(store);
 
         let reopened = OpfsAcceleratedObjectStore::open(&name, 1_024)
             .await
             .unwrap_or_else(|error| unreachable!("OPFS reopen failed: {error}"));
-        let read = AsyncObjectStore::read(
+        let read = {
+            let __object_args = (object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &reopened,
-            object_id,
-            1_024,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }
         .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
         assert_eq!(read.value.bytes, bytes);
 
@@ -697,14 +791,19 @@ mod tests {
             .write(object_id, &OwnedBytes::from(b"corrupt".to_vec()), &cancellation)
             .await
             .unwrap_or_else(|error| unreachable!("corruption setup failed: {error}"));
-        let failure = AsyncObjectStore::read(
+        let failure = {
+            let __object_args = (object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = AsyncObjectStore::read(
             &reopened,
-            object_id,
-            1_024,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }
         .err()
         .unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
         assert!(matches!(failure.error, ObjectStoreError::Corrupt));
@@ -725,9 +824,15 @@ mod tests {
             })
             .collect();
         let cancellation = CancellationToken::new();
-        AsyncObjectStore::put_many(&store, &writes, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .unwrap_or_else(|failure| unreachable!("OPFS batch put failed: {}", failure.error));
+        {
+            let __object_args = (&writes, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }
+        .unwrap_or_else(|failure| unreachable!("OPFS batch put failed: {}", failure.error));
         let requests: Vec<_> = objects
             .iter()
             .rev()
@@ -736,12 +841,17 @@ mod tests {
                 maximum_bytes: 1_024,
             })
             .collect();
-        let reads =
-            AsyncObjectStore::read_many(&store, &requests, WorkBudget::UNBOUNDED, &cancellation)
-                .await
-                .unwrap_or_else(|failure| {
-                    unreachable!("OPFS batch read failed: {}", failure.error)
-                });
+        let reads = {
+            let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result =
+                AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        }
+        .unwrap_or_else(|failure| unreachable!("OPFS batch read failed: {}", failure.error));
         let actual: Vec<_> = reads.value.into_iter().map(|read| read.bytes).collect();
         let expected: Vec<_> = objects
             .iter()
@@ -772,10 +882,25 @@ mod tests {
             maximum_bytes: 1_024,
         }).collect();
         let cancellation = CancellationToken::new();
-        store.put_many(&writes, WorkBudget::UNBOUNDED, &cancellation).await
-            .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
-        let read = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await
-            .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
+        {
+            let __object_args = (&writes, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.put_many(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }
+        .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
+        let read = {
+            let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        }
+        .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
         let required = allocation_bytes::<ObjectRead>(requests.len())
             .unwrap_or_else(|error| unreachable!("vector size failed: {error}"))
             + allocation_bytes::<(ObjectId, Blob, u64)>(16)
@@ -788,19 +913,37 @@ mod tests {
         let cloned = read.value[0].bytes.clone();
         drop(read);
         assert_eq!(cloned.as_ref(), writes[0].bytes.as_ref());
-        let denied = store.read_many(&requests, WorkBudget {
+        let denied = {
+            let __object_args = (&requests, WorkBudget {
             peak_allocation_bytes: required - 1,
             ..WorkBudget::UNBOUNDED
-        }, &cancellation).await
-            .err().unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
+        }, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        }
+        .err().unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
         assert_eq!(denied.work.object_bytes_read, 16 * 1_024);
         assert!(matches!(denied.error, ObjectStoreError::Work(_)));
 
         // Complete sibling reads after failure to retain their work and allocation peak.
         store.write(writes[16].object_id, &OwnedBytes::from(vec![255; 1_024]), &cancellation)
             .await.unwrap_or_else(|error| unreachable!("corruption setup failed: {error}"));
-        let corrupt = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await
-            .err().unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
+        let corrupt = {
+            let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
+            let mut __object_work =
+                acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        }
+        .err().unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
         assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
         assert_eq!(corrupt.work.object_bytes_read, 32 * 1_024);
         assert!(corrupt.work.peak_allocation_bytes >= required);

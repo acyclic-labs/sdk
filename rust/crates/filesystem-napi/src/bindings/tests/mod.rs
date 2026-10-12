@@ -727,8 +727,21 @@ async fn napi_operation_windows_share_the_native_authority_fence()
     transaction.write_text("/accepted", "yes").await?;
     assert!(matches!(
         transaction
-            .commit_with_permit(lease.publication_permit())
-            .await?,
+            .commit::<acyclic_fs::WorkspaceError, _, _>(
+                None,
+                lease.publication_permit(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::default(),
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?,
         TransactionCommit::Committed(_)
     ));
 
@@ -771,8 +784,21 @@ async fn napi_operation_windows_share_the_native_authority_fence()
     rejected.write_text("/rejected", "no").await?;
     assert!(matches!(
         rejected
-            .commit_with_permit(expired.publication_permit())
-            .await?,
+            .commit::<acyclic_fs::WorkspaceError, _, _>(
+                None,
+                expired.publication_permit(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::default(),
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?,
         TransactionCommit::Fenced
     ));
     Ok(())

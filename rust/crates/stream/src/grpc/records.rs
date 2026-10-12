@@ -83,29 +83,36 @@ impl Client {
                             Some(Ok(mut response)) => {
                                 let token = response.delivery_token.take();
                                 match read_response(response, cursor.next, cursor.remaining) {
-                                Ok(records) => {
-                                    if let Some(token) = token {
-                                        if token.len() != 32 {
-                                            active.2.invalid_response();
-                                            cursor.completion.invalid_response();
-                                            return cursor.failure(StreamError::Unavailable);
+                                    Ok(records) => {
+                                        if let Some(token) = token {
+                                            if token.len() != 32 {
+                                                active.2.invalid_response();
+                                                cursor.completion.invalid_response();
+                                                return cursor.failure(StreamError::Unavailable);
+                                            }
+                                            if cursor.client.acknowledge_deliveries
+                                                && records.len() != 0
+                                            {
+                                                let worker = cursor
+                                                    .acknowledgements
+                                                    .get_or_insert_with(|| {
+                                                        DeliveryAcknowledgements::new(
+                                                            cursor.client.clone(),
+                                                        )
+                                                    });
+                                                let _ =
+                                                    worker.queue.try_send((active_endpoint, token));
+                                            }
                                         }
-                                        if cursor.client.acknowledge_deliveries && records.len() != 0 {
-                                            let worker = cursor.acknowledgements.get_or_insert_with(|| {
-                                                DeliveryAcknowledgements::new(cursor.client.clone())
-                                            });
-                                            let _ = worker.queue.try_send((active_endpoint, token));
-                                        }
+                                        cursor.buffered = records;
                                     }
-                                    cursor.buffered = records;
-                                },
-                                Err(error) => {
-                                    active.2.invalid_response();
-                                    cursor.completion.invalid_response();
-                                    return cursor.failure(error);
+                                    Err(error) => {
+                                        active.2.invalid_response();
+                                        cursor.completion.invalid_response();
+                                        return cursor.failure(error);
+                                    }
                                 }
-                                }
-                            },
+                            }
                             Some(Err(error)) if !retryable(&error) => {
                                 return cursor.failure(status(&error));
                             }
@@ -126,20 +133,16 @@ impl Client {
     }
 }
 
-fn bounded_ca_certificate(value: &[u8]) -> Result<&[u8], ConnectError> {
-    if value.is_empty() || value.len() > MAX_CA_CERTIFICATE_BYTES {
-        Err(ConnectError::InvalidCaCertificate)
-    } else {
-        Ok(value)
-    }
-}
-
 struct RecordCursor {
     client: Client,
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion)>,
+    active: Option<(
+        obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
+        usize,
+        Completion,
+    )>,
     /// Decoded records from the latest frame that the caller has not yet taken.
     buffered: std::vec::IntoIter<Record>,
     completion: Completion,
@@ -170,22 +173,43 @@ impl RecordCursor {
         );
     }
 
-    async fn open(&self) -> Result<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion), StreamError> {
+    async fn open(
+        &self,
+    ) -> Result<
+        (
+            obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
+            usize,
+            Completion,
+        ),
+        StreamError,
+    > {
         let response = if let Some(limit) = self.remaining {
-            self.client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-                wire::ReadRequest { path: self.path.to_string(), from: self.next, limit },
-                |mut service, request| Box::pin(async move { service.read(request).await }),
-            ).await?
+            self.client
+                .unary(
+                    OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+                    wire::ReadRequest {
+                        path: self.path.to_string(),
+                        from: self.next,
+                        limit,
+                    },
+                    |mut service, request| Box::pin(async move { service.read(request).await }),
+                )
+                .await?
         } else {
-            self.client.unary(FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
-                wire::FollowRequest { path: self.path.to_string(), from: self.next },
-                |mut service, request| Box::pin(async move { service.follow(request).await }),
-            ).await?
+            self.client
+                .unary(
+                    FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
+                    wire::FollowRequest {
+                        path: self.path.to_string(),
+                        from: self.next,
+                    },
+                    |mut service, request| Box::pin(async move { service.follow(request).await }),
+                )
+                .await?
         };
         let (body, endpoint, completion) = response;
         Ok((completion.span.scope(body), endpoint, completion))
     }
-
 }
 
 fn read_response(

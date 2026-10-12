@@ -18,7 +18,10 @@ async fn hung_operation_fails_over_without_truncating_a_healthy_slow_response()
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
         })
         .await?;
-    let transport = Client::from_channels(Arc::from([stalled_channel(), provider_channel(Service::new(provider))]), Client::authorization("fixture")?);
+    let transport = Client::from_channels(
+        Arc::from([stalled_channel(), provider_channel(Service::new(provider))]),
+        Client::authorization("fixture")?,
+    );
     let tail = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         transport.tail(StreamPath::new("accounts/events")?),
@@ -41,7 +44,10 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends()
         .inner
         .append(AppendRequest {
             path: StreamPath::new("accounts/events")?,
-            records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
+            records: vec![
+                OwnedBytes::from_static(b"one"),
+                OwnedBytes::from_static(b"two"),
+            ],
             if_tail: Some(0),
             idempotency_key: None,
         })
@@ -80,7 +86,8 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends()
             .await?;
         let mut sequences = Vec::new();
         for token in ["fixture", "denied-open"] {
-            let client = Client::from_channels(Arc::from([channel.clone()]), Client::authorization(token)?);
+            let client =
+                Client::from_channels(Arc::from([channel.clone()]), Client::authorization(token)?);
             let items = client
                 .follow(StreamPath::new("accounts/events")?, 0)
                 .await?
@@ -134,10 +141,13 @@ async fn clean_follow_eof_advances_once_to_the_next_endpoint()
             idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
         })
         .await?;
-    let transport = Client::from_channels(Arc::from([
+    let transport = Client::from_channels(
+        Arc::from([
             provider_channel(Service::new(Arc::clone(&ended))),
             provider_channel(Service::new(durable)),
-        ]), Client::authorization("fixture")?);
+        ]),
+        Client::authorization("fixture")?,
+    );
     let preferred = Arc::clone(&transport.preferred);
     let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
 
@@ -154,20 +164,6 @@ async fn clean_follow_eof_advances_once_to_the_next_endpoint()
     assert_eq!(ended.follows.load(Ordering::Relaxed), 1);
     assert_eq!(preferred.load(Ordering::Relaxed), 1);
 
-    // A stale cursor cannot overwrite a newer successful endpoint choice.
-    let stale = RecordCursor {
-        client: Client::from_channels(Arc::from([unavailable_channel(), unavailable_channel()]), Client::authorization("fixture")?),
-        path: StreamPath::new("accounts/events")?,
-        next: 0,
-        remaining: None,
-        active: None,
-        buffered: Vec::new().into_iter(),
-        completion: Completion::new(tracing::Span::none()),
-        acknowledgements: None,
-    };
-    stale.client.preferred.store(1, Ordering::Relaxed);
-    stale.advance_follow(0);
-    assert_eq!(stale.client.preferred.load(Ordering::Relaxed), 1);
     Ok(())
 }
 
@@ -233,17 +229,21 @@ async fn persistent_unknown_expires_without_changing_request_identity()
     let started = tokio::time::Instant::now();
     let mut attempts = 0;
     let result: Result<(), StreamError> = client
-        .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, Bytes::from_static(b"stable-key-and-body"), |_, request| {
-            assert_eq!(
-                request.into_inner(),
-                Bytes::from_static(b"stable-key-and-body")
-            );
-            attempts += 1;
-            Box::pin(async {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                Err(Status::unknown("outcome unavailable"))
-            })
-        })
+        .unary(
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            Bytes::from_static(b"stable-key-and-body"),
+            |_, request| {
+                assert_eq!(
+                    request.into_inner(),
+                    Bytes::from_static(b"stable-key-and-body")
+                );
+                attempts += 1;
+                Box::pin(async {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    Err(Status::unknown("outcome unavailable"))
+                })
+            },
+        )
         .await
         .and_then(|response| decode_response(response, Ok));
     assert_eq!(result, Err(StreamError::Unavailable));

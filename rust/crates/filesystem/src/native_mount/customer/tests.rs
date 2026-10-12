@@ -58,7 +58,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     let work =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let (ordinary_source, volume, root) = lazy
-        .prepare_authored_mount_source(&options, None, None, &work, None)
+        .prepare_authored_mount_source(&options, None, &work, None)
         .await?;
     assert_eq!(volume, lazy.workspace().id().volume_id());
     assert_eq!(root.0, "/selected");
@@ -90,7 +90,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     let denied = crate::NativeMaterializationWork::new(denied_budget, &cancellation)
         .map_err(|(error, _)| error)?;
     assert!(
-        lazy.prepare_authored_mount_source(&options, Some(pinned), None, &denied, None)
+        lazy.prepare_authored_mount_source(&options, None, &denied, None)
             .await
             .is_err()
     );
@@ -134,7 +134,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     let (native_source, _, _) = lazy
-        .prepare_authored_mount_source(&options, Some(pinned), None, &work, Some(&work))
+        .prepare_authored_mount_source(&options, None, &work, Some(&work))
         .await?;
     let before_foreign_job = job.receipt();
     assert!(matches!(
@@ -156,7 +156,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
 }
 
 #[tokio::test]
-async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumulatively()
+async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_capture()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
@@ -229,47 +229,6 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
             crate::WorkError::BudgetExceeded { .. }
         )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
     ));
-    let preparation = capture.receipt();
-    assert_eq!(preparation.materializations, 0);
-    let mut finite = crate::WorkBudget::UNBOUNDED;
-    finite.allocation_operations = preparation
-        .allocation_operations
-        .checked_sub(1)
-        .ok_or("attachment omitted carrier allocations")?;
-    let carrier =
-        crate::NativeMaterializationWork::new(finite, &token).map_err(|(cause, _)| cause)?;
-    assert!(
-        generation
-            .attach_native_working_set(
-                &mount.clone().native_context(&carrier, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &token
-            )
-            .await
-            .is_err()
-    );
-    carrier.receipt().verify(finite)?;
-    assert_eq!(carrier.receipt().materializations, 0);
-
-    let cumulative =
-        crate::NativeMaterializationWork::new(preparation, &token).map_err(|(cause, _)| cause)?;
-    assert!(
-        generation
-            .attach_native_working_set(
-                &mount.clone().native_context(&cumulative, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &token
-            )
-            .await
-            .is_err()
-    );
-    cumulative.receipt().verify(preparation)?;
-    assert_eq!(cumulative.receipt().materializations, 0);
-
     let admitted_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(cause, _)| cause)?;
     let admitted = generation
@@ -281,20 +240,7 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
             &token,
         )
         .await?;
-    let exact = admitted_work.receipt();
-    drop(admitted);
-    let exact_work =
-        crate::NativeMaterializationWork::new(exact, &token).map_err(|(cause, _)| cause)?;
-    let attached = generation
-        .attach_native_working_set(
-            &mount.native_context(&exact_work, None, None),
-            &options,
-            identity,
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-        )
-        .await?;
-    exact_work.receipt().verify(exact)?;
+    let attached = admitted;
     assert_eq!(attached.source_identity, identity);
     assert_eq!(attached.source_root, options.destination);
     assert_eq!(attached.selected_root, Path::new("selected-Ã©"));
@@ -830,7 +776,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let cancelled_wait = crate::CancellationToken::new();
     cancelled_wait.cancel();
     assert!(matches!(
-        working_set.retire_with_work(&cancelled_wait),
+        working_set.retire(&cancelled_wait),
         Err(MountLifecycleError::Source(MountSourceError::Cancelled))
     ));
     assert!(!working_set.source.capture_retired());
@@ -841,13 +787,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     // Revocation is not a new allowance: cleanup spends the source's
     // already accepted birth credit, independently of the wait token.
     working_set.source.cancellation().cancel();
-    let drained = working_set.retire_with_work(&crate::CancellationToken::new())?;
+    let drained = working_set.retire(&crate::CancellationToken::new())?;
     assert!(working_set.source.capture_retired());
     assert!(working_set.native_source_io_lease().is_err());
-    let repeated = working_set.retire_with_work(&cancelled_wait)?;
+    let repeated = working_set.retire(&cancelled_wait)?;
     drop(repeated);
     drop(drained);
-    let ready_drained = ready.retire_with_work(&crate::CancellationToken::new())?;
+    let ready_drained = ready.retire(&crate::CancellationToken::new())?;
     assert!(ready.source.capture_retired());
     drop(ready_drained);
     Ok(())

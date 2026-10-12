@@ -560,7 +560,13 @@ impl NativeMount {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .ok_or_else(|| napi_error("mount is stopped"))?
-            .revalidate()
+            .revalidate(
+                &acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .map_err(|(error, _)| napi_error(error))?,
+            )
             .map_err(napi_error)
     }
 

@@ -45,40 +45,71 @@ impl StreamProvider for MemoryStream {
                 .get(&request.destination)
                 .map(|stream| stream.tail),
         )?;
-        let missing = provider_result(missing_paths(&state, std::iter::once(&request.destination), None))?;
+        let missing = provider_result(missing_paths(
+            &state,
+            std::iter::once(&request.destination),
+            None,
+        ))?;
         reserve(&state, &missing.value, 0, 0, self.limits)?;
         provider_result(prepare_retained_capacity(&mut state, None))?;
-        let decision = state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()).ok_or(StreamError::Capacity)?;
-        let commit_id = provider_result(planned_commit_id(decision, digest, None).map_err(MemoryFailure::from))?;
+        let decision = state
+            .commits
+            .len()
+            .checked_add(1)
+            .and_then(|count| u64::try_from(count).ok())
+            .ok_or(StreamError::Capacity)?;
+        let commit_id = provider_result(
+            planned_commit_id(decision, digest, None).map_err(MemoryFailure::from),
+        )?;
         let envelope = CommittedEnvelope {
             commit_id,
             mutations: vec![CommittedMutation::Fork(CommittedFork {
-                source: request.source.clone(), destination: request.destination.clone(),
-                forked_at, tail: forked_at, records: Vec::new(),
+                source: request.source.clone(),
+                destination: request.destination.clone(),
+                forked_at,
+                tail: forked_at,
+                records: Vec::new(),
             })],
         };
         let paths = provider_result(prepare_paths(&missing.value, &envelope, None))?;
         let mutations = provider_result(prepare_mutations(&state, &envelope, None))?;
         drop(missing);
         let receipt = ForkReceipt {
-            source: request.source, destination: request.destination,
-            forked_at, tail: forked_at, commit_id,
+            source: request.source,
+            destination: request.destination,
+            forked_at,
+            tail: forked_at,
+            commit_id,
         };
-        let cached = provider_result(cache_replay(None, Some(envelope), IdempotencyOutcome::Fork(receipt.clone()), Allocation::default())
-            .map_err(MemoryFailure::Observer))?;
-        publish(&mut state, PreparedPublication {
-            cached, key: request.idempotency_key.map(|key| key.0), paths, mutations,
-            resident: Allocation::default(),
-        }, digest);
+        let cached = provider_result(
+            cache_replay(
+                None,
+                Some(envelope),
+                IdempotencyOutcome::Fork(receipt.clone()),
+                Allocation::default(),
+            )
+            .map_err(MemoryFailure::Observer),
+        )?;
+        publish(
+            &mut state,
+            PreparedPublication {
+                cached,
+                key: request.idempotency_key.map(|key| key.0),
+                paths,
+                mutations,
+                resident: Allocation::default(),
+            },
+            digest,
+        );
         Ok(receipt)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
         let records = provider_result(self.read_inner(request, None).await)?;
-        Ok(stream::iter(record_iterator(records)).map(|record| {
-            Ok(record.expect("ordinary reads have no fallible meter"))
-        }).boxed())
+        Ok(stream::iter(record_iterator(records))
+            .map(|record| Ok(record.expect("ordinary reads have no fallible meter")))
+            .boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
@@ -121,9 +152,14 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let page = self.children_page(ChildrenPageRequest {
-            parent: request.parent, limit: request.limit, after: None, hierarchy_version: None,
-        }).await?;
+        let page = self
+            .children_page(ChildrenPageRequest {
+                parent: request.parent,
+                limit: request.limit,
+                after: None,
+                hierarchy_version: None,
+            })
+            .await?;
         Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
     }
 
@@ -150,14 +186,23 @@ impl StreamProvider for MemoryStream {
         {
             return Err(StreamError::HierarchyChanged);
         }
-        let prefix = request.parent.as_ref().map(|parent| format!("{}/", parent.as_str()));
+        let prefix = request
+            .parent
+            .as_ref()
+            .map(|parent| format!("{}/", parent.as_str()));
         let lower = request.after.as_ref().map_or_else(
             || prefix.as_deref().map_or(Bound::Unbounded, Bound::Included),
             |after| Bound::Excluded(after.as_str()),
         );
-        let mut paths = state.paths.range::<str, _>((lower, Bound::Unbounded))
+        let mut paths = state
+            .paths
+            .range::<str, _>((lower, Bound::Unbounded))
             .map(|(path, _)| path)
-            .take_while(|path| prefix.as_ref().is_none_or(|prefix| path.as_str().starts_with(prefix)))
+            .take_while(|path| {
+                prefix
+                    .as_ref()
+                    .is_none_or(|prefix| path.as_str().starts_with(prefix))
+            })
             .filter(|path| {
                 request.parent.as_ref().map_or_else(
                     || !path.as_str().contains('/'),
@@ -190,12 +235,19 @@ impl StreamProvider for MemoryStream {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        self.commit_value(request, Some(deadline_unix_millis), None).await
+        self.commit_value(request, Some(deadline_unix_millis), None)
+            .await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.state.read().await.commits.get(&commit_id)
-            .and_then(|cached| cached.envelope()).cloned().ok_or(StreamError::NotFound)
+        self.state
+            .read()
+            .await
+            .commits
+            .get(&commit_id)
+            .and_then(|cached| cached.envelope())
+            .cloned()
+            .ok_or(StreamError::NotFound)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -218,7 +270,12 @@ impl StreamProvider for MemoryStream {
     ) -> NativeProviderFuture<'_, u64> {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            native(self.bounds_inner(path, Some(&meter)).await.map(|output| output.map(|bounds| bounds.tail)), &meter)
+            native(
+                self.bounds_inner(path, Some(&meter))
+                    .await
+                    .map(|output| output.map(|bounds| bounds.tail)),
+                &meter,
+            )
         })
     }
 
@@ -246,12 +303,27 @@ impl StreamProvider for MemoryStream {
                 return Ok(Err(error));
             }
             let cursor_meter = Arc::clone(&meter);
-            let cursor = stream::iter(record_iterator((MemoryOutput::default(), None))).map(move |record| record.map(|record| Ok(NativeStreamOutput::new(record, ReadAllocation::empty(&cursor_meter)))));
+            let cursor = stream::iter(record_iterator((NativeStreamOutput::default(), None))).map(
+                move |record| {
+                    record.map(|record| {
+                        Ok(NativeStreamOutput::new(
+                            record,
+                            ReadAllocation::empty(&cursor_meter),
+                        ))
+                    })
+                },
+            );
             let allocation = allocate(Some(&meter), std::mem::size_of_val(&cursor))?;
-            let mut cursor = MemoryOutput { value: Box::pin(cursor), allocation };
+            let mut cursor = NativeStreamOutput {
+                value: Box::pin(cursor),
+                allocation,
+            };
             let result = self.read_inner(request, Some(&meter)).await.map(|records| {
                 *cursor.value.as_mut().get_mut().get_mut().get_mut() = record_iterator(records);
-                MemoryOutput { value: cursor.value as NativeRecordStream, allocation: cursor.allocation }
+                NativeStreamOutput {
+                    value: cursor.value as NativeRecordStream,
+                    allocation: cursor.allocation,
+                }
             });
             native(result, &meter)
         })
@@ -302,7 +374,16 @@ impl StreamProvider for MemoryStream {
         NativeProviderFuture::new(&original, async move {
             let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
-            match self.apply_commit(&mut input.value, deadline_unix_millis, Some(&meter), Some(&mut before), None).await {
+            match self
+                .apply_commit(
+                    &mut input.value,
+                    deadline_unix_millis,
+                    Some(&meter),
+                    Some(&mut before),
+                    None,
+                )
+                .await
+            {
                 Ok(Ok((outcome, error, _))) => match error {
                     Some(error) => Err(error),
                     None => native(Ok(outcome), &meter).map(|result| result.map_err(E::from)),
@@ -324,9 +405,10 @@ impl StreamProvider for MemoryStream {
         NativeProviderFuture::new(&original, async move {
             let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
-            let prepared = match self.prepare_commit(
-                &mut input.value, maximum_record_bytes, Arc::clone(&meter),
-            ).await? {
+            let prepared = match self
+                .prepare_commit(&mut input.value, maximum_record_bytes, Arc::clone(&meter))
+                .await?
+            {
                 Ok(prepared) => prepared,
                 Err(error) => return Ok(Err(error)),
             };
@@ -346,9 +428,16 @@ impl StreamProvider for MemoryStream {
                     Err(error) => return Ok(Err(error)),
                 };
                 let [CommitMutation::Append { records, .. }] = input.value.mutations.as_mut_slice()
-                    else { unreachable!("the private template was validated before issuance") };
+                else {
+                    unreachable!("the private template was validated before issuance")
+                };
                 records[0] = body;
-                match provider.finish_commit(prepared, &mut input.value, None).await? {
+                match provider.finish_commit(
+                    &mut *provider.state.write().await,
+                    prepared,
+                    &mut input.value,
+                    None,
+                )? {
                     Ok((outcome, error)) => match error {
                         Some(error) => Err(error),
                         None => native(Ok(outcome), &finish_meter),
@@ -372,5 +461,4 @@ impl StreamProvider for MemoryStream {
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         self.commit_future(request, Some(deadline_unix_millis), meter)
     }
-
 }

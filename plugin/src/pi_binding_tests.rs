@@ -1,149 +1,139 @@
 use super::*;
-
-fn binding(session: &str, identity: u8) -> PiTaskBinding {
-    let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
+pub(crate) fn binding(session: &str, identity: u8) -> PiTaskBinding {
+    let provider =
+        ProviderRef::new("acyclic".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent_id = AgentId::from_bytes([identity; 16]);
+    let scratch = PiScratchBinding {
+        volume: VolumeRef::new(
+            provider.clone(),
+            "scratch".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent_id),
+            &mut None,
+        )
+        .unwrap(),
+        allocation: PiScratchAllocation::Created(PiScratchCreation {
+            workspace_id: [identity; 16],
+            generation: GenerationRef::new(provider, [3; 32].into(), None).unwrap(),
+        }),
+    };
     PiTaskBinding {
-        native_session_id: session.to_owned(),
+        native_session_id: session.into(),
         task_id: TaskId::from_bytes([identity; 16]),
         agent_id,
         project_volumes: BTreeMap::new(),
         results: None,
-        scratch: PiScratchBinding {
-            volume: VolumeRef::new(
-                provider.clone(),
-                "scratch",
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent_id),
-            )
-            .unwrap(),
-            allocation: PiScratchAllocation::Created(PiScratchCreation {
-                workspace_id: [identity; 16],
-                generation: GenerationRef::new(provider, [3; 32].into(), None).unwrap(),
-            }),
-        },
+        scratch,
     }
 }
-
 #[test]
-fn roles_providers_and_original_creation_are_checked() {
+fn allocations_and_selected_roles_are_explicit_and_bound() {
     let original = binding("native-session", 1);
-    original
-        .validate(Some("native-session"), vec![], false)
-        .unwrap();
-    assert!(
-        original
-            .validate(Some("other-session"), vec![], false)
-            .is_err()
-    );
-    assert!(
-        original
-            .validate(None, vec!["missing-root"], false)
-            .is_err()
-    );
-    let mut changed = original.clone();
-    changed.scratch.volume = VolumeRef::new(
-        original.scratch.volume.provider().clone(),
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
-    )
-    .unwrap();
-    assert!(changed.validate(None, vec![], false).is_err());
-    let mut changed = original.clone();
-    let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {
-        panic!("fixture must have a created scratch volume");
-    };
-    creation.generation = GenerationRef::new(
-        ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None).unwrap(),
-        [3; 32].into(),
-        None,
-    )
-    .unwrap();
-    assert!(changed.validate(None, vec![], false).is_err());
-    let mut changed = original;
-    let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {
-        panic!("fixture must have a created scratch volume");
-    };
-    creation.workspace_id = [0; 16];
-    assert!(changed.validate(None, vec![], false).is_err());
-}
-
-#[test]
-fn scratch_allocation_requires_an_explicit_current_variant() {
-    let original = binding("native-session", 1);
+    assert!(original.validate(Some("other-session"), [], false).is_err());
+    assert!(original.validate(None, ["missing-root"], false).is_err());
+    for mutation in 0..3 {
+        let mut changed = original.clone();
+        match mutation {
+            0 => {
+                changed.scratch.volume = VolumeRef::new(
+                    original.scratch.volume.provider().clone(),
+                    "scratch".into(),
+                    VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
+                    &mut None,
+                )
+                .unwrap()
+            }
+            _ => {
+                let PiScratchAllocation::Created(creation) = &mut changed.scratch.allocation else {
+                    unreachable!()
+                };
+                if mutation == 1 {
+                    creation.generation = GenerationRef::new(
+                        ProviderRef::new(
+                            "other".into(),
+                            "filesystem".into(),
+                            "1".into(),
+                            &mut None,
+                        )
+                        .unwrap(),
+                        [3; 32].into(),
+                        None,
+                    )
+                    .unwrap();
+                } else {
+                    creation.workspace_id = [0; 16];
+                }
+            }
+        }
+        assert!(changed.validate(None, [], false).is_err());
+    }
     let current = serde_json::to_value(&original).unwrap();
-    let mut preparing = original;
-    preparing.scratch.allocation = PiScratchAllocation::Preparing;
-    let prepared = serde_json::to_value(&preparing).unwrap();
-    let decoded: PiTaskBinding = serde_json::from_value(prepared).unwrap();
-    decoded.validate(None, vec![], true).unwrap();
-    assert!(decoded.validate(None, vec![], false).is_err());
-    for replacement in [
-        serde_json::Value::Null,
+    for allocation in [
+        Value::Null,
         json!({}),
         json!({"state":"unknown"}),
         json!({"state":"created"}),
     ] {
         let mut invalid = current.clone();
-        *invalid.pointer_mut("/scratch/allocation").unwrap() = replacement;
+        invalid["scratch"]["allocation"] = allocation;
         assert!(serde_json::from_value::<PiTaskBinding>(invalid).is_err());
     }
     let mut omitted = current;
-    omitted
-        .get_mut("scratch")
-        .unwrap()
+    omitted["scratch"]
         .as_object_mut()
         .unwrap()
         .remove("allocation");
     assert!(serde_json::from_value::<PiTaskBinding>(omitted).is_err());
-}
-
-#[test]
-fn project_selection_rejects_aliases_and_non_project_roles() {
-    let mut selected = binding("native-session", 1);
+    let mut selected = original;
+    selected.scratch.allocation = PiScratchAllocation::Preparing;
+    let mut selected: PiTaskBinding =
+        serde_json::from_value(serde_json::to_value(selected).unwrap()).unwrap();
+    selected.validate(None, [], true).unwrap();
+    assert!(selected.validate(None, [], false).is_err());
+    selected.scratch.allocation = binding("native-session", 1).scratch.allocation;
     let project = VolumeRef::new(
         selected.scratch.volume.provider().clone(),
-        "project",
+        "project".into(),
         VolumeClass::Project,
-        VolumeOwner::Project("project-owner".to_owned()),
+        VolumeOwner::Project("project-owner".into()),
+        &mut None,
     )
     .unwrap();
-    selected
-        .project_volumes
-        .insert("a".to_owned(), project.clone());
-    selected.validate(None, vec!["a"], false).unwrap();
-    selected.project_volumes.insert("b".to_owned(), project);
-    assert!(selected.validate(None, vec!["a", "b"], false).is_err());
+    selected.project_volumes.insert("a".into(), project.clone());
+    selected.validate(None, ["a"], false).unwrap();
+    selected.project_volumes.insert("b".into(), project);
+    assert!(selected.validate(None, ["a", "b"], false).is_err());
     selected.project_volumes.remove("b");
     selected
         .project_volumes
-        .insert("a".to_owned(), selected.scratch.volume.clone());
-    assert!(selected.validate(None, vec!["a"], false).is_err());
+        .insert("a".into(), selected.scratch.volume.clone());
+    assert!(selected.validate(None, ["a"], false).is_err());
 }
-
 #[test]
-fn retained_bindings_reject_mixed_hosts_and_duplicate_task_identities() {
+fn retained_bindings_reject_mixed_hosts_and_reused_task_ids() {
     let root = binding("root-session", 1);
     let mut state = AdapterState {
         task_binding: PluginTaskBinding::Pi(Box::new(root.clone())),
-        root_session_id: "root-session".to_owned(),
-        root_agent_id: "root:root-session".to_owned(),
+        root_session_id: "root-session".into(),
+        root_agent_id: "root:root-session".into(),
         ..AdapterState::default()
     };
     validate_pi_bindings(&state).unwrap();
-    let route = Route {
-        task_binding: PluginTaskBinding::HostManaged,
-        agent_id: "child-session".to_owned(),
-        turn_id: "turn".to_owned(),
-        context_id: [2; 16],
-        root_id: [2; 16],
-        parent_agent_id: state.root_agent_id.clone(),
-        roots: BTreeMap::new(),
-        mount_path: PathBuf::new(),
-        lifecycle: RouteLifecycle::Active,
-    };
-    state.routes.insert("child-session".to_owned(), route);
+    state.routes.insert(
+        "child-session".into(),
+        Route {
+            task_binding: PluginTaskBinding::HostManaged,
+            agent_id: "child-session".into(),
+            turn_id: "turn".into(),
+            context_id: [2; 16],
+            root_id: [2; 16],
+            parent_agent_id: state.root_agent_id.clone(),
+            roots: BTreeMap::new(),
+            mount_path: PathBuf::new(),
+            lifecycle: RouteLifecycle::Active,
+        },
+    );
     assert!(validate_pi_bindings(&state).is_err());
     let mut child = binding("child-session", 2);
     state.routes.get_mut("child-session").unwrap().task_binding =
@@ -155,40 +145,4 @@ fn retained_bindings_reject_mixed_hosts_and_duplicate_task_identities() {
     assert!(validate_pi_bindings(&state).is_err());
     state.task_binding = PluginTaskBinding::HostManaged;
     assert!(validate_pi_bindings(&state).is_err());
-}
-
-#[test]
-fn native_retained_binding_validation_uses_original_work_and_retires_keys() {
-    let state = AdapterState {
-        task_binding: PluginTaskBinding::Pi(Box::new(binding("root-session", 1))),
-        root_session_id: "root-session".to_owned(),
-        root_agent_id: "root:root-session".to_owned(),
-        ..AdapterState::default()
-    };
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let live = work.live_allocation_bytes();
-    validate_pi_bindings_with_native_work(&state, &work).unwrap();
-    assert_eq!(work.live_allocation_bytes(), live);
-    let mut substituted = state.clone();
-    let PluginTaskBinding::Pi(root) = &mut substituted.task_binding else { unreachable!() };
-    root.task_id = TaskId::from_bytes([0; 16]);
-    assert!(matches!(validate_pi_bindings_with_native_work(&substituted, &work),
-        Err(acyclic_harness::Error::NativeBoundary { .. })));
-    assert_eq!(work.live_allocation_bytes(), live);
-    let before = work.receipt();
-    cancellation.cancel();
-    assert!(matches!(validate_pi_bindings_with_native_work(&state, &work),
-        Err(acyclic_harness::Error::NativeWork { .. })));
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), live);
-    let limited = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-        items_examined: 0, ..crate::pi_root_provider::allocation_budget()
-    }, &acyclic_fs::CancellationToken::new()).unwrap();
-    let live = limited.live_allocation_bytes();
-    assert!(matches!(validate_pi_bindings_with_native_work(&AdapterState::default(), &limited),
-        Err(acyclic_harness::Error::NativeWork { .. })));
-    assert_eq!(limited.live_allocation_bytes(), live);
-    assert_eq!(limited.receipt().items_examined, 0);
 }

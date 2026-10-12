@@ -1,7 +1,7 @@
-use crate::async_storage::AsyncObjectStore;
-use crate::kernel::decode_file_table_page;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
+use crate::kernel::decode_file_table_page;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{
     FileKind, FilePayload, FileTablePage, encode_file_table_page, file_table_page_id,
@@ -53,10 +53,17 @@ async fn put(
     maximum_items: u32,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, maximum_items)?;
-    store.put(
+    {
+        let __object_args = (
         id,
         OwnedBytes::from(encode_file_table_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -118,11 +125,24 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
     ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
-    let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-        .value;
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
     let FileTablePage::Internal(children) =
-        decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+        decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("candidate file table is not internal".into());
     };
@@ -150,11 +170,26 @@ async fn unordered_file_table_mutations_are_sorted_once_and_persist_canonically(
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
-    let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-        .value;
-    let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
+    )
+    .await?;
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
+    let FileTablePage::Leaf(records) =
+        decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
     else {
         return Err("unordered file-table result is not a leaf".into());
     };
@@ -257,20 +292,47 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
         limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    ).await?;
+    )
+    .await?;
     assert_eq!(receipt.work.page_writes, 3);
-    let root_bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-        .value;
+    let root_bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
     assert!(root_bytes.len() <= 120);
-    let FileTablePage::Internal(children) = decode_file_table_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
+    let FileTablePage::Internal(children) =
+        decode_file_table_page(&root_bytes, limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+    else {
         return Err("byte-bounded candidate root is not internal".into());
     };
     assert_eq!(children.len(), 2);
     for child in children {
-        let bytes = store
-            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
-            .value;
+        let bytes = {
+            let __object_args = (
+                child.page,
+                u64::MAX,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value;
         assert!(bytes.len() <= 120);
         assert!(matches!(
             decode_file_table_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
@@ -281,13 +343,15 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
+async fn item_larger_than_page_bound_rejects_before_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_file_table_mutations(
         &store,
         root,
-        vec![FileTableMutation::Insert(record(1, 1))],
+        vec![
+            FileTableMutation::Insert(record(1, 1))],
         1,
         DecodeLimits {
             maximum_page_bytes: 72,
@@ -295,8 +359,7 @@ async fn item_larger_than_page_bound_rejects_before_writes() -> Result<(), Box<d
         },
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
-    )
-    .await
+    ).await
     .err()
     .ok_or("oversized file-table item unexpectedly succeeded")?;
     assert!(matches!(
