@@ -341,7 +341,7 @@ struct DarwinMountContext {
     native_allocation: Option<crate::NativeAllocation>,
     callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     source_original_work: Option<crate::NativeMaterializationWork>,
-    allocation_custody: Option<crate::demand::NativeMountAllocationCustody>,
+    allocation_custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
 }
 
 struct CallbackGate {
@@ -422,7 +422,7 @@ struct AroundChanges {
 }
 
 impl ViewObserver for DarwinMountContext {
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         self.allocation_custody.clone()
     }
 
@@ -2474,7 +2474,7 @@ pub(super) struct DarwinRecoveryControl {
 /// Retains the original detach work and allocation.
 pub(crate) struct DetachReadMeter {
     work: Mutex<Option<crate::NativeMaterializationWork>>,
-    custody: crate::demand::NativeMountAllocationCustody,
+    custody: std::sync::Arc<crate::demand::NativeMountAllocationCustody>,
 }
 
 struct DirectUnmountTask {
@@ -2524,7 +2524,6 @@ fn new_detach_meter(
     let meter = Arc::new(DetachReadMeter {
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
-    native.source_leaf(|original| custody.attach_known_control(Arc::downgrade(&meter) as _, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
     Ok(meter)
 }
 
@@ -3094,11 +3093,11 @@ impl Drop for DarwinBytes {
     }
 }
 
-type DarwinFile = (Arc<dyn MountOpenFile>, Option<super::NativeMountAllocationCustody>);
+type DarwinFile = (Arc<dyn MountOpenFile>, Option<std::sync::Arc<super::NativeMountAllocationCustody>>);
 
 struct DarwinOwned<T> {
     value: Option<T>,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     bytes: u64,
     allocation: Option<crate::NativeAllocation>,
 }

@@ -847,14 +847,6 @@ pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCha
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, code, charge)
 }
 
-/// Native carrier for the legacy identity policy, restricted to an already paid, trusted resident Value.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<Vec<u8>> {
-    encode(value, JsonBounds::IDENTITY, Some(code), charge)
-}
-
 /// SDK-private sizing of an already bounded, audited closed source.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -948,15 +940,12 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
 /// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, output: &mut Vec<u8>, maximum_bytes: u64,
+    value: &Value, output: &mut [u8], maximum_bytes: u64,
     code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<()> {
+) -> Result<usize> {
     let maximum = usize::try_from(maximum_bytes)
         .map_err(|_| Error::NativeBoundary { code, reason: "JSON output exceeds address space" })?;
-    if !output.is_empty() {
-        return Err(Error::NativeBoundary { code, reason: "JSON prepaid output must be empty" });
-    }
-    if output.capacity() < maximum {
+    if output.len() < maximum {
         return Err(Error::NativeBoundary { code, reason: "JSON prepaid output capacity is insufficient" });
     }
     let mut meter = Meter { bounds: JsonBounds { maximum_bytes, ..JsonBounds::IDENTITY },
@@ -965,37 +954,40 @@ pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCode
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(meter.root_error(error));
     }
-    write_canonical_output(value, output, maximum, &mut meter)
+    write_canonical_output(value, &mut std::io::Cursor::new(output), maximum, &mut meter)
 }
 
 struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> {
-    bytes: &'a mut Vec<u8>,
+    bytes: &'a mut dyn std::io::Write,
     maximum: usize,
+    written: usize,
     meter: &'a mut Meter<'b, F>,
 }
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.maximum.checked_sub(self.bytes.len())
+        let remaining = self.maximum.checked_sub(self.written)
             .ok_or_else(|| self.meter.bound("JSON exceeds admitted output").into_io())?;
         if bytes.len() > remaining {
             return Err(self.meter.bound("JSON exceeds admitted output").into_io());
         }
         self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(CodecError::into_io)?;
         self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
-        self.bytes.extend_from_slice(bytes);
+        self.bytes.write_all(bytes)?;
+        self.written += bytes.len();
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 fn write_canonical_output<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, bytes: &mut Vec<u8>, maximum: usize, meter: &mut Meter<'_, F>,
-) -> Result<()> {
-    if let Err(error) = serde_json::to_writer(Output { bytes, maximum, meter }, value) {
-        return Err(meter.root_error(error.into()));
+    value: &Value, bytes: &mut dyn std::io::Write, maximum: usize, meter: &mut Meter<'_, F>,
+) -> Result<usize> {
+    let mut output = Output { bytes, maximum, written: 0, meter };
+    if let Err(error) = serde_json::to_writer(&mut output, value) {
+        return Err(output.meter.root_error(error.into()));
     }
-    Ok(())
+    Ok(output.written)
 }
 
 pub(super) fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(

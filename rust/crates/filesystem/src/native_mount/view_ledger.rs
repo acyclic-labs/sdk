@@ -98,7 +98,7 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation custody, when this is an SDK-owned observer.
-    fn allocation_custody(&self) -> Option<super::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<super::NativeMountAllocationCustody>> {
         None
     }
 
@@ -110,7 +110,7 @@ pub trait ViewObserver: Send + Sync {
 
 #[derive(Default)]
 struct ViewObserverRegistry {
-    observers: Vec<(Weak<dyn ViewObserver>, Option<super::NativeMountAllocationCustody>)>,
+    observers: Vec<(Weak<dyn ViewObserver>, Option<std::sync::Arc<super::NativeMountAllocationCustody>>)>,
     pending: Option<PendingViewNotification>,
     next_notification: u64,
 }
@@ -195,7 +195,7 @@ impl PendingDeliveryBuffer {
 #[derive(Default)]
 struct PendingDeliveryBuffer {
     entries: Vec<PendingObserverDelivery>,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
 }
 
 impl Drop for PendingDeliveryBuffer {
@@ -246,9 +246,9 @@ impl Drop for PreparedObserverJoin {
 impl ViewLedger {
     fn add_locked(
         &self,
-        observers: &mut Vec<(Weak<dyn ViewObserver>, Option<super::NativeMountAllocationCustody>)>,
+        observers: &mut Vec<(Weak<dyn ViewObserver>, Option<std::sync::Arc<super::NativeMountAllocationCustody>>)>,
         observer: Weak<dyn ViewObserver>,
-        custody: Option<super::NativeMountAllocationCustody>,
+        custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
         registry: &mut Option<(u64, u64)>,
         allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut crate::WorkCounters,
@@ -261,7 +261,7 @@ impl ViewLedger {
             allocations.release(bytes).map_err(observer_allocation_error)?;
             *registry = None;
         }
-        let width = std::mem::size_of::<(Weak<dyn ViewObserver>, Option<super::NativeMountAllocationCustody>)>();
+        let width = std::mem::size_of::<(Weak<dyn ViewObserver>, Option<std::sync::Arc<super::NativeMountAllocationCustody>>)>();
         let sweep = crate::WorkCounters {
             items_examined: observers.len() as u64,
             bytes_copied: observers.len().checked_mul(width)
@@ -698,7 +698,7 @@ impl ViewLedger {
     ) -> Result<(usize, ViewLedgerAdmission), super::MountSourceError> {
         work.check().map_err(super::lazy::mount_demand_error)?;
         let (roots, allocations, counters, budget) =
-            work.view_ledger_admission_parts().map_err(super::lazy::mount_demand_error)?;
+            work.admissions(|roots| &mut roots.view_ledgers).map_err(super::lazy::mount_demand_error)?;
         roots.take(self, allocations, counters, budget)
     }
 
@@ -851,7 +851,7 @@ impl ViewLedger {
                     } else { 0 };
                     let admitted = (|| {
                         let (admissions, allocations, counters, budget) =
-                            work.view_observer_admission_parts().map_err(mount_demand_error)?;
+                            work.admissions(|roots| &mut roots.view_observers).map_err(mount_demand_error)?;
                         let entry = admissions.entry_mut(self, allocations, counters, budget)?;
                         self.add_locked(
                             &mut hub.observers, observer.clone(), custody.clone(),
@@ -1962,7 +1962,7 @@ mod tests {
         let ledger = Arc::new(ViewLedger::new());
         let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let (slot, mut first) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&ledger, allocations, counters, budget)?
         };
         let named = path(&["original"])?;
@@ -1977,7 +1977,7 @@ mod tests {
         let live = work.live_allocation_bytes();
         let allocated = work.work.allocation_operations;
         let (same_slot, mut second) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&ledger, allocations, counters, budget)?
         };
         assert_eq!(slot, same_slot);
@@ -1990,8 +1990,8 @@ mod tests {
         ledger.record(&change, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), &mut second)?;
         assert_eq!(work.work.allocation_operations, allocated);
         assert_eq!(work.live_allocation_bytes(), live);
-        work.restore_view_ledger_admission(slot, first);
-        work.restore_view_ledger_admission(same_slot, second);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(slot, first);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(same_slot, second);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live);
         assert_eq!(work.work.allocation_operations, allocated);
@@ -2005,7 +2005,7 @@ mod tests {
         let ledger = Arc::new(ViewLedger::new());
         let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let (slot, mut loan) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&ledger, allocations, counters, budget)?
         };
         ledger.record(&ViewChange::Node(FileId::from_bytes([1; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), &mut loan)?;
@@ -2022,7 +2022,7 @@ mod tests {
         let reconciled = work.live_allocation_bytes();
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), reconciled);
-        work.restore_view_ledger_admission(slot, loan);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(slot, loan);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), reconciled);
         Ok(())
@@ -2036,16 +2036,16 @@ mod tests {
         let second_source = Arc::new(ViewLedger::new());
         let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let (first_slot, mut first) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&first_source, allocations, counters, budget)?
         };
         let (second_slot, mut second) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&second_source, allocations, counters, budget)?
         };
         assert_ne!(first_slot, second_slot);
         let (nested_slot, mut nested) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&first_source, allocations, counters, budget)?
         };
         assert_eq!(nested_slot, first_slot);
@@ -2056,23 +2056,23 @@ mod tests {
         assert!(!Arc::ptr_eq(original, other));
         first_source.record(&ViewChange::Node(FileId::from_bytes([11; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), &mut first)?;
         second_source.record(&ViewChange::Node(FileId::from_bytes([12; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), &mut second)?;
-        work.restore_view_ledger_admission(first_slot, first);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(first_slot, first);
         let live = work.live_allocation_bytes();
         work.budget.items_examined = work.work.items_examined;
         assert!(matches!(first_source.record(&ViewChange::Node(FileId::from_bytes([13; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut work), &mut nested), Err(super::super::MountSourceError::Work(_))));
-        work.restore_view_ledger_admission(second_slot, second);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(second_slot, second);
         cancellation.cancel();
         assert!(matches!(work.check(), Err(crate::demand::DemandError::Cancelled)));
-        work.restore_view_ledger_admission(nested_slot, nested);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(nested_slot, nested);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live);
         work.budget = crate::WorkBudget::UNBOUNDED;
         let (restored_slot, restored) = {
-            let (roots, allocations, counters, budget) = work.view_ledger_admission_parts()?;
+            let (roots, allocations, counters, budget) = work.admissions(|roots| &mut roots.view_ledgers)?;
             roots.take(&first_source, allocations, counters, budget)?
         };
         assert_eq!(restored_slot, first_slot);
-        work.restore_view_ledger_admission(restored_slot, restored);
+        work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(restored_slot, restored);
         Ok(())
     }
 

@@ -93,7 +93,7 @@ struct ProjectedEntry {
 
 struct RetainedBuffer<T> {
     value: Option<T>,
-    custody: crate::demand::NativeMountAllocationCustody,
+    custody: std::sync::Arc<crate::demand::NativeMountAllocationCustody>,
     bytes: u64,
     /// Canonical native claim; `bytes` counts only ordinary custody above.
     native_allocation: Option<crate::NativeAllocation>,
@@ -107,7 +107,7 @@ impl<T> RetainedBuffer<T> {
             native_allocation: self.native_allocation.take(), source_ownership: self.source_ownership.take() }
     }
 
-    fn source_owned(value: T, ownership: crate::demand::SourcePayloadOwnership, custody: crate::demand::NativeMountAllocationCustody) -> Self {
+    fn source_owned(value: T, ownership: crate::demand::SourcePayloadOwnership, custody: std::sync::Arc<crate::demand::NativeMountAllocationCustody>) -> Self {
         Self { value: Some(value), custody, bytes: 0, native_allocation: None, source_ownership: Some(ownership) }
     }
 
@@ -150,7 +150,7 @@ impl<T> Drop for RetainedBuffer<T> {
 }
 
 fn clone_host_path_with_work(
-    path: &std::path::Path, custody: &crate::demand::NativeMountAllocationCustody, work: &crate::NativeMaterializationWork,
+    path: &std::path::Path, custody: &std::sync::Arc<crate::demand::NativeMountAllocationCustody>, work: &crate::NativeMaterializationWork,
 ) -> Result<RetainedBuffer<PathBuf>, NativeMountError> {
     let bytes = path.as_os_str().as_encoded_bytes().len() as u64;
     let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
@@ -1078,7 +1078,7 @@ struct Projection<'a> {
     source: &'a dyn MountFilesystem,
     work: &'a crate::NativeMaterializationWork,
     /// Physical owners may retain this proof, but never an original meter alias, after the scoped queue has returned the original invocation.
-    custody: &'a crate::demand::NativeMountAllocationCustody,
+    custody: &'a std::sync::Arc<crate::demand::NativeMountAllocationCustody>,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     root: &'a std::path::Path,
     root_identity: crate::NativeRootIdentity,
@@ -1383,7 +1383,7 @@ struct Projector {
     paths: Mutex<MemoMap<MountPath, Arc<NativeOwned<Mutex<()>>>>>,
     changed: Condvar,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-    custody: crate::demand::NativeMountAllocationCustody,
+    custody: std::sync::Arc<crate::demand::NativeMountAllocationCustody>,
     scoped_work: Mutex<super::NativeMountMeterActivation>,
     scope_gate: Mutex<()>,
     active_rounds: std::sync::atomic::AtomicUsize,
@@ -1554,7 +1554,7 @@ impl ViewObserver for Projector {
         self.changed.notify_all();
     }
 
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         Some(self.custody.clone())
     }
 }
@@ -1567,7 +1567,7 @@ enum Replaced {
 
 impl Projector {
 
-    fn new(custody: &crate::demand::NativeMountAllocationCustody, work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
+    fn new(custody: &std::sync::Arc<crate::demand::NativeMountAllocationCustody>, work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
         let allocation = work.claim(size_of::<Self>() as u64, u64::from((size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         Ok(Self {
             state: Mutex::new(ProjectorState::default()),
@@ -6902,7 +6902,7 @@ mod tests {
         let original = outcome._stage.as_ref().expect("original held-stage metadata, not an ambient replacement");
         assert!(original.directory.is_none(), "physical success requires the actual original directory handle to close");
         assert_eq!(original.identity, identity);
-        assert!(!original.name.data.as_slice().is_empty());
+        assert!(!original._name.data.as_slice().is_empty());
         let (primary, secondary) = outcome.take_capture_failures().expect("actual namespace-only refusal");
         assert_eq!(super::native_mount_error_code(&primary), Some(super::HR_DIRECTORY_NOT_EMPTY));
         assert!(secondary.is_none(), "no authored capture failure was invented");

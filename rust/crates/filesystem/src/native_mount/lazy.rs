@@ -37,7 +37,7 @@ struct MountSyncWork<'w> {
     meter: super::adapter::NativeDemandCarrier<'w>,
     view: super::view_ledger::ViewLedgerAdmission,
     view_slot: usize,
-    scratch_custody: Option<super::NativeMountAllocationCustody>,
+    scratch_custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     reserved_items: u64,
     observation: MountPublicationObservation,
     publication_snapshot: Option<crate::NativePublicationSnapshot>,
@@ -49,7 +49,7 @@ enum MountPublicationObservation { Ordinary, Qualified }
 
 struct MountSyncBuffer<T: Default> {
     value: T,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     bytes: u64,
     native_allocation: Option<crate::NativeAllocation>,
 }
@@ -174,7 +174,7 @@ impl<'w> MountSyncWork<'w> {
 
     fn cancellation(&mut self) -> crate::CancellationToken { self.meter.cancellation() }
 
-    fn retain_scratch(&mut self, bytes: u64) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
+    fn retain_scratch(&mut self, bytes: u64) -> Result<std::sync::Arc<super::NativeMountAllocationCustody>, MountSourceError> {
         if self.scratch_custody.is_none() {
             let custody = self.meter.new_custody()?;
             self.scratch_custody = Some(custody);
@@ -371,7 +371,7 @@ impl Drop for MountSyncWork<'_> {
         let reserved = std::mem::take(&mut self.reserved_items);
         self.meter.with_work(|work| {
             work.refund(crate::materializer::NativeResourceCredit::Items, reserved).expect("original reservation is balanced");
-            work.restore_view_ledger_admission(self.view_slot, view);
+            work.admissions_completed(|roots| &mut roots.view_ledgers).0.restore(self.view_slot, view);
         });
     }
 }
@@ -415,12 +415,8 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
             kind: super::NativeSourceTextKind::Engine,
             text: "source demand failed: source request is invalid",
         },
-        #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        DemandError::LinuxMetadata(error) => MountSourceError::Metadata(error),
-        #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        DemandError::MacMetadata(error) => MountSourceError::Metadata(error),
-        #[cfg(all(windows, any(feature = "native-mount", test)))]
-        DemandError::WindowsMetadata(error) => MountSourceError::Metadata(error),
+        #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
+        DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
         DemandError::SourceWatchStartup(owner) => MountSourceError::SourceWatchStartup(owner),
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -1711,7 +1707,7 @@ struct MountedRemoval {
 
 struct MountedRemovalPath {
     text: String,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     bytes: u64,
     native_allocation: Option<crate::NativeAllocation>,
 }
@@ -1759,7 +1755,7 @@ type CapturedRemovalData = ((FileRecord, FileMetadata), usize);
 struct CapturedRemovalRecord {
     value: (FileRecord, FileMetadata),
     paths: usize,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     bytes: u64,
 }
 
@@ -1883,7 +1879,7 @@ struct PendingDetachedIdentity<A, O> {
     epoch: u64,
     operation: Option<crate::OperationId>,
     // Declared last: the frozen physical collection hold drops first.
-    _custody: super::NativeMountAllocationCustody,
+    _custody: std::sync::Arc<super::NativeMountAllocationCustody>,
 }
 
 fn retain_pending_detached_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1913,7 +1909,7 @@ struct DetachedIdentity<A, O> {
 
 struct DetachedTable<A, O> {
     entries: Vec<(FileId, DetachedIdentity<A, O>)>,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
     bytes: u64,
     native_allocation: Option<crate::NativeAllocation>,
 }
@@ -2300,7 +2296,7 @@ pub struct NativeMountSourceWatchOwner {
     sink: Option<Arc<dyn SourceChangeSink>>,
     startup_failure: Option<Arc<crate::source_watch::SourceWatchStartupFailure>>,
     bytes: u64,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
 }
 
 impl NativeMountSourceWatchOwner {
@@ -2459,7 +2455,7 @@ where Self: Send + Sync, CheckoutMountSource<A, O>: Send + Sync {
 #[derive(Default)]
 struct LinkedIdentities {
     values: Vec<FileId>,
-    custody: Option<super::NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<super::NativeMountAllocationCustody>>,
 }
 
 impl Drop for LinkedIdentities {
@@ -5508,7 +5504,7 @@ where
 
 pub(super) fn with_native_callback_carrier<T>(
     runtime: &CallbackRuntime, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, super::adapter::PreparedCallbackWait)
+    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, Arc<super::adapter::CallbackWait>)
         -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;
@@ -7969,9 +7965,7 @@ mod tests {
                     let allowance = original.remaining().map_err(MountSourceError::NativeWork)?;
                     let prefix = original.receipt();
                     let workspace = view.lazy.workspace();
-                    let inspected = workspace.volume.fs.authority().publication_reservation_with_native_work(
-                        workspace.authority_id(), operation, &original, original.cancellation(),
-                    ).await.map_err(|error| MountSourceError::Filesystem(crate::FsError::Authority(error)))?;
+                    let inspected = ({ let __authority_args = (workspace.authority_id(), operation, &original, original.cancellation(),); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = workspace.volume.fs.authority().publication_reservation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(|error| MountSourceError::Filesystem(crate::FsError::Authority(error)))?;
                     assert!(inspected.is_none(), "unrestricted filesystem permit is not task authority");
                     let completed = original.receipt();
                     assert!(completed.authority_records_read > prefix.authority_records_read);
@@ -8289,7 +8283,7 @@ mod tests {
         assert!(view.lookup(&next)?.is_none());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.paths.is_empty());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.publication.is_none());
-        view.lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        ({ let __authority_args = (reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = view.lazy.workspace().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -8368,7 +8362,7 @@ mod tests {
             assert_eq!(std::fs::read(source_root.path().join("a"))?, b"source");
             assert_eq!(std::fs::read(source_root.path().join("b"))?, b"source");
             assert!(view.lookup(&a)?.is_none());
-            lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            ({ let __authority_args = (reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = lazy.workspace().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
@@ -10503,7 +10497,7 @@ mod tests {
                     mount_items(&mut work, 1)?;
                     let owned = match change {
                         SourceChange::Name(path) | SourceChange::Entry(path) => {
-                            let (_, ledger, counters, budget) = work.native_mount_admission_parts()
+                            let (_, ledger, counters, budget) = work.admissions(|roots| &mut roots.native_mount_admissions)
                                 .map_err(mount_demand_error)?;
                             let copied = path.clone_with_ledger(ledger, counters, budget, cancellation)
                                 .map_err(|error| match error {

@@ -2454,7 +2454,7 @@ impl HostRoot {
         &self, name: &Path, destination: &Self, destination_name: &Path,
         work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
-        crate::native_exchange::exchange_native_entries_held_measured(
+        crate::native_exchange::exchange_native_entries_held(
             &self.directory, name, &destination.directory, destination_name, work,
         )
     }
@@ -2462,7 +2462,7 @@ impl HostRoot {
     pub(crate) fn recover_entry_exchange_measured(
         &self, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
-        crate::native_exchange::recover_native_entry_exchange_held_measured(
+        crate::native_exchange::recover_native_entry_exchange_held(
             &self.directory, name, work,
         )
     }
@@ -6606,7 +6606,7 @@ mod macos_metadata_tests {
                     posix_flags: MetadataField::Value(1),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
         ));
         assert!(matches!(
             root.open_macos_metadata_target(Path::new("file"), &mut work)?
@@ -6614,7 +6614,7 @@ mod macos_metadata_tests {
                     changed_ns: MetadataField::Value(1),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
         ));
         Ok(())
     }
@@ -6658,7 +6658,7 @@ mod macos_metadata_tests {
                     posix_mode: MetadataField::Value(0o640),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
         ));
         let old_socket = temporary.path().join("old-socket");
         let pending = root.open_macos_metadata_target(Path::new("socket"), &mut work)?;
@@ -6903,7 +6903,7 @@ mod tests {
                 created_ns: MetadataField::Value(12),
                 ..representable
             }, &mut work),
-            Err(crate::DemandError::LinuxMetadata(super::NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(super::NativeMetadataError(_)))
         ));
         assert_eq!(
             std::fs::metadata(&moved)?.permissions().mode() & 0o7777,
@@ -7422,7 +7422,7 @@ mod windows_clone_tests {
                     windows_attributes: MetadataField::Value(REPARSE_POINT),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
         ));
         assert!(matches!(
             super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("file"), &mut work)
@@ -7433,7 +7433,7 @@ mod windows_clone_tests {
                     }),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+            Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
         ));
         assert!(
             root.open_windows_metadata_target(Path::new("../outside"), &mut work)

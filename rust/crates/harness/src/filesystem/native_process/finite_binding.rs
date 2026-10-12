@@ -16,7 +16,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
 ) -> Result<()> {
     require_family(view.original_native_work(), work)?;
     view.operation_cancellation().check()
-        .map_err(acyclic_fs::NativeTreeMaterializationError::from)
+        .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)
         .map_err(Error::from)
 }
 
@@ -31,19 +31,6 @@ pub(super) fn copy_plan_with_io(
         request: plan.request.copy(&mut Some(&mut observer))?,
         result_schema: plan.result_schema.copy(&mut Some(&mut observer))?,
     })
-}
-
-pub(super) fn shared_custody(
-    mut custody: NativeAllocation, work: &NativeMaterializationWork,
-) -> Result<Arc<NativeAllocation>> {
-    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED) {
-        Ok(slot) => slot,
-        Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
-    };
-    if let Err(cause) = custody.absorb(&mut slot) {
-        return Err(Error::NativeWork { cause, custody: Some(custody) });
-    }
-    Ok(Arc::new(custody))
 }
 
 fn arc<T>(value: T, io: &PreparationIo) -> Result<Arc<T>> {
@@ -121,9 +108,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             }
             let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
             authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
-            let invocation = Invocation {
-                view, request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
-            };
+            let invocation = arc(Invocation { view, request, result_schema, approval_digest }, &io)?;
             let provider = assemble(io, owner, command, plan, Some(invocation), approval, authority, work)?;
             provider.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             require_view_family(provider.invocation()?.view.as_ref(), work)?;
@@ -132,10 +117,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
     }
 }
 
-
 pub(super) fn assemble<P: StreamProvider>(
     io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
-    invocation: Option<Invocation<P>>, approval: InteractionId,
+    invocation: Option<Arc<Invocation<P>>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
@@ -146,7 +130,15 @@ pub(super) fn assemble<P: StreamProvider>(
     let history = arc(history, &io)?;
     let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new() }, &io)?;
     let retained = io.owned_bytes()?;
+    let mut custody = io.into_native_custody(retained)?;
+    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED) {
+        Ok(slot) => slot,
+        Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
+    };
+    if let Err(cause) = custody.absorb(&mut slot) {
+        return Err(Error::NativeWork { cause, custody: Some(custody) });
+    }
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _arc_custody: None,
-        _custody: shared_custody(io.into_native_custody(retained)?, work)? })
+        _custody: Arc::new(custody) })
 }

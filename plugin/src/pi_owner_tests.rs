@@ -1,3 +1,4 @@
+use std::fs;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::{policy, work};
@@ -515,7 +516,7 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
             _ => unreachable!(),
         }
         let plain = serde_json::to_vec(&value).unwrap();
-        let protected = protection::protect(&plain).unwrap();
+        let protected = protection::protect_with_copy(&plain, |bytes| Ok::<_, std::io::Error>(bytes.to_vec())).unwrap();
         let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
         bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
         bytes.extend_from_slice(&protected);

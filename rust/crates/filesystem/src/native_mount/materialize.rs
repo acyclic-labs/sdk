@@ -297,11 +297,11 @@ fn materialize_demand_error(error: DemandError) -> MaterializeError {
         DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
         DemandError::Io(error) => MaterializeError::Io(error),
         #[cfg(target_os = "linux")]
-        DemandError::LinuxMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         #[cfg(target_os = "macos")]
-        DemandError::MacMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         #[cfg(windows)]
-        DemandError::WindowsMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
+        DemandError::NativeMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         error => MaterializeError::Demand(error),
     }
 }
@@ -1842,7 +1842,7 @@ where
         }
         (FileKind::SymbolicLink, FilePayload::SymbolicLink { target_bytes, .. }) => {
             let target = read_source!(receipt, remaining, value,
-                reader.read_symbolic_link_with_native_work(path, receipt.custody.work(), cancellation) => value,
+                reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
                 reader.read_symbolic_link(path, remaining, cancellation) => {
                     receipt.adopt(value.len())?;
                     value
@@ -2118,7 +2118,7 @@ where
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(receipt, remaining, value,
-            reader.read_metadata_with_native_work(path, receipt.custody.work(), cancellation) => value,
+            reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
             reader.read_metadata(path, remaining, cancellation) => value,
         ),
     };

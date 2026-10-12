@@ -1,5 +1,4 @@
 use super::*;
-
 /// Opaque identity and invalidation epoch of an attached source.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -78,27 +77,22 @@ pub struct SourceNode {
     pub metadata: SourceMetadata,
 }
 
-/// One named node returned by a source directory.
+/// One directory entry in native enumeration order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceDirectoryEntry {
-    pub(in crate::demand) name: crate::kernel::LogicalName,
-    /// Metadata for this entry.
+    /// Lossless host component encoding.
+    pub name: crate::kernel::LogicalName,
+    /// The entry's node, exactly as a lookup of its path would report it.
     pub node: SourceNode,
-    pub(in crate::demand) ownership: SourcePayloadOwnership,
 }
 
-impl SourceDirectoryEntry {
-    /// Constructs a caller-owned entry.
-    pub fn new(name: crate::kernel::LogicalName, node: SourceNode) -> Self {
-        Self {
-            name,
-            node,
-            ownership: SourcePayloadOwnership::default(),
-        }
-    }
-
-    /// Returns the lossless component name.
-    pub fn name(&self) -> &crate::kernel::LogicalName {
-        &self.name
-    }
+/// One bounded directory page. Native pages retain native enumeration order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceDirectoryPage {
+    /// At most the requested number of entries.
+    pub entries: Vec<SourceDirectoryEntry>,
+    /// Opaque continuation bound to this source and directory version.
+    pub next: Option<SourceCursor>,
+    /// Directory metadata evidence for this page.
+    pub version: SourceVersion,
 }

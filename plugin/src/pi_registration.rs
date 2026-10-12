@@ -116,12 +116,36 @@ pub(crate) async fn register(
     let grants = [
         work.display(&format_args!("effect:provider:{ROOT_ALLOCATION_PROVIDER}")).map_err(native_error)?,
         work.display(&format_args!("effect:provider:{}", super::pi_native::PI_NATIVE_PROVIDER)).map_err(native_error)?,
-        journal.directory_read_capability_with_native_work(ROOT_INPUT_DIRECTORY, work)?,
-        journal.directory_read_capability_with_native_work(super::pi_root_provider::OPERATOR_INPUT_DIRECTORY, work)?,
-        scratch.capability_with_native_work(VolumeOperation::Read, work)?,
-        scratch.capability_with_native_work(VolumeOperation::Write, work)?,
-        project.capability_with_native_work(VolumeOperation::Read, work)?,
-        project.capability_with_native_work(VolumeOperation::Write, work)?,
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = journal.directory_read_capability(super::pi_root_provider::OPERATOR_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = scratch.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
+        {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        },
     ];
     let capabilities = Capabilities::new_with_native_work(
         GRANTS.iter().copied().chain(grants.iter().map(|grant| grant.0.as_str())), work,
@@ -165,7 +189,11 @@ pub(crate) async fn register(
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
         resources.fs.clone(), &provider, work,
     )?.into_native_shared(work)?;
-    let journal_name = journal.storage_name_with_native_work(work)?;
+    let journal_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = journal.storage_name(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let journal_generation = resources.fs.create_workspace_with_operation_with_native_work(
         &journal_name.0, VolumeConfig::portable(Lifecycle::Durable),
         OperationId::from_bytes(identity("journal", session, work)?), work, work.cancellation(),

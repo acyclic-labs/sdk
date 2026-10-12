@@ -2915,12 +2915,8 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         crate::demand::DemandError::NativeWorkUnavailable => NativeWatchError::NativeWorkUnavailable,
         #[cfg(feature = "native-mount")]
         crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
-        #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        crate::demand::DemandError::LinuxMetadata(error) => NativeWatchError::Metadata(error),
-        #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        crate::demand::DemandError::MacMetadata(error) => NativeWatchError::Metadata(error),
-        #[cfg(all(windows, any(feature = "native-mount", test)))]
-        crate::demand::DemandError::WindowsMetadata(error) => NativeWatchError::Metadata(error),
+        #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
+        crate::demand::DemandError::NativeMetadata(error) => NativeWatchError::Metadata(error),
     }
 }
 

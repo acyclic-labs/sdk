@@ -47,8 +47,8 @@ impl NativeInvocationView {
     }
 
     fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
-        self._metadata.work().state(|original| original.with_invocation_scope(Some(self.self_ref.clone()), |work| {
-            work.with_resource_scope(self._metadata.work().resource.as_ref().map(std::sync::Arc::downgrade), operation)
+        self._metadata.work().state(|original| original.scope(|work| &mut work.native_invocation, Some(self.self_ref.clone()), |work| {
+            work.scope(|work| &mut work.native_resource, self._metadata.work().resource.as_ref().map(std::sync::Arc::downgrade), operation)
         }))
     }
 
@@ -357,7 +357,7 @@ impl NativeResourceAllowance {
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeResourceAllowance {
     fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
-        self._root_only_metadata_guard.meter.state(|original| original.with_resource_scope(Some(self.self_ref.clone()), operation))
+        self._root_only_metadata_guard.meter.state(|original| original.scope(|work| &mut work.native_resource, Some(self.self_ref.clone()), operation))
     }
 
     fn with_io<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> Result<T, crate::DemandError>) -> std::io::Result<T> {
@@ -482,6 +482,8 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
     };
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl_original_native_read_meter!(crate::demand::NativeDemandReadMeter);
 #[cfg(not(target_arch = "wasm32"))]
 impl_original_native_read_meter!(NativeResourceAllowance);
 #[cfg(not(target_arch = "wasm32"))]
@@ -609,16 +611,16 @@ impl NativeMaterializationWork {
 
     fn state<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
         self.state.with_original_leaf(|work| {
-            work.with_invocation_scope(self.invocation.as_ref().map(std::sync::Arc::downgrade), |work| {
-                work.with_resource_scope(None, |work| work.with_capture(None, operation))
+            work.scope(|work| &mut work.native_invocation, self.invocation.as_ref().map(std::sync::Arc::downgrade), |work| {
+                work.scope(|work| &mut work.native_resource, None, |work| work.scope(|work| &mut work.capture_custody, None, operation))
             })
         })
     }
 
     /// Borrows one accounting leaf of the original invocation.
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
-        self.state(|original| original.with_resource_scope(self.resource.as_ref().map(std::sync::Arc::downgrade), |work| {
-            work.with_capture(self.capture_origin.clone(), operation)
+        self.state(|original| original.scope(|work| &mut work.native_resource, self.resource.as_ref().map(std::sync::Arc::downgrade), |work| {
+            work.scope(|work| &mut work.capture_custody, self.capture_origin.clone(), operation)
         }))
     }
 
@@ -839,15 +841,15 @@ impl NativeMaterializationWork {
     }
 
     /// Obtains registered producer membership without an SDK loan.
-    pub(crate) fn checkout_control_sink(&self, producer: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
-        self.state.checkout_control_witness(producer).ok_or(NativeTreeMaterializationError::InvalidLayout)
+    pub(crate) fn checkout_control_sink(&self, producer: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
+        self.state.checkout_control_sink(producer).ok_or(NativeTreeMaterializationError::InvalidLayout)
     }
 
     /// Registers the actual pre-funded constructor token on this original.
     pub(crate) fn register_native_checkout_control(
         &self, producer: &std::sync::Arc<crate::kernel::ProofDataCustody>,
         header_guard: &mut NativeAllocation,
-    ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
         self.state.register_native_checkout_control(self, producer, header_guard)
     }
 
@@ -1793,7 +1795,7 @@ impl NativeOwnedCleanupCredit {
         self._metadata.work().with_original_leaf(|work| {
             if overrun { work.record_native_io_failure(crate::DemandError::InvalidRequest); }
             // The explicit resource completion below owns this token's tags.
-            let original = work.with_resource_scope(None, |work| {
+            let original = work.scope(|work| &mut work.native_resource, None, |work| {
                 let credited = work.record_native_work(credited);
                 let excess = if overrun { work.record(excess) } else { Ok(()) };
                 credited.and(excess)
@@ -2163,9 +2165,9 @@ impl NativeAllocation {
     /// Transfers paid buffer custody into a registered checkout control.
     pub(crate) fn transfer_checkout_control(
         &mut self, owner: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.state, owner) {
+        if !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let retirement = self.transfer_resource_retirement(self.bytes)?;
@@ -2176,9 +2178,9 @@ impl NativeAllocation {
     pub(crate) fn transfer_checkout_data_bytes(
         &mut self, bytes: u64,
         owner: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if bytes > self.bytes || !scope.owns(&self.meter.state, owner) {
+        if bytes > self.bytes || !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let retirement = self.transfer_resource_retirement(bytes)?;
@@ -5476,7 +5478,7 @@ where
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
+pub async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
@@ -5581,10 +5583,10 @@ where
 
         let (changes, changes_custody) = from_generation
             .diff_to_with_native_work(to_generation, u32::MAX, &work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         let (changed, mut changed_custody) = changes
             .changed_paths_with_native_work(u32::MAX, &work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         drop(changes);
         drop(changes_custody);
         let held_root = crate::native_host::HostRoot::open(&root, &mut &work)?;
@@ -5936,7 +5938,7 @@ where
     loop {
         let (mut page, mut page_custody) = generation
             .list_after_with_native_work(&directory, after.as_ref(), 1_024, work, cancellation)
-            .await?;
+            .await.map_err(|error| (error, None))?;
         for entry in &page.entries {
             let mut index = 0;
             let mut found = false;
