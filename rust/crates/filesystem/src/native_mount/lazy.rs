@@ -1903,7 +1903,7 @@ struct SelectedMountInput<'a> {
     destination: crate::LazySnapshotRef,
     plan: &'a crate::SelectedImportPlan,
     operation: crate::OperationId,
-    original: &'a super::NativeMountMeterWork,
+    original: &'a crate::NativeMaterializationWork,
 }
 
 #[derive(Clone, Copy)]
@@ -2478,7 +2478,7 @@ impl NativeMountSourceWatchOwner {
             }
             super::adapter::NativeDemandCarrier::Shared(original) => self.stop_on_meter(original),
             super::adapter::NativeDemandCarrier::Native(work) => {
-                let original = work.native_materialization_work();
+                let original = work.clone();
                 self.stop_on_native_work(
                     crate::demand::NativeSourceWork::from_native_materialization_work(&original))
             }
@@ -2533,17 +2533,9 @@ impl NativeMountSourceWatchOwner {
         result.map_err(mount_demand_error).map(|()| true)
     }
 
-    /// Stops the watcher on its original invocation.
-    pub fn stop_with_work(
-        &mut self, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<bool, super::NativeMountError> {
-        self.stop_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(&work.work.native_mount_work()))
-            .map_err(Into::into)
-    }
-
     /// Stops this original watch using an already operative shared meter.
     pub fn stop_with_meter(
-        &mut self, work: &super::NativeMountMeterWork,
+        &mut self, work: &crate::NativeMaterializationWork,
     ) -> Result<bool, super::NativeMountError> {
         self.stop_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(work))
             .map_err(Into::into)
@@ -2555,7 +2547,7 @@ impl NativeMountSourceWatchOwner {
     ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, super::NativeMountError> {
         let work = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, spent)| crate::OperationFailure::new(error.into(), spent))?;
-        match self.stop_with_meter(&work.native_mount_work()) {
+        match self.stop_with_meter(&work) {
             Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
             Err(error) => Err(crate::OperationFailure::new(error, work.receipt())),
         }
@@ -2667,9 +2659,9 @@ where
         root: String,
         root_allocation: crate::NativeAllocation,
         source_allocation: &mut crate::NativeAllocation,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
-        let original = work.native_materialization_work();
+        let original = work.clone();
         original.admit(crate::WorkCounters::UNCHARGED)
             .map_err(|error| super::NativeMountError::Demand(
                 DemandError::Mount(MountSourceError::NativeWork(error))))?;
@@ -2776,7 +2768,7 @@ where
                             lazy.watch_source_with_native_work(
                                 sink, crate::demand::NativeSourceWork::new(original)),
                         super::adapter::NativeDemandCarrier::Native(work) => {
-                            let original = work.native_materialization_work();
+                            let original = work.clone();
                             lazy.watch_source_with_native_work(sink,
                                 crate::demand::NativeSourceWork::from_native_materialization_work(&original))
                         }
@@ -2911,8 +2903,8 @@ where
             .binary_search(&file_id).is_ok()
     }
 
-    fn reported_with_meter(&self, file_id: FileId, work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
-        let mut work = work.meter().lock();
+    fn reported_with_meter(&self, file_id: FileId, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
+        let mut work = work.native_read_meter().lock();
         work.check().map_err(mount_demand_error)?;
         self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
         let linked = self.linked.lock().map_err(|_| MountSourceError::Stale)?;
@@ -2950,7 +2942,7 @@ where
     }
 
     pub(crate) fn cancel_with_native_work(
-        &self, work: &super::NativeMountMeterWork,
+        &self, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.cancel_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(work))
     }
@@ -3383,7 +3375,7 @@ where
         async move {
             let native = match &work.meter {
                 super::adapter::NativeDemandCarrier::Shared(meter) =>
-                    Some(super::NativeMountMeterWork::from_meter(Arc::clone(meter))),
+                    Some(crate::NativeMaterializationWork::from_meter(Arc::clone(meter))),
                 super::adapter::NativeDemandCarrier::Native(original) => Some((*original).clone()),
                 super::adapter::NativeDemandCarrier::Borrowed(_) => None,
             };
@@ -3582,7 +3574,7 @@ where
         let mut work = MountSyncWork::new(
             &self.authored, super::adapter::NativeDemandCarrier::Shared(meter),
         )?;
-        let original = super::NativeMountMeterWork::from_meter(Arc::clone(meter));
+        let original = crate::NativeMaterializationWork::from_meter(Arc::clone(meter));
         self.finish_acknowledged_mount_custody_with_sync_work(
             operation, generation, &mut work, &original, cancellation,
         ).await
@@ -3590,7 +3582,7 @@ where
 
     fn finish_acknowledged_mount_custody_with_sync_work<'a, 'work>(
         &'a self, operation: crate::OperationId, generation: crate::GenerationId,
-        work: &'a mut MountSyncWork<'work>, original: &super::NativeMountMeterWork,
+        work: &'a mut MountSyncWork<'work>, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<crate::LazySnapshotRef>, MountSourceError>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
@@ -3802,7 +3794,7 @@ where
     }
 
     pub(crate) async fn sync_async_with_permit_qualified_native_work_guarded_with_ack<F, Fut, E>(
-        &self, permit: crate::PublicationPermit, original: &super::NativeMountMeterWork,
+        &self, permit: crate::PublicationPermit, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
         acknowledged: &mut Option<crate::NativePublicationSnapshot>, mut before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, (E, Option<MountSourceError>)>
@@ -3900,7 +3892,7 @@ where
             .map_err(|error| crate::OperationFailure::new(
                 E::from(MountSourceError::NativeWork(error)), work.receipt(),
             ))?;
-        let original = work.native_mount_work();
+        let original = work.clone();
         let result = async move {
             self.import_selected_meter_guarded(
                 destination, plan, operation, permit, &original,
@@ -3915,7 +3907,7 @@ where
     pub(crate) async fn import_selected_meter_guarded<F, Fut, E>(
         &self, destination: crate::LazySnapshotRef, plan: crate::SelectedImportPlan,
         operation: crate::OperationId, permit: crate::PublicationPermit,
-        original: &super::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, mut before_publication: F,
     ) -> Result<crate::LazySnapshotRef, E>
     where
@@ -3941,7 +3933,7 @@ where
     pub(crate) async fn selected_import_snapshot(
         &self,
         operation: crate::OperationId,
-        original: &super::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
@@ -4171,7 +4163,7 @@ where
         };
         let native_owned = match &work.meter {
             super::adapter::NativeDemandCarrier::Shared(meter) =>
-                Some(super::NativeMountMeterWork::from_meter(Arc::clone(meter))),
+                Some(crate::NativeMaterializationWork::from_meter(Arc::clone(meter))),
             super::adapter::NativeDemandCarrier::Borrowed(_)
                 | super::adapter::NativeDemandCarrier::Native(_) => None,
         };
@@ -5353,7 +5345,7 @@ where
                 let original = crate::demand::OriginalDemandWork::from_meter(Arc::clone(original));
                 let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
                     .map_err(mount_demand_error)?;
-                self.promote_subtree_with_original_work(path, owner, &original.native_mount_work()).await
+                self.promote_subtree_with_original_work(path, owner, &original).await
             }
             super::adapter::NativeDemandCarrier::Borrowed(work) =>
                 super::adapter::BorrowedNativeDemandMeter::new(work)?
@@ -5361,16 +5353,16 @@ where
                         let original = crate::demand::OriginalDemandWork::from_meter(original);
                         let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
                             .map_err(mount_demand_error)?;
-                        self.promote_subtree_with_original_work(path, owner, &original.native_mount_work()).await
+                        self.promote_subtree_with_original_work(path, owner, &original).await
                     }).await,
         }
     }
 
     async fn promote_subtree_with_original_work(
         &self, path: &MountPath, owner: super::view_gate::CallbackOwner,
-        native: &super::NativeMountMeterWork,
+        native: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let original = native.native_materialization_work();
+        let original = native.clone();
         let cancellation = original.cancellation();
         original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let mut carrier = super::adapter::NativeDemandCarrier::Native(native);
@@ -5996,9 +5988,9 @@ where
     fn capture_host_with_native_work(
         &self, source_root: &Path, paths: &[MountPath], expected_root_identity: NativeRootIdentity,
         scope: super::adapter::HostCaptureScope,
-        original: &super::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        original.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)
+        original.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
         if paths.is_empty() { return Ok(()); }
@@ -6107,7 +6099,7 @@ where
     }
 
     fn native_attributes<T>(
-        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(Option<Arc<CheckoutDetachedFile<A, O>>>, bool) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
@@ -6134,17 +6126,17 @@ where
         result
     }
 
-    fn native_call<T>(&self, operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, MountSourceError>)
+    fn native_call<T>(&self, operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, MountSourceError>)
         -> Result<T, MountSourceError> {
         if let Some(work) = self.authored.native_original_work()? { return operation(&work); }
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation())
             .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
-        operation(&work.native_mount_work())
+        operation(&work)
     }
 
     fn native_mutation<T>(
         &self, path: &MountPath, source: Option<&MountPath>, promote: bool, rebound: bool,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(Option<Arc<CheckoutDetachedFile<A, O>>>) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
@@ -6164,7 +6156,7 @@ where
                 Ok((lease, text, detached))
             })
         })?;
-        let original = work.native_materialization_work();
+        let original = work.clone();
         let delta = if rebound {
             carrier.with_work(|work| {
                 mount_items(work, 1)?;
@@ -6377,7 +6369,7 @@ where
 
     fn with_view_with_meter<T>(
         &self,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
@@ -6395,7 +6387,7 @@ where
 
     fn with_mutation_with_meter<T>(
         &self,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
@@ -6416,74 +6408,74 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    fn lookup_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+    fn lookup_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.with_view_with_meter(work, |file| file.lookup_with_meter(work))
     }
 
-    fn read_range_with_meter(&self, offset: u64, length: u32, work: &super::NativeMountMeterWork)
+    fn read_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         self.with_view_with_meter(work, |file| file.read_range_with_meter(offset, length, work))
     }
 
-    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &super::NativeMountMeterWork)
+    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &crate::NativeMaterializationWork)
         -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         self.with_view_with_meter(work, |file| file.read_up_to_with_meter(offset, maximum_bytes, work))
     }
 
-    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &super::NativeMountMeterWork)
+    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &crate::NativeMaterializationWork)
         -> Result<Option<u64>, MountSourceError> {
         self.with_view_with_meter(work, |file| file.seek_with_meter(offset, target, work))
     }
 
     fn write_range_with_meter(&self, offset: u64, bytes: crate::kernel::OwnedSourceChunk,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.write_range_with_meter(offset, bytes, work))
     }
 
-    fn resize_with_meter(&self, logical_bytes: u64, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn resize_with_meter(&self, logical_bytes: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.resize_with_meter(logical_bytes, work))
     }
 
     fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.allocate_range_with_meter(offset, length, operation, work))
     }
 
     fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.set_attributes_with_meter(metadata, logical_bytes, work))
     }
 
-    fn read_attribute_with_meter(&self, name: &[u8], work: &super::NativeMountMeterWork)
+    fn read_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         self.with_view_with_meter(work, |file| file.read_attribute_with_meter(name, work))
     }
 
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, |file| file.list_attributes_with_meter(cursor, maximum_entries, work))
     }
 
     fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
-        mode: MountAttributeWriteMode, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.write_attribute_with_meter(name, value, mode, work))
     }
 
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn remove_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.remove_attribute_with_meter(name, work))
     }
 
-    fn settle_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn settle_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.settle_with_meter(work))
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &super::NativeMountMeterWork)
+    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, |file| file.read_sparse_range_with_meter(offset, length, work))
     }
 
     fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_mutation_with_meter(work, |file| file.write_sparse_range_with_meter(offset, range, work))
     }
 
@@ -6627,7 +6619,7 @@ where
     }
 
     fn with_view_with_meter<T>(
-        &self, work: &super::NativeMountMeterWork, refresh: bool,
+        &self, work: &crate::NativeMaterializationWork, refresh: bool,
         operation: impl FnOnce(Option<&dyn MountOpenFile>, SourceNode,
             &mut super::adapter::NativeDemandCarrier<'_>) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
@@ -6659,7 +6651,7 @@ where
     }
 
     fn with_authored_with_meter<T>(
-        &self, work: &super::NativeMountMeterWork,
+        &self, work: &crate::NativeMaterializationWork,
         operation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>,
     ) -> Result<T, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
@@ -6770,7 +6762,7 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn lookup_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+    fn lookup_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.with_view_with_meter(work, true, |file, node, carrier| {
             if let Some(file) = file { return file.lookup_with_meter(work); }
             let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
@@ -6781,7 +6773,7 @@ where
         })
     }
 
-    fn read_range_with_meter(&self, offset: u64, length: u32, work: &super::NativeMountMeterWork)
+    fn read_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, carrier| match file {
             Some(file) => file.read_range_with_meter(offset, length, work),
@@ -6789,7 +6781,7 @@ where
         })
     }
 
-    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &super::NativeMountMeterWork)
+    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &crate::NativeMaterializationWork)
         -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         self.with_view_with_meter(work, false, |file, node, carrier| {
             if let Some(file) = file { return file.read_up_to_with_meter(offset, maximum_bytes, work); }
@@ -6804,7 +6796,7 @@ where
         })
     }
 
-    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &super::NativeMountMeterWork)
+    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &crate::NativeMaterializationWork)
         -> Result<Option<u64>, MountSourceError> {
         self.with_view_with_meter(work, false, |file, node, carrier| {
             if let Some(file) = file { return file.seek_with_meter(offset, target, work); }
@@ -6818,25 +6810,25 @@ where
     }
 
     fn write_range_with_meter(&self, offset: u64, bytes: crate::kernel::OwnedSourceChunk,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.write_range_with_meter(offset, bytes, work))
     }
 
-    fn resize_with_meter(&self, logical_bytes: u64, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn resize_with_meter(&self, logical_bytes: u64, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.resize_with_meter(logical_bytes, work))
     }
 
     fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.allocate_range_with_meter(offset, length, operation, work))
     }
 
     fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.set_attributes_with_meter(metadata, logical_bytes, work))
     }
 
-    fn read_attribute_with_meter(&self, name: &[u8], work: &super::NativeMountMeterWork)
+    fn read_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, _| match file {
             Some(file) => file.read_attribute_with_meter(name, work),
@@ -6845,35 +6837,35 @@ where
     }
 
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, _| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
             None => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
-                work.native_materialization_work().retain_owned(0).map_err(MountSourceError::NativeWork)?)),
+                work.retain_owned(0).map_err(MountSourceError::NativeWork)?)),
         })
     }
 
     fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
-        mode: MountAttributeWriteMode, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.write_attribute_with_meter(name, value, mode, work))
     }
 
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn remove_attribute_with_meter(&self, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.remove_attribute_with_meter(name, work))
     }
 
-    fn settle_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+    fn settle_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_view_with_meter(work, false, |file, _, _| match file {
             Some(file) => file.settle_with_meter(work),
             None => Ok(()),
         })
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &super::NativeMountMeterWork)
+    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, false, |file, node, carrier| {
             if let Some(file) = file { return file.read_sparse_range_with_meter(offset, length, work); }
-            let original = work.native_materialization_work();
+            let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
                 return Err(MountSourceError::NativeStaticText {
@@ -6923,7 +6915,7 @@ where
     }
 
     fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
-        work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.with_authored_with_meter(work, |file| file.write_sparse_range_with_meter(offset, range, work))
     }
 
@@ -7071,7 +7063,7 @@ where
         self.authored.native_callback_guard()
     }
 
-    fn native_original_work(&self) -> Result<Option<super::NativeMountMeterWork>, MountSourceError> {
+    fn native_original_work(&self) -> Result<Option<crate::NativeMaterializationWork>, MountSourceError> {
         self.authored.native_original_work()
     }
 
@@ -7099,14 +7091,8 @@ where
         self.authored.observe_view(observer)
     }
 
-    fn observe_view_with_work(
-        &self, observer: Weak<dyn ViewObserver>, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.observe_view_with_meter(observer, original))
-    }
-
     fn observe_view_with_meter(
-        &self, observer: Weak<dyn ViewObserver>, work: &super::NativeMountMeterWork,
+        &self, observer: Weak<dyn ViewObserver>, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.authored.observe_view_with_meter(observer, work)
     }
@@ -7117,20 +7103,14 @@ where
         })
     }
 
-    fn fence_changes_with_work(
-        &self, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.fence_changes_with_meter(original))
-    }
-
     fn fence_changes_with_meter(
-        &self, work: &super::NativeMountMeterWork,
+        &self, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.fence_changes_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(work))
     }
 
     fn shutdown_with_meter(
-        &self, work: &super::NativeMountMeterWork,
+        &self, work: &crate::NativeMaterializationWork,
     ) -> Result<bool, MountSourceError> {
         let changed = !self.physically_retired()?;
         self.cancel_with_native_work(work)?;
@@ -7157,50 +7137,50 @@ where
             && self.authored.unchanged_since(path, file_id, stamp)
     }
 
-    fn view_is_stable_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+    fn view_is_stable_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
         carrier.with_work(|work| mount_items(work, 1))?;
         Ok(self.source_view.is_stable())
     }
 
-    fn view_stamp_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<Option<ViewStamp>, MountSourceError> {
+    fn view_stamp_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<Option<ViewStamp>, MountSourceError> {
         if !self.view_is_stable_with_meter(work)? || !self.source_observed() { return Ok(None); }
         self.authored.view_stamp_with_meter(work)
     }
 
-    fn binding_epoch_with_meter(&self, work: &super::NativeMountMeterWork) -> Result<Option<u64>, MountSourceError> {
+    fn binding_epoch_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<Option<u64>, MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
         carrier.with_work(|work| mount_items(work, 1))?;
         Ok(Some(self.source_view.generation()))
     }
 
-    fn folded_path_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+    fn folded_path_with_meter(&self, path: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<Option<(MountPath, u64)>, MountSourceError> {
         self.authored.folded_path_with_meter(path, work)
     }
 
     fn unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
-        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         if !self.view_is_stable_with_meter(work)? { return Ok(false); }
         if let Some(file_id) = file_id { if !self.reported_with_meter(file_id, work)? { return Ok(false); } }
         self.authored.unchanged_since_with_meter(path, file_id, stamp, work)
     }
 
     fn reported_unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
-        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         if !self.view_is_stable_with_meter(work)? { return Ok(false); }
         if let Some(file_id) = file_id { if !self.reported_with_meter(file_id, work)? { return Ok(false); } }
         self.authored.reported_unchanged_since_with_meter(path, file_id, stamp, work)
     }
 
     fn node_unchanged_since_with_meter(&self, file_id: FileId, stamp: ViewStamp,
-        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         Ok(self.view_is_stable_with_meter(work)? && self.reported_with_meter(file_id, work)?
             && self.authored.node_unchanged_since_with_meter(file_id, stamp, work)?)
     }
 
     fn listing_unchanged_since_with_meter(&self, path: &MountPath, stamp: ViewStamp,
-        work: &super::NativeMountMeterWork) -> Result<bool, MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
         Ok(self.view_is_stable_with_meter(work)? && self.authored.listing_unchanged_since_with_meter(path, stamp, work)?)
     }
 
@@ -7245,14 +7225,8 @@ where
             .map(|lease| Box::new(lease) as Box<dyn MountViewLease>)
     }
 
-    fn acquire_binding_lease_with_work(
-        &self, expected_epoch: Option<u64>, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
-        work.run_with_meter(|original| self.acquire_binding_lease_with_meter(expected_epoch, original))
-    }
-
     fn acquire_binding_lease_with_meter(
-        &self, expected_epoch: Option<u64>, work: &super::NativeMountMeterWork,
+        &self, expected_epoch: Option<u64>, work: &crate::NativeMaterializationWork,
     ) -> Result<Box<dyn MountViewLease>, MountSourceError> {
         self.acquire_binding_lease_with_carrier(
             expected_epoch, &mut super::adapter::NativeDemandCarrier::Native(work),
@@ -7263,14 +7237,8 @@ where
         Ok(self.lookup_pinned(path)?.map(|(lookup, _)| lookup))
     }
 
-    fn lookup_with_work(
-        &self, path: &MountPath, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<Option<MountLookup>, MountSourceError> {
-        work.run_with_meter(|original| self.lookup_with_meter(path, original))
-    }
-
     fn lookup_with_meter(
-        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<Option<MountLookup>, MountSourceError> {
         self.with_native_read_carrier(
             &mut super::adapter::NativeDemandCarrier::Native(work), |carrier, prepared| {
@@ -7302,16 +7270,8 @@ where
         })
     }
 
-    fn lookup_pinned_with_work(
-        &self,
-        path: &MountPath,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
-        work.run_with_meter(|original| self.lookup_pinned_with_meter(path, original))
-    }
-
     fn lookup_pinned_with_meter(
-        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError> {
         self.with_native_read_carrier(&mut super::adapter::NativeDemandCarrier::Native(work), |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || self.lookup_pinned_async_with_carrier(path, carrier))
@@ -7322,7 +7282,7 @@ where
         self.native_call(|work| self.open_file_with_meter(path, work)).map(|(file, _)| file)
     }
 
-    fn open_file_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+    fn open_file_with_meter(&self, path: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         self.open_proven(path, work).map(|(file, _)| file)
     }
@@ -7331,7 +7291,7 @@ where
         self.native_call(|work| self.open_file_with_lookup_with_meter(path, work)).map(|((file, _), lookup)| (file, lookup))
     }
 
-    fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+    fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError> {
         let (file, proven) = self.open_proven(path, work)?;
         let lookup = match proven { Some(lookup) => lookup, None => file.0.lookup_with_meter(work)? };
@@ -7342,7 +7302,7 @@ where
         self.native_call(|work| self.detach_file_with_meter(path, work)).map(|(file, _)| file)
     }
 
-    fn detach_file_with_meter(&self, path: &MountPath, work: &super::NativeMountMeterWork)
+    fn detach_file_with_meter(&self, path: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         self.native_mutation(path, None, true, false, work, |detached| {
             let file = match detached {
@@ -7357,20 +7317,12 @@ where
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
         ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
-        self.read_link_with_work(path, &mut super::NativeMountWork::new(&original))
+        self.read_link_with_meter(path, &original)
             .map(|output| output.bytes)
     }
 
-    fn read_link_with_work(
-        &self,
-        path: &MountPath,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        work.run_with_meter(|original| self.read_link_with_meter(path, original))
-    }
-
     fn read_link_with_meter(
-        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         self.with_native_read_carrier(&mut super::adapter::NativeDemandCarrier::Native(work), |carrier, prepared| {
             self.runtime.wait_prepared(prepared, || self.read_link_async_with_carrier(path, carrier))
@@ -7398,18 +7350,8 @@ where
         Ok(read)
     }
 
-    fn read_range_with_work(
-        &self,
-        path: &MountPath,
-        offset: u64,
-        length: u32,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        work.run_with_meter(|original| self.read_range_with_meter(path, offset, length, original))
-    }
-
     fn read_range_with_meter(
-        &self, path: &MountPath, offset: u64, length: u32, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         let mut read = None;
         self.read_content_with_carrier(
@@ -7435,22 +7377,9 @@ where
         self.read_content(path, Some(pin), offset, length, piece, sink)
     }
 
-    fn read_pinned_with_work(
-        &self,
-        path: &MountPath,
-        pin: MountContentPin,
-        offset: u64,
-        length: u64,
-        piece: u32,
-        sink: &mut super::NativeMountContentSink<'_>,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.read_pinned_with_meter(path, pin, offset, length, piece, sink, original))
-    }
-
     fn read_pinned_with_meter(
         &self, path: &MountPath, pin: MountContentPin, offset: u64, length: u64,
-        piece: u32, sink: &mut super::NativeMountContentSink<'_>, work: &super::NativeMountMeterWork,
+        piece: u32, sink: &mut super::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.read_content_with_carrier(path, Some(pin), offset, length, piece, sink,
             &mut super::adapter::NativeDemandCarrier::Native(work))
@@ -7513,68 +7442,58 @@ where
         Ok(page)
     }
 
-    fn read_directory_with_work(
-        &self,
-        path: &MountPath,
-        cursor: Option<&[u8]>,
-        maximum_entries: u32,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<MountDirectoryPage, MountSourceError> {
-        work.run_with_meter(|original| self.read_directory_with_meter(path, cursor, maximum_entries, original))
-    }
-
     fn read_directory_with_meter(
         &self,
         path: &MountPath,
         cursor: Option<&[u8]>,
         maximum_entries: u32,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
         self.read_directory_with_carrier(
-            path, cursor, maximum_entries, &work.native_materialization_work(),
+            path, cursor, maximum_entries, &work,
             &mut super::adapter::NativeDemandCarrier::Native(work),
         )
     }
 
-    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::NativeMountMeterWork)
+    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_file_with_meter(path, metadata, work))
     }
 
     fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
-        work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_|
             self.authored.create_absent_file_with_meter(path, metadata, absent_since, work))
     }
 
-    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &super::NativeMountMeterWork)
+    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_directory_with_meter(path, metadata, work))
     }
 
     fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
-        metadata: FileMetadata, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_symbolic_link_with_meter(path, target, metadata, work))
     }
 
     fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
-        metadata: FileMetadata, work: &super::NativeMountMeterWork) -> Result<MountLookup, MountSourceError> {
+        metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_special_with_meter(path, kind, device, metadata, work))
     }
 
-    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &super::NativeMountMeterWork)
+    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<(), MountSourceError> {
         self.native_mutation(destination, Some(source), false, true, work, |_| self.authored.hard_link_with_meter(source, destination, work))
     }
 
     fn clone_range_by_id_with_meter(&self, source_file_id: FileId, source_offset: u64,
-        destination_file_id: FileId, destination_offset: u64, length: u64, work: &super::NativeMountMeterWork)
+        destination_file_id: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork)
         -> Result<(), MountSourceError> {
-        work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
+        work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.clone_range_by_id(source_file_id, source_offset, destination_file_id, destination_offset, length)
     }
 
-    fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::NativeMountMeterWork)
+    fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         self.native_attributes(path, work, |file, projected| match file {
             Some(file) => file.read_attribute_with_meter(name, work),
@@ -7584,24 +7503,24 @@ where
     }
 
     fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &super::NativeMountMeterWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        work: &crate::NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
         self.native_attributes(path, work, |file, projected| match file {
             Some(file) => file.list_attributes_with_meter(cursor, maximum_entries, work),
             None if projected => Ok((MountAttributePage { names: Vec::new(), next_cursor: None },
-                work.native_materialization_work().retain_owned(0).map_err(MountSourceError::NativeWork)?)),
+                work.retain_owned(0).map_err(MountSourceError::NativeWork)?)),
             None => self.authored.list_attributes_with_meter(path, cursor, maximum_entries, work),
         })
     }
 
     fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk,
-        mode: MountAttributeWriteMode, work: &super::NativeMountMeterWork) -> Result<(), MountSourceError> {
+        mode: MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         self.native_mutation(path, None, true, false, work, |file| match file {
             Some(file) => file.write_attribute_with_meter(name, value, mode, work),
             None => self.authored.write_attribute_with_meter(path, name, value, mode, work),
         })
     }
 
-    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &super::NativeMountMeterWork)
+    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
         -> Result<(), MountSourceError> {
         self.native_mutation(path, None, true, false, work, |file| match file {
             Some(file) => file.remove_attribute_with_meter(name, work),
@@ -7630,7 +7549,7 @@ where
         self.native_call(|work| self.open_created_with_meter(path, created, work)).map(|(file, _)| file)
     }
 
-    fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &super::NativeMountMeterWork)
+    fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
         let owner = SourceViewGate::callback_owner();
@@ -7686,26 +7605,16 @@ where
         self.authored.set_attributes(path, metadata, logical_bytes)
     }
 
-    fn set_attributes_with_work(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.set_attributes_with_meter(path, metadata, logical_bytes, original))
-    }
-
     fn set_attributes_with_meter(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.set_attributes_with_carrier(
             path, metadata, logical_bytes,
-            &mut super::adapter::NativeDemandCarrier::Shared(work.meter()),
+            &mut super::adapter::NativeDemandCarrier::Shared(work.native_read_meter()),
         )
     }
 
@@ -7854,22 +7763,13 @@ where
         ))
     }
 
-    fn remove_with_work(
-        &self,
-        path: &MountPath,
-        expected: Option<FileId>,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.remove_with_meter(path, expected, original))
-    }
-
     fn remove_with_meter(
         &self,
         path: &MountPath,
         expected: Option<FileId>,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.remove_with_carrier(path, expected, &mut super::adapter::NativeDemandCarrier::Shared(work.meter()))
+        self.remove_with_carrier(path, expected, &mut super::adapter::NativeDemandCarrier::Shared(work.native_read_meter()))
     }
 
     fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError> {
@@ -7929,24 +7829,14 @@ where
         self.record_removed(path, removed_id)
     }
 
-    fn rename_with_work(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-        replace: bool,
-        work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.rename_with_meter(source, destination, replace, original))
-    }
-
     fn rename_with_meter(
         &self,
         source: &MountPath,
         destination: &MountPath,
         replace: bool,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.rename_with_carrier(source, destination, replace, &mut super::adapter::NativeDemandCarrier::Shared(work.meter()))
+        self.rename_with_carrier(source, destination, replace, &mut super::adapter::NativeDemandCarrier::Shared(work.native_read_meter()))
     }
 
     fn rename(
@@ -8043,31 +7933,18 @@ where
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
         ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
-        self.flush_with_meter(&original.native_mount_work())
-    }
-
-    fn flush_with_work(
-        &self, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.flush_with_meter(original))
+        self.flush_with_meter(&original)
     }
 
     fn flush_with_meter(
-        &self, work: &super::NativeMountMeterWork,
+        &self, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.flush_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(work))
     }
 
-    fn capture_host_paths_with_work(
-        &self, source_root: &Path, paths: &[MountPath],
-        expected_root_identity: NativeRootIdentity, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.capture_host_paths_with_meter(source_root, paths, expected_root_identity, original))
-    }
-
     fn capture_host_paths_with_meter(
         &self, source_root: &Path, paths: &[MountPath],
-        expected_root_identity: NativeRootIdentity, work: &super::NativeMountMeterWork,
+        expected_root_identity: NativeRootIdentity, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.capture_host_with_native_work(
             source_root, paths, expected_root_identity, super::adapter::HostCaptureScope::ExactPaths,
@@ -8075,16 +7952,9 @@ where
         )
     }
 
-    fn capture_host_subtree_with_work(
-        &self, source_root: &Path, path: &MountPath,
-        expected_root_identity: NativeRootIdentity, work: &mut super::NativeMountWork<'_>,
-    ) -> Result<(), MountSourceError> {
-        work.run_with_meter(|original| self.capture_host_subtree_with_meter(source_root, path, expected_root_identity, original))
-    }
-
     fn capture_host_subtree_with_meter(
         &self, source_root: &Path, path: &MountPath,
-        expected_root_identity: NativeRootIdentity, work: &super::NativeMountMeterWork,
+        expected_root_identity: NativeRootIdentity, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.capture_host_with_native_work(
             source_root, std::slice::from_ref(path), expected_root_identity,
@@ -8125,7 +7995,7 @@ where
         ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
         self.capture_host_with_native_work(
             source_root, std::slice::from_ref(path), expected_root_identity,
-            super::adapter::HostCaptureScope::Subtree, &original.native_mount_work(),
+            super::adapter::HostCaptureScope::Subtree, &original,
         )
     }
 }
@@ -8164,12 +8034,12 @@ where
         ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
         self.capture_host_with_native_work(
             source_root, paths, expected_root_identity, super::adapter::HostCaptureScope::ExactPaths,
-            &original.native_mount_work(),
+            &original,
         )
     }
 
     fn open_proven(
-        &self, path: &MountPath, work: &super::NativeMountMeterWork,
+        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
     ) -> Result<((Arc<dyn MountOpenFile>, u64), Option<MountLookup>), MountSourceError> {
         let mut carrier = super::adapter::NativeDemandCarrier::Native(work);
         let path_text = mount_path_text_with_carrier(&self.root, path, &mut carrier)?;
@@ -8247,10 +8117,10 @@ where
 
     fn bind_open_file(
         &self, file: (Arc<dyn MountOpenFile>, u64), file_id: Option<FileId>, generation: u64,
-        work: &super::NativeMountMeterWork,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
-        work.meter().lock().allocate(bytes).map_err(mount_demand_error)?;
+        work.native_read_meter().lock().allocate(bytes).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
             inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
             source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
@@ -10336,7 +10206,7 @@ mod tests {
             .map_err(|(cause, _)| cause)?;
         let table = Arc::new(CursorTable::new(1));
         let drops = Arc::new(AtomicU64::new(0));
-        let native = original.native_mount_work();
+        let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let token = table.remember_with_carrier((2, 1), Payload {
             table: Arc::downgrade(&table), original: original.clone(), drops: Arc::clone(&drops),
@@ -10370,7 +10240,7 @@ mod tests {
             crate::WorkBudget { items_examined: 0, ..finite_directory_budget() }, &root_stop,
         ).map_err(|(cause, _)| cause)?;
         let table = CursorTable::new(1);
-        let native = original.native_mount_work();
+        let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let before = original.receipt();
         assert!(matches!(table.remember_with_carrier((2, 1), 7_u8, &mut carrier),
@@ -10393,11 +10263,11 @@ mod tests {
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
         let original = native_control_work(budget, &caller)?;
-        let context = original.native_mount_work();
+        let context = original.clone();
         let mut native = super::super::adapter::NativeDemandCarrier::Native(&context);
-        let page = view.read_directory_with_work(
+        let page = view.read_directory_with_meter(
             &mounted(&["dir"]), None, 1,
-            &mut super::super::NativeMountWork::new(&original),
+            &original,
         )?;
         let token = page.next_cursor.as_deref().ok_or("missing continuation")?;
         let generation = view.cursors.entries.lock().map_err(|_| "cursor lock")?
@@ -10469,7 +10339,7 @@ mod tests {
         let scoped = root.native_volume_work(crate::WorkBudget {
             allocation_operations: 1, ..finite_directory_budget()
         })?;
-        let native = scoped.native_mount_work();
+        let native = scoped.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let prefix = root.receipt();
         let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
@@ -10489,7 +10359,7 @@ mod tests {
             let file_id = view.lookup(&MountPath::root())?.ok_or("missing mounted root")?.node.file_id;
             let caller = crate::CancellationToken::new();
             let original = native_control_work(finite_directory_budget(), &caller)?;
-            let native = original.native_mount_work();
+            let native = original.clone();
             let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
             let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
             scratch.prepare_finalization()?;
@@ -10539,7 +10409,7 @@ mod tests {
         let scoped = root.native_volume_work(crate::WorkBudget {
             allocation_operations: 0, ..finite_directory_budget()
         })?;
-        let native = scoped.native_mount_work();
+        let native = scoped.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let before = root.receipt();
         assert!(view.reserve_detached_slot_with_carrier(file_id, &mut carrier).is_err());
@@ -10561,7 +10431,7 @@ mod tests {
         let caller = crate::CancellationToken::new();
         let root = native_control_work(finite_directory_budget(), &caller)?;
         let original = root.native_volume_work(finite_directory_budget())?;
-        let native = original.native_mount_work();
+        let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         assert_eq!(view.reserve_detached_slot_with_carrier(file_id, &mut carrier)?, Some(0));
         let capacity = view.detached.lock().map_err(|_| "detached table poisoned")?.capacity();
@@ -10569,7 +10439,7 @@ mod tests {
         let borrowed = root.native_volume_work(crate::WorkBudget {
             allocation_operations: 0, peak_allocation_bytes: 0, ..finite_directory_budget()
         })?;
-        let borrowed_native = borrowed.native_mount_work();
+        let borrowed_native = borrowed.clone();
         let mut borrowed_carrier = super::super::adapter::NativeDemandCarrier::Native(&borrowed_native);
         let before = original.remaining()?.peak_allocation_bytes;
         let prefix = root.receipt();
@@ -10975,7 +10845,7 @@ mod tests {
                 .ok_or("missing original companion")?;
             let caller = crate::CancellationToken::new();
             let original = native_control_work(finite_content_budget(), &caller)?;
-            let native = original.native_mount_work();
+            let native = original.clone();
             let live_before = original.live_allocation_bytes();
             let publication = view.publication_snapshot(super::super::adapter::NativeDemandCarrier::Native(&native), &caller)
                 .await.map_err(|(primary, _)| primary)?;
@@ -11031,7 +10901,7 @@ mod tests {
 
     impl PublicationLifetimeGuard {
         fn verify<'a>(
-            &'a self, work: &'a super::super::NativeMountMeterWork, require_write: bool,
+            &'a self, work: &'a crate::NativeMaterializationWork, require_write: bool,
         ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
             if require_write && !self.authored_write {
                 return Err(super::super::NativeMountError::Lifecycle(
@@ -11039,7 +10909,7 @@ mod tests {
                 ));
             }
             super::super::NativeMountCallbackFuture::new_guarded(work, move || async move {
-                work.native_materialization_work().charge(crate::WorkCounters {
+                work.charge(crate::WorkCounters {
                     items_examined: 1, ..crate::WorkCounters::UNCHARGED
                 }).map_err(MountSourceError::NativeWork)?;
                 self.visits.fetch_add(1, Ordering::AcqRel);
@@ -11051,13 +10921,13 @@ mod tests {
 
     impl super::super::NativeMountCallbackGuard for PublicationLifetimeGuard {
         fn check<'a>(
-            &'a self, work: &'a super::super::NativeMountMeterWork,
+            &'a self, work: &'a crate::NativeMaterializationWork,
         ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
             self.verify(work, false)
         }
 
         fn check_write<'a>(
-            &'a self, work: &'a super::super::NativeMountMeterWork,
+            &'a self, work: &'a crate::NativeMaterializationWork,
         ) -> Result<super::super::NativeMountCallbackFuture<'a>, super::super::NativeMountError> {
             self.verify(work, true)
         }
@@ -11084,7 +10954,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11122,13 +10992,13 @@ mod tests {
             });
         let caller = crate::CancellationToken::new();
         let original = native_control_work(crate::WorkBudget::UNBOUNDED, &caller)?;
-        guard.check(&original.native_mount_work())?.await?;
+        guard.check(&original)?.await?;
         assert_eq!(visits.load(Ordering::Acquire), 1);
         view.authored = Arc::new(CheckoutMountSource::new(
             Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
         )?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11208,8 +11078,8 @@ mod tests {
         let handle = view.open_file(&mounted(&["file"]))?;
         let opens = demand.opens.load(Ordering::Acquire);
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_mount_work().meter().clone();
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&meter));
+        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let identity = handle.lookup_with_meter(&context)?.node.file_id;
         assert_eq!(handle.read_range_with_meter(2, 3, &context)?.bytes.as_ref(), b"cde");
         assert_eq!(handle.read_up_to_with_meter(6, 8, &context)?.bytes.as_ref(), b"gh");
@@ -11261,7 +11131,7 @@ mod tests {
         let meter = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(budget, &caller),
         )));
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&meter));
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let identity = handle.lookup_with_meter(&context)?.node.file_id;
         handle.write_range_with_meter(
             2, crate::kernel::OwnedSourceChunk::claimed(OwnedBytes::from_static(b"XY"), 0), &context,
@@ -11283,8 +11153,8 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new()?;
         let view = runtime.block_on(mounted_view(source.path(), "finite-linked-custody"))?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_mount_work().meter().clone();
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&meter));
+        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let lookup = view.lookup_pinned_with_meter(&mounted(&["file"]), &context)?.ok_or("missing linked file")?.0;
         let bytes = {
             let linked = view.linked.lock().map_err(|_| "linked authority poisoned")?;
@@ -11320,8 +11190,8 @@ mod tests {
         let link = mounted(&["link"]);
         view.create_symbolic_link(&link, Bytes::from_static(b"../target"), FileMetadata::default())?;
         let caller = crate::CancellationToken::new();
-        let meter = native_control_work(finite_content_budget(), &caller)?.native_mount_work().meter().clone();
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&meter));
+        let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let path = mounted(&["file"]);
         let (_, pin) = view.lookup_pinned_with_meter(&path, &context)?.ok_or("missing source file")?;
         let pin = pin.ok_or("missing source content pin")?;
@@ -11352,7 +11222,7 @@ mod tests {
                 &crate::CancellationToken::new(),
             ),
         )));
-        let denied_context = super::super::NativeMountMeterWork::from_meter(denied);
+        let denied_context = crate::NativeMaterializationWork::from_meter(denied);
         assert!(matches!(view.read_range_with_meter(&path, 0, 1, &denied_context),
             Err(MountSourceError::Work(_))));
         assert_eq!(demand.lookups(), lookups);
@@ -11370,15 +11240,15 @@ mod tests {
         let path = mounted(&["file"]);
         let caller = crate::CancellationToken::new();
         let mut lookup = native_control_work(finite_content_budget(), &caller)?;
-        let (_, pin) = view.lookup_pinned_with_work(
-            &path, &mut super::super::NativeMountWork::new(&lookup),
+        let (_, pin) = view.lookup_pinned_with_meter(
+            &path, &lookup,
         )?.ok_or("missing source file")?;
         let pin = pin.ok_or("missing source content pin")?;
         let opened = demand.opens.load(Ordering::Acquire);
         let mut read = native_control_work(finite_content_budget(), &caller)?;
         let mut prefix = Vec::new();
         let mut pieces = 0;
-        let result = view.read_pinned_with_work(
+        let result = view.read_pinned_with_meter(
             &path, pin, 0, 8, 2,
             &mut |offset, bytes| {
                 assert_eq!(offset, prefix.len() as u64);
@@ -11389,7 +11259,7 @@ mod tests {
                 pieces += 1;
                 Ok(())
             },
-            &mut super::super::NativeMountWork::new(&read),
+            &read,
         );
         assert!(matches!(result, Err(MountSourceError::Stale)));
         assert_eq!(prefix, b"abcd");
@@ -11414,14 +11284,14 @@ mod tests {
             let path = mounted(&["file"]);
             let caller = crate::CancellationToken::new();
             let mut lookup = native_control_work(finite_content_budget(), &caller)?;
-            let (_, pin) = view.lookup_pinned_with_work(
-                &path, &mut super::super::NativeMountWork::new(&lookup),
+            let (_, pin) = view.lookup_pinned_with_meter(
+                &path, &lookup,
             )?.ok_or("missing source file")?;
             let pin = pin.ok_or("missing source content pin")?;
             let opened = demand.opens.load(Ordering::Acquire);
             let mut work = native_control_work(finite_content_budget(), &caller)?;
             let mut prefix = Vec::new();
-            let result = view.read_pinned_with_work(&path, pin, 0, 8, 2,
+            let result = view.read_pinned_with_meter(&path, pin, 0, 8, 2,
                 &mut |offset, bytes| {
                     assert_eq!(offset, prefix.len() as u64);
                     prefix.extend_from_slice(&bytes.bytes);
@@ -11430,7 +11300,7 @@ mod tests {
                         .map_err(|error| MountSourceError::Engine(error.to_string()))?; }
                     Ok(())
                 },
-                &mut super::super::NativeMountWork::new(&work),
+                &work,
             );
             if cancel { assert!(matches!(result, Err(MountSourceError::Cancelled))); }
             else { assert!(matches!(result, Err(MountSourceError::Stale))); }
@@ -11453,8 +11323,8 @@ mod tests {
         let caller = crate::CancellationToken::new();
         let mut work = native_control_work(finite_content_budget(), &caller)?;
         let opened = demand.opens.load(Ordering::Acquire);
-        let bytes = view.read_link_with_work(
-            &mounted(&["link"]), &mut super::super::NativeMountWork::new(&work),
+        let bytes = view.read_link_with_meter(
+            &mounted(&["link"]), &work,
         )?;
         assert_eq!(bytes.bytes.as_ref(), b"../target");
         assert_eq!(work.receipt().source_bytes_read, bytes.bytes.len() as u64);
@@ -11475,8 +11345,8 @@ mod tests {
         let caller = crate::CancellationToken::new();
         let opened = demand.opens.load(Ordering::Acquire);
         let mut range = native_control_work(finite_content_budget(), &caller)?;
-        let bytes = view.read_range_with_work(
-            &mounted(&["file"]), 2, 3, &mut super::super::NativeMountWork::new(&range),
+        let bytes = view.read_range_with_meter(
+            &mounted(&["file"]), 2, 3, &range,
         )?;
         assert_eq!(bytes.bytes.as_ref(), b"cde");
         assert!(bytes.logical_owned_bytes >= bytes.bytes.len() as u64);
@@ -11488,8 +11358,8 @@ mod tests {
         let lookups = demand.lookups();
         let opened = demand.opens.load(Ordering::Acquire);
         let mut read = native_control_work(finite_content_budget(), &caller)?;
-        let bytes = view.read_link_with_work(
-            &link, &mut super::super::NativeMountWork::new(&read),
+        let bytes = view.read_link_with_meter(
+            &link, &read,
         )?;
         assert_eq!(bytes.bytes.as_ref(), target.as_ref());
         assert_eq!(demand.lookups(), lookups);
@@ -11515,16 +11385,16 @@ mod tests {
         )?;
         let lookups = demand.lookups();
         let opens = demand.opens.load(Ordering::Acquire);
-        assert!(matches!(view.read_range_with_work(
-            &mounted(&["file"]), 0, 2, &mut super::super::NativeMountWork::new(&denied),
+        assert!(matches!(view.read_range_with_meter(
+            &mounted(&["file"]), 0, 2, &denied,
         ), Err(error) if matches!(error.semantic_error(),
             MountSourceError::Work(_) | MountSourceError::NativeWork(_)
             | MountSourceError::Filesystem(crate::FsError::NativeKernel(_)))));
         assert_eq!(demand.lookups(), lookups);
         assert_eq!(demand.opens.load(Ordering::Acquire), opens);
         let mut absent = native_control_work(finite_content_budget(), &caller)?;
-        assert!(view.lookup_pinned_with_work(
-            &mounted(&["absent"]), &mut super::super::NativeMountWork::new(&absent),
+        assert!(view.lookup_pinned_with_meter(
+            &mounted(&["absent"]), &absent,
         )?.is_none());
         assert!(absent.receipt().backend_read_operations > 0);
         assert!(absent.receipt().items_examined > 0);
@@ -12426,7 +12296,7 @@ mod tests {
         let denied = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(denied_budget, &caller),
         )));
-        let denied_context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&denied));
+        let denied_context = crate::NativeMaterializationWork::from_meter(Arc::clone(&denied));
         assert!(matches!(
             view.rename_with_meter(&from, &to, false, &denied_context),
             Err(MountSourceError::Work(_)),
@@ -12437,7 +12307,7 @@ mod tests {
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(budget, &caller),
         )));
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&original));
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
         view.rename_with_meter(&from, &to, false, &context)?;
         assert!(view.lookup(&from)?.is_none());
         let moved = view.lookup(&mounted(&["moved", "nested", "leaf"]))?
@@ -12471,7 +12341,7 @@ mod tests {
         let meter = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(budget, &caller),
         )));
-        let context = super::super::NativeMountMeterWork::from_meter(Arc::clone(&meter));
+        let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
         let mut cursor = None;
         let mut names = Vec::new();
         loop {
@@ -12497,7 +12367,7 @@ mod tests {
         let denied_meter = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(denied_budget, &caller),
         )));
-        let denied = super::super::NativeMountMeterWork::from_meter(Arc::clone(&denied_meter));
+        let denied = crate::NativeMaterializationWork::from_meter(Arc::clone(&denied_meter));
         assert!(matches!(
             view.read_directory_with_meter(&MountPath::root(), None, 1, &denied),
             Err(MountSourceError::Work(_))
@@ -12509,7 +12379,7 @@ mod tests {
         let cancelled_meter = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(
             crate::demand::DemandWork::new(budget, &stopped),
         )));
-        let cancelled = super::super::NativeMountMeterWork::from_meter(Arc::clone(&cancelled_meter));
+        let cancelled = crate::NativeMaterializationWork::from_meter(Arc::clone(&cancelled_meter));
         assert!(matches!(
             view.read_directory_with_meter(&MountPath::root(), None, 1, &cancelled),
             Err(MountSourceError::Cancelled)
@@ -12538,9 +12408,9 @@ mod tests {
         let denied = original.native_volume_work(denied_budget)?;
         let denied_prefix = denied.receipt();
         assert!(matches!(
-            view.read_directory_with_work(
+            view.read_directory_with_meter(
                 &MountPath::root(), None, 1,
-                &mut super::super::NativeMountWork::new(&denied),
+                &denied,
             ),
             Err(error) if matches!(error.semantic_error(),
                 MountSourceError::Work(_) | MountSourceError::NativeWork(_)
@@ -12549,16 +12419,16 @@ mod tests {
         assert_eq!(denied.receipt().allocation_operations, denied_prefix.allocation_operations);
         assert_eq!(denied.receipt().source_entries_visited, 0);
         let work = native_control_work(budget, &caller)?;
-        let empty = view.read_directory_with_work(
-            &mounted(&["empty"]), None, 1, &mut super::super::NativeMountWork::new(&work),
+        let empty = view.read_directory_with_meter(
+            &mounted(&["empty"]), None, 1, &work,
         )?;
         assert!(empty.entries.is_empty() && empty.next_cursor.is_none());
         let mut cursor = None;
         let mut names = Vec::new();
         loop {
-            let page = view.read_directory_with_work(
+            let page = view.read_directory_with_meter(
                 &MountPath::root(), cursor.as_deref(), 1,
-                &mut super::super::NativeMountWork::new(&work),
+                &work,
             )?;
             assert!(!page.entries.is_empty() || page.next_cursor.is_none());
             for entry in page.entries { names.push(entry.name); }
@@ -12574,15 +12444,15 @@ mod tests {
         assert!(work.receipt().allocation_operations > 0);
         work.receipt().verify(budget)?;
 
-        let first = view.read_directory_with_work(
-            &MountPath::root(), None, 1, &mut super::super::NativeMountWork::new(&work),
+        let first = view.read_directory_with_meter(
+            &MountPath::root(), None, 1, &work,
         )?;
         let next = first.next_cursor.expect("source phase has a continuation");
         view.create_file(&mounted(&["d"]), FileMetadata::default())?;
         assert!(matches!(
-            view.read_directory_with_work(
+            view.read_directory_with_meter(
                 &MountPath::root(), Some(&next), 1,
-                &mut super::super::NativeMountWork::new(&work),
+                &work,
             ),
             Err(MountSourceError::Stale)
         ));
@@ -12590,9 +12460,9 @@ mod tests {
         let cancelled = native_control_work(budget, &stopped)?;
         stopped.cancel();
         assert!(matches!(
-            view.read_directory_with_work(
+            view.read_directory_with_meter(
                 &MountPath::root(), None, 1,
-                &mut super::super::NativeMountWork::new(&cancelled),
+                &cancelled,
             ),
             Err(error) if matches!(error.semantic_error(), MountSourceError::Cancelled
                 | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled))
