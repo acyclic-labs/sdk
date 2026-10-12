@@ -142,7 +142,7 @@ impl Drop for PreparedMaterializationRecord {
     fn drop(&mut self) {
         let Some(cleanup) = self.cleanup.take() else { return; };
         #[cfg(unix)]
-        let _ = cleanup.attempt_recorded(|| {
+        let _ = cleanup.attempt(|| {
             // SAFETY: preparation validated and terminated this retained name.
             let name = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
@@ -151,7 +151,7 @@ impl Drop for PreparedMaterializationRecord {
             } else { Err(io::Error::last_os_error()) }
         });
         #[cfg(windows)]
-        let _ = cleanup.attempt_recorded(|| {
+        let _ = cleanup.attempt(|| {
             use windows::Wdk::Storage::FileSystem::{FILE_DISPOSITION_INFORMATION, FileDispositionInformation};
             windows_set_information(&self.file,
                 &FILE_DISPOSITION_INFORMATION { DeleteFile: true }, FileDispositionInformation)
@@ -365,7 +365,7 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) { drop(reservation); }
     fn attempt_cleanup_write<T>(&mut self, reservation: Self::CleanupWrite, operation: impl FnOnce() -> T)
         -> (T, Result<(), Self::Error>) {
-        reservation.attempt_recorded(operation)
+        reservation.attempt(operation)
     }
 }
 
@@ -8447,7 +8447,7 @@ mod bounded_record_tests {
         fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) { drop(reservation); }
         fn attempt_cleanup_write<T>(&mut self, reservation: Self::CleanupWrite, operation: impl FnOnce() -> T)
             -> (T, Result<(), Self::Error>) {
-            reservation.attempt_recorded(operation)
+            reservation.attempt(operation)
         }
     }
 
