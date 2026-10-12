@@ -1328,7 +1328,7 @@ impl StockExecutor {
         mut self,
         stage: Arc<dyn crate::context::ContextStage>,
     ) -> Result<Self> {
-        stage.validate()?;
+        stage.validate(None)?;
         self.context = self.context.with(stage);
         Ok(self)
     }
@@ -5635,9 +5635,10 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             _: Limits,
-        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
             let revision = self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 Ok(vec![
                     ModelMessage {
                         role: ModelRole::System,
@@ -6622,9 +6623,10 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             _: Limits,
-        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
             let read = self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 Ok(vec![ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Text(format!("source revision {read}")),
@@ -6894,16 +6896,18 @@ mod tests {
         fn name(&self) -> &str {
             "once"
         }
-        fn contract(&self) -> Value {
-            json!({"revision": "1"})
+        fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+            Ok(json!({"revision": "1"}))
         }
         fn apply<'a>(
             &'a self,
             _: &'a ContextInput,
             context: crate::context::Context,
             _: Limits,
-        ) -> BoxFuture<'a, Result<crate::context::Context>> {
-            Box::pin(async move {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::Context>>
+        {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 if self.0.fetch_add(1, Ordering::SeqCst) != 0 {
                     return Err(Error::NotFound("source removed after admission".into()));
                 }

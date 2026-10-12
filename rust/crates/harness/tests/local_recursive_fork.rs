@@ -160,6 +160,8 @@ where
             "scratch.txt",
             1024,
             &IdempotencyKey::new(format!("scratch-{level}"))?,
+            None,
+            None,
         )
         .await?;
     let mut capabilities = local_scope
@@ -179,13 +181,13 @@ where
             &mut None,
         )
         .expect("scope proof");
-    let reader = Arc::new(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         host.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         &read_scope,
         64 * 1024,
         None,
-    )?);
+    )?;
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -472,16 +474,16 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    let reader = Arc::new(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         host.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         64 * 1_024,
         None,
-    )?);
+    )?;
     let forks = Arc::new(CompositeForkVerifier::new(
         &[
-            Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
+            FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
             Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
         ],
         &mut None,
@@ -492,15 +494,15 @@ where
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
     .await?
     .with_content_verifier(reader)
     .with_fork_verifier(forks)
-    .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(host))))
+    .with_merge_verifier(FilesystemProjectMergeVerifier::new(host, None)?))
 }
 
 #[tokio::test]
@@ -596,6 +598,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             "root.txt",
             1_024,
             &IdempotencyKey::new("root-message")?,
+            None,
+            None,
         )
         .await?;
     let root_attachment = host
@@ -608,6 +612,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             "root.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
+            None,
+            None,
         )
         .await?;
     let mut previous_attachment = root_attachment.clone();
@@ -687,13 +693,13 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             VolumeOwner::Project("local-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let parent_reader = Arc::new(FilesystemContentVerifier::new(
+        let parent_reader = FilesystemContentVerifier::new(
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &grant_scope,
             64 * 1_024,
             None,
-        )?);
+        )?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
@@ -883,13 +889,13 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 authority.stream_path(&mut None)?.into_bytes(),
                 Some(aggregate.reducer().revision().to_string()),
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
+            let reader = FilesystemContentVerifier::new(
                 host.clone(),
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &grant_scope,
                 64 * 1024,
                 None,
-            )?);
+            )?;
             let sibling_preparer = FilesystemForkPreparer::new(
                 host.clone(),
                 aggregate.reducer().clone(),
@@ -939,6 +945,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     "scratch.txt",
                     1024,
                     &IdempotencyKey::new("later-parent-scratch")?,
+                    None,
+                    None,
                 )
                 .await?;
             assert_ne!(Some(&changed), approved_model_files.get(1));
@@ -992,6 +1000,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &format!("child-{level}.txt"),
                 1_024,
                 &IdempotencyKey::new(format!("child-message-{level}"))?,
+                None,
+                None,
             )
             .await?;
         let child_attachment = host
@@ -1004,6 +1014,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &format!("child-{level}.bin"),
                 1_024,
                 &IdempotencyKey::new(format!("child-attachment-{level}"))?,
+                None,
+                None,
             )
             .await?;
         let child_read = ContentGrant::verify(
@@ -1014,17 +1026,17 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         )?;
         assert!(
             !host
-                .read_content(&inherited_file, &child_read, 16 * 1_024)
+                .read_content(&inherited_file, &child_read, 16 * 1_024, None)
                 .await?
                 .is_empty()
         );
         assert!(
-            host.read_content(&root_file, &child_read, 1_024)
+            host.read_content(&root_file, &child_read, 1_024, None)
                 .await
                 .is_err()
         );
         assert_eq!(
-            host.read_content(&child_attachment, &child_read, 1_024)
+            host.read_content(&child_attachment, &child_read, 1_024, None)
                 .await?
                 .as_ref(),
             format!("child attachment {level}").as_bytes(),
@@ -1142,6 +1154,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     "final-merge.txt",
                     1_024,
                     &IdempotencyKey::new("final-merge-notice")?,
+                    None,
+                    None,
                 )
                 .await?;
             let merge_message = ConversationMessage {
@@ -1251,7 +1265,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &root_attachment,
             )?;
             assert_eq!(
-                host.read_content(&root_attachment, &exact, 1_024)
+                host.read_content(&root_attachment, &exact, 1_024, None)
                     .await?
                     .as_ref(),
                 b"root attachment"
@@ -1288,18 +1302,18 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         VolumeOperation::Read,
     )?;
     assert_eq!(
-        host.read_content(&final_file, &final_read, 1_024)
+        host.read_content(&final_file, &final_read, 1_024, None)
             .await?
             .as_ref(),
         b"child message 3",
     );
     assert!(
-        host.read_content(&root_file, &final_read, 1_024)
+        host.read_content(&root_file, &final_read, 1_024, None)
             .await
             .is_err()
     );
     assert_eq!(
-        host.read_content(&final_attachment, &final_read, 1_024)
+        host.read_content(&final_attachment, &final_read, 1_024, None)
             .await?
             .as_ref(),
         b"child attachment 3",
@@ -1316,7 +1330,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         &root_attachment,
     )?;
     assert_eq!(
-        host.read_content(&root_attachment, &exact_read, 1_024)
+        host.read_content(&root_attachment, &exact_read, 1_024, None)
             .await?
             .as_ref(),
         b"root attachment"
@@ -1467,6 +1481,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             "current.txt",
             1_024,
             &IdempotencyKey::new("deep-message-0")?,
+            None,
+            None,
         )
         .await?;
     let mut previous_attachment = host
@@ -1479,6 +1495,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("deep-attachment-0")?,
+            None,
+            None,
         )
         .await?;
     aggregate
@@ -1531,13 +1549,13 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             VolumeOwner::Project("deep-project".into()),
         )?;
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
+        let reader = FilesystemContentVerifier::new(
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &grant_scope,
             8 * 1_024,
             None,
-        )?);
+        )?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
@@ -1642,7 +1660,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             &previous_attachment,
         )?;
         assert_eq!(
-            host.read_content(&previous_attachment, &exact_parent_read, 1_024)
+            host.read_content(&previous_attachment, &exact_parent_read, 1_024, None)
                 .await?
                 .as_ref(),
             format!("deep attachment {}", level - 1).as_bytes(),
@@ -1664,17 +1682,17 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
         )?;
         assert!(
             !host
-                .read_content(&inherited_file, &child_read, 8 * 1_024)
+                .read_content(&inherited_file, &child_read, 8 * 1_024, None)
                 .await?
                 .is_empty()
         );
         assert!(
-            host.read_content(&previous_file, &child_read, 1_024)
+            host.read_content(&previous_file, &child_read, 1_024, None)
                 .await
                 .is_err()
         );
         assert!(
-            host.read_content(&previous_attachment, &child_read, 1_024)
+            host.read_content(&previous_attachment, &child_read, 1_024, None)
                 .await
                 .is_err()
         );
@@ -1696,7 +1714,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             &previous_attachment,
         )?;
         assert_eq!(
-            host.read_content(&previous_attachment, &child_reference_read, 1_024)
+            host.read_content(&previous_attachment, &child_reference_read, 1_024, None)
                 .await?
                 .as_ref(),
             format!("deep attachment {}", level - 1).as_bytes(),
@@ -1726,6 +1744,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 "current.txt",
                 1_024,
                 &IdempotencyKey::new(format!("deep-message-{level}"))?,
+                None,
+                None,
             )
             .await?;
         let child_attachment = host
@@ -1738,6 +1758,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("deep-attachment-{level}"))?,
+                None,
+                None,
             )
             .await?;
         child_aggregate

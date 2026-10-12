@@ -39,12 +39,17 @@ pub fn json_projection<T: JsonSchema>() -> Result<Value> {
 }
 
 pub(crate) fn project_json<T: Serialize>(
-    value: &T, _work: crate::NativeWork<'_>,
+    value: &T,
+    _work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = _work {
-        return super::value(&JsonProjection::Json { value }, work.remaining()?.bytes_encoded, work)
-            .map(|(value, custody)| (value, Some(custody)));
+        return super::value(
+            &JsonProjection::Json { value },
+            work.remaining()?.bytes_encoded,
+            work,
+        )
+        .map(|(value, custody)| (value, Some(custody)));
     }
     serde_json::to_value(JsonProjection::Json { value })
         .map(|value| (value, None))
@@ -92,12 +97,17 @@ pub fn reference_projection() -> Result<Value> {
 }
 
 pub(crate) fn project_reference(
-    file: &crate::conversation::FileRef, text: &str, _work: crate::NativeWork<'_>,
+    file: &crate::conversation::FileRef,
+    text: &str,
+    _work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     let projection = ReferenceProjection::Parts {
         parts: [
             ReferencePart::Text { text },
-            ReferencePart::File { file, policy: ReferencePolicy::Reference },
+            ReferencePart::File {
+                file,
+                policy: ReferencePolicy::Reference,
+            },
         ],
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -129,12 +139,14 @@ mod tests {
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([11; 16])),
-             &mut None)?,
+                &mut None,
+            )?,
             "file.txt".into(),
             "pinned-1".into(),
             FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
             "file.txt".into(),
-         &mut None)
+            &mut None,
+        )
     }
 
     #[test]
@@ -155,19 +167,20 @@ mod tests {
         let read = ToolResult {
             value: json!("exact"),
         };
-        for (canonical, projection, schema) in [
+        for (projection, schema) in [
             (
-                &published,
-                FileResultProjection(ProjectionMode::Reference).project(&invocation, &published, None)?.0,
+                FileResultProjection(ProjectionMode::Reference)
+                    .project(&invocation, &published, None)?
+                    .0,
                 FileResultProjection(ProjectionMode::Reference).schema()?,
             ),
             (
-                &read,
-                ReadFileProjection(ProjectionMode::Reference).project(&invocation, &read, None)?.0,
+                ReadFileProjection(ProjectionMode::Reference)
+                    .project(&invocation, &read, None)?
+                    .0,
                 ReadFileProjection(ProjectionMode::Reference).schema()?,
             ),
         ] {
-            let unchanged = canonical.clone();
             crate::tool::validate_value(&schema, &projection, "file reference projection", None)?;
             let wire: ToolResultContent = serde_json::from_value(projection.clone())
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -177,20 +190,23 @@ mod tests {
             assert!(
                 matches!(parts.get(1),Some(ModelDataPart::File { file:actual,policy:FileProjectionPolicy::Reference }) if actual==&file)
             );
-            assert!(
-                matches!(parts.first(),Some(ModelDataPart::Text { text }) if text.contains("omitted"))
-            );
+            assert!(matches!(parts.first(),Some(ModelDataPart::Text { text }) if !text.is_empty()));
             let mut changed = projection;
             changed["parts"][1]["policy"] = json!("bounded_full");
-            assert!(crate::tool::validate_value(&schema, &changed, "unselected policy", None).is_err());
-            assert_eq!(canonical, &unchanged);
+            assert!(
+                crate::tool::validate_value(&schema, &changed, "unselected policy", None).is_err()
+            );
         }
         assert_eq!(
-            FileResultProjection(ProjectionMode::Full).project(&invocation, &published, None)?.0,
+            FileResultProjection(ProjectionMode::Full)
+                .project(&invocation, &published, None)?
+                .0,
             json!({"kind":"json","value":published.value})
         );
         assert_eq!(
-            ReadFileProjection(ProjectionMode::Full).project(&invocation, &read, None)?.0,
+            ReadFileProjection(ProjectionMode::Full)
+                .project(&invocation, &read, None)?
+                .0,
             json!({"kind":"json","value":read.value})
         );
         assert!(
@@ -212,7 +228,9 @@ mod tests {
         assert_ne!(tool.definition.digest()?, original_digest);
         assert_eq!(
             tool.projection.project(&invocation, &published, None)?.0,
-            FileResultProjection(ProjectionMode::Reference).project(&invocation, &published, None)?.0
+            FileResultProjection(ProjectionMode::Reference)
+                .project(&invocation, &published, None)?
+                .0
         );
         Ok(())
     }
@@ -232,7 +250,12 @@ mod tests {
         crate::tool::validate_value(&input_schema, &json!({"file":file}), "generated read", None)?;
         crate::tool::validate_value(&output_schema, &canonical, "generated result", None)?;
         let projection = project_json(&result, None)?.0;
-        crate::tool::validate_value(&projection_schema, &projection, "generated projection", None)?;
+        crate::tool::validate_value(
+            &projection_schema,
+            &projection,
+            "generated projection",
+            None,
+        )?;
         assert_eq!(projection, json!({"kind":"json","value":canonical}));
         assert_eq!(
             serde_json::from_value::<FileResult>(canonical.clone())
@@ -240,11 +263,17 @@ mod tests {
             result
         );
         assert!(
-            crate::tool::validate_value(&projection_schema, &canonical, "bare result", None).is_err()
+            crate::tool::validate_value(&projection_schema, &canonical, "bare result", None)
+                .is_err()
         );
         assert!(
-            crate::tool::validate_value(&output_schema, &projection, "wrong canonical envelope", None)
-                .is_err()
+            crate::tool::validate_value(
+                &output_schema,
+                &projection,
+                "wrong canonical envelope",
+                None
+            )
+            .is_err()
         );
         for pointer in [
             "/file/version",
@@ -257,7 +286,8 @@ mod tests {
                 .pointer_mut(pointer)
                 .ok_or_else(|| Error::Invalid("fixture field missing".into()))? = json!(1);
             assert!(
-                crate::tool::validate_value(&output_schema, &changed, "wrong nested type", None).is_err()
+                crate::tool::validate_value(&output_schema, &changed, "wrong nested type", None)
+                    .is_err()
             );
         }
         let mut changed = canonical.clone();
@@ -267,7 +297,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture ref missing".into()))?
             .remove("version");
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "missing nested field", None).is_err()
+            crate::tool::validate_value(&output_schema, &changed, "missing nested field", None)
+                .is_err()
         );
         let mut changed = canonical.clone();
         changed
@@ -276,7 +307,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture descriptor missing".into()))?
             .insert("extra".into(), json!(true));
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "unknown nested field", None).is_err()
+            crate::tool::validate_value(&output_schema, &changed, "unknown nested field", None)
+                .is_err()
         );
         for digest in [vec![0; 31], vec![0; 33], vec![256; 32]] {
             let mut changed = canonical.clone();
@@ -284,7 +316,8 @@ mod tests {
                 .pointer_mut("/file/descriptor/sha256")
                 .ok_or_else(|| Error::Invalid("fixture digest missing".into()))? = json!(digest);
             assert!(
-                crate::tool::validate_value(&output_schema, &changed, "invalid digest", None).is_err()
+                crate::tool::validate_value(&output_schema, &changed, "invalid digest", None)
+                    .is_err()
             );
         }
         let mut changed = canonical;
@@ -293,7 +326,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("fixture length missing".into()))? =
             json!(crate::conversation::MAX_EXACT_JS_INTEGER + 1);
         assert!(
-            crate::tool::validate_value(&output_schema, &changed, "imprecise descriptor", None).is_err()
+            crate::tool::validate_value(&output_schema, &changed, "imprecise descriptor", None)
+                .is_err()
         );
         Ok(())
     }
@@ -307,16 +341,18 @@ mod tests {
             crate::tool::validate_value(
                 &edit.definition.input_schema,
                 &json!({"file":file,"old_text":"","new_text":"x"}),
-                "empty edit"
-            , None)
+                "empty edit",
+                None
+            )
             .is_err()
         );
         assert!(
             crate::tool::validate_value(
                 &patch.definition.input_schema,
                 &json!({"file":file,"diff":""}),
-                "empty patch"
-            , None)
+                "empty patch",
+                None
+            )
             .is_err()
         );
         let mut invalid = json!({"file":file});

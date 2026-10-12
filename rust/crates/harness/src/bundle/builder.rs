@@ -229,7 +229,7 @@ impl HarnessBuilder {
                 "builder already captured its original extension selection".into(),
             ));
         }
-        let original = agent.original_extension_binding()?;
+        let original = (agent.extension_admission()?, agent.schemas().clone());
         if let Some(bound) = self.bound_scope.take() {
             self.bound_scope = Some(bound.with_original_extensions(original)?);
         } else {

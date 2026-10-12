@@ -339,7 +339,7 @@ pub(crate) struct PiNativeCaptureLimits {
 
 /// Fixed native policy captured in the immutable seed, never a spawn override.
 pub(crate) fn capture_limits(actual_root_limits: acyclic_harness::conversation::Limits, maximum_payload: u64) -> Result<PiNativeCaptureLimits> {
-    actual_root_limits.validate()?;
+    actual_root_limits.validate(&mut None)?;
     let result = actual_root_limits.file_bytes.min(maximum_payload)
         .min(super::MAXIMUM_ADAPTER_STATE_BYTES).min(1_048_576);
     let output = result.checked_sub(2048).map(|remaining| (remaining / 4).min(262_144))
@@ -914,8 +914,8 @@ impl PiNativeRootSeed {
         }
         creator.authorize_settlement_with_native_work(owner, meter).await?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation)?;
-            owner.require_volume_grant_with_native_work(&self.scratch, operation, meter)?;
+            ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
+            owner.require_volume_grant(&self.scratch, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         }
         let bytes = shared.context().read_file_with_native_work(session, meter).await?;
         if bytes.as_ref() != intent.session_bytes.as_bytes() {
@@ -1001,8 +1001,8 @@ impl PiNativeRootSeed {
         let volume = binding.project_volumes.get(root_key).ok_or_else(|| invalid("Pi lazy project is not selected by the original child"))?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             if operation == VolumeOperation::Write && !writable { continue; }
-            ContentGrant::verify(&authority.0, &authority.1, volume, operation)?;
-            owner.require_volume_grant_with_native_work(volume, operation, meter)?;
+            ContentGrant::verify(&authority.0, &authority.1, volume, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
+            owner.require_volume_grant(volume, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         }
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;
@@ -1024,8 +1024,7 @@ impl PiNativeRootSeed {
             let mut allocation = original_volume_work.claim(std::mem::size_of::<LazyMount<A, O, D, S>>() as u64, u64::from((std::mem::size_of::<LazyMount<A, O, D, S>>() as u64) != 0), acyclic_fs::WorkCounters::default())
                 .map_err(native_error)?;
             let mut slot = Arc::<LazyMount<A, O, D, S>>::new_uninit();
-            let mut mount = match workspace.mount_with_work(path.0.as_path(), options,
-                Some(source_guard), &original_volume_work, cancellation).await {
+            let mut mount = match workspace.mount(path.0.as_path(), options.native_context(&original_volume_work, Some(source_guard), None)).await {
                 Ok(mount) => mount,
                 Err(acyclic_fs::native_mount::MountLifecycleError::Native(
                     acyclic_fs::native_mount::NativeMountError::StartupFailed(failure),
@@ -1043,7 +1042,7 @@ impl PiNativeRootSeed {
             if let Some(cause) = custody_failure {
                 *retained_allocation = Some(allocation);
                 if retained.as_ref().expect("actual mount retained above")
-                    .abandon_with_work(&original_volume_work).is_ok()
+                    .abandon(&original_volume_work).is_ok()
                 {
                     *retained = None;
                     *retained_allocation = None;
@@ -1055,7 +1054,7 @@ impl PiNativeRootSeed {
         if mount.path() != path.0.as_path() {
             return Err(Error::Conflict("Pi retained project mount belongs to another native namespace".into()));
         }
-        let snapshot = mount.snapshot_with_work(&original_volume_work, cancellation).await.map_err(Error::from)?;
+        let snapshot = mount.snapshot(&original_volume_work, cancellation).await.map_err(Error::from)?;
         if snapshot.workspace_id != actual.id()
             || snapshot.authored_generation.digest().as_bytes().as_slice() != original_generation.as_resource().key()
         {
@@ -1264,7 +1263,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 reason: "Pi source owner belongs to another original allocation" });
         }
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
-        mount.abandon_with_work(&volume_work).map_err(Error::from)?;
+        mount.abandon(&volume_work).map_err(Error::from)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();

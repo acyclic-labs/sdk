@@ -16,7 +16,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(initial.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, vec![pinned.id()]);
-    assert!(child.list_directory("/", None, 1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.entries.is_empty());
+    assert!(child.list_directory("/", None, 1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?.entries.is_empty());
     let retried = parent
         .fork(
             "scratch-child",

@@ -173,7 +173,7 @@ where
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
-        Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
+        Some(std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new()).definition()?)
     } else { None };
     for task in &mut tasks.0 {
         if let Some(preparation) = task.preparation {
@@ -185,7 +185,7 @@ where
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()
-                .expect("retained preparation definition").0.identity() || admission.0.parent != task.parent
+                .expect("retained preparation definition").identity() || admission.0.parent != task.parent
                 || request.0.child.parent != task.parent
                 || request.0.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
                 || child.0.binding != *task.binding
@@ -219,7 +219,13 @@ where
     let mut observations = Vec::with_capacity(tasks.0.len());
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
-            let recovered = runtime.task_host().recover_work_with_native_work(preparation, work).await?;
+            let recovered = (async {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+                let value = runtime.task_host().recover_work(preparation, &mut Some(&mut io)).await?;
+                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+            }).await?;
             let phase = match recovered.0 {
                 WorkPull::Claimed(_) => PiPreparationPhase::Reserved,
                 WorkPull::Unresolved { .. } => PiPreparationPhase::Uncertain,
@@ -240,7 +246,13 @@ where
             continue;
         }
         let task_id = task.binding.task_id;
-        let mut recovered = runtime.task_host().recover_work_with_native_work(task_id, work).await?;
+        let mut recovered = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = runtime.task_host().recover_work(task_id, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         custody.absorb(&mut recovered.1).map_err(native_error)?;
         let observation = match recovered.0 {
             WorkPull::Claimed(lease) => PiTaskObservation::Reserved { lease },

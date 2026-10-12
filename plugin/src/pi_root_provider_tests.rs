@@ -52,16 +52,16 @@ impl Fixture {
         let task = TaskId::from_bytes([112; 16]);
         let root = [113; 16];
         let provider = ProviderRef::new("pi-provider-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
-        let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-        let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-        let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
+        let journal = VolumeRef::new(provider.clone(), "journal".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap();
+        let scratch = VolumeRef::new(provider.clone(), "scratch".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap();
+        let project = VolumeRef::new(provider.clone(), "project".into(), VolumeClass::Project, VolumeOwner::Project(hex::encode(root)), &mut None).unwrap();
         let grants = Capabilities::new([
             "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
             "operation:wake".to_owned(), "task:spawn:acyclic.pi@1".to_owned(), "effect:plan".to_owned(), "conversation:bind".to_owned(),
             "effect:run".to_owned(), format!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"),
-            journal.directory_read_capability(ROOT_INPUT_DIRECTORY).unwrap(),
-            scratch.capability(VolumeOperation::Read).unwrap(), scratch.capability(VolumeOperation::Write).unwrap(),
-            project.capability(VolumeOperation::Read).unwrap(), project.capability(VolumeOperation::Write).unwrap(),
+            journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None).unwrap(),
+            scratch.capability(VolumeOperation::Read, &mut None).unwrap(), scratch.capability(VolumeOperation::Write, &mut None).unwrap(),
+            project.capability(VolumeOperation::Read, &mut None).unwrap(), project.capability(VolumeOperation::Write, &mut None).unwrap(),
         ]);
         let owner = PiOwnerConfig::new(&PiOwnerPolicy { root_task: task, agent, journal: journal.clone(), grants,
             limits: Limits { file_bytes: 1_048_576, path_bytes: 4096, render_bytes: 1_048_576, ..Limits::default() },
@@ -95,8 +95,14 @@ impl Fixture {
         drop(command_custody);
         let (worker_id, worker_id_custody) = startup.display(&format_args!("pi-root-provider-worker")).unwrap();
         let worker = Worker { id: worker_id, available: Default::default(), labels: Default::default() };
-        let (first, lease_custody) = runtime.runtime.run_operation_with_native_work(
-            &worker, task, &runtime.runtime.commands(), 1, &startup).await.unwrap();
+        let (first, lease_custody) = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         drop(worker);
         drop(worker_id_custody);
         let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = first.unwrap() else {
@@ -118,7 +124,7 @@ impl Fixture {
 
     async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
         let current = Arc::clone(self.provider.journal_owner.as_ref().unwrap());
-        let content = self.provider.preparation.context.content_residency_verifier_with_native_work(current, &self.startup)?;
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&self.provider.preparation.context), current, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&self.startup)?))?;
         let (authority, custody) = self.owner.effect_authority_with_native_work(&self.startup)?;
         let effects = crate::pi_owner::root_effects_with_native_work(self.stream.clone(), authority, custody,
             content, self.provider.clone(), &self.startup)?;
@@ -157,7 +163,7 @@ impl Fixture {
     async fn assert_no_selected_resources(&self) {
         let observation = crate::pi_fork::tests::work();
         for volume in self.request.binding.project_volumes.values().chain(std::iter::once(&self.request.binding.scratch.volume)) {
-            assert!(self.resources.fs.open_workspace_with_native_work(&volume.storage_name().unwrap(), &observation, observation.cancellation()).await.is_err());
+            assert!(self.resources.fs.open_workspace_with_native_work(&volume.storage_name(&mut None).unwrap(), &observation, observation.cancellation()).await.is_err());
         }
         assert_eq!(std::fs::read(self.native.join("untouched.txt")).unwrap(), b"original native bytes");
         assert_eq!(self.resources.shared_roots.live_roots().await, 0);
@@ -194,7 +200,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
                 &bytes, "application/json", &mut None).unwrap();
             let file = acyclic_harness::conversation::FileRef::new(fixture.owner.policy().journal.clone(),
                 "allocation.json".into(), "schema-test".into(), descriptor, "allocation.json".into(), &mut None).unwrap();
-            reducer.validate_custom_bytes("plugin.test.allocation", 1, &file, &bytes)
+            reducer.schemas().validate_bytes("plugin.test.allocation", 1, &file, &bytes)
         };
         let original_value = serde_json::to_value(&allocation.0).unwrap();
         validate(&original_value).unwrap();
@@ -322,7 +328,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
             let dispatch = fixture.dispatch_identity().await;
             let before = fixture.provider.observe_resources_with_native_work(dispatch.effect_id,
                 dispatch.attempt_id, dispatch.request_digest, &fixture.startup).await.unwrap();
-            let scratch_name = fixture.request.binding.scratch.volume.storage_name().unwrap();
+            let scratch_name = fixture.request.binding.scratch.volume.storage_name(&mut None).unwrap();
             let original_scratch = fixture.resources.fs.open_workspace_with_native_work(&scratch_name, &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.ok();
             let original_workspace = original_scratch.as_ref().map(|workspace| workspace.id());
             if let Some(scratch) = original_scratch {
@@ -440,7 +446,7 @@ async fn pi_root_provider_never_adopts_a_selected_name_created_by_another_operat
     let fixture = Fixture::new(true).await;
     let volume = &fixture.request.binding.scratch.volume;
     let foreign = acyclic_fs::OperationId::from_bytes([122; 16]);
-    let name = volume.storage_name().unwrap();
+    let name = volume.storage_name(&mut None).unwrap();
     let initial = fixture.resources.fs.create_workspace_with_operation_with_native_work(&name,
         VolumeConfig::portable(Lifecycle::Durable), foreign, &fixture.startup, fixture.startup.cancellation()).await.unwrap();
     assert!(matches!(fixture.execute().await.unwrap().0, EffectStatus::Indeterminate));
@@ -467,7 +473,7 @@ async fn pi_root_provider_lost_output_ack_ignores_a_replaced_mutable_output_path
     let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     let substituted = fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.0.path(),
         &serde_json::to_vec(&changed.0).unwrap(), "application/json", "result.json",
-        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("different-output-operation").unwrap()).await.unwrap();
+        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("different-output-operation").unwrap(), None, None).await.unwrap();
     assert_ne!(original.0, substituted);
     let reopened = fixture.reopen_provider().await;
     let before = fixture.startup.receipt();
@@ -644,7 +650,7 @@ async fn pi_root_partial_creation_without_original_source_intent_is_not_recaptur
     let (key, project) = fixture.request.binding.project_volumes.iter().next().unwrap();
     let operation = fixture.provider.creation_operation_with_native_work(dispatch.effect_id,
         dispatch.attempt_id, key, &fixture.startup).unwrap();
-    let generation = fixture.resources.fs.create_workspace_with_operation_with_native_work(&project.storage_name().unwrap(),
+    let generation = fixture.resources.fs.create_workspace_with_operation_with_native_work(&project.storage_name(&mut None).unwrap(),
         VolumeConfig::native(Lifecycle::Durable), operation, &fixture.startup, fixture.startup.cancellation()).await.unwrap();
     let before = fixture.startup.receipt();
     assert!(fixture.provider.reconcile_native(dispatch.attempt_id, &fixture.startup).await.is_err());
@@ -653,8 +659,8 @@ async fn pi_root_partial_creation_without_original_source_intent_is_not_recaptur
     assert_eq!(after.source_entries_visited, before.source_entries_visited);
     assert_eq!(after.materializations, before.materializations);
     assert_eq!(fixture.resources.shared_roots.live_roots().await, 0);
-    assert_eq!(fixture.resources.fs.open_workspace_with_native_work(&project.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.unwrap().id(), generation.workspace().id());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&fixture.request.binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert_eq!(fixture.resources.fs.open_workspace_with_native_work(&project.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.unwrap().id(), generation.workspace().id());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&fixture.request.binding.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     assert_eq!(std::fs::read(fixture.native.join("untouched.txt")).unwrap(), b"original native bytes");
 }
 
@@ -668,7 +674,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert_eq!(output.context().durable_task_id(), Some(fixture.request.binding.task_id));
     assert_eq!(output.context().scope().grants(), context.context().scope().grants());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-        assert!(!output.context().scope().grants().contains(&fixture.owner.policy().journal.capability(operation).unwrap()));
+        assert!(!output.context().scope().grants().contains(&fixture.owner.policy().journal.capability(operation, &mut None).unwrap()));
     }
     let (published, custody) = output.context().stage_file_once_with_native_work(
         OperationId::from_bytes([133; 16]), "root/checkpoint.json", b"{\"actual\":\"root scratch\"}",
@@ -736,20 +742,26 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, operator.path(), b"{\"changed\":true}",
         "application/json", "scope.json", fixture.owner.policy().maximum_payload_bytes,
-        &IdempotencyKey::new("different-operator-path-upload").unwrap()).await.unwrap();
+        &IdempotencyKey::new("different-operator-path-upload").unwrap(), None, None).await.unwrap();
     let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
     assert_eq!(retry.0, operator);
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
         &fixture.fence, &plan, fixture.root_handle.workspace.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&Worker { id: "operator-child-read-denial".into(),
-        available: Default::default(), labels: Default::default() }, child.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &native).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&native)?;
+        let value = fixture.runtime.runtime.run_operation(&Worker { id: "operator-child-read-denial".into(),
+        available: Default::default(), labels: Default::default() }, child.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("actual created child lease"); };
     let context = fixture.runtime.runtime.task_context(child.binding.task_id, LeaseFence::from(&lease.reservation)).await.unwrap();
-    assert!(context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(ROOT_INPUT_DIRECTORY).unwrap()));
-    assert!(!context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(OPERATOR_INPUT_DIRECTORY).unwrap()));
+    assert!(context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None).unwrap()));
+    assert!(!context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(OPERATOR_INPUT_DIRECTORY, &mut None).unwrap()));
     assert!(context.read_file(&operator).await.is_err());
     assert_eq!(context.read_file(&regular).await.unwrap(), b"{\"not\":\"a bearer scope\"}");
     assert!(context.read_file_with_native_work(&operator, &native).await.is_err());
@@ -815,17 +827,18 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     let (write, _write_custody) = pi_input_write_grant_with_native_work(&fixture.owner, &crate::pi_fork::tests::work()).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, file.path(),
         b"{\"later\":\"mutable head\"}", "application/json", "native-mail.json",
-        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap())
+        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap(), None, None)
         .await.unwrap();
     let (original, original_custody) = observe_pi_input(
         &fixture.owner, &fixture.filesystem, operation, "native-mail", &work).await.unwrap().unwrap();
     assert_eq!(original, file);
     let (authority, authority_custody) = fixture.owner.authority_with_native_work(&work).unwrap();
-    let verifier = FilesystemContentVerifier::new_with_native_work(fixture.filesystem.clone(),
+    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
+    let verifier = FilesystemContentVerifier::new(fixture.filesystem.clone(),
         &authority.verifier, &authority.signed,
-        fixture.owner.policy().maximum_payload_bytes, &work).unwrap();
-    let bytes = verifier.read_with_native_work(&original,
-        fixture.owner.policy().maximum_payload_bytes, &work).await.unwrap();
+        fixture.owner.policy().maximum_payload_bytes, Some(&io)).unwrap();
+    let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(verifier.as_ref(), &original,
+        fixture.owner.policy().maximum_payload_bytes, Some(&io)).unwrap().await.unwrap();
     let (decoded, decoded_custody) = guarded_pi_decode::<PiMailEnvelope>(bytes.as_ref(), fixture.owner.policy().maximum_payload_bytes, std::mem::size_of::<PiMailEnvelope>() as u64, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["PiMailEnvelope", "PiMailKind", "kind", "message", "steer"]), &work).unwrap();
     assert_eq!(decoded, payload);
     drop(bytes);

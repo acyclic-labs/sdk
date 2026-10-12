@@ -270,28 +270,16 @@ impl ContextSource for DiscoveredContext {
         &'a self,
         _: &'a ContextInput,
         limits: crate::conversation::Limits,
-    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
-        Box::pin(async move { self.messages(limits, None) })
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
+        crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move { self.messages(limits, io) },
+        )
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool {
         true
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_native<'a>(
-        &'a self,
-        _: &'a ContextInput,
-        limits: crate::conversation::Limits,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let messages = self.messages(limits, Some(&io))?;
-            let retained = io.owned_bytes()?;
-            Ok((messages, io.into_native_custody(retained)?))
-        })
     }
 }

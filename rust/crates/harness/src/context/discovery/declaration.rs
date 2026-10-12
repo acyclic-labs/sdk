@@ -265,7 +265,10 @@ pub struct PinnedContextPath {
 }
 
 impl PinnedContextPath {
-    pub(super) fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+    pub(super) fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         self.root.validate(work)?;
         self.generation.validate(work)?;
         validate_content_path(&self.path, work)?;

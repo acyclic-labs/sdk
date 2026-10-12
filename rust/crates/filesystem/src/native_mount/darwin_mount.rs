@@ -601,25 +601,27 @@ impl ChangeLabels {
 
 }
 
-pub(super) struct DarwinStartupMeterScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     context: Arc<DarwinMountContext>,
     meter: crate::NativeMaterializationWork,
     generation: u64,
 }
 
-impl DarwinStartupMeterScope {
+impl NativeMountWorkScope {
     fn new(context: Arc<DarwinMountContext>, meter: &crate::NativeMaterializationWork)
         -> Result<Self, NativeMountError> {
         let generation = context.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).enter(meter)?;
         Ok(Self { context, meter: meter.clone(), generation })
     }
     /// Retains the original callback meter for accepted I/O.
-    pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::new(Arc::clone(&self.context), &self.meter)
     }
 }
 
-impl Drop for DarwinStartupMeterScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         self.context.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).leave(&self.meter, self.generation);
     }
@@ -1562,7 +1564,7 @@ impl DarwinMountSession {
                 context.native_allocation = Some(materialization.claim(std::mem::size_of::<DarwinMountContext>() as u64, u64::from((std::mem::size_of::<DarwinMountContext>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?);
                 Arc::new(context)
             };
-            let _startup_meter = DarwinStartupMeterScope::new(Arc::clone(&context), source_work)?;
+            let _startup_meter = NativeMountWorkScope::new(Arc::clone(&context), source_work)?;
             let observer: Weak<DarwinMountContext> = Arc::downgrade(&context);
             context.source.observe_view_with_meter(observer, source_work).map_err(NativeMountError::from)?;
             let supports_named_attributes = context.source.supports_posix_named_attributes();
@@ -1779,11 +1781,11 @@ impl DarwinMountSession {
 
     pub(super) fn begin_original_work(
         &self, native: &crate::NativeMaterializationWork,
-    ) -> Result<DarwinStartupMeterScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         native.admit(crate::WorkCounters::UNCHARGED)?;
         let resources = self.resources()?;
         if resources.driver_session.load(Ordering::Acquire) == 0 { return Err(NativeMountError::Lifecycle("session is stopped")); }
-        DarwinStartupMeterScope::new(Arc::clone(&resources.context), native)
+        NativeMountWorkScope::new(Arc::clone(&resources.context), native)
     }
 
     /// Returns the authenticated mounted-root identity.
@@ -3316,8 +3318,6 @@ fn darwin_source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::WorkspacePrefixFailure { source, .. } => super::native_workspace_errno(source),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
-        MountSourceError::NativeText { kind, .. } =>
-            super::native_source_text_errno(*kind),
         _ => libc::EIO,
     }
 }
@@ -5144,8 +5144,8 @@ mod tests {
             DemandWork::new(CALLBACK_POLICY, &cancellation))));
         let original = crate::NativeMaterializationWork::from_meter(original);
         let other = crate::NativeMaterializationWork::from_meter(other);
-        let active = DarwinStartupMeterScope::new(Arc::clone(&context), &original)?;
-        assert!(matches!(DarwinStartupMeterScope::new(Arc::clone(&context), &other),
+        let active = NativeMountWorkScope::new(Arc::clone(&context), &original)?;
+        assert!(matches!(NativeMountWorkScope::new(Arc::clone(&context), &other),
             Err(NativeMountError::ControlPending)));
         assert_eq!(other.native_read_meter().lock().work, crate::WorkCounters::UNCHARGED);
         let accepted_io_scope = active.try_clone_for_io()?;
@@ -5787,7 +5787,7 @@ mod tests {
             Some(std::io::ErrorKind::NotFound)
         );
         let began = Instant::now();
-        mount.revalidate()?;
+        mount.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| super::NativeMountError::from(cause))?)?;
         assert!(
             began.elapsed() < CALLBACK_GRACE_INTERVAL,
             "the mount's own changes need no wait"
@@ -5799,7 +5799,7 @@ mod tests {
             Bytes::from_static(b"newer"),
         )?;
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"created".to_vec()) , FileMetadata::default(), None, work))?;
-        mount.revalidate()?;
+        mount.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| super::NativeMountError::from(cause))?)?;
         assert_eq!(std::fs::metadata(&changed)?.len(), 5);
         assert!(created.is_file(), "the absent name is looked up again");
         let mut listed = names()?;

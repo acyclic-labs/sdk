@@ -75,14 +75,16 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         tool: &'a ResumableTool,
         invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RecursiveToolOwner<P, A, O>>>;
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveToolOwner<P, A, O>>>;
     /// Authenticates the immutable source and allocation before staging.
     fn select<'a>(
         &'a self,
         context: &'a ToolContext,
         arguments: &'a ForkToolArguments,
         cancellation: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RecursiveForkSourceIntent>>;
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>>;
     /// Creates or restores the authenticated fork source.
     fn fork<'a>(
         &'a self,
@@ -91,7 +93,8 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         intent: &'a RecursiveForkSourceIntent,
         original: Option<&'a RecursiveForkToolPlan>,
         cancellation: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RecursiveForkToolBinding<P, A, O>>>;
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkToolBinding<P, A, O>>>;
     /// Binds the actual destination and explicitly readable selected source.
     fn merge<'a>(
         &'a self,
@@ -99,7 +102,8 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         arguments: &'a MergeToolArguments,
         original: Option<&'a RecursiveMergeToolPlan>,
         cancellation: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RecursiveMergeToolBinding<P, A, O>>>;
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveMergeToolBinding<P, A, O>>>;
     /// Restores the exact retained source for an ordinary preparation worker.
     fn preparation<'a>(
         &'a self,
@@ -112,74 +116,6 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_source(&self) -> bool {
         false
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn owner_with_native_work<'a>(
-        &'a self,
-        _context: &'a ToolContext,
-        _tool: &'a ResumableTool,
-        _invocation: &'a ToolInvocation,
-        _cancellation: &'a CancellationToken,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>,
-    > {
-        Err(NATIVE_SOURCE_REQUIRED)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn select_with_native_work<'a>(
-        &'a self,
-        _context: &'a ToolContext,
-        _arguments: &'a ForkToolArguments,
-        _cancellation: &'a CancellationToken,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<'a, (RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)>,
-    > {
-        Err(NATIVE_SOURCE_REQUIRED)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fork_with_native_work<'a>(
-        &'a self,
-        _context: &'a ToolContext,
-        _arguments: &'a ForkToolArguments,
-        _intent: &'a RecursiveForkSourceIntent,
-        _original: Option<&'a RecursiveForkToolPlan>,
-        _cancellation: &'a CancellationToken,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            (
-                RecursiveForkToolBinding<P, A, O>,
-                acyclic_fs::NativeAllocation,
-            ),
-        >,
-    > {
-        Err(NATIVE_SOURCE_REQUIRED)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn merge_with_native_work<'a>(
-        &'a self,
-        _context: &'a ToolContext,
-        _arguments: &'a MergeToolArguments,
-        _original: Option<&'a RecursiveMergeToolPlan>,
-        _cancellation: &'a CancellationToken,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<
-        crate::NativeFutureBundle<
-            'a,
-            (
-                RecursiveMergeToolBinding<P, A, O>,
-                acyclic_fs::NativeAllocation,
-            ),
-        >,
-    > {
-        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1599,18 +1535,24 @@ where
         let mut result = async {
             let work = &work;
             let cancellation = &cancellation;
+            let owner_io = super::PreparationIo::from_native_work(work)?;
             let owner = self
                 .source
                 .as_deref()
                 .expect("recursive source was authorized")
-                .owner_with_native_work(context, &self.durable, invocation, cancellation, work)?
+                .owner(
+                    context,
+                    &self.durable,
+                    invocation,
+                    cancellation,
+                    Some(&owner_io),
+                )?
                 .await?;
             let caller = context.durable_task_id().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "recursive native tool has no durable caller",
             })?;
             let admitted = owner
-                .0
                 .runtime
                 .task_host()
                 .observe_admission_with_native_work(caller, work)
@@ -1626,27 +1568,25 @@ where
             }
             drop(admitted);
             owner
-                .0
                 .runtime
                 .task_host()
                 .verify_dispatch_owner_with_native_work(
                     caller,
-                    owner.0.journal_owner.task_binding().1,
+                    owner.journal_owner.task_binding().1,
                     work,
                 )?
                 .await?;
             let mut session = self
                 .durable
-                .open_with_native_context(context, invocation, Arc::clone(&owner.0.workflow), work)?
+                .open_with_native_context(context, invocation, Arc::clone(&owner.workflow), work)?
                 .await?;
             for _ in 0..8 {
                 owner
-                    .0
                     .runtime
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         caller,
-                        owner.0.journal_owner.task_binding().1,
+                        owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;
@@ -1663,7 +1603,7 @@ where
                     .input(
                         context,
                         invocation,
-                        &owner.0,
+                        &owner,
                         state.0,
                         cancellation,
                         Some(&io),
@@ -1682,12 +1622,11 @@ where
                     .step(identity.0, identity.1, input, custody, work)?
                     .await?;
                 owner
-                    .0
                     .runtime
                     .task_host()
                     .verify_dispatch_owner_with_native_work(
                         caller,
-                        owner.0.journal_owner.task_binding().1,
+                        owner.journal_owner.task_binding().1,
                         work,
                     )?
                     .await?;
@@ -1726,7 +1665,7 @@ where
             .source
             .as_deref()
             .expect("recursive source was authorized")
-            .owner(&context, &self.durable, &invocation, cancellation)
+            .owner(&context, &self.durable, &invocation, cancellation, None)?
             .await?;
         let caller = context
             .durable_task_id()
@@ -1817,28 +1756,12 @@ where
                     io,
                 )
                 .await?;
-                let intent = 'selected: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(io) = io {
-                        let work = io
-                            .original_native_work()
-                            .expect("native selector preserves its original ledger");
-                        let (intent, custody) = self
-                            .source
-                            .as_deref()
-                            .expect("recursive source was authorized")
-                            .select_with_native_work(context, &original, cancellation, work)?
-                            .await?;
-                        io.absorb_native_custody(custody)?;
-                        break 'selected intent;
-                    }
-                    break 'selected self
-                        .source
-                        .as_deref()
-                        .expect("recursive source was authorized")
-                        .select(context, &original, cancellation)
-                        .await?;
-                };
+                let intent = self
+                    .source
+                    .as_deref()
+                    .expect("recursive source was authorized")
+                    .select(context, &original, cancellation, io)?
+                    .await?;
                 validate_source_intent(&intent, &arguments, io)?;
                 if intent.caller != caller || intent.request.operation_id != invocation.operation_id
                 {
@@ -2045,32 +1968,12 @@ where
                     "fork source choice is not durably pinned",
                 )
             })?;
-            let binding = 'binding: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(io), Some(work)) = (io, native_work) {
-                    let (binding, custody) = self
-                        .source
-                        .as_deref()
-                        .expect("recursive source was authorized")
-                        .fork_with_native_work(
-                            context,
-                            &original,
-                            intent,
-                            None,
-                            cancellation,
-                            work,
-                        )?
-                        .await?;
-                    io.absorb_native_custody(custody)?;
-                    break 'binding binding;
-                }
-                break 'binding self
-                    .source
-                    .as_deref()
-                    .expect("recursive source was authorized")
-                    .fork(context, &original, intent, None, cancellation)
-                    .await?;
-            };
+            let binding = self
+                .source
+                .as_deref()
+                .expect("recursive source was authorized")
+                .fork(context, &original, intent, None, cancellation, io)?
+                .await?;
             if binding.source.request != intent.request
                 || binding.child.operation_id != intent.child_operation_id
             {
@@ -2181,25 +2084,12 @@ where
             )?)
         } else {
             let original: MergeToolArguments = decode(arguments, io)?;
-            let binding = 'binding: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(io), Some(work)) = (io, native_work) {
-                    let (binding, custody) = self
-                        .source
-                        .as_deref()
-                        .expect("recursive source was authorized")
-                        .merge_with_native_work(context, &original, None, cancellation, work)?
-                        .await?;
-                    io.absorb_native_custody(custody)?;
-                    break 'binding binding;
-                }
-                break 'binding self
-                    .source
-                    .as_deref()
-                    .expect("recursive source was authorized")
-                    .merge(context, &original, None, cancellation)
-                    .await?;
-            };
+            let binding = self
+                .source
+                .as_deref()
+                .expect("recursive source was authorized")
+                .merge(context, &original, None, cancellation, io)?
+                .await?;
             validate_merge_binding(context, original.source, &binding, io)?;
             let controller = ParentProjectController::new(
                 binding.filesystem.as_ref(),
@@ -2352,31 +2242,12 @@ where
         let io = temporary_io.as_ref();
         #[cfg(not(target_arch = "wasm32"))]
         let native_work = io.and_then(super::PreparationIo::original_native_work);
-        let binding = 'binding: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let (Some(io), Some(work)) = (io, native_work) {
-                let (binding, custody) = self
-                    .source
-                    .as_deref()
-                    .expect("recursive source was authorized")
-                    .merge_with_native_work(
-                        context,
-                        &merge.arguments,
-                        Some(merge),
-                        cancellation,
-                        work,
-                    )?
-                    .await?;
-                io.absorb_native_custody(custody)?;
-                break 'binding binding;
-            }
-            break 'binding self
-                .source
-                .as_deref()
-                .expect("recursive source was authorized")
-                .merge(context, &merge.arguments, Some(merge), cancellation)
-                .await?;
-        };
+        let binding = self
+            .source
+            .as_deref()
+            .expect("recursive source was authorized")
+            .merge(context, &merge.arguments, Some(merge), cancellation, io)?
+            .await?;
         validate_merge_binding(context, merge.arguments.source, &binding, io)?;
         check_merge_binding(merge, &binding, io)?;
         let controller = ParentProjectController::new(
@@ -2551,7 +2422,7 @@ where
                         io.absorb_native_custody(custody)?;
                         break 'generation reference;
                     }
-                    break 'generation binding.filesystem.generation_ref(generation)?;
+                    break 'generation binding.filesystem.generation_ref_id(generation.id())?;
                 };
                 let status = if matches!(&outcome, JoinOutcome::NoChanges(_)) {
                     "no_changes"
@@ -2610,35 +2481,19 @@ where
             allocation_digest: fork.allocation_digest,
             request: decode(&fork.request.payload, io)?,
         };
-        let mut binding = 'binding: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io
-                    .original_native_work()
-                    .expect("native publication preserves its original ledger");
-                let (binding, custody) = self
-                    .source
-                    .as_deref()
-                    .expect("recursive source was authorized")
-                    .fork_with_native_work(
-                        context,
-                        &fork.arguments,
-                        &intent,
-                        Some(fork),
-                        cancellation,
-                        work,
-                    )?
-                    .await?;
-                io.absorb_native_custody(custody)?;
-                break 'binding binding;
-            }
-            break 'binding self
-                .source
-                .as_deref()
-                .expect("recursive source was authorized")
-                .fork(context, &fork.arguments, &intent, Some(fork), cancellation)
-                .await?;
-        };
+        let mut binding = self
+            .source
+            .as_deref()
+            .expect("recursive source was authorized")
+            .fork(
+                context,
+                &fork.arguments,
+                &intent,
+                Some(fork),
+                cancellation,
+                io,
+            )?
+            .await?;
         validate_fork_binding(context, &fork.arguments, &binding, cancellation, io).await?;
         if !recursive_encoded_equal(&binding.source.request, &fork.request.payload, io)?
             || binding.child_message_pointer != fork.child_message_pointer
@@ -2802,34 +2657,12 @@ where
     ) -> Result<Value> {
         let temporary_io = recursive_temporary_io(output_io)?;
         let io = temporary_io.as_ref();
-        let mut binding = 'binding: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(io) = io {
-                let work = io
-                    .original_native_work()
-                    .expect("native publication preserves its original ledger");
-                let (binding, custody) = self
-                    .source
-                    .as_deref()
-                    .expect("recursive source was authorized")
-                    .merge_with_native_work(
-                        context,
-                        &merge.arguments,
-                        Some(merge),
-                        cancellation,
-                        work,
-                    )?
-                    .await?;
-                io.absorb_native_custody(custody)?;
-                break 'binding binding;
-            }
-            break 'binding self
-                .source
-                .as_deref()
-                .expect("recursive source was authorized")
-                .merge(context, &merge.arguments, Some(merge), cancellation)
-                .await?;
-        };
+        let mut binding = self
+            .source
+            .as_deref()
+            .expect("recursive source was authorized")
+            .merge(context, &merge.arguments, Some(merge), cancellation, io)?
+            .await?;
         validate_merge_binding(context, merge.arguments.source, &binding, io)?;
         check_merge_binding(merge, &binding, io)?;
         let receipt = receipt.ok_or_else(|| {
@@ -2921,9 +2754,9 @@ where
                             kind: history.clone_text(&command.kind)?,
                             payload: command.payload.copy(&mut Some(&mut *history))?,
                         };
-                        let payload = crate::core::native_value_clone_with_custody(
-                            &payload,
+                        let payload = crate::wire_codec::CodecQuota::produce(
                             &mut Some(&mut *history),
+                            |copy_quota| crate::core::copy_value(&payload, copy_quota),
                         )?
                         .0;
                         break 'progress owner

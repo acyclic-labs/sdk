@@ -99,7 +99,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let authority = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &grants, &work).unwrap();
     let (_, issuer, scope) = &authority.0;
     let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
-        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
+        &fixture.root_request.binding.scratch.volume, &issuer.verifier(&mut None).unwrap(), &acyclic_harness::core::SchemaRegistry::new(), scope, fixture.owner.policy().maximum_payload_bytes, None).unwrap();
     let approval = InteractionId::from_bytes([211; 16]);
     let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
     let journal = make_journal();
@@ -150,8 +150,14 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
         labels: Default::default() };
     let attempt_custody;
     let attempt;
-    (attempt, attempt_custody) = fixture.runtime.runtime.run_operation_with_native_work(&worker,
-        child.binding.task_id, &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    (attempt, attempt_custody) = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, child.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt else {
         panic!("actual admitted child command lease");
     };
@@ -180,7 +186,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
         &fixture.owner, &fixture.filesystem, operation, "operator-proof-isolation", &request, &work).await.unwrap();
     assert!(private.path().starts_with(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY));
     assert!(!child_context.context().scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(
-        crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY).unwrap()));
+        crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY, &mut None).unwrap()));
     assert!(matches!(child_context.context().read_file(&private).await, Err(Error::Unauthorized(_))));
     let (caller, caller_custody) = pi_caller::issue(&fixture.owner, session, &child.binding, &work).unwrap();
     request.operator = caller.0;

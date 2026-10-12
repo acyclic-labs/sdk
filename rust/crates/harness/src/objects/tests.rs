@@ -162,14 +162,14 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             summary: None,
             child_project_volume: VolumeRef::new(
                 filesystem.clone(),
-                "artifact-child-project",
+                "artifact-child-project".into(),
                 VolumeClass::Project,
                 project_owner.clone(),
                 &mut None,
             )?,
             child_private_volume: VolumeRef::new(
                 filesystem.clone(),
-                "artifact-child-private",
+                "artifact-child-private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(child_agent),
                 &mut None,
@@ -185,7 +185,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 revision: ResourceRevision::PrivateVolume {
                     volume: VolumeRef::new(
                         filesystem.clone(),
-                        "parent-scratch",
+                        "parent-scratch".into(),
                         VolumeClass::AgentPrivate,
                         VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
                         &mut None,
@@ -207,7 +207,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 revision: ResourceRevision::Project {
                     volume: VolumeRef::new(
                         filesystem.clone(),
-                        "artifact-parent-project",
+                        "artifact-parent-project".into(),
                         VolumeClass::Project,
                         project_owner,
                         &mut None,
@@ -222,7 +222,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         ],
         boundary: None,
     };
-    request.validate()?;
+    request.validate(&mut None)?;
     let [
         _scratch_selection,
         history_selection,
@@ -323,13 +323,13 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     assert_eq!(
-        crate::conversation::load_manifest(&owner_store, &manifest, 1, None)
+        crate::conversation::load_manifest(owner_store.as_ref(), &manifest, 1, None)
             .await
             .map(|(items, _)| items)?,
         items
     );
     assert!(
-        crate::conversation::load_manifest(&owner_store, &manifest, 2, None)
+        crate::conversation::load_manifest(owner_store.as_ref(), &manifest, 2, None)
             .await
             .map(|(items, _)| items)
             .is_err()
@@ -494,8 +494,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     let replacement_artifact = owner_store.artifact_ref(&replacement)?;
     assert!(replacement_artifact.as_resource().version().is_none());
     owner_store.verify_artifact(&replacement_artifact).await?;
-    owner_store
-        .objects
+    objects
         .put(
             wire::PutObjectHeader {
                 bucket: Some(owner_store.bucket.clone()),

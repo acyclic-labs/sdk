@@ -715,13 +715,13 @@ impl CreationFixture {
             root_scope.limits().file_bytes,
             None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
+        let reader = FilesystemContentVerifier::new(
             filesystem.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             root_scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
             identity: MachineIdentity {
@@ -766,7 +766,7 @@ impl CreationFixture {
         )?);
         let host = Arc::new(
             CoordinatorTaskHost::new(
-                DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
+                DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
                 stream,
                 payloads,
                 reader,
@@ -1349,13 +1349,13 @@ impl CreationFixture {
                 &mut None,
             )
             .expect("scope proof");
-        let resolver = Arc::new(FilesystemContentVerifier::new(
+        let resolver = FilesystemContentVerifier::new(
             self.filesystem.clone(),
             &fork_issuer.verifier(&mut None).expect("verifier copy"),
             &fork_scope,
             65_536,
             None,
-        )?);
+        )?;
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
             &fork_stream,

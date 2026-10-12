@@ -8,10 +8,10 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
     let provider = ProviderRef::new("pi-caller-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([71; 16]);
     let task = TaskId::from_bytes([72; 16]);
-    let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent)).unwrap();
-    let scratch = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent)).unwrap();
+    let journal = VolumeRef::new(provider.clone(), "journal".into(), VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent), &mut None).unwrap();
+    let scratch = VolumeRef::new(provider, "scratch".into(), VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(agent), &mut None).unwrap();
     let owner = pi_owner::PiOwnerConfig::new(&pi_owner::PiOwnerPolicy {
         root_task: task, agent, journal, grants: Capabilities::new(["operation:declare", "operation:observe"]),
         limits: Limits::default(), run_limits: TaskRunLimits::default(),

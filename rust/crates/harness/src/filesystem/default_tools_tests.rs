@@ -245,7 +245,7 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
             "expected real Filesystem publication".into(),
         ));
     };
-    let result = fixture.host.generation_ref(&first.generation)?;
+    let result = fixture.host.generation_ref_id(first.generation.id())?;
     let restored = controller
         .prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target))
         .await?;
@@ -258,7 +258,10 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
             "retry did not observe original publication".into(),
         ));
     };
-    assert_eq!(fixture.host.generation_ref(&retried.generation)?, result);
+    assert_eq!(
+        fixture.host.generation_ref_id(retried.generation.id())?,
+        result
+    );
     let project = workspace_ref(
         fixture.project.provider().clone(),
         &fixture.project.storage_name(&mut None)?,
@@ -338,6 +341,8 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
             "value.txt",
             64,
             &IdempotencyKey::new("initial-edit-source")?,
+            None,
+            None,
         )
         .await?;
     assert!(
@@ -368,6 +373,8 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
             "value.txt",
             64,
             &IdempotencyKey::new("user-edit")?,
+            None,
+            None,
         )
         .await?;
     assert!(matches!(
@@ -390,7 +397,7 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
     assert_eq!(
         fixture
             .host
-            .read_content(&changed, &read, 64)
+            .read_content(&changed, &read, 64, None)
             .await?
             .as_ref(),
         b"user"
@@ -398,7 +405,7 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
     assert_eq!(
         fixture
             .host
-            .read_content(&source, &read, 64)
+            .read_content(&source, &read, 64, None)
             .await?
             .as_ref(),
         b"aaa"
@@ -429,6 +436,8 @@ async fn merge_plan(
             "notice.txt",
             4096,
             &IdempotencyKey::new("merge-notice")?,
+            None,
+            None,
         )
         .await?;
     let controller = ParentProjectController::new(
@@ -481,6 +490,8 @@ async fn merge_plan(
             "command.json",
             65536,
             &IdempotencyKey::new("merge-command")?,
+            None,
+            None,
         )
         .await?;
     Ok((plan, command_payload))
@@ -638,21 +649,29 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a ResumableTool,
         _: &'a ToolInvocation,
         _: &'a CancellationToken,
-    ) -> BoxProviderFuture<
-        'a,
-        Result<RecursiveToolOwner<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            RecursiveToolOwner<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
+        >,
     > {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unauthorized("unexpected source access".into()))
+        })
     }
     fn select<'a>(
         &'a self,
         _: &'a ToolContext,
         _: &'a ForkToolArguments,
         _: &'a CancellationToken,
-    ) -> BoxProviderFuture<'a, Result<RecursiveForkSourceIntent>> {
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, RecursiveForkSourceIntent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unauthorized("unexpected source access".into()))
+        })
     }
     fn fork<'a>(
         &'a self,
@@ -661,12 +680,17 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a RecursiveForkSourceIntent,
         _: Option<&'a RecursiveForkToolPlan>,
         _: &'a CancellationToken,
-    ) -> BoxProviderFuture<
-        'a,
-        Result<RecursiveForkToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
+            RecursiveForkToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
+        >,
     > {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unauthorized("unexpected source access".into()))
+        })
     }
     fn merge<'a>(
         &'a self,
@@ -674,14 +698,17 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
         _: &'a MergeToolArguments,
         _: Option<&'a RecursiveMergeToolPlan>,
         _: &'a CancellationToken,
-    ) -> BoxProviderFuture<
-        'a,
-        Result<
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<
+            'a,
             RecursiveMergeToolBinding<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
         >,
     > {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(Error::Unauthorized("unexpected source access".into())) })
+        crate::conversation::BoundedContentFuture::new(io, || async {
+            Err(Error::Unauthorized("unexpected source access".into()))
+        })
     }
     fn preparation<'a>(
         &'a self,
@@ -799,24 +826,27 @@ async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_befor
             "original.txt",
             64,
             &IdempotencyKey::new("cancel-original")?,
+            None,
+            None,
         )
         .await?;
     let cancellation = CancellationToken::new();
     let guard = InvocationCancellation(cancellation.clone());
     let budget = acyclic_fs::performance::work_budget(4096, 1 << 20);
+    let io = crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?;
     let live = fixture
         .host
-        .read_content_measured(&file, &read, 64, budget, &cancellation)
-        .await
-        .map_err(|failure| failure.error)?;
-    assert_eq!(live.value.as_ref(), b"original");
+        .read_content(&file, &read, 64, Some(&io))
+        .await?;
+    assert_eq!(live.as_ref(), b"original");
+    let io = crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?;
     drop(guard);
-    let failure = fixture
+    fixture
         .host
-        .read_content_measured(&file, &read, 64, budget, &cancellation)
+        .read_content(&file, &read, 64, Some(&io))
         .await
         .expect_err("actual invoking token must reject a new backend request");
-    assert_eq!(*failure.work, acyclic_fs::WorkCounters::default());
+    assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
     assert!(cancellation.is_cancelled());
     Ok(())
 }
@@ -843,6 +873,8 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             "content.txt",
             8192,
             &IdempotencyKey::new("history-content")?,
+            None,
+            None,
         )
         .await?;
     let attachment = fixture
@@ -856,6 +888,8 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             "attachment.bin",
             8192,
             &IdempotencyKey::new("history-attachment")?,
+            None,
+            None,
         )
         .await?;
     let attachments = fixture
@@ -880,13 +914,13 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             ));
         }
     };
-    let reader = Arc::new(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         fixture.host.clone(),
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.scope,
         8192,
         None,
-    )?);
+    )?;
     fixture.parent = fixture.parent.with_content_verifier(reader.clone());
     fixture
         .parent
@@ -945,7 +979,8 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             reader.as_ref(),
             None,
         )
-        .await?;
+        .await?
+        .0;
     assert!(fixture.host.resolve(&child_workspace).await.is_err());
     assert_eq!(projected.len(), 3);
     let member = projected
@@ -1068,6 +1103,8 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
             "arguments.json",
             8192,
             &IdempotencyKey::new("source-arguments")?,
+            None,
+            None,
         )
         .await?;
     let project = workspace_ref(
@@ -1176,16 +1213,15 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     )?;
     assert_eq!(pinned.status, MachineStatus::Suspended);
     assert_eq!(pinned.commands, vec![command.clone()]);
-    fixture.parent =
-        fixture
-            .parent
-            .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-                fixture.host.clone(),
-                &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-                &fixture.scope,
-                8192,
-                None,
-            )?));
+    fixture.parent = fixture
+        .parent
+        .with_content_verifier(FilesystemContentVerifier::new(
+            fixture.host.clone(),
+            &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+            &fixture.scope,
+            8192,
+            None,
+        )?);
     fixture
         .parent
         .execute(

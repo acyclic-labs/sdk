@@ -653,7 +653,9 @@ async fn exercise_live_native_boundary() -> Result<()> {
         issuer.verifier(&mut None).expect("verifier copy"),
         schemas.clone(),
     );
-    agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
+    agent
+        .schemas()
+        .validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
         (
             0,
@@ -757,13 +759,13 @@ async fn exercise_live_native_boundary() -> Result<()> {
         ));
     }
     let reader = Arc::new(ReaderSpy {
-        inner: Arc::new(FilesystemContentVerifier::new(
+        inner: FilesystemContentVerifier::new(
             host.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &owner,
             65_536,
             None,
-        )?),
+        )?,
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
         missing: AtomicBool::new(false),
@@ -1230,7 +1232,9 @@ async fn exercise_live_native_boundary() -> Result<()> {
         )?
         .await?
         .0;
-    agent.validate_configuration_bytes(&extension, &next, next_bytes, None)?;
+    agent
+        .schemas()
+        .validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
             2,
@@ -1374,6 +1378,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
         agent
+            .schemas()
             .validate_configuration_bytes(&extension, &malformed, malformed_bytes, None)
             .is_err()
     );
@@ -1575,14 +1580,14 @@ where
             None,
             Some(ContentBindings {
                 reader: adapter.reader.clone(),
-                writer: Some(Arc::new(FilesystemContentPublisher::new(
+                writer: Some(FilesystemContentPublisher::new(
                     host.clone(),
                     &volume,
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     &signed,
                     65_536,
                     None,
-                )?)),
+                )?),
             }),
             None,
             None,
@@ -2000,10 +2005,12 @@ where
         .await?;
     let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(
         &[
-            Arc::new(acyclic_harness::filesystem::FilesystemForkVerifier::new(
+            acyclic_harness::filesystem::FilesystemForkVerifier::new(
                 host.clone(),
                 65_536,
-            )?),
+                None,
+                None,
+            )?,
             Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(
                 &stream_provider,
                 &mut None,
@@ -2017,8 +2024,8 @@ where
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
@@ -2193,21 +2200,21 @@ where
             &mut None,
         )
         .expect("scope proof");
-    let child_reader = Arc::new(FilesystemContentVerifier::new(
+    let child_reader = FilesystemContentVerifier::new(
         host.clone(),
         &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_scope,
         65_536,
         None,
-    )?);
+    )?;
     let mut child_aggregate = StreamAggregate::open(
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )

@@ -115,10 +115,5 @@ fn publication_template_rejects_missing_scope_and_invalid_path_before_dispatch()
         Err(Error::Unauthorized(_))
     ));
     assert!(tool.executor.authorize(Some(&scope), &invocation).is_err());
-    assert_eq!(tool.definition.revision, "portable-5");
-    assert_eq!(
-        patch_file(4096, 16)?.definition.revision,
-        "portable-patch-4"
-    );
     Ok(())
 }

@@ -571,7 +571,7 @@ impl ToolProjection for LocalListFilesTool {
 }
 
 struct MemoryContentPublisher {
-    files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
+    files: Arc<FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>>,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
@@ -832,13 +832,13 @@ impl MemoryHarnessStorage {
                 &mut None,
             )
             .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(
+        let input = FilesystemContentVerifier::new(
             Arc::clone(&host),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             maximum_file_bytes,
             None,
-        )?);
+        )?;
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -1078,7 +1078,7 @@ impl MemoryHarnessStorage {
     fn delegated_reader(
         &self,
         scope: &Scope,
-    ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
+    ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
             &self.issuer.verifier(&mut None).expect("verifier copy"),
@@ -1519,11 +1519,12 @@ mod tests {
         path_budget.allocation_operations = work.receipt().allocation_operations;
         let path_work = acyclic_fs::NativeMaterializationWork::new(path_budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let path_io = super::super::PreparationIo::from_native_work(&path_work)?;
         let path_prefix = path_work.receipt();
         assert!(matches!(
             storage
                 .host
-                .put_content_with_native_work(
+                .put_content(
                     &storage.volume,
                     &write,
                     "../outside",
@@ -1532,7 +1533,8 @@ mod tests {
                     "never",
                     1024,
                     &key,
-                    &path_work,
+                    None,
+                    Some(&path_io)
                 )
                 .await,
             Err(Error::NativeBoundary {
@@ -1543,13 +1545,13 @@ mod tests {
         assert!(matches!(
             storage
                 .host
-                .content_for_operation_with_native_work(
+                .content_for_operation(
                     &storage.volume,
                     &write,
                     &key,
                     ".system/private",
                     1024,
-                    &path_work,
+                    Some(&path_io)
                 )
                 .await,
             Err(Error::NativeBoundary {
@@ -1558,9 +1560,10 @@ mod tests {
             })
         ));
         assert_eq!(path_work.receipt(), path_prefix);
+        let io = super::super::PreparationIo::from_native_work(&work)?;
         let staged = storage
             .host
-            .put_content_with_native_work(
+            .put_content(
                 &storage.volume,
                 &write,
                 "inputs/original.json",
@@ -1569,10 +1572,11 @@ mod tests {
                 "original.json",
                 1024,
                 &key,
-                &work,
+                None,
+                Some(&io),
             )
             .await?;
-        assert_eq!(staged.1.bytes(), staged.0.logical_owned_bytes()?);
+        let staged_hold = io.take_native_custody(staged.logical_owned_bytes()?)?;
         storage
             .host
             .put_content(
@@ -1584,26 +1588,27 @@ mod tests {
                 "later.txt",
                 1024,
                 &IdempotencyKey::new("head-edit")?,
+                None,
+                None,
             )
             .await?;
         let recovered = storage
             .host
-            .content_for_operation_with_native_work(
+            .content_for_operation(
                 &storage.volume,
                 &write,
                 &key,
                 "inputs/original.json",
                 1024,
-                &work,
+                Some(&io),
             )
             .await?
             .ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
-        assert_eq!(recovered.0, staged.0);
-        assert_eq!(recovered.1.bytes(), recovered.0.logical_owned_bytes()?);
-        let read_io = super::super::PreparationIo::from_native_work(&work)?;
+        let recovered_hold = io.take_native_custody(recovered.logical_owned_bytes()?)?;
+        assert_eq!(recovered, staged);
         let content = storage
             .content_verifier
-            .read(&recovered.0, 1024, Some(&read_io))?
+            .read(&recovered, 1024, Some(&io))?
             .await?;
         assert_eq!(content.as_ref(), b"original");
         drop(content);
@@ -1611,7 +1616,7 @@ mod tests {
         assert!(
             storage
                 .host
-                .put_content_with_native_work(
+                .put_content(
                     &storage.volume,
                     &write,
                     "inputs/original.json",
@@ -1620,7 +1625,8 @@ mod tests {
                     "changed.txt",
                     1024,
                     &key,
-                    &work,
+                    None,
+                    Some(&io)
                 )
                 .await
                 .is_err()
@@ -1629,13 +1635,13 @@ mod tests {
         assert!(
             storage
                 .host
-                .content_for_operation_with_native_work(
+                .content_for_operation(
                     &storage.volume,
                     &write,
                     &key,
                     "inputs/changed.json",
                     1024,
-                    &work,
+                    Some(&io)
                 )
                 .await
                 .is_err()
@@ -1643,36 +1649,40 @@ mod tests {
         assert!(
             storage
                 .host
-                .content_for_operation_with_native_work(
+                .content_for_operation(
                     &storage.volume,
                     &write,
                     &IdempotencyKey::new("proven-absent-operation")?,
                     "inputs/original.json",
                     1024,
-                    &work,
+                    Some(&io)
                 )
                 .await?
                 .is_none()
         );
         drop(recovered);
+        drop(recovered_hold);
         drop(staged);
+        drop(staged_hold);
+        drop(io);
         assert_eq!(work.live_allocation_bytes(), baseline);
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_work =
             acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancelled)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = super::super::PreparationIo::from_native_work(&cancelled_work)?;
         let prefix = cancelled_work.receipt();
         cancelled.cancel();
         assert!(matches!(
             storage
                 .host
-                .content_for_operation_with_native_work(
+                .content_for_operation(
                     &storage.volume,
                     &write,
                     &key,
                     "inputs/original.json",
                     1024,
-                    &cancelled_work,
+                    Some(&io)
                 )
                 .await,
             Err(Error::NativeWork {

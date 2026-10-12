@@ -487,8 +487,8 @@ where
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(),
         None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
+        acyclic_harness::store::default_projection_read_limits(),
+        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
         None,
         &mut None,
     )
@@ -1015,13 +1015,13 @@ async fn worker_restart_with_options(
                 65_536,
                 None,
             )?);
-            let reader = Arc::new(FilesystemContentVerifier::new(
+            let reader = FilesystemContentVerifier::new(
                 filesystem.clone(),
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
                 65_536,
                 None,
-            )?);
+            )?;
             if with_policy && !reopened {
                 Box::pin(async {
                     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
@@ -1036,8 +1036,8 @@ async fn worker_restart_with_options(
                             .expect("verifier copy"),
                         SchemaRegistry::new(),
                         None,
-                        crate::store::default_projection_read_limits(),
-                        crate::store::DEFAULT_TERMINAL_EFFECTS,
+                        acyclic_harness::store::default_projection_read_limits(),
+                        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
                         None,
                         &mut None,
                     )
@@ -2179,6 +2179,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             "shared.txt",
             128,
             &IdempotencyKey::new("base")?,
+            None,
+            None,
         )
         .await?;
         let controller = ParentProjectController::new(
@@ -2417,6 +2419,8 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 "concurrent.txt",
                 128,
                 &IdempotencyKey::new("concurrent")?,
+                None,
+                None,
             )
             .await?;
         }
@@ -2608,13 +2612,13 @@ async fn stock_restart_with_publication_fault(
             65_536,
             None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
+        let reader = FilesystemContentVerifier::new(
             filesystem.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             65_536,
             None,
-        )?);
+        )?;
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(
                 &stream,

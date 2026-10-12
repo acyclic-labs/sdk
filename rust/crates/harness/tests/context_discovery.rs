@@ -100,15 +100,16 @@ impl Fixture {
     async fn journal_volume(&self) -> Result<(VolumeRef, acyclic_harness::core::Scope)> {
         let private = VolumeRef::new(
             self.volume.provider().clone(),
-            "journal",
+            "journal".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
         )?;
         self.host.create_volume(&private).await?;
         let scope = self.issuer.issue("journal", &Capabilities::new([
-                private.capability(VolumeOperation::Read)?,
-                private.capability(VolumeOperation::Write)?,
-                self.volume.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+                self.volume.capability(VolumeOperation::Read, &mut None)?,
             ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
         Ok((private, scope))
     }
@@ -136,9 +137,10 @@ impl Fixture {
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,
-            "sources",
+            "sources".into(),
             VolumeClass::SessionShared,
             VolumeOwner::Agent(agent),
+            &mut None,
         )?;
         let issuer = AuthorityIssuer::new(
             "discovery",
@@ -149,19 +151,14 @@ impl Fixture {
             },
         );
         let scope = issuer.issue("owner", &Capabilities::new([
-                volume.capability(VolumeOperation::Write)?,
-                volume.capability(VolumeOperation::Read)?,
-                volume.directory_read_capability("")?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.directory_read_capability("", &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         host.create_volume(&volume).await?;
         let writer =
-            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            32_768, None,
-        )?);
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+        let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 32_768, None)?;
         Ok(Self {
             host,
             issuer,
@@ -182,7 +179,7 @@ impl Fixture {
                 "source.md",
                 1_000_000,
                 &IdempotencyKey::new(key)?,
-            )
+             None, None)
             .await?;
         Ok(())
     }
@@ -342,12 +339,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     ));
     declaration.limits.entries = 64;
     let scope = fixture.issuer.issue("denied", &Capabilities::default(), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
-    let denied = FilesystemContentVerifier::new(
-        fixture.host.clone(),
-        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        32_768, None,
-    )?;
+    let denied = FilesystemContentVerifier::new(fixture.host.clone(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &scope, 32_768, None)?;
     assert!(matches!(
         declaration.capture(&denied).await,
         Err(Error::Unauthorized(_))

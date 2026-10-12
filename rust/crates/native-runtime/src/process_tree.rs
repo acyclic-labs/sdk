@@ -1334,13 +1334,13 @@ mod tests {
     fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation()
     -> std::io::Result<()> {
         use std::sync::Arc;
-        let sizing = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
+        let sizing = Arc::new(crate::runtime::tests::ReadBudgetMeter::new(0, 0));
         let frame = ProcessTree::prepare_closed_process(2, sizing.clone())?;
         let bytes = sizing.memory.load(std::sync::atomic::Ordering::Acquire);
         assert!(bytes > 0);
         drop(frame);
         assert_eq!(sizing.memory.load(std::sync::atomic::Ordering::Acquire), 0);
-        let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, 0));
+        let original = Arc::new(crate::runtime::tests::ReadBudgetMeter::new(u64::MAX, 0));
         let mut frame = Some(ProcessTree::prepare_closed_process(2, original.clone())?);
         assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes);
         original.deny_allocations.store(true, std::sync::atomic::Ordering::Release);
@@ -1372,7 +1372,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn prepared_closed_spawn_denial_retains_original_frame() -> io::Result<()> {
-        let mut limits = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        let mut limits = crate::runtime::tests::ReadBudgetMeter::new(u64::MAX, 0);
         limits.cancel_after_operation = true;
         let meter = std::sync::Arc::new(limits);
         let mut frame = Some(ProcessTree::prepare_closed_process(2, meter.clone())?);
@@ -1394,7 +1394,7 @@ mod tests {
     fn measured_kill_with_denied_observation_keeps_owned_child() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
         let mut tree = ProcessTree::spawn(&mut command("child", temporary.path()))?;
-        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        let mut meter = crate::runtime::tests::ReadBudgetMeter::new(u64::MAX, 0);
         meter.operation_denial = Some(crate::NativeOperationKind::Read);
         assert!(tree.terminate(Some(&meter)).is_err());
         assert!(!tree.is_reaped());
@@ -1408,7 +1408,7 @@ mod tests {
     #[test]
     fn denied_admission_after_suspended_spawn_retains_child() -> io::Result<()> {
         let temporary = tempfile::tempdir()?;
-        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+        let mut meter = crate::runtime::tests::ReadBudgetMeter::new(u64::MAX, 0);
         meter.operation_denial = Some(crate::NativeOperationKind::Read);
         let mut custody = None;
         assert!(crate::spawn_process_tree_with_meter_custody(

@@ -193,7 +193,7 @@ fn native_event_bytes_match_cross_language_fixture() -> Result<()> {
     let native = encode_event(&authority, &event, &mut None)?;
     assert_eq!(native, encode_event(&authority, &replayed, &mut None)?);
     let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("../conformance/native-wasm-event-v2.json"))
+        serde_json::from_str(include_str!("../../conformance/native-wasm-event-v2.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let expected = fixture
         .get("event_wire_hex")

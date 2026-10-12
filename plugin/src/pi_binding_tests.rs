@@ -12,9 +12,10 @@ fn binding(session: &str, identity: u8) -> PiTaskBinding {
         scratch: PiScratchBinding {
             volume: VolumeRef::new(
                 provider.clone(),
-                "scratch",
+                "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent_id),
+                &mut None,
             )
             .unwrap(),
             allocation: PiScratchAllocation::Created(PiScratchCreation {
@@ -44,9 +45,10 @@ fn roles_providers_and_original_creation_are_checked() {
     let mut changed = original.clone();
     changed.scratch.volume = VolumeRef::new(
         original.scratch.volume.provider().clone(),
-        "scratch",
+        "scratch".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
+        &mut None,
     )
     .unwrap();
     assert!(changed.validate(None, vec![], false).is_err());
@@ -104,9 +106,10 @@ fn project_selection_rejects_aliases_and_non_project_roles() {
     let mut selected = binding("native-session", 1);
     let project = VolumeRef::new(
         selected.scratch.volume.provider().clone(),
-        "project",
+        "project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project-owner".to_owned()),
+        &mut None,
     )
     .unwrap();
     selected

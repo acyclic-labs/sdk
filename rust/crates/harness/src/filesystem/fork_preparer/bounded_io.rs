@@ -272,7 +272,8 @@ impl PreparationIo {
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
-    pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
+    /// Starts finite preparation accounting with the caller's cancellation token.
+    pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid("measured content requires finite work allowances".into()));
         }
@@ -335,7 +336,8 @@ impl PreparationIo {
 
     /// Move already admitted ownership; never retain it a second time.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+    /// Transfers retained output storage to its caller.
+    pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
         match self {
             PreparationIo::Native { custody, .. } => custody.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1094,7 +1096,7 @@ macro_rules! filesystem_call {
         result
     }};
 }
-pub(super) use filesystem_call;
+pub(in crate::filesystem) use filesystem_call;
 
 pub(super) fn digest(bytes: &[u8], io: Option<&PreparationIo>) -> Result<blake3::Hash> {
     let work = WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
@@ -1482,7 +1484,7 @@ pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObje
         strings(io, &[host.provider.namespace(), host.provider.family(), host.provider.version()])?;
         io.retain_owned(32)?;
     }
-    host.generation_ref(generation)
+    host.generation_ref_id(generation.id())
 }
 
 /// Pins the acknowledged immutable generation with its original typed cause.
@@ -1655,7 +1657,7 @@ mod tests {
                 Ok(())
             },
         ).await?;
-        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref(&accepted)?), "/file", 32).await?.as_ref(), b"owned");
+        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref_id(accepted.id())?), "/file", 32).await?.as_ref(), b"owned");
         Ok(())
     }
 

@@ -40,13 +40,13 @@ fn ordinary_host() -> Result<ConversationEffectHost<MemoryStream>> {
             &mut None,
         )?,
     )?);
-    let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
+    let content = crate::filesystem::FilesystemContentVerifier::new(
         files,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         crate::conversation::Limits::default().file_bytes,
         None,
-    )?);
+    )?;
     ConversationEffectHost::new(
         Arc::new(MemoryStream::default()),
         authority,
