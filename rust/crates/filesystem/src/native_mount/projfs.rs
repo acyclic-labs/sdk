@@ -4498,7 +4498,7 @@ impl ProjFsSession {
 
     #[cfg(test)]
     fn test_original_stop_work(&self) -> Option<crate::NativeMaterializationWork> {
-        self.original_stop_work.or_else(|| self.ingress.as_ref().and_then(|ingress|
+        self.original_stop_work.clone().or_else(|| self.ingress.as_ref().and_then(|ingress|
             lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.original_stop_work.clone())))
     }
 
@@ -6742,7 +6742,7 @@ mod tests {
             >>().map_err(|_| "original stock checkout alias differs")?;
         let mut old = crate::native_mount::prepare_native_mount_start(&meter)?
             .start(request.clone(), source.clone(), &meter, None)?;
-        old.stop(&CancellationToken::new())?;
+        old.stop()?;
         assert!(old.cleanup_state().cleanup_complete);
         let refused = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old, source.clone(), &meter).err().expect("old permanently retired capture gate is denied");
@@ -6763,7 +6763,7 @@ mod tests {
             .start(request, fresh.clone(), &meter, None).err().expect("cold raw ProjFS marker never grants authority");
         let crate::NativeMountError::StartupFailed(mut cold) = cold else { panic!("cold failure retains actual controls"); };
         assert!(matches!(cold.error(), crate::NativeMountError::UnsafeRecoveryDestination { .. }));
-        cold.owner_mut().stop(&CancellationToken::new())?;
+        cold.owner_mut().stop()?;
         let checkout = fresh.native_namespace_lineage().expect("original stock alias")
             .owner.downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
@@ -6775,7 +6775,7 @@ mod tests {
         let mut restarted = crate::native_mount::prepare_native_mount_start(&meter)?
             .restart_with_meter(old.expect("actual original issuer retained once"), fresh, &meter)?;
         assert_eq!(restarted.destination(), destination);
-        restarted.stop(&CancellationToken::new())?;
+        restarted.stop()?;
         assert!(restarted.cleanup_state().cleanup_complete);
         assert!(!original.cancellation().is_cancelled(), "retirement never resets or cancels original work");
         Ok(())
@@ -6793,7 +6793,7 @@ mod tests {
         };
         let meter = work.clone();
         let result = (|| {
-            let custody = crate::native_mount::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
+            let custody = crate::native_mount::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
             let captures = Mutex::new(PostOperationFailures::default());
             let staging_custody = Mutex::new(None);
             operation(super::Projection {
@@ -7200,7 +7200,7 @@ mod tests {
 
         // The provider is already stopped, so no callback can authenticate or publish this write.
         assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7241,7 +7241,7 @@ mod tests {
                 .env("ACYCLIC_FS_TEST_GO", &go),
         )?;
         while !ready.exists() {
-            assert!(editor.try_wait()?.is_none(), "editor exited early");
+            assert!(editor.try_wait(None)?.is_none(), "editor exited early");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         session.flush_callbacks()?;
@@ -7259,7 +7259,7 @@ mod tests {
             crate::kernel::MetadataField::Value(978_307_200_000_000_000),
             "the edit made after the boundary was lost"
         );
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7290,7 +7290,7 @@ mod tests {
         assert!(source.lookup(&seed)?.is_none());
         let moved = windows_path("moved.txt");
         assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7329,7 +7329,7 @@ mod tests {
         external("del linked.txt")?;
         session.flush_callbacks()?;
         assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7352,7 +7352,7 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
         assert!(source.lookup(&windows_path("b.txt"))?.is_none());
         assert!(source.lookup(&windows_path("c.txt"))?.is_some());
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7380,7 +7380,7 @@ mod tests {
         source.remove(&link, None)?;
         session.revalidate()?;
         assert!(sorted_names(&destination)?.is_empty());
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7465,7 +7465,7 @@ mod tests {
             }
         }
         assert!(lost.is_empty(), "times lost: {lost:?}");
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7487,7 +7487,7 @@ mod tests {
         source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
         session.revalidate()?;
         assert_eq!(std::fs::read(&projected)?, b"after!");
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7511,7 +7511,7 @@ mod tests {
             source.read_range(&kept, 0, 15)?.as_ref(),
             b"source and user"
         );
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7540,7 +7540,7 @@ mod tests {
                 .is_symlink_dir()
         );
         assert_eq!(std::fs::read(link.join("inner.txt"))?, b"inner");
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7584,7 +7584,7 @@ mod tests {
             } else {
                 assert!(sorted_names(&destination)?.is_empty());
             }
-            session.stop()?;
+            session.stop(&CancellationToken::new())?;
         }
         Ok(())
     }
@@ -7610,7 +7610,7 @@ mod tests {
         source.remove(&link, None)?;
         session.revalidate()?;
         assert!(std::fs::symlink_metadata(&projected)?.is_dir());
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7648,7 +7648,7 @@ mod tests {
             std::fs::metadata(destination.join("invalidated.txt"))?.len(),
             0
         );
-        session.stop()?;
+        session.stop(&CancellationToken::new())?;
         Ok(())
     }
 
@@ -7677,9 +7677,8 @@ mod tests {
             .create_file(
                 "/added.txt",
                 Bytes::from_static(b"added"),
-                FileMetadata::default(),
-            )
-            .await?;
+                FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         mount.advance_to_head().await?;
         assert_eq!(std::fs::read(&added)?, b"added");
@@ -7917,7 +7916,7 @@ mod tests {
             let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
             let workspace = engine.create_workspace("edits-projfs", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-            transaction.create_file(&format!("/{name}"), Bytes::from_static(content), FileMetadata::default()).await?;
+            transaction.create_file(&format!("/{name}"), Bytes::from_static(content), FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let first = root.path().join("first-mount");
             std::fs::create_dir(&first)?;
@@ -7965,9 +7964,8 @@ mod tests {
             .create_file(
                 "/before.txt",
                 Bytes::from_static(b"unread"),
-                crate::kernel::FileMetadata::default(),
-            )
-            .await?;
+                crate::kernel::FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let destination = root.path().join("mount");
         std::fs::create_dir(&destination)?;
@@ -8007,9 +8005,8 @@ mod tests {
             .create_file(
                 "/original.txt",
                 Bytes::from_static(b"original"),
-                crate::kernel::FileMetadata::default(),
-            )
-            .await?;
+                crate::kernel::FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
         let destination = root.path().join("projection");
@@ -8132,18 +8129,16 @@ mod tests {
                 .create_file(
                     &format!("/entry{index:03}"),
                     Bytes::from_static(b"initial"),
-                    crate::kernel::FileMetadata::default(),
-                )
-                .await?;
+                    crate::kernel::FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
         for name in ["Alpha", "Zebra", "Ã©clair"] {
             transaction
                 .create_file(
                     &format!("/{name}"),
                     Bytes::from_static(b"initial"),
-                    crate::kernel::FileMetadata::default(),
-                )
-                .await?;
+                    crate::kernel::FileMetadata::default(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let path = root.path().join("mount");
