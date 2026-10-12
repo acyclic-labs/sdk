@@ -1639,7 +1639,7 @@ where
         owner.stream(),
         files.clone(),
         result_volume,
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?);
@@ -2621,7 +2621,7 @@ async fn reopen_native(
         owner.stream(),
         files.clone(),
         seed.result_volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         seed.scope.clone(),
         1_000_000,
     )?);
