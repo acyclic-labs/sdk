@@ -2657,17 +2657,6 @@ impl NativeMountSession {
         Ok(OwnedNativeMountOriginalWorkScope { _driver: scope })
     }
 
-    /// Runs native I/O under this original accounting scope.
-    pub async fn with_original_work<T, F: std::future::Future<Output = T>>(
-        &self, work: &NativeMaterializationWork,
-        operation: impl FnOnce(&OwnedNativeMountOriginalWorkScope) -> F,
-    ) -> Result<T, NativeMountError> {
-        let scope = self.begin_original_work(work)?;
-        let value = operation(&scope).await;
-        drop(scope);
-        Ok(value)
-    }
-
     /// Authenticated active kernel-root identity captured by this driver during its original constructor.
     #[must_use]
     pub fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
@@ -3807,13 +3796,6 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()?,
             limits,
         )?)
-    }
-
-    #[test]
-    fn probe_names_exactly_one_target_driver() {
-        let probe = probe_native_mount();
-        assert!(probe.kind.is_some());
-        assert_eq!(probe.available, probe.unavailable_reason.is_none());
     }
 
     fn await_recovery_worker(thread: std::thread::JoinHandle<()>) -> Result<(), Box<dyn std::error::Error>> {

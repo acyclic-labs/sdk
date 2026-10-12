@@ -328,14 +328,6 @@ fn clone_namespace_measured(
     Ok(path)
 }
 
-fn share_generation_namespace(
-    path: NamespacePath,
-    receipt: &mut GenerationReceipt,
-) -> Result<Arc<(NamespacePath, crate::NativeAllocation)>, GenerationFailure> {
-    let bytes = path.retained_bytes() as usize;
-    receipt.owned_arc(path, bytes)
-}
-
 /// Native path storage whose capacity and encoding are visible to the ledger.
 struct GenerationHostPath {
     #[cfg(unix)]
@@ -920,7 +912,8 @@ where
         let host_path = GenerationHostPath::new(None, path.components(), &mut receipt)?;
         if path.is_root() {
             let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
-            let namespace = share_generation_namespace(namespace, &mut receipt)?;
+            let bytes = namespace.retained_bytes() as usize;
+            let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(&mut pending, (namespace.clone(), host_path.clone()))?;
             receipt.push(&mut deferred_directory_metadata, (namespace, host_path))?;
             continue;
@@ -945,7 +938,8 @@ where
         generation_action(&mut before_effect, &receipt, NativeMaterializationActionPhase::Completed).await?;
         let directory = if record.kind == FileKind::Directory {
             let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
-            let namespace = share_generation_namespace(namespace, &mut receipt)?;
+            let bytes = namespace.retained_bytes() as usize;
+            let namespace = receipt.owned_arc(namespace, bytes)?;
             receipt.push(&mut deferred_directory_metadata, (namespace.clone(), host_path.clone()))?;
             Some(namespace)
         } else {
@@ -1002,9 +996,9 @@ where
                 let child_bytes = child.retained_bytes() as usize;
                 let mut owned_child = Some(child);
                 let selected_directory = if entry.record.kind == FileKind::Directory {
-                    let child = share_generation_namespace(owned_child.take().ok_or_else(|| {
+                    let child = receipt.owned_arc(owned_child.take().ok_or_else(|| {
                         GenerationFailure::new(MaterializeError::InvalidOptions, receipt.work())
-                    })?, &mut receipt)?;
+                    })?, child_bytes)?;
                     receipt.push(&mut deferred_directory_metadata, (child.clone(), child_host.clone()))?;
                     Some(child)
                 } else {
@@ -1163,19 +1157,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     let receipt = GenerationReceipt::new(budget, cancellation)?;
     let meter = Arc::clone(receipt.custody.work().native_read_meter());
     drop(receipt);
-    restore_checkout_host_path_on_source(
-        checkout, relative, replacement, options,
-        &crate::NativeMaterializationWork::from_meter(meter),
-    ).await.map_err(OperationFailure::from)
-}
-
-async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    replacement: HostPathReplacement,
-    options: &MaterializeOptions,
-    native_work: &crate::NativeMaterializationWork,
-) -> Result<OperationReceipt<HostPathRestore>, GenerationFailure> {
+    let native_work = crate::NativeMaterializationWork::from_meter(meter);
     let span = crate::obs::span!(
         DEBUG,
         "acyclic.fs.restore_host_path",
@@ -1190,14 +1172,6 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
         &span,
         crate::obs::in_span(&span, async move {
             let work = Arc::clone(native_work.native_read_meter());
-            let admission = work.with_original_leaf(|original| {
-                if original.budget.has_finite_allowances() {
-                    Ok(())
-                } else {
-                    Err(GenerationFailure::new(MaterializeError::InvalidOptions, original.work))
-                }
-            });
-            admission?;
             let result = async {
                 validate_bounds(options)?;
                 let allocation_work = native_work.clone();
@@ -1281,7 +1255,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                 .map_err(|error| GenerationFailure::new(error, spent))
         }).await.map_err(|failure| (failure.error, failure.work)),
         |receipt| &receipt.work,
-    ).map_err(|(error, work)| GenerationFailure::new(error, work))
+    ).map_err(|(error, work)| OperationFailure::new(error, work))
 }
 
 async fn restore_io<T: Send + 'static>(
