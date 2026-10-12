@@ -224,7 +224,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        let (path, mut allocation) = crate::native_host::clone_path_with_work(path, &mut &original)
+        let (path, mut allocation) = crate::native_host::clone_path(path, &mut &original)
             .map_err(MountSourceError::NativeWork)?;
         self.allocation
             .as_mut()

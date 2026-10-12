@@ -103,6 +103,21 @@ fn native_test_path(name: &str) -> MountPath {
     MountPath::root().child(bytes)
 }
 
+fn mount_source(
+    source: &Arc<MemorySource>,
+    destination: &Path,
+) -> Result<crate::native_mount::NativeMountSession, NativeMountError> {
+    crate::mount_native(
+        crate::NativeMountRequest {
+            mount_id: crate::MountId::new(),
+            volume_id: source.volume_id()?,
+            destination: destination.to_path_buf(),
+            writable: true,
+        },
+        source.clone(),
+    )
+}
+
 include!("runtime.rs");
 include!("namespace.rs");
 include!("lifecycle.rs");
