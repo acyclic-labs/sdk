@@ -720,7 +720,7 @@ impl PiSession {
         for (key, handle) in &self.roots {
             let rebound = handle
                 .workspace
-                .rebind_source(
+                .state(
                     &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
                         work: original_native_work,
                         cancellation: original_native_work.cancellation(),

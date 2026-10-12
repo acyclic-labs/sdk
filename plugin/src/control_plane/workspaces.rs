@@ -293,7 +293,12 @@ impl ControlPlane {
             self.roots
                 .get(&key)
                 .ok_or_else(|| "root workspace is unavailable".to_owned())?
-                .rebind_source()
+                .state(&mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: WorkBudget::UNBOUNDED,
+                    cancellation: &CancellationToken::new(),
+                })
                 .await
                 .map_err(display)?;
             let binding = self

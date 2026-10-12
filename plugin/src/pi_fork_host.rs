@@ -1063,7 +1063,7 @@ where
         cancellation: work.cancellation(),
     };
     let rebound = source
-        .rebind_source(&mut accounting)
+        .state(&mut accounting)
         .await
         .map_err(native_lazy_error)?;
     guard().await?;
