@@ -4543,7 +4543,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 /// Creates the canonical provider-owned reference for a named workspace.
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
-    acyclic_fs::WorkspaceName::new(name).map_err(|error| Error::Invalid(error.to_string()))?;
+    acyclic_fs::WorkspaceName::new(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Invalid(error.to_string()))?;
     WorkspaceRef::new(provider, name.as_bytes(), None)
 }
 

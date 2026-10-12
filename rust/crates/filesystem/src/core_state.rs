@@ -4973,7 +4973,7 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [4; 16],
-            &WorkspaceName::new("durable").expect("valid workspace"),
+            &WorkspaceName::new("durable", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value
     }

@@ -721,7 +721,7 @@ impl<A, O> Fs<A, O> {
         &self, name: impl AsRef<str>, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> MeasuredResult<FsReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
 
-        let named = crate::WorkspaceName::new_measured(name, budget, cancellation)?;
+        let named = crate::WorkspaceName::new(name, budget, cancellation)?;
         let work = named.work;
         let derived = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &named.value,
@@ -3589,7 +3589,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
         cancellation.check().map_err(FsError::from)?;
         original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-        let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+        let name = crate::WorkspaceName::new(name, original, cancellation)?;
         let id = crate::WorkspaceId::derive(
             self.inner.workspace_namespace, &name, original, cancellation,
         )?;
@@ -3634,7 +3634,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result: Result<_, WorkspaceError> = async {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let name = crate::WorkspaceName::new(name, original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
@@ -3667,7 +3667,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result: Result<_, WorkspaceError> = async {
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let name = crate::WorkspaceName::new(name, original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
@@ -3745,7 +3745,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self, name: impl AsRef<str>, original: &NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), (WorkspaceError, Option<NativeAllocation>)> {
         let result = (|| {
-            let name = crate::WorkspaceName::new_with_native_work(name.as_ref(), original, cancellation)?;
+            let name = crate::WorkspaceName::new(name.as_ref(), original, cancellation)?;
             let id = crate::WorkspaceId::derive(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;

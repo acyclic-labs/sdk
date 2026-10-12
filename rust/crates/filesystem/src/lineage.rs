@@ -54,13 +54,13 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
     ) {
         (None, None) => record.fork_generation == record.initial_generation,
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name).is_ok()
+            parent_id != record.workspace_id && crate::WorkspaceName::new(parent_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         }
         _ => false,
     };
     record.version == LINEAGE_VERSION
         && record.revision > 0
-        && crate::WorkspaceName::new(&record.workspace_name).is_ok()
+        && crate::WorkspaceName::new(&record.workspace_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).is_ok()
         && parent_shape
 }
 
@@ -160,7 +160,7 @@ impl LineageRegistrationWork<'_> {
             Self::Ordinary(_) => Ok(lineage_shape_is_valid(record)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => {
-                let valid_name = |name: &str| match crate::WorkspaceName::new_with_native_work(name, original, cancellation) {
+                let valid_name = |name: &str| match crate::WorkspaceName::new(name, original, cancellation) {
                     Ok(_) => Ok(true),
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong
@@ -402,8 +402,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         crate::obs::outcome_on(
             &span,
             crate::obs::in_span(&span, async move {
-                let destination = crate::WorkspaceName::new(destination.as_ref())
-                    .map_err(WorkspaceError::from)?;
+                let destination = crate::WorkspaceName::new(destination.as_ref(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
                     .volume.fs.workspace_id(destination.as_str())
@@ -802,7 +801,7 @@ mod tests {
     use crate::{Digest, Fs, WorkspaceName};
 
     fn workspace(name: &str) -> WorkspaceId {
-        WorkspaceId::derive([9; 16], &WorkspaceName::new(name).expect("valid name"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
+        WorkspaceId::derive([9; 16], &WorkspaceName::new(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid name").value, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded workspace identity").value
     }
 
     fn generation(byte: u8) -> GenerationId {
