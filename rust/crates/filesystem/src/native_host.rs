@@ -17,7 +17,7 @@ use crate::NativeRootIdentity;
 
 pub(crate) struct PreparedMaterializationRecord {
     file: File,
-    parent: Dir,
+    _parent: Dir,
     #[cfg(unix)]
     temporary_name: NativeOwned<Vec<u8>>,
     #[cfg(unix)]
@@ -87,7 +87,7 @@ impl PreparedMaterializationRecord {
             create_windows_provisional_file_with_work(&parent, name, work)
         })?;
         let prepared = Self {
-            file, parent,
+            file, _parent: parent,
             #[cfg(unix)] temporary_name,
             #[cfg(unix)] current_name,
             #[cfg(windows)] rename_packet,
@@ -124,16 +124,16 @@ impl PreparedMaterializationRecord {
             let temporary = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: preparation validated and terminated these owned names; borrowing them performs no late scan, encoding or allocation.
             let current = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
-            rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
+            rename_unix_names_once(&self._parent, temporary, &self._parent, current, true)?;
         }
         #[cfg(windows)]
         windows_rename_packet_once(file, &self.rename_packet.data, self.rename_length)?;
         drop(self.cleanup.take());
         self.credit.record_completed(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED })?;
         #[cfg(unix)]
-        sync_held_descriptor_once(&self.parent)?;
+        sync_held_descriptor_once(&self._parent)?;
         #[cfg(windows)]
-        sync_held_descriptor_once(&self.parent_sync)?;
+        sync_held_descriptor_once(&self._parent_sync)?;
         Ok(())
     }
 }
@@ -146,7 +146,7 @@ impl Drop for PreparedMaterializationRecord {
             // SAFETY: preparation validated and terminated this retained name.
             let name = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
-            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+            if unsafe { libc::unlinkat(self._parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 Ok(())
             } else { Err(io::Error::last_os_error()) }
         });
