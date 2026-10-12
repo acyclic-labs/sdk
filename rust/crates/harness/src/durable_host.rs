@@ -525,29 +525,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut observer = crate::store::history::native_work_io(work)?;
         self.require_mail_scope(scope, &mut Some(&mut observer))
     }
-    fn task_context_binding_matches(
-        &self, context: &crate::runtime::TaskContext,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<bool> {
-        if context.durable_task_id() != Some(self.task_id)
-            || context.id() != self.operation_id()
-            || !context.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
-            || context.scope().limits() != self.input_limits
-            || context.scope().run_limits().deadline_epoch_ms != self.deadline_epoch_ms
-        {
-            return Ok(false);
-        }
-        let proofs = self.input_created.as_ref().map_or(&[][..], |access| access.proofs.as_slice());
-        crate::core::source_metadata_inspection_with_work(
-            &(context.scope().grants(), &self.input_grants,
-                context.scope().resource_proofs(), proofs,
-                context.scope().extensions(), self.extensions.as_ref()),
-            work,
-        )?;
-        Ok(context.scope().grants() == &self.input_grants
-            && context.scope().resource_proofs() == proofs
-            && context.scope().extensions() == self.extensions.as_ref())
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn require_task_context_binding_with_native_work(
@@ -560,7 +537,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "native read owner differs from its original admission ledger" });
         }
         let mut observer = crate::store::history::native_work_io(work)?;
-        if !self.task_context_binding_matches(context, &mut Some(&mut observer))? {
+        if context.durable_task_id() != Some(self.task_id)
+            || context.id() != self.operation_id()
+            || !context.original_host_binding_matches(self.host.as_ref(), self.host.policy.as_deref())
+            || context.scope().limits() != self.input_limits
+            || context.scope().run_limits().deadline_epoch_ms != self.deadline_epoch_ms
+            || {
+                let proofs = self.input_created.as_ref().map_or(&[][..], |access| access.proofs.as_slice());
+                crate::core::source_metadata_inspection_with_work(
+                    &(context.scope().grants(), &self.input_grants,
+                        context.scope().resource_proofs(), proofs,
+                        context.scope().extensions(), self.extensions.as_ref()),
+                    &mut Some(&mut observer),
+                )?;
+                context.scope().grants() != &self.input_grants
+                    || context.scope().resource_proofs() != proofs
+                    || context.scope().extensions() != self.extensions.as_ref()
+            }
+        {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native read context differs from its original SDK owner admission" });
         }
@@ -2473,32 +2467,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let (path, path_retained) = Self::timer_path_with_work(task, custody.work())?;
         custody.adopt(path_retained)?;
-        let mut identity = String::new();
-        let identity_bytes = "harness/v2/timers/".len() + 36 + 1 + 36;
+        let task_text = Self::timer_path_text(task);
+        let mut operation_text = [0; 36];
+        uuid::Uuid::from_bytes(operation.into_bytes()).hyphenated().encode_lower(&mut operation_text);
         if let Some(io) = custody.work().as_deref_mut() {
-            io.admit_copy(identity_bytes as u64)?;
-            io.reserve_text(&mut identity, identity_bytes)?;
+            io.hashed_bytes((task_text.len() + 1 + operation_text.len()) as u64)?;
         }
-        custody.adopt(identity.capacity() as u64)?;
-        if let Some(io) = custody.work().as_deref_mut() { io.copy_bytes(identity_bytes as u64)?; }
-        use std::fmt::Write as _;
-        write!(&mut identity, "harness/v2/timers/{task}/{operation}").expect("writing into String");
-        if let Some(io) = custody.work().as_deref_mut() { io.hashed_bytes(identity.len() as u64)?; }
-        let digest = blake3::hash(identity.as_bytes());
-        let capacity = identity.capacity() as u64;
-        drop(identity);
-        custody.relinquish(capacity)?;
+        let mut identity = blake3::Hasher::new();
+        identity.update(&task_text);
+        identity.update(b"/");
+        identity.update(&operation_text);
+        let digest = identity.finalize();
         let (key, key_retained) = {
             let mut key_custody = crate::wire_codec::CodecQuota::new(custody.work(), 0)?;
-            let mut bytes = Vec::new();
-            if let Some(io) = key_custody.work().as_deref_mut() {
-                io.reserve_bytes(&mut bytes, 32)?;
-            } else {
-                bytes.try_reserve_exact(32).map_err(|cause| Error::Storage(cause.to_string()))?;
-            }
-            key_custody.adopt(bytes.capacity() as u64)?;
-            if let Some(io) = key_custody.work().as_deref_mut() { io.copy_bytes(32)?; }
-            bytes.extend_from_slice(digest.as_bytes());
+            let bytes = crate::core::copy_copy_vector(digest.as_bytes(), &mut key_custody)?;
             key_custody.transfer();
             let (bytes, retained) = crate::store::operations::owned_bytes_from_retained_vec(
                 bytes, key_custody.work(),
@@ -2520,16 +2502,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let (tail, found) = self.timer_state_with_work(
                 task, operation, deadline_unix_ms, custody.work(),
             ).await?;
-            if found {
-                self.verify_owner(task, fence, false, custody.work()).await?;
-                if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
-                return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
-            }
-            let appended = owner.append(
+            if found || owner.append(
                 path.clone(), tail, &key, bytes.clone(),
                 crate::distributed::JournalWrite::Fresh, custody.work(),
-            ).await?;
-            if appended {
+            ).await? {
                 self.verify_owner(task, fence, false, custody.work()).await?;
                 if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
@@ -5959,11 +5935,11 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
-    fn test_registries(
+    fn test_registries<O: 'static>(
         implementation: Arc<dyn ResumableMachine>, input: Value, output: Value,
     ) -> Result<(ComponentIdentity, MachineIdentity, TaskRegistry, MachineRegistry)> {
         let machine = implementation.identity().clone();
-        let definition = TaskDefinition::<Value, Value>::resumable(implementation.clone(), input, output)?;
+        let definition = TaskDefinition::<Value, O>::resumable(implementation.clone(), input, output)?;
         let task = definition.identity().clone();
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
@@ -6174,7 +6150,7 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let (task_identity, machine, tasks, machines) = test_registries(
+        let (task_identity, machine, tasks, machines) = test_registries::<Value>(
             implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
         let host = CoordinatorTaskHost::new(
@@ -6668,7 +6644,7 @@ pub(crate) mod tests {
             },
             schema: serde_json::json!({"type":"integer"}),
         });
-        let (task_identity, machine, tasks, machines) = test_registries(
+        let (task_identity, machine, tasks, machines) = test_registries::<Value>(
             implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"integer"}),
         )?;
         let host = Arc::new(CoordinatorTaskHost::new(
@@ -7553,16 +7529,9 @@ pub(crate) mod tests {
             identity: machine.clone(),
             schema: serde_json::json!({"type": "integer"}),
         });
-        let definition = TaskDefinition::<Value, i64>::resumable(
-            implementation.clone(),
-            serde_json::json!({"type": "integer"}),
-            serde_json::json!({"type": "integer"}),
+        let (task, machine, tasks, machines) = test_registries::<i64>(
+            implementation, serde_json::json!({"type": "integer"}), serde_json::json!({"type": "integer"}),
         )?;
-        let task = definition.identity().clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
-        let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?,
             stream.clone(),
@@ -8636,20 +8605,13 @@ pub(crate) mod tests {
                 version: "1".into(),
                 digest: [2; 32],
             };
-            let mut machines = MachineRegistry::default();
             let implementation: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
                 identity: machine.clone(),
                 schema: serde_json::json!({"type": "integer"}),
             });
-            machines.register(implementation.clone())?;
-            let definition = TaskDefinition::<Value, i64>::resumable(
-                implementation,
-                serde_json::json!({"type": "integer"}),
-                serde_json::json!({"type": "integer"}),
+            let (task, machine, tasks, machines) = test_registries::<i64>(
+                implementation, serde_json::json!({"type": "integer"}), serde_json::json!({"type": "integer"}),
             )?;
-            let task = definition.identity().clone();
-            let mut tasks = TaskRegistry::default();
-            tasks.register(definition)?;
             let coordinator = DistributedCoordinator::open(&stream, payloads.clone()).await?;
             let host = CoordinatorTaskHost::new(
                 coordinator,
@@ -8855,20 +8817,13 @@ pub(crate) mod tests {
             version: "1".into(),
             digest: [2; 32],
         };
-        let mut machines = MachineRegistry::default();
         let implementation: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
             identity: machine.clone(),
             schema: serde_json::json!({"type": "integer"}),
         });
-        machines.register(implementation.clone())?;
-        let definition = TaskDefinition::<Value, i64>::resumable(
-            implementation,
-            serde_json::json!({"type": "integer"}),
-            serde_json::json!({"type": "integer"}),
+        let (task, machine, tasks, machines) = test_registries::<i64>(
+            implementation, serde_json::json!({"type": "integer"}), serde_json::json!({"type": "integer"}),
         )?;
-        let task = definition.identity().clone();
-        let mut tasks = TaskRegistry::default();
-        tasks.register(definition)?;
         let coordinator = DistributedCoordinator::open(&stream, payloads.clone()).await?;
         let host = CoordinatorTaskHost::new(
             coordinator,
