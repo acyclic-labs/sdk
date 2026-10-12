@@ -35,7 +35,7 @@ impl ThresholdCompaction {
         output_tokens: Option<u32>,
     ) -> Result<u32> {
         capacity.validate()?;
-        self.retention.validate()?;
+        self.retention.validate(None)?;
         let required = u64::from(self.response_reserve_tokens) + u64::from(self.recent_tokens);
         let output =
             output_tokens.unwrap_or(capacity.output_tokens.min(self.response_reserve_tokens));

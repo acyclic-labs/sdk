@@ -2475,7 +2475,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         parent: Option<(&FileRef, &crate::model::PreparedModelRequest)>,
     ) -> Result<(FileRef, crate::model::PreparedModelRequest)> {
         let prepared = executor
-            .completed_tool_prefix(journal, input, step, call_id)
+            .completed_tool_prefix(journal, input, step, Some(call_id))
             .await?;
         let segment = crate::model::ModelPrefix::select(&prepared, parent)?;
         let reference = self.stage_model_prefix(private, &segment).await?;
@@ -2504,7 +2504,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         let grant =
             ContentGrant::verify(&self.verifier, &self.scope, private, VolumeOperation::Write)?;
-        let bytes = prefix.canonical_bytes()?;
+        let bytes = prefix.canonical_bytes(None)?;
         let digest = blake3::hash(&bytes).to_hex();
         self.host
             .put_internal_content(

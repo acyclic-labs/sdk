@@ -108,7 +108,7 @@ pub fn select_turn_delta(
         ));
     }
     let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
-        envelope.validate(limits)?;
+        envelope.validate(limits, None)?;
         limits.validate_file(&reference)?;
         reference
             .descriptor()
@@ -243,9 +243,9 @@ impl SelectedModelContext {
                 "selected context must end with the current user message".into(),
             ));
         }
-        last.content.validate_user_input()?;
+        last.content.validate_user_input(&mut None)?;
         for message in &self.messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
         }
         Ok(())
     }
@@ -658,11 +658,11 @@ fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo
 }
 
 fn projection_string(text: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
-    crate::model::model_string_clone_with_io(text, io)
+    crate::executor::stock_string_copy(text, io)
 }
 
 fn projection_file(file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<FileRef> {
-    crate::model::model_file_clone_with_io(file, io)
+    crate::model::clone_file(file, io)
 }
 
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {

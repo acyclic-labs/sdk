@@ -278,7 +278,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(conversation.messages()[0].sequence, 4);
     }
     let reference =
-        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
+        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits, None)
             .await?
             .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
     let later = OperationId::new();
@@ -286,7 +286,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         "r".repeat(60_000).as_bytes(), "text/plain", "later-input.txt").await?;
     storage.run_conversation(&bundle, later, later_input, Vec::new(), 1).await?;
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
-        storage.journal.as_ref(), later, limits).await?
+        storage.journal.as_ref(), later, limits, None).await?
         .ok_or_else(|| Error::Invalid("missing later admitted checkpoint".into()))?;
     assert_ne!(later_checkpoint, reference);
     let mut aggregate = StreamAggregate::open(

@@ -110,9 +110,9 @@ impl ResumableToolRegistry {
         let entry_bytes = std::mem::size_of::<((String, String), ResumableTool)>() as u64;
         for ((name, revision), tool) in &self.0 {
             io.retain_owned(entry_bytes)?;
-            let name = crate::model::model_string_clone_with_io(name, Some(&io))?;
-            let revision = crate::model::model_string_clone_with_io(revision, Some(&io))?;
-            let definition = crate::model::model_tool_definition_clone_with_io(&tool.definition, Some(&io))?;
+            let name = crate::executor::stock_string_copy(name, Some(&io))?;
+            let revision = crate::executor::stock_string_copy(revision, Some(&io))?;
+            let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
             copied.0.insert((name, revision), ResumableTool {
                 definition, machine: tool.machine.clone(),
             });
@@ -513,9 +513,9 @@ fn clone_admission_with_native_work(
     use crate::filesystem::UploadRecord as _;
     let io = crate::executor::PreparationIo::from_native_work(work)?;
     io.retain_owned(std::mem::size_of::<WorkflowAdmission>() as u64)?;
-    let name = crate::model::model_string_clone_with_io(&admission.initial.machine.name, Some(&io))?;
-    let version = crate::model::model_string_clone_with_io(&admission.initial.machine.version, Some(&io))?;
-    let state = crate::model::model_value_clone_with_io(&admission.initial.state, Some(&io))?;
+    let name = crate::executor::stock_string_copy(&admission.initial.machine.name, Some(&io))?;
+    let version = crate::executor::stock_string_copy(&admission.initial.machine.version, Some(&io))?;
+    let state = crate::model::clone_value(&admission.initial.state, Some(&io))?;
     let copied = WorkflowAdmission {
         operation_id: admission.operation_id,
         request_digest: admission.request_digest,
@@ -962,7 +962,7 @@ impl DurableToolRunner {
                 self.journal.as_ref(), operation_id, 4, |_| true, work)?.await?;
             return Ok(ToolPayload::native(records, custody));
         }
-        let (_, records) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true).await?;
+        let (_, records) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, None).await?;
         Ok(ToolPayload::ordinary(records))
     }
 
@@ -975,14 +975,14 @@ impl DurableToolRunner {
                 self.journal.as_ref(), reference, work)?.await?;
             return Ok(ToolPayload::native(value, custody));
         }
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
+        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     async fn load<T: crate::executor::PreparationRecord + Send>(
         &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ToolPayload<T>> {
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
+        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     async fn stage<T: serde::Serialize + Sync>(
@@ -995,7 +995,7 @@ impl DurableToolRunner {
                 self.journal.as_ref(), operation_id, key, value, work)?.await?;
             return Ok(ToolPayload::native(reference, custody));
         }
-        Ok(ToolPayload::ordinary(stage_json(self.journal.as_ref(), operation_id, key, value).await?))
+        Ok(ToolPayload::ordinary(stage_json(self.journal.as_ref(), operation_id, key, value, None).await?))
     }
 
     async fn append(
@@ -1136,7 +1136,7 @@ fn tool_validate_projection(
         drop(custody);
         return Ok(());
     }
-    definition.validate_projection(value)?.validate_limits(limits)
+    definition.validate_projection(value)?.validate_limits(limits, &mut None)
 }
 
 fn tool_project(

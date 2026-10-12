@@ -133,7 +133,7 @@ impl ExecutionSummary {
                 .and_then(Option::as_ref)
                 .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "model dispatch is already settled"))?
-                .validate_next_with_io(
+                .validate_next(
                     model.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Storage,
                         "model observation is missing"))?,
                     limits, io,
@@ -220,7 +220,7 @@ impl ExecutionSummary {
                     .as_mut()
                     .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                         "model dispatch is already settled"))?;
-                admission.observe_with_io(
+                admission.observe(
                     model.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Storage,
                         "model observation is missing"))?,
                     limits, io,
@@ -787,7 +787,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             return Ok(());
         };
         canonical_validate_file(limits, projection, io)?;
-        let projection = crate::executor::load_preparation_json::<
+        let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
         crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
         let Some(reference) = &projection.checkpoint else {
@@ -798,9 +798,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             return Ok(());
         };
         canonical_validate_file(limits, reference, io)?;
-        let envelope = crate::executor::load_preparation_json::<
+        let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
-        envelope.validate_with_io(limits, io)?;
+        envelope.validate(limits, io)?;
         if *step != 0
             || envelope.operation_id != operation_id
             || projection.canonical.as_ref() != Some(&envelope.source)
@@ -809,13 +809,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                 "canonical publication differs from its envelope"));
         }
-        let source = crate::executor::load_preparation_json::<crate::context::Context>(
+        let source = crate::executor::load_json::<crate::context::Context>(
             self, &envelope.source, io).await?;
-        let retained = crate::executor::load_preparation_json::<crate::context::Context>(
+        let retained = crate::executor::load_json::<crate::context::Context>(
             self, &envelope.retained, io).await?;
-        let proof = crate::executor::load_preparation_json::<crate::context::CompactionReference>(
+        let proof = crate::executor::load_json::<crate::context::CompactionReference>(
             self, compaction, io).await?;
-        envelope.validate_projection_with_io(&source, &retained, &proof, limits, io)?;
+        envelope.validate_projection(&source, &retained, &proof, limits, io)?;
         self.verify_canonical_source_with_io(&envelope, &source, limits, io).await?;
         self.verify_canonical_summary_with_io(operation_id, &envelope, &source, &proof, limits, io).await
     }
@@ -864,7 +864,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 drop(association_hold);
             }
             let previous = match &envelope.selection.checkpoint {
-                Some(reference) => Some(crate::executor::load_canonical_checkpoint_scoped(
+                Some(reference) => Some(crate::executor::load_canonical_checkpoint(
                     self, reference, limits, None, io).await?),
                 None => None,
             };
@@ -920,7 +920,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             let delta = project_canonical_delta_with_io(
                 self, loaded, &envelope.selection, verifier.as_ref(), limits, io).await?;
             let expected = match previous {
-                Some((_, retained)) => crate::context::ContextPipeline::continue_base_with_io(
+                Some((_, retained)) => crate::context::ContextPipeline::continue_base(
                     retained, delta, limits, io)?,
                 None => delta,
             };
@@ -961,7 +961,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             let summary = proof.summary.as_ref().filter(|summary| summary.step == 0)
                 .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                     "canonical summary belongs to another step"))?;
-            let (_, records) = crate::executor::replay_execution_with_io(
+            let (_, records) = crate::executor::replay_execution(
                 self, operation, limits.model_events_per_step.saturating_add(2),
                 |event| matches!(event,
                     ExecutionEvent::ContextPrepared { step: 0, .. }
@@ -977,17 +977,17 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 super::fork_preparer_io::item(io, 0)?;
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
-                        prepared = Some(crate::executor::load_preparation_json::<
+                        prepared = Some(crate::executor::load_json::<
                             crate::executor::ResponseProjection>(self, projection, io).await?);
                     }
                     ExecutionEvent::ModelStarted { request: reference, .. } => {
-                        request = Some(crate::executor::load_model_request_with_io(
+                        request = Some(crate::executor::load_model_request(
                             self, reference, limits, io).await?);
                     }
                     ExecutionEvent::Model { event, .. } => {
-                        let event = crate::executor::load_preparation_json::<ModelEvent>(
+                        let event = crate::executor::load_json::<ModelEvent>(
                             self, event, io).await?;
-                        admission.observe_with_io(&event, limits, io)?;
+                        admission.observe(&event, limits, io)?;
                         match &*event {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
@@ -3050,12 +3050,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             None,
         ).await?,
     };
-    let input = crate::model::model_content_clone_with_io(&selected.messages.last()
-        .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-            "canonical input is missing"))?.content, io)?;
+    let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&selected.messages.last().ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid, "canonical input is missing"))?.content, work).map(|(copy, _)| copy))?;
     let mut selected_delta = selected;
     selected_delta.selection.checkpoint = None;
-    crate::context::ContextPipeline::base_context_with_io(
+    crate::context::ContextPipeline::base_context(
         &crate::context::ContextInput {
             input, selected_context: Some(selected_delta), step: 0, prior_messages: Vec::new(),
         }, limits, io,
@@ -3150,7 +3148,7 @@ mod tests {
         let (_, first_retry, _) = Observation::encode(operation, turn, "first", &event)?;
         let (_, second_retry, _) = Observation::encode(operation, turn, "second", &event)?;
         assert_ne!(first_retry, second_retry);
-        let summary_operation = ModelPurpose::Summary.attempt_operation(operation);
+        let summary_operation = ModelPurpose::Summary.attempt_operation(operation, None)?;
         assert_ne!(summary_operation, operation);
         for mutation in [
             "wrong_execution",
@@ -3399,16 +3397,16 @@ mod tests {
             }
         }
         assert_eq!(
-            ModelPurpose::Response.attempt_operation(operation),
+            ModelPurpose::Response.attempt_operation(operation, None)?,
             operation
         );
         assert_ne!(
-            ModelPurpose::Summary.attempt_operation(operation),
+            ModelPurpose::Summary.attempt_operation(operation, None)?,
             operation
         );
         assert_ne!(
-            ModelPurpose::Summary.attempt_operation(operation),
-            ModelPurpose::Summary.attempt_operation(OperationId::new())
+            ModelPurpose::Summary.attempt_operation(operation, None)?,
+            ModelPurpose::Summary.attempt_operation(OperationId::new(), None)?
         );
         Ok(())
     }
@@ -3610,7 +3608,7 @@ mod tests {
                     step: 0,
                     prior_messages: Vec::new(),
                 },
-                limits,
+                limits, None,
             )
         }
         let history = aggregate

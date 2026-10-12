@@ -1814,12 +1814,12 @@ mod tests {
                 let projection = tool.projection.project(&invocation, &result)?;
                 assert_eq!(projection, expected_projection);
                 let content = tool.definition.validate_projection(&projection)?;
-                content.validate_limits(limits)?;
+                content.validate_limits(limits, &mut None)?;
                 assert!(matches!(
                     content.validate_limits(Limits {
                         render_bytes: render_bytes - 1,
                         ..limits
-                    }),
+                    }, &mut None),
                     Err(Error::Invalid(_))
                 ));
                 assert_eq!(

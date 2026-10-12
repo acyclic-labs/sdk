@@ -60,11 +60,7 @@ pub struct SessionLimits {
 
 impl SessionLimits {
     /// Rejects empty or inconsistent session ceilings.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         observe(work)?;
@@ -174,14 +170,6 @@ pub struct OperationSpec {
 
 impl OperationSpec {
     pub(crate) fn verify_owner(
-        &self,
-        owner: &Authority,
-        verifier: &crate::core::AuthorityVerifier,
-    ) -> Result<()> {
-        self.verify_owner_with_work(owner,verifier,&mut None)
-    }
-
-    pub(crate) fn verify_owner_with_work(
         &self, owner: &Authority, verifier: &crate::core::AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -542,12 +530,12 @@ impl Scheduler {
         Ok(SchedulerEvent::Declared { spec: Box::new(spec) })
     }
 
-    pub(crate) fn validate_session_with_work(
+    pub(crate) fn validate_session(
         &self, spec: &OperationSpec, limits: &SessionLimits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_declaration(spec, work)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         self.validate_session_configuration(
             spec.operation_id, spec.parent.is_some(), false, limits, work,
         )
@@ -575,15 +563,15 @@ impl Scheduler {
     ) -> Result<()> {
         use crate::wire::ErrorCode::{Conflict, Invalid};
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        observe_text(&spec.entrypoint.name, work)?;
-        observe_text(&spec.entrypoint.version, work)?;
+        observe(work)?;
+        observe(work)?;
         if spec.entrypoint.name.trim().is_empty() || spec.entrypoint.version.trim().is_empty() {
             return Err(diagnostic(work, Invalid, "durable entrypoint name and version are required"));
         }
         spec.state.validate_with_work(work)?;
         for (key, value) in &spec.placement {
-            observe_text(key, work)?;
-            observe_text(value, work)?;
+            observe(work)?;
+            observe(work)?;
             if key.is_empty() || key.len() > COMPONENT_LABEL_MAX_BYTES
                 || value.len() > COMPONENT_LABEL_MAX_BYTES
                 || key.chars().any(char::is_control) || value.chars().any(char::is_control)
@@ -601,7 +589,7 @@ impl Scheduler {
             }
         }
         if let Some(parent) = &spec.parent {
-            observe_text(&parent.slot, work)?;
+            observe(work)?;
             if parent.slot.trim().is_empty() || parent.slot.len() > COMPONENT_LABEL_MAX_BYTES
                 || parent.slot.chars().any(char::is_control)
             {
@@ -610,7 +598,7 @@ impl Scheduler {
             let parent_operation = self.operation(parent.operation_id)
                 .ok_or_else(|| diagnostic(work, Invalid, "structured child requires an existing parent and slot"))?;
             for ((operation, slot), _) in self.child_slots.range((parent.operation_id, String::new())..) {
-                observe_text(slot, work)?;
+                observe(work)?;
                 if *operation != parent.operation_id || slot > &parent.slot { break; }
                 if slot == &parent.slot {
                     return Err(diagnostic(work, Conflict, "parent child slot is already bound"));
@@ -700,9 +688,9 @@ impl Scheduler {
         for operation in self.operations.values() {
             observe(work)?;
             if let Some(reservation) = &operation.reservation {
-                observe_text(&reservation.placement, work)?;
+                observe(work)?;
                 if reservation.placement == placement {
-                    for resource in reservation.admitted.0.keys() { observe_text(resource, work)?; }
+                    for resource in reservation.admitted.0.keys() { observe(work)?; }
                 }
             }
         }
@@ -722,7 +710,7 @@ impl Scheduler {
         name = "acyclic.harness.scheduler.apply", level = "debug", skip_all,
         fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)))]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
-        self.validate_event_with_work(&event, &mut None)?;
+        self.validate_event(&event, &mut None)?;
         let prepared = self.prepare_event(event, &mut None)?;
         self.apply_validated(prepared);
         crate::obs::outcome(Ok(()))
@@ -733,7 +721,7 @@ impl Scheduler {
         &mut self, event: &SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_event_with_work(event, work)?;
+        self.validate_event(event, work)?;
         if matches!(event, SchedulerEvent::Completed { .. })
             && self.operation(event.operation_id()).is_some_and(|operation| operation.phase == OperationPhase::Terminal)
         {
@@ -748,7 +736,7 @@ impl Scheduler {
     }
 
     /// The original deterministic validators for every scheduler event.
-    pub(crate) fn validate_event_with_work(
+    pub(crate) fn validate_event(
         &self, event: &SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -771,7 +759,7 @@ impl Scheduler {
         match event {
             SchedulerEvent::Declared { spec } => self.validate_declaration(spec, work)?,
             SchedulerEvent::SessionConfigured { limits, .. } => {
-                limits.validate_with_work(work)?;
+                limits.validate(work)?;
                 let operation = self.validated_operation(primary, work)?;
                 self.validate_session_configuration(
                     primary, operation.spec.parent.is_some(),
@@ -857,7 +845,7 @@ impl Scheduler {
                 }
             }
             SchedulerEvent::Rejected { reason, .. } => {
-                observe_text(reason, work)?;
+                observe(work)?;
                 if reason.trim().is_empty() {
                     return Err(diagnostic(work, Invalid, "rejection reason is empty"));
                 }
@@ -1644,13 +1632,6 @@ impl Scheduler {
     #[cfg(feature = "filesystem")]
     pub(crate) fn require_model_claim(
         &self, task: OperationId, attempt: OperationId, step: u32, digest: &[u8; 32],
-    ) -> Result<()> {
-        self.require_model_claim_with_work(task, attempt, step, digest, &mut None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn require_model_claim_with_work(
-        &self, task: OperationId, attempt: OperationId, step: u32, digest: &[u8; 32],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         let reason = "model dispatch lacks its exact shared budget claim";
@@ -1857,8 +1838,8 @@ impl BorrowedOutcome<'_> {
 
     fn observe(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         match self {
-            Self::Failed(message) => observe_text(message, work),
-            Self::ChildFailed { slot, message } => { observe_text(slot, work)?; observe_text(message, work) }
+            Self::Failed(message) => observe(work),
+            Self::ChildFailed { slot, message } => { observe(work)?; observe(work) }
             _ => observe(work),
         }
     }
@@ -1982,10 +1963,6 @@ fn observe(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Resu
     Ok(())
 }
 
-fn observe_text(_text: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
-    observe(work)
-}
-
 fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = work.as_ref() { return io.original_native_work().is_some(); }
@@ -2023,7 +2000,7 @@ fn covers(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
     for (resource, quantity) in &request.0 {
-        observe_text(resource, work)?;
+        observe(work)?;
         if held.get(resource).unwrap_or(&0) < quantity { return Ok(false); }
     }
     Ok(true)
@@ -2062,8 +2039,8 @@ fn require_fence(
 ) -> Result<()> {
     let reservation = operation.reservation.as_ref()
         .ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Conflict, "operation has no active lease"))?;
-    observe_text(&fence.reservation_id, work)?;
-    observe_text(&fence.placement, work)?;
+    observe(work)?;
+    observe(work)?;
     if reservation.id != fence.reservation_id || reservation.placement != fence.placement {
         return Err(diagnostic(work, crate::wire::ErrorCode::Unauthorized, "stale or foreign lease fence"));
     }
@@ -2156,35 +2133,33 @@ impl TaskInbox {
         )
     )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        crate::obs::outcome(self.apply_item(item))
-    }
-
-    fn apply_item(&mut self, item: InboxItem) -> Result<()> {
-        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
-            return Err(Error::Invalid(
-                "inbox item has the wrong task or an empty message identity".into(),
-            ));
-        }
-        item.payload.validate()?;
-        if let Some(existing) = self
-            .items
-            .iter()
-            .find(|existing| existing.message_id == item.message_id)
-        {
-            return if existing == &item {
-                Ok(())
-            } else {
-                Err(Error::Conflict("inbox message identity reused".into()))
-            };
-        }
-        let expected = self.items.len() as u64 + 1;
-        if item.sequence != expected {
-            return Err(Error::Conflict(format!(
-                "expected inbox sequence {expected}"
-            )));
-        }
-        self.items.push(item);
-        Ok(())
+        crate::obs::outcome((|| {
+            if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+                return Err(Error::Invalid(
+                    "inbox item has the wrong task or an empty message identity".into(),
+                ));
+            }
+            item.payload.validate()?;
+            if let Some(existing) = self
+                .items
+                .iter()
+                .find(|existing| existing.message_id == item.message_id)
+            {
+                return if existing == &item {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("inbox message identity reused".into()))
+                };
+            }
+            let expected = self.items.len() as u64 + 1;
+            if item.sequence != expected {
+                return Err(Error::Conflict(format!(
+                    "expected inbox sequence {expected}"
+                )));
+            }
+            self.items.push(item);
+            Ok(())
+        })())
     }
 
     /// Reads a bounded page after a sequence.
@@ -3042,15 +3017,15 @@ mod tests {
         let limits = SessionLimits { active_tasks: 1, total_tasks: 2, depth: 1, model_steps: 2 };
         let scheduler = Scheduler::new();
         let root = spec(id(89), Orchestration::Leaf)?;
-        scheduler.validate_session_with_work(&root, &limits, &mut None)?;
+        scheduler.validate_session(&root, &limits, &mut None)?;
         let mut projected = scheduler;
         projected.apply(SchedulerEvent::Declared { spec: Box::new(root.clone()) })?;
         projected.apply(SchedulerEvent::SessionConfigured { operation_id: root.operation_id, limits })?;
-        assert!(matches!(projected.validate_session_with_work(&root, &limits, &mut None),
+        assert!(matches!(projected.validate_session(&root, &limits, &mut None),
             Err(Error::Conflict(_))));
         let mut child = spec(id(90), Orchestration::Leaf)?;
         child.parent = Some(ParentLink { operation_id: root.operation_id, slot: "child".into() });
-        assert!(matches!(projected.validate_session_with_work(&child, &limits, &mut None),
+        assert!(matches!(projected.validate_session(&child, &limits, &mut None),
             Err(Error::Conflict(_))));
         projected.apply(SchedulerEvent::Declared { spec: Box::new(child) })?;
         assert!(matches!(projected.apply(SchedulerEvent::SessionConfigured { operation_id: id(90), limits }),

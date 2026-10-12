@@ -759,7 +759,7 @@ fn compose_context_with_io(
 /// Validates finite projected context bounds, never silently omitting mandatory data.
 pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<()> {
     limits.validate()?;
-    context.validate_current_input()?;
+    context.validate_current_input(None)?;
     if context.messages.len() > limits.context_messages
         || context.metadata.len() > limits.attachments
     {
@@ -769,7 +769,7 @@ pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<(
     }
     crate::contract::validate_json_byte_bound(context, limits.render_bytes)?;
     for message in &context.messages {
-        message.content.validate_limits(limits)?;
+        message.content.validate_limits(limits, &mut None)?;
     }
     for file in context.metadata.values() {
         limits.validate_file(file)?;

@@ -7562,7 +7562,7 @@ impl TaskContext {
         let mut files = Vec::new();
         let mut configurations = Vec::new();
         for message in messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
                 limits.validate_file(file)?;
                 if !read_granted(self.scope.grants(), file)? {
@@ -7580,7 +7580,7 @@ impl TaskContext {
                 binding.verify_original(
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
-                    self.scope.extension_runtime.as_deref(),
+                    self.scope.extension_runtime.as_deref(), None,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -7736,7 +7736,7 @@ impl TaskContext {
             };
             let Some(event) = next else { break };
             let event = event?;
-            admission.observe(&event, self.scope.limits())?;
+            admission.observe(&event, self.scope.limits(), None)?;
             let event_bytes = crate::contract::canonical_json_bytes(&event)?;
             bytes = bytes
                 .checked_add(event_bytes.len() as u64)

@@ -75,26 +75,10 @@ impl Default for CompactionRetention {
 
 impl CompactionRetention {
     /// Rejects ambiguous repeated role declarations.
-    pub fn validate(&self) -> Result<()> {
-        for (position, role) in self.roles.iter().enumerate() {
-            if self
-                .roles
-                .get(..position)
-                .is_some_and(|prior| prior.contains(role))
-            {
-                return Err(crate::Error::Invalid(
-                    "compaction retention repeats a role".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_native(&self) -> Result<()> {
+    pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         for (position, role) in self.roles.iter().enumerate() {
             if self.roles[..position].contains(role) {
-                return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                     "compaction retention repeats a role"));
             }
         }
@@ -140,11 +124,7 @@ pub struct CanonicalContextCheckpoint {
 
 impl CanonicalContextCheckpoint {
     /// Checks a bounded envelope, sharing the I/O companion's policy and native scratch custody.
-    pub fn validate(&self, limits: Limits) -> Result<()> {
-        self.validate_with_io(limits, None)
-    }
-
-    pub(crate) fn validate_with_io(
+    pub fn validate(
         &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(feature = "filesystem")]
@@ -195,7 +175,7 @@ impl CanonicalContextCheckpoint {
 
     /// Encodes one bounded envelope for the owning journal's normal content publisher.
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
-        self.validate(limits)?;
+        self.validate(limits, None)?;
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
         crate::contract::validate_json_byte_bound(
             self,
@@ -212,30 +192,13 @@ impl CanonicalContextCheckpoint {
 
     /// Binds resolved payloads to the canonical source and existing summary operation.
     pub fn validate_projection(
-        &self,
-        source: &Context,
-        retained: &Context,
-        compaction: &CompactionReference,
-        limits: Limits,
-    ) -> Result<()> {
-        self.validate_projection_with_io(source, retained, compaction, limits, None)
-    }
-
-    pub(crate) fn validate_projection_with_io(
         &self, source: &Context, retained: &Context, compaction: &CompactionReference,
         limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        self.validate_with_io(limits, io)?;
+        self.validate(limits, io)?;
         validate_projected_context_with_io(source, limits, io)?;
         validate_projected_context_with_io(retained, limits, io)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            validate_compaction_native(compaction, source, retained, work)?;
-        } else {
-            validate_compaction_with_io(compaction, source, retained, io)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        validate_compaction_with_io(compaction, source, retained, io)?;
+        validate_compaction(compaction, source, retained, io)?;
         if compaction
             .summary
             .as_ref()
@@ -458,8 +421,8 @@ impl DurableContextProvider {
         let key = StreamIdempotencyKey::new(key_bytes.clone())
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         if let Some(reference) = &compaction {
-            let source = self.read_revision(expected_revision).await?;
-            validate_compaction_with_io(reference, &source.context, &context, None)?;
+            let source = self.read_revision(expected_revision, self.limits).await?;
+            validate_compaction(reference, &source.context, &context, None)?;
         }
         let (record, encoded) = self
             .stage_revision(revision, context, compaction, &key_bytes)
@@ -507,7 +470,7 @@ impl DurableContextProvider {
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         validate_projected_context(&source, self.limits)?;
         validate_projected_context(&compacted, self.limits)?;
-        validate_compaction_with_io(&reference, &source, &compacted, None)?;
+        validate_compaction(&reference, &source, &compacted, None)?;
         validate_context_refs(&source, self.content_verifier.as_ref(), self.limits).await?;
         validate_context_refs(&compacted, self.content_verifier.as_ref(), self.limits).await?;
         let (source_record, source_bytes) = self
@@ -564,65 +527,63 @@ impl DurableContextProvider {
         )
     )]
     pub async fn revisions(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
-        crate::obs::outcome(self.revisions_inner(after, through).await)
-    }
-
-    async fn revisions_inner(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
-        if after > through || through > self.tail_revision().await? {
-            return Err(crate::Error::Invalid(
-                "context page cursor is invalid".into(),
-            ));
-        }
-        let count = (through - after).min(u64::from(self.maximum_page_records));
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let mut stream = self
-            .provider
-            .read(ReadRequest {
-                path: self.path.clone(),
-                from: after,
-                limit: u32::try_from(count)
-                    .map_err(|_| crate::Error::Invalid("context page bound overflow".into()))?,
-            })
-            .await
-            .map_err(|error| crate::Error::Storage(error.to_string()))?;
-        let mut revisions: Vec<ContextRevision> = Vec::new();
-        while let Some(record) = stream.next().await {
-            let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
-            if revisions.len() as u64 >= count || record.sequence != after + revisions.len() as u64
-            {
-                return Err(crate::Error::Storage(
-                    "context page returned an invalid range".into(),
+        crate::obs::outcome(async {
+            if after > through || through > self.tail_revision().await? {
+                return Err(crate::Error::Invalid(
+                    "context page cursor is invalid".into(),
                 ));
             }
-            let revision = self
-                .decode_revision(record.sequence, &record.value, self.limits)
-                .await?;
-            if let Some(reference) = &revision.compaction {
-                let preceding = if revisions.is_empty() {
-                    if after == 0 {
-                        return Err(crate::Error::Storage(
-                            "context compaction has no preceding source".into(),
-                        ));
-                    }
-                    Some(self.read_revision(after).await?)
-                } else {
-                    None
-                };
-                let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
-                    crate::Error::Storage("context compaction source is absent".into())
-                })?;
-                validate_compaction_with_io(reference, &source.context, &revision.context, None)
-                    .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let count = (through - after).min(u64::from(self.maximum_page_records));
+            if count == 0 {
+                return Ok(Vec::new());
             }
-            revisions.push(revision);
-        }
-        if revisions.len() as u64 != count {
-            return Err(crate::Error::Storage("context page is incomplete".into()));
-        }
-        crate::obs::obs_record!("items" = revisions.len() as u64);
-        Ok(revisions)
+            let mut stream = self
+                .provider
+                .read(ReadRequest {
+                    path: self.path.clone(),
+                    from: after,
+                    limit: u32::try_from(count)
+                        .map_err(|_| crate::Error::Invalid("context page bound overflow".into()))?,
+                })
+                .await
+                .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let mut revisions: Vec<ContextRevision> = Vec::new();
+            while let Some(record) = stream.next().await {
+                let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
+                if revisions.len() as u64 >= count || record.sequence != after + revisions.len() as u64
+                {
+                    return Err(crate::Error::Storage(
+                        "context page returned an invalid range".into(),
+                    ));
+                }
+                let revision = self
+                    .decode_revision(record.sequence, &record.value, self.limits)
+                    .await?;
+                if let Some(reference) = &revision.compaction {
+                    let preceding = if revisions.is_empty() {
+                        if after == 0 {
+                            return Err(crate::Error::Storage(
+                                "context compaction has no preceding source".into(),
+                            ));
+                        }
+                        Some(self.read_revision(after, self.limits).await?)
+                    } else {
+                        None
+                    };
+                    let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
+                        crate::Error::Storage("context compaction source is absent".into())
+                    })?;
+                    validate_compaction(reference, &source.context, &revision.context, None)
+                        .map_err(|error| crate::Error::Storage(error.to_string()))?;
+                }
+                revisions.push(revision);
+            }
+            if revisions.len() as u64 != count {
+                return Err(crate::Error::Storage("context page is incomplete".into()));
+            }
+            crate::obs::obs_record!("items" = revisions.len() as u64);
+            Ok(revisions)
+        }.await)
     }
 
     async fn decode_revision(
@@ -679,11 +640,7 @@ impl DurableContextProvider {
         })
     }
 
-    async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
-        self.read_revision_bounded(revision, self.limits).await
-    }
-
-    async fn read_revision_bounded(
+    async fn read_revision(
         &self,
         revision: u64,
         limits: Limits,
@@ -723,10 +680,10 @@ impl DurableContextProvider {
     }
 
     async fn revision_bounded(&self, revision: u64, limits: Limits) -> Result<ContextRevision> {
-        let record = self.read_revision_bounded(revision, limits).await?;
+        let record = self.read_revision(revision, limits).await?;
         if let Some(reference) = &record.compaction {
-            let source = self.read_revision_bounded(revision - 1, limits).await?;
-            validate_compaction_with_io(reference, &source.context, &record.context, None)?;
+            let source = self.read_revision(revision - 1, limits).await?;
+            validate_compaction(reference, &source.context, &record.context, None)?;
         }
         Ok(record)
     }
@@ -852,150 +809,28 @@ impl DurableContextProvider {
         let record = self.read_revision_on_original_work(revision, limits, work).await?;
         if let Some(reference) = &record.0.compaction {
             let source = self.read_revision_on_original_work(revision - 1, limits, work).await?;
-            validate_compaction_native(reference, &source.0.context, &record.0.context, work)?;
+            validate_compaction(reference, &source.0.context, &record.0.context, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
         }
         Ok(record)
     }
 
-    /// Deterministically compacts a context and returns its immutable source reference.
+    /// Compacts a context on the optional original preparation ledger.
     pub fn compact(
-        context: &Context,
-        max_messages: usize,
-        summary: Option<ContextSummary>,
-        retention: CompactionRetention,
-    ) -> Result<(Context, CompactionReference)> {
-        Self::compact_with_io(context, max_messages, summary, retention, None)
-    }
-
-    pub(crate) fn compact_with_io(
         context: &Context, max_messages: usize, summary: Option<ContextSummary>,
         retention: CompactionRetention, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Context, CompactionReference)> {
-        Self::compact_with_io_and_custody(context, max_messages, summary, retention, io)
-            .map(|(result, _)| result)
-    }
-
-    fn compact_with_io_and_custody(
-        context: &Context, max_messages: usize, summary: Option<ContextSummary>,
-        retention: CompactionRetention, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<((Context, CompactionReference), u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
-        {
-            let compacted = Self::compact_on_original_work(context, max_messages, summary, retention, work)?;
-            let claim = compacted.1.bytes();
-            io.absorb_native_custody(compacted.1)?;
-            return Ok((compacted.0, claim));
-        }
-        retention.validate()?;
-        context.validate_current_input()?;
+        retention.validate(io)?;
+        context.validate_current_input(io)?;
         if max_messages == 0 {
-            return Err(crate::Error::Invalid(
-                "compaction max_messages must be positive".into(),
-            ));
-        }
-        let source_digest = crate::executor::preparation_digest(context, io)?;
-        if let Some(summary) = &summary {
-            let mut observed_claim = 0;
-            let digest = (|| {
-                #[cfg(feature = "filesystem")]
-                let summarized = if let Some(io) = io {
-                    let mut history = io.history_io();
-                    let (copy, claim) = compaction::clone_context_prefix(
-                        context, summary.source_messages as usize, &mut Some(&mut history))?;
-                    observed_claim = claim;
-                    copy
-                } else {
-                    compaction::clone_context_prefix(context, summary.source_messages as usize, &mut None)?.0
-                };
-                #[cfg(not(feature = "filesystem"))]
-                let summarized = compaction::clone_context_prefix(
-                    context, summary.source_messages as usize, &mut None)?.0;
-                crate::executor::preparation_digest(&summarized, io)
-            })();
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io { io.release(observed_claim)?; }
-            let _ = observed_claim;
-            if summary.source_messages == 0
-                || summary.source_digest != digest?
-                || summary.output.descriptor().media_type() != "text/plain"
-            {
-                return Err(crate::Error::Invalid(
-                    "summary does not bind its source prefix".into(),
-                ));
-            }
-        }
-        #[cfg(feature = "filesystem")]
-        if io.is_some() {
-            u32::try_from(max_messages).map_err(|_| context_boundary_with_io(
-                io, crate::wire::ErrorCode::Invalid, "compaction budget exceeds portable count"))?;
-        }
-        let mut produced_claim = 0;
-        let compacted = if context.messages.len() > max_messages
-            || (summary.is_some() && context.messages.len() == max_messages)
-        {
-            let summary = summary.as_ref().ok_or_else(|| {
-                crate::Error::Invalid(
-                    "compaction requires a durable summary; context cannot be silently dropped"
-                        .into(),
-                )
-            })?;
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let mut history = io.history_io();
-                let (context, claim) = compaction::compact_context(context, max_messages, summary, &retention,
-                    &mut Some(&mut history))?;
-                produced_claim = claim;
-                context
-            } else {
-                compaction::compact_context(context, max_messages, summary, &retention, &mut None)?.0
-            }
-            #[cfg(not(feature = "filesystem"))]
-            { compaction::compact_context(context, max_messages, summary, &retention, &mut None)?.0 }
-        } else {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let mut history = io.history_io();
-                let (context, claim) = compaction::clone_context(context, &mut Some(&mut history))?;
-                produced_claim = claim;
-                context
-            } else { context.clone() }
-            #[cfg(not(feature = "filesystem"))]
-            { context.clone() }
-        };
-        let reference = CompactionReference {
-            source_digest,
-            maximum_messages: u32::try_from(max_messages).map_err(|_| {
-                crate::Error::Invalid("compaction budget exceeds portable count".into())
-            })?,
-            summary,
-            retention,
-        };
-        Ok(((compacted, reference), produced_claim))
-    }
-
-    /// Native continuation of the original compaction policy; every clone is admitted on the caller's original ledger before physical allocation.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn compact_on_original_work(
-        context: &Context,
-        max_messages: usize,
-        summary: Option<ContextSummary>,
-        retention: CompactionRetention,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<((Context, CompactionReference), acyclic_fs::NativeAllocation)> {
-        retention.validate_native()?;
-        context.validate_current_input_native()?;
-        if max_messages == 0 {
-            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "compaction max_messages must be positive"));
         }
-        let maximum_messages = u32::try_from(max_messages).map_err(|_| native_context_boundary(
-            crate::wire::ErrorCode::Invalid, "compaction budget exceeds portable count"))?;
-        let source_digest = context_digest_native(context, work)?;
+        let maximum_messages = u32::try_from(max_messages).map_err(|_| context_boundary_with_io(
+            io, crate::wire::ErrorCode::Invalid, "compaction budget exceeds portable count"))?;
+        let source_digest = crate::executor::preparation_digest(context, io)?;
         if let Some(summary) = &summary {
             let covered = context.messages.get(..summary.source_messages as usize)
-                .ok_or_else(|| native_context_boundary(crate::wire::ErrorCode::Invalid,
+                .ok_or_else(|| context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                     "summary extent exceeds source projection"))?;
             let summarized = BorrowedContext {
                 messages: ContextMessages { first: covered, user: None, second: &[] },
@@ -1003,40 +838,27 @@ impl DurableContextProvider {
                 current_input_index: context.current_input_index.filter(|index| *index < summary.source_messages),
             };
             if summary.source_messages == 0
-                || summary.source_digest != context_digest_native(&summarized, work)?
+                || summary.source_digest != crate::executor::preparation_digest(&summarized, io)?
                 || summary.output.descriptor().media_type() != "text/plain"
             {
-                return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+                return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                     "summary does not bind its source prefix"));
             }
         }
-        let compacted = if context.messages.len() > max_messages
-            || (summary.is_some() && context.messages.len() == max_messages)
-        {
-            let summary = summary.as_ref().ok_or_else(|| native_context_boundary(
-                crate::wire::ErrorCode::Invalid,
-                "compaction requires a durable summary; context cannot be silently dropped"))?;
-            let mut io = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
-            let (context, _) = compaction::compact_context(context, max_messages, summary, &retention,
-                &mut Some(&mut io))?;
-            (context, io.into_custody())
-        } else { clone_context_native(context, work)? };
-        Ok(((compacted.0, CompactionReference {
-            source_digest, maximum_messages, retention, summary,
-        }), compacted.1))
+        let (compacted, _) = crate::executor::with_history_io(io, |work| {
+            if context.messages.len() > max_messages
+                || (summary.is_some() && context.messages.len() == max_messages)
+            {
+                let summary = summary.as_ref().ok_or_else(|| context_boundary_with_io(
+                    io, crate::wire::ErrorCode::Invalid,
+                    "compaction requires a durable summary; context cannot be silently dropped"))?;
+                compaction::compact_context(context, max_messages, summary, &retention, work)
+            } else {
+                compaction::clone_context(context, work)
+            }
+        })?;
+        Ok((compacted, CompactionReference { source_digest, maximum_messages, summary, retention }))
     }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn context_digest_native<T: Serialize>(
-    value: &T, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<[u8; 32]> {
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-    work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64,
-        ..acyclic_fs::WorkCounters::default() })
-        .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
-    Ok(*blake3::hash(&bytes).as_bytes())
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1065,19 +887,12 @@ pub(super) fn mandatory_positions(
     selected.into_iter().enumerate().filter_map(|(position, selected)| selected.then_some(position)).collect()
 }
 
-pub(crate) fn validate_compaction_with_io(
+pub(crate) fn validate_compaction(
     reference: &CompactionReference, source: &Context, compacted: &Context,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return validate_compaction_native(reference, source, compacted, work);
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+    crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let summary = match &reference.summary {
             Some(summary) => Some(ContextSummary {
                 operation_id: summary.operation_id, step: summary.step,
@@ -1088,48 +903,26 @@ pub(crate) fn validate_compaction_with_io(
         };
         let mut roles = Vec::new();
         let copied = reference.retention.roles.len().checked_mul(std::mem::size_of::<ModelRole>())
-            .ok_or_else(|| context_boundary_with_io(Some(io), crate::wire::ErrorCode::Invalid,
+            .ok_or_else(|| context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "compaction retention capacity overflows"))? as u64;
-        quota.work().as_deref().expect("observed compaction proof").admit_copy(copied)?;
+        if let Some(work) = quota.work().as_deref() { work.admit_copy(copied)?; }
         compaction::reserve_vector_with_work(&mut roles, reference.retention.roles.len(), quota.work())?;
         quota.adopt((roles.capacity() * std::mem::size_of::<ModelRole>()) as u64)?;
-        quota.work().as_deref_mut().expect("observed compaction proof").copy_bytes(copied)?;
+        if let Some(work) = quota.work().as_deref_mut() { work.copy_bytes(copied)?; }
         roles.extend_from_slice(&reference.retention.roles);
         let retention = CompactionRetention { roles, native_media: reference.retention.native_media };
-        let ((reconstructed, proof), claim) = DurableContextProvider::compact_with_io_and_custody(
-            source, reference.maximum_messages as usize, summary, retention, Some(io))?;
-        quota.adopt(claim)?;
+        #[cfg(feature = "filesystem")]
+        let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
+        let (reconstructed, proof) = DurableContextProvider::compact(
+            source, reference.maximum_messages as usize, summary, retention, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { quota.adopt(io.owned_bytes()? - before)?; }
         if reference.source_digest != proof.source_digest || reconstructed != *compacted {
-            return Err(context_boundary_with_io(Some(io), crate::wire::ErrorCode::Invalid,
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "compaction reference does not bind the source and retained context"));
         }
-        return Ok(());
-    }
-    let _ = io;
-    let (reconstructed, proof) = DurableContextProvider::compact(
-        source, reference.maximum_messages as usize, reference.summary.clone(), reference.retention.clone())?;
-    if reference.source_digest != proof.source_digest || reconstructed != *compacted {
-        return Err(crate::Error::Invalid(
-            "compaction reference does not bind the source and retained context".into(),
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn validate_compaction_native(
-    reference: &CompactionReference, source: &Context, compacted: &Context,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let summary = clone_summary_native(reference.summary.as_ref(), work)?;
-    let retention = clone_retention_native(&reference.retention, work)?;
-    let reconstructed = DurableContextProvider::compact_on_original_work(
-        source, reference.maximum_messages as usize, summary.0, retention.0, work)?;
-    if reference.source_digest != reconstructed.0.1.source_digest || reconstructed.0.0 != *compacted {
-        return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
-            "compaction reference does not bind the source and retained context"));
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1137,15 +930,15 @@ pub(crate) fn validate_projected_context_native(
     context: &Context, limits: Limits, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     limits.validate_with_native_work(work)?;
-    context.validate_current_input_native()?;
+    context.validate_current_input(Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
     if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
         return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
             "context projection exceeded declared bounds"));
     }
-    for message in &context.messages { message.content.validate_limits_with_native_work(limits, work)?; }
-    for file in context.metadata.values() { limits.validate_file_with_native_work(file, work)?; }
     let mut observer = crate::store::history::native_work_io(work)
         .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    for message in &context.messages { message.content.validate_limits(limits, &mut Some(&mut observer))?; }
+    for file in context.metadata.values() { limits.validate_file_with_native_work(file, work)?; }
     crate::contract::validate_trusted_json_byte_bound(
         context, limits.render_bytes, &mut Some(&mut observer))?;
     Ok(())
@@ -1163,12 +956,12 @@ pub(crate) fn validate_projected_context_with_io(
         let mut history = io.history_io();
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         limits.validate_with_work(&mut observed)?;
-        context.validate_current_input()?;
+        context.validate_current_input(Some(io))?;
         if context.messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
             return Err(crate::Error::Invalid("context projection exceeded declared bounds".into()));
         }
         for message in &context.messages {
-            message.content.validate_limits_with_work(limits, &mut observed)?;
+            message.content.validate_limits(limits, &mut observed)?;
         }
         for file in context.metadata.values() {
             limits.validate_file_with_work(file, &mut observed)?;
@@ -1434,9 +1227,9 @@ pub(super) fn validate_source_messages(messages: &[ModelMessage], limits: Limits
         metadata: &metadata,
         current_input_index: None,
     }
-    .validate_bounds(limits)?;
+    .validate_bounds(limits, None)?;
     for message in messages {
-        message.content.validate_limits(limits)?;
+        message.content.validate_limits(limits, &mut None)?;
     }
     Ok(())
 }
@@ -1637,7 +1430,7 @@ pub struct CompactionStage {
 
 impl ContextStage for CompactionStage {
     fn validate(&self) -> Result<()> {
-        self.retention.validate()?;
+        self.retention.validate(None)?;
         if self.max_messages == 0 {
             return Err(crate::Error::Invalid(
                 "compaction max_messages must be positive".into(),
@@ -1683,12 +1476,7 @@ impl ContextStage for CompactionStage {
         Box::pin(async move {
             self.validate()?;
             validate_projected_context(&context, limits)?;
-            let compacted = DurableContextProvider::compact(
-                &context,
-                self.max_messages,
-                self.summary.clone(),
-                self.retention.clone(),
-            )?
+            let compacted = DurableContextProvider::compact(&context, self.max_messages, self.summary.clone(), self.retention.clone(), None)?
             .0;
             validate_projected_context(&compacted, limits)?;
             Ok(compacted)
@@ -1699,8 +1487,8 @@ impl ContextStage for CompactionStage {
     fn supports_native(&self) -> bool { true }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_native(&self, _: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.retention.validate_native()?;
+    fn validate_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+        self.retention.validate(Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
         if self.max_messages == 0 {
             return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
                 "compaction max_messages must be positive"));
@@ -1722,7 +1510,7 @@ impl ContextStage for CompactionStage {
             let retention = clone_retention_native(&self.retention, work)?;
             io.absorb_native_custody(summary.1)?;
             io.absorb_native_custody(retention.1)?;
-            let compacted = DurableContextProvider::compact_with_io(
+            let compacted = DurableContextProvider::compact(
                 &context.0, self.max_messages, summary.0, retention.0, Some(&io))?.0;
             validate_projected_context_native(&compacted, limits, work)?;
             let retained = io.owned_bytes()?;
@@ -1748,22 +1536,9 @@ pub struct Context {
 }
 
 impl Context {
-    fn validate_current_input(&self) -> Result<()> {
-        if self
-            .current_input_index
-            .is_some_and(|index| index as usize >= self.messages.len())
-        {
-            return Err(crate::Error::Invalid(
-                "current input index is outside context".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn validate_current_input_native(&self) -> Result<()> {
+    fn validate_current_input(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if self.current_input_index.is_some_and(|index| index as usize >= self.messages.len()) {
-            return Err(native_context_boundary(crate::wire::ErrorCode::Invalid,
+            return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "current input index is outside context"));
         }
         Ok(())
@@ -1815,11 +1590,7 @@ struct BorrowedContext<'a> {
 }
 
 impl BorrowedContext<'_> {
-    fn validate_bounds(&self, limits: Limits) -> Result<()> {
-        self.validate_bounds_with_io(limits, None)
-    }
-
-    fn validate_bounds_with_io(&self, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
+    fn validate_bounds(&self, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
         let count = self
             .messages
             .first
@@ -1865,7 +1636,7 @@ impl ContextInput {
         prior: &[ModelMessage],
         io: Option<&ContextPreparationIo>,
     ) -> Result<Self> {
-        let input = copy_context_content_with_io(&turn.input, io)?;
+        let input = crate::executor::with_history_io(io, |work| crate::model::clone_content(&turn.input, work).map(|(copy, _)| copy))?;
         let selected_context = match &turn.selected_context {
             Some(selected) => {
                 #[cfg(feature = "filesystem")]
@@ -1944,13 +1715,7 @@ fn native_context_work_error(cause: acyclic_fs::NativeTreeMaterializationError) 
 }
 
 fn validate_context_limits_with_io(limits: Limits, io: Option<&ContextPreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return limits.validate_with_work(&mut Some(&mut history));
-    }
-    let _ = io;
-    limits.validate()
+    crate::executor::with_history_io(io, |work| limits.validate_with_work(work))
 }
 
 fn validate_context_json_with_io<T: Serialize>(
@@ -1977,27 +1742,11 @@ fn validate_context_json_native<T: Serialize>(
 fn validate_context_content_with_io(
     content: &ModelContent, limits: Limits, user: bool, io: Option<&ContextPreparationIo>,
 ) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        content.validate_limits_with_work(limits, &mut work)?;
-        return if user { content.validate_user_input_with_work(&mut work) } else { Ok(()) };
-    }
-    let _ = io;
-    content.validate_limits(limits)?;
-    if user { content.validate_user_input()?; }
-    Ok(())
-}
-
-fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return content.validate_user_input_with_work(&mut Some(&mut history));
-    }
-    let _ = io;
-    content.validate_user_input()
+    crate::executor::with_history_io(io, |work| {
+        content.validate_limits(limits, work)?;
+        if user { content.validate_user_input(work)?; }
+        Ok(())
+    })
 }
 
 fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
@@ -2016,50 +1765,19 @@ fn validate_context_projection_with_io(context: &Context, limits: Limits, io: Op
     validate_projected_context(context, limits)
 }
 
-fn copy_context_content_with_io(content: &ModelContent, io: Option<&ContextPreparationIo>) -> Result<ModelContent> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return crate::model::clone_content(content, &mut Some(&mut history)).map(|(copy, _)| copy);
-    }
-    let _ = io;
-    Ok(content.clone())
-}
-
 fn copy_context_messages_with_io(messages: &[ModelMessage], io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return compaction::clone_messages(messages, &mut Some(&mut history)).map(|(copy, _)| copy);
-    }
-    let _ = io;
-    Ok(messages.to_vec())
+    crate::executor::with_history_io(io, |work| compaction::clone_messages(messages, work).map(|(copy, _)| copy))
 }
 
 pub(crate) fn context_clone_with_io(context: &Context, io: Option<&ContextPreparationIo>) -> Result<Context> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return compaction::clone_context(context, &mut Some(&mut history)).map(|(copy, _)| copy);
-    }
-    let _ = io;
-    Ok(context.clone())
+    crate::executor::with_history_io(io, |work| compaction::clone_context(context, work).map(|(copy, _)| copy))
 }
 
 fn copy_context_base_messages_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<Vec<ModelMessage>> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return compaction::clone_base_messages(
+    crate::executor::with_history_io(io, |work| compaction::clone_base_messages(
             input.selected_context.as_ref().map_or(&[], |selected| selected.messages.as_slice()),
             input.selected_context.is_none().then_some(&input.input), &input.prior_messages,
-            &mut Some(&mut history)).map(|(copy, _)| copy);
-    }
-    let _ = io;
-    let base = input.selected_context.as_ref().map_or_else(
-        || vec![ModelMessage { role: ModelRole::User, content: input.input.clone() }],
-        |selected| selected.messages.clone());
-    Ok(base.into_iter().chain(input.prior_messages.iter().cloned()).collect())
+            work).map(|(copy, _)| copy))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2143,7 +1861,8 @@ fn validate_source_messages_native(
     if messages.len() > limits.context_messages {
         return Err(native_context_boundary(crate::wire::ErrorCode::Invalid, "context projection exceeded declared bounds"));
     }
-    for message in messages { message.content.validate_limits_with_native_work(limits, work)?; }
+    let mut observer = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
+    for message in messages { message.content.validate_limits(limits, &mut Some(&mut observer))?; }
     let metadata = BTreeMap::new();
     validate_context_json_native(&BorrowedContext {
         messages: ContextMessages { first: messages, user: None, second: &[] },
@@ -2275,18 +1994,8 @@ impl ContextPipeline {
         self
     }
 
-    /// Runs every stage in declared order.
-    pub async fn run(&self, input: &ContextInput) -> Result<Context> {
-        self.run_bounded(input, crate::conversation::Limits::default())
-            .await
-    }
-
     /// Builds the canonical selection/current input and in-turn messages before stages.
-    pub fn base_context(input: &ContextInput, limits: Limits) -> Result<Context> {
-        Self::base_context_with_io(input, limits, None)
-    }
-
-    pub(crate) fn base_context_with_io(
+    pub fn base_context(
         input: &ContextInput,
         limits: Limits,
         io: Option<&ContextPreparationIo>,
@@ -2316,7 +2025,7 @@ impl ContextPipeline {
             metadata: &metadata,
             current_input_index: Some(current_input_index),
         }
-        .validate_bounds_with_io(limits, io)?;
+        .validate_bounds(limits, io)?;
         validate_context_content_with_io(&input.input, limits, true, io)?;
         validate_context_selection_with_io(input, io)?;
         if input
@@ -2334,11 +2043,7 @@ impl ContextPipeline {
     }
 
     /// Adds an exact new delta to an owner-resolved base before running stages.
-    pub fn continue_base(retained: Context, delta: Context, limits: Limits) -> Result<Context> {
-        Self::continue_base_with_io(retained, delta, limits, None)
-    }
-
-    pub(crate) fn continue_base_with_io(
+    pub fn continue_base(
         mut retained: Context,
         delta: Context,
         limits: Limits,
@@ -2355,22 +2060,13 @@ impl ContextPipeline {
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.
-    pub async fn run_bounded(&self, input: &ContextInput, limits: Limits) -> Result<Context> {
-        self.transform_bounded(input, Self::base_context(input, limits)?, limits)
+    pub async fn run(&self, input: &ContextInput, limits: Limits, io: Option<&ContextPreparationIo>) -> Result<Context> {
+        self.transform(input, Self::base_context(input, limits, io)?, limits, io)
             .await
     }
 
     /// Applies declared stages to an explicit base, including a retained canonical checkpoint plus its new history delta.
-    pub async fn transform_bounded(
-        &self,
-        input: &ContextInput,
-        context: Context,
-        limits: Limits,
-    ) -> Result<Context> {
-        self.transform_bounded_with_io(input, context, limits, None).await
-    }
-
-    pub(crate) async fn transform_bounded_with_io(
+    pub async fn transform(
         &self,
         input: &ContextInput,
         mut context: Context,
@@ -2392,7 +2088,7 @@ impl ContextPipeline {
             return Err(context_boundary_with_io(io, crate::wire::ErrorCode::Invalid,
                 "context stage count exceeds limit"));
         }
-        validate_context_user_input_with_io(&input.input, io)?;
+        crate::executor::with_history_io(io, |work| input.input.validate_user_input(work))?;
         validate_context_selection_with_io(input, io)?;
         validate_context_projection_with_io(&context, limits, io)?;
         if context.current_input_index.is_none() {
@@ -2419,12 +2115,6 @@ impl ContextPipeline {
             }
         }
         Ok(context)
-    }
-
-    /// Returns stage names in exact execution order.
-    #[must_use]
-    pub fn stage_names(&self) -> Vec<&str> {
-        self.0.iter().map(|stage| stage.name()).collect()
     }
 
     /// Returns immutable stage contracts in exact execution order.
@@ -2566,163 +2256,31 @@ mod tests {
         let output = message(ModelRole::Assistant, "summary")?.content.file_refs()[0].clone();
         let summary = ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 2, source_digest: crate::contract::canonical_json_digest(&prefix)?, output };
-        let (retained, reference) = DurableContextProvider::compact(
-            &source, 3, Some(summary), CompactionRetention::default())?;
+        let (retained, reference) = DurableContextProvider::compact(&source, 3, Some(summary), CompactionRetention::default(), None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = crate::executor::PreparationIo::from_budget(owned_context_budget(), &cancellation)?;
-        validate_compaction_with_io(&reference, &source, &retained, Some(&io))?;
+        validate_compaction(&reference, &source, &retained, Some(&io))?;
         assert_eq!(io.owned_bytes()?, 0);
         let mut changed = retained.clone();
         changed.messages.last_mut().expect("retained current input").content = ModelContent::Text("changed".into());
-        assert!(validate_compaction_with_io(&reference, &source, &changed, Some(&io)).is_err());
+        assert!(validate_compaction(&reference, &source, &changed, Some(&io)).is_err());
         assert_eq!(io.owned_bytes()?, 0);
         let mut changed = reference.clone();
         changed.summary.as_mut().expect("summary proof").source_digest[0] ^= 1;
-        assert!(validate_compaction_with_io(&changed, &source, &retained, Some(&io)).is_err());
+        assert!(validate_compaction(&changed, &source, &retained, Some(&io)).is_err());
         assert_eq!(io.owned_bytes()?, 0);
         let mut budget = owned_context_budget();
         budget.items_examined = 0;
         let denied = crate::executor::PreparationIo::from_budget(budget, &cancellation)?;
-        assert!(validate_compaction_with_io(&reference, &source, &retained, Some(&denied)).is_err());
+        assert!(validate_compaction(&reference, &source, &retained, Some(&denied)).is_err());
         assert_eq!(denied.owned_bytes()?, 0);
         let cancelled = crate::executor::PreparationIo::from_budget(owned_context_budget(), &cancellation)?;
         cancellation.cancel();
-        assert!(validate_compaction_with_io(&reference, &source, &retained, Some(&cancelled)).is_err());
+        assert!(validate_compaction(&reference, &source, &retained, Some(&cancelled)).is_err());
         assert_eq!(cancelled.owned_bytes()?, 0);
         Ok(())
     }
 
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one fixture compares borrowed and owned wire bounds for both base variants and checkpoint continuation"
-    )]
-    fn borrowed_context_preflight_matches_base_and_continuation_wire() -> Result<()> {
-        let user = ModelContent::Text("current 🦀 \"quoted\"\n".into());
-        let message = |role, text: &str| ModelMessage {
-            role,
-            content: ModelContent::Text(text.into()),
-        };
-        let selected = SelectedModelContext {
-            selection: crate::conversation::ModelContextSelection {
-                conversation_revision: 2,
-                message_ids: vec![uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2)],
-                checkpoint: None,
-            },
-            messages: vec![
-                message(ModelRole::System, "pinned instruction"),
-                ModelMessage {
-                    role: ModelRole::User,
-                    content: user.clone(),
-                },
-            ],
-        };
-        for selected_context in [None, Some(selected)] {
-            let input = ContextInput {
-                input: user.clone(),
-                selected_context,
-                step: 0,
-                prior_messages: vec![message(ModelRole::Assistant, "prior answer")],
-            };
-            let base = ContextPipeline::base_context(&input, Limits::default())?;
-            let view = BorrowedContext {
-                messages: ContextMessages {
-                    first: input
-                        .selected_context
-                        .as_ref()
-                        .map_or(&[], |selected| selected.messages.as_slice()),
-                    user: input.selected_context.is_none().then_some(&input.input),
-                    second: &input.prior_messages,
-                },
-                metadata: &base.metadata,
-                current_input_index: base.current_input_index,
-            };
-            let encoded = crate::contract::canonical_json_bytes(&base)?;
-            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
-            let exact = Limits {
-                render_bytes: encoded.len() as u64,
-                ..Limits::default()
-            };
-            assert_eq!(ContextPipeline::base_context(&input, exact)?, base);
-            assert!(matches!(
-                ContextPipeline::base_context(
-                    &input,
-                    Limits {
-                        render_bytes: exact.render_bytes - 1,
-                        ..exact
-                    }
-                ),
-                Err(crate::Error::Invalid(_))
-            ));
-            assert!(matches!(
-                ContextPipeline::base_context(
-                    &input,
-                    Limits {
-                        context_messages: base.messages.len() - 1,
-                        ..Limits::default()
-                    }
-                ),
-                Err(crate::Error::Invalid(_))
-            ));
-
-            let retained = Context {
-                messages: vec![message(ModelRole::System, "retained summary")],
-                ..Default::default()
-            };
-            let expected = Context {
-                messages: retained
-                    .messages
-                    .iter()
-                    .chain(&base.messages)
-                    .cloned()
-                    .collect(),
-                metadata: retained.metadata.clone(),
-                current_input_index: base.current_input_index.map(|index| index + 1),
-            };
-            let view = BorrowedContext {
-                messages: ContextMessages {
-                    first: &retained.messages,
-                    user: None,
-                    second: &base.messages,
-                },
-                metadata: &retained.metadata,
-                current_input_index: expected.current_input_index,
-            };
-            let encoded = crate::contract::canonical_json_bytes(&expected)?;
-            assert_eq!(crate::contract::canonical_json_bytes(&view)?, encoded);
-            let exact = Limits {
-                render_bytes: encoded.len() as u64,
-                ..Limits::default()
-            };
-            assert_eq!(
-                ContextPipeline::continue_base(retained.clone(), base.clone(), exact)?,
-                expected
-            );
-            assert!(matches!(
-                ContextPipeline::continue_base(
-                    retained.clone(),
-                    base.clone(),
-                    Limits {
-                        render_bytes: exact.render_bytes - 1,
-                        ..exact
-                    }
-                ),
-                Err(crate::Error::Invalid(_))
-            ));
-            assert!(matches!(
-                ContextPipeline::continue_base(
-                    retained,
-                    base,
-                    Limits {
-                        context_messages: expected.messages.len() - 1,
-                        ..Limits::default()
-                    }
-                ),
-                Err(crate::Error::Invalid(_))
-            ));
-        }
-        Ok(())
-    }
     use acyclic_stream::MemoryStream;
     use std::{future::Future, pin::Pin};
 
@@ -2853,12 +2411,7 @@ mod tests {
                 source_digest: crate::contract::canonical_json_digest(&source)?,
                 output: file.clone(),
             };
-            let (compacted, reference) = DurableContextProvider::compact(
-                &source,
-                results + 3,
-                Some(summary.clone()),
-                CompactionRetention::default(),
-            )?;
+            let (compacted, reference) = DurableContextProvider::compact(&source, results + 3, Some(summary.clone()), CompactionRetention::default(), None)?;
             let mut expected = vec![source.messages[1].clone()];
             expected.extend_from_slice(&source.messages[3..]);
             assert_eq!(compacted.messages.get(1..), Some(expected.as_slice()));
@@ -2869,15 +2422,10 @@ mod tests {
                         .map_err(|_| crate::Error::Invalid("fixture index exceeds u32".into()))?
                 )
             );
-            validate_compaction_with_io(&reference, &source, &compacted, None)?;
+            validate_compaction(&reference, &source, &compacted, None)?;
             validate_native_call_fixture(&compacted)?;
             assert!(
-                DurableContextProvider::compact(
-                    &source,
-                    results + 2,
-                    Some(summary.clone()),
-                    CompactionRetention::default()
-                )
+                DurableContextProvider::compact(&source, results + 2, Some(summary.clone()), CompactionRetention::default(), None)
                 .is_err()
             );
             let retention = CompactionRetention {
@@ -2885,7 +2433,7 @@ mod tests {
                 ..CompactionRetention::default()
             };
             let (without_media, _) =
-                DurableContextProvider::compact(&source, 2, Some(summary), retention)?;
+                DurableContextProvider::compact(&source, 2, Some(summary), retention, None)?;
             assert_eq!(
                 without_media.messages.get(1..),
                 source.messages.get(source.messages.len() - 1..)
@@ -2957,45 +2505,25 @@ mod tests {
             source_digest: crate::contract::canonical_json_digest(&prefix)?,
             ..summary.clone()
         };
-        let (prefix_compacted, prefix_reference) = DurableContextProvider::compact(
-            &source,
-            5,
-            Some(prefix_summary.clone()),
-            CompactionRetention::default(),
-        )?;
+        let (prefix_compacted, prefix_reference) = DurableContextProvider::compact(&source, 5, Some(prefix_summary.clone()), CompactionRetention::default(), None)?;
         assert_eq!(prefix_compacted.messages.get(2..), source.messages.get(3..));
-        validate_compaction_with_io(&prefix_reference, &source, &prefix_compacted, None)?;
+        validate_compaction(&prefix_reference, &source, &prefix_compacted, None)?;
         assert!(
-            DurableContextProvider::compact(
-                &source,
-                4,
-                Some(prefix_summary.clone()),
-                CompactionRetention::default(),
-            )
+            DurableContextProvider::compact(&source, 4, Some(prefix_summary.clone()), CompactionRetention::default(), None)
             .is_err(),
             "unsummarized messages cannot be dropped to meet the budget"
         );
         for extent in [0, 2, 7] {
             assert!(
-                DurableContextProvider::compact(
-                    &source,
-                    5,
-                    Some(ContextSummary {
+                DurableContextProvider::compact(&source, 5, Some(ContextSummary {
                         source_messages: extent,
                         ..prefix_summary.clone()
-                    }),
-                    CompactionRetention::default(),
-                )
+                    }), CompactionRetention::default(), None)
                 .is_err()
             );
         }
         for budget in 1..=6 {
-            let result = DurableContextProvider::compact(
-                &source,
-                budget,
-                Some(summary.clone()),
-                CompactionRetention::default(),
-            );
+            let result = DurableContextProvider::compact(&source, budget, Some(summary.clone()), CompactionRetention::default(), None);
             if matches!(budget, 1 | 2 | 4) {
                 assert!(result.is_err());
                 continue;
@@ -3007,17 +2535,17 @@ mod tests {
                 projected.messages.contains(&source.messages[3]),
                 projected.messages.contains(&source.messages[4])
             );
-            validate_compaction_with_io(&reference, &source, &projected, None)?;
+            validate_compaction(&reference, &source, &projected, None)?;
             let mut corrupt = projected;
             corrupt
                 .messages
                 .last_mut()
                 .ok_or_else(|| crate::Error::Invalid("empty context".into()))?
                 .content = ModelContent::Text("substitution".into());
-            assert!(validate_compaction_with_io(&reference, &source, &corrupt, None).is_err());
+            assert!(validate_compaction(&reference, &source, &corrupt, None).is_err());
         }
         assert!(
-            DurableContextProvider::compact(&source, 3, None, CompactionRetention::default())
+            DurableContextProvider::compact(&source, 3, None, CompactionRetention::default(), None)
                 .is_err()
         );
         let configurable = Context {
@@ -3042,24 +2570,14 @@ mod tests {
             ..summary
         };
         assert!(
-            DurableContextProvider::compact(
-                &configurable,
-                3,
-                Some(configured_summary.clone()),
-                CompactionRetention::default(),
-            )
+            DurableContextProvider::compact(&configurable, 3, Some(configured_summary.clone()), CompactionRetention::default(), None)
             .is_err()
         );
         let retention = CompactionRetention {
             roles: vec![ModelRole::User],
             native_media: false,
         };
-        let (projected, mut reference) = DurableContextProvider::compact(
-            &configurable,
-            3,
-            Some(configured_summary),
-            retention.clone(),
-        )?;
+        let (projected, mut reference) = DurableContextProvider::compact(&configurable, 3, Some(configured_summary), retention.clone(), None)?;
         assert_eq!(
             projected.messages.get(1..),
             Some(
@@ -3070,15 +2588,15 @@ mod tests {
             )
         );
         assert_eq!(reference.retention, retention);
-        validate_compaction_with_io(&reference, &configurable, &projected, None)?;
+        validate_compaction(&reference, &configurable, &projected, None)?;
         reference.retention = CompactionRetention::default();
-        assert!(validate_compaction_with_io(&reference, &configurable, &projected, None).is_err());
+        assert!(validate_compaction(&reference, &configurable, &projected, None).is_err());
         assert!(
             CompactionRetention {
                 roles: vec![ModelRole::User, ModelRole::User],
                 native_media: true
             }
-            .validate()
+            .validate(None)
             .is_err()
         );
         Ok(())
@@ -3177,7 +2695,7 @@ mod tests {
             )) as Arc<dyn ContextStage>,
             stage.clone(),
         ]);
-        let projected = pipeline.run_bounded(&input, limits).await?;
+        let projected = pipeline.run(&input, limits, None).await?;
         assert_eq!(projected.current_input_index, Some(1));
         assert_eq!(
             *source
@@ -3193,7 +2711,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec![limits]
         );
-        let base = ContextPipeline::base_context(&input, limits)?;
+        let base = ContextPipeline::base_context(&input, limits, None)?;
         let contribution = vec![ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text("source".into()),
@@ -3378,7 +2896,7 @@ mod tests {
             context_messages: 2,
             ..payload_limits()
         };
-        let base = ContextPipeline::base_context(&input, admitted)?;
+        let base = ContextPipeline::base_context(&input, admitted, None)?;
         assert!(matches!(
             stage.apply(&input, base.clone(), admitted).await,
             Err(crate::Error::Invalid(_))
@@ -3599,26 +3117,16 @@ mod tests {
             })
         };
         let first_summary = make_summary(&source, "first-summary")?;
-        let (mut next, reference) = DurableContextProvider::compact(
-            &source,
-            3,
-            Some(first_summary.clone()),
-            CompactionRetention::default(),
-        )?;
-        validate_compaction_with_io(&reference, &source, &next, None)?;
+        let (mut next, reference) = DurableContextProvider::compact(&source, 3, Some(first_summary.clone()), CompactionRetention::default(), None)?;
+        validate_compaction(&reference, &source, &next, None)?;
         assert_eq!(next.messages[0].role, ModelRole::Assistant);
         next.messages.extend([
             message(ModelRole::Assistant, "later-answer")?,
             message(ModelRole::User, "latest")?,
         ]);
         next.current_input_index = Some(4);
-        let (compacted, reference) = DurableContextProvider::compact(
-            &next,
-            3,
-            Some(make_summary(&next, "second-summary")?),
-            CompactionRetention::default(),
-        )?;
-        validate_compaction_with_io(&reference, &next, &compacted, None)?;
+        let (compacted, reference) = DurableContextProvider::compact(&next, 3, Some(make_summary(&next, "second-summary")?), CompactionRetention::default(), None)?;
+        validate_compaction(&reference, &next, &compacted, None)?;
         assert_eq!(compacted.messages.len(), 3);
         assert!(compacted.messages.contains(&source.messages[0]));
         assert_eq!(compacted.messages.last(), next.messages.last());
@@ -3671,21 +3179,11 @@ mod tests {
                 .clone(),
         };
         assert!(
-            DurableContextProvider::compact(
-                &source,
-                4,
-                Some(summary.clone()),
-                CompactionRetention::default(),
-            )
+            DurableContextProvider::compact(&source, 4, Some(summary.clone()), CompactionRetention::default(), None)
             .is_err()
         );
-        let (compacted, reference) = DurableContextProvider::compact(
-            &source,
-            5,
-            Some(summary),
-            CompactionRetention::default(),
-        )?;
-        validate_compaction_with_io(&reference, &source, &compacted, None)?;
+        let (compacted, reference) = DurableContextProvider::compact(&source, 5, Some(summary), CompactionRetention::default(), None)?;
+        validate_compaction(&reference, &source, &compacted, None)?;
         assert!(compacted.messages.contains(&source.messages[3]));
         assert_eq!(compacted.messages.last(), source.messages.last());
         assert!(compacted.messages.contains(&source.messages[4]));
@@ -3770,12 +3268,12 @@ mod tests {
             step: 0,
             prior_messages: Vec::new(),
         };
-        let raw = ContextPipeline::base_context(&input, Limits::default())?;
+        let raw = ContextPipeline::base_context(&input, Limits::default(), None)?;
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(ContextPipeline::default().run(&input).await?, raw);
+        assert_eq!(ContextPipeline::default().run(&input, Limits::default(), None).await?, raw);
         let retained = retained_input_base(input.input.clone());
         let first = pipeline
-            .transform_bounded(&input, retained.clone(), Limits::default())
+            .transform(&input, retained.clone(), Limits::default(), None)
             .await?;
         assert_eq!(first.current_input_index, Some(1));
         assert_eq!(first.messages[1].content, input.input);
@@ -3789,7 +3287,7 @@ mod tests {
         let mut next_base = retained.clone();
         next_base.messages[2].content = input.input.clone();
         let next = pipeline
-            .transform_bounded(&input, next_base.clone(), Limits::default())
+            .transform(&input, next_base.clone(), Limits::default(), None)
             .await?;
         assert_eq!(
             next.messages[0].content,
@@ -3802,7 +3300,7 @@ mod tests {
             })
                 as Arc<dyn ContextStage>]))?;
         let next = reloaded
-            .transform_bounded(&input, next_base, Limits::default())
+            .transform(&input, next_base, Limits::default(), None)
             .await?;
         assert_eq!(
             next.messages[0].content,
@@ -3822,7 +3320,7 @@ mod tests {
         };
         assert!(
             pipeline
-                .transform_bounded(&input, invalid, Limits::default())
+                .transform(&input, invalid, Limits::default(), None)
                 .await
                 .is_err()
         );
@@ -3859,7 +3357,7 @@ mod tests {
                 ContextPlacement::Append,
             )),
         ]);
-        let projected = pipeline.run(&input).await?;
+        let projected = pipeline.run(&input, Limits::default(), None).await?;
         assert_eq!(projected.current_input_index, Some(1));
         assert_eq!(projected.messages[1].content, input.input);
         let summary = ContextSummary {
@@ -3872,19 +3370,14 @@ mod tests {
                 .file_refs()[0]
                 .clone(),
         };
-        let (compacted, reference) = DurableContextProvider::compact(
-            &projected,
-            3,
-            Some(summary),
-            CompactionRetention::default(),
-        )?;
-        validate_compaction_with_io(&reference, &projected, &compacted, None)?;
+        let (compacted, reference) = DurableContextProvider::compact(&projected, 3, Some(summary), CompactionRetention::default(), None)?;
+        validate_compaction(&reference, &projected, &compacted, None)?;
         assert_eq!(compacted.current_input_index, Some(1));
         assert_eq!(compacted.messages[1].content, input.input);
         assert_eq!(compacted.messages.last(), projected.messages.last());
         assert!(
             ContextPipeline::new([Arc::new(RemoveInputMarker) as Arc<dyn ContextStage>])
-                .run(&input)
+                .run(&input, Limits::default(), None)
                 .await
                 .is_err()
         );
@@ -3897,7 +3390,7 @@ mod tests {
             validate_projected_context(&invalid, crate::conversation::Limits::default()).is_err()
         );
         assert!(
-            DurableContextProvider::compact(&invalid, 4, None, CompactionRetention::default())
+            DurableContextProvider::compact(&invalid, 4, None, CompactionRetention::default(), None)
                 .is_err()
         );
         Ok(())
@@ -4085,13 +3578,13 @@ mod tests {
             ContextRepresentation::Full,
         )?)?;
         assert_ne!(snapshot.contracts(), current.contracts());
-        let rebuilt = current.run(&input).await?;
+        let rebuilt = current.run(&input, Limits::default(), None).await?;
         let update = attribute_pipeline(
             "new",
             ContextRenderMode::Update,
             ContextRepresentation::Full,
         )?
-        .run(&input)
+        .run(&input, Limits::default(), None)
         .await?;
         assert_eq!(
             rebuilt.messages.first().map(|m| &m.content),
@@ -4107,7 +3600,7 @@ mod tests {
             ContextRepresentation::Reference,
         ] {
             let view = attribute_pipeline("new", ContextRenderMode::Prompt, representation)?
-                .run(&input)
+                .run(&input, Limits::default(), None)
                 .await?;
             assert_eq!(
                 view.messages.first().map(|m| &m.content),
@@ -4116,7 +3609,7 @@ mod tests {
                 )))
             );
         }
-        assert_eq!(snapshot.run(&input).await?, old.run(&input).await?);
+        assert_eq!(snapshot.run(&input, Limits::default(), None).await?, old.run(&input, Limits::default(), None).await?);
         assert!(
             old.reload(ContextPipeline::new([Arc::new(CompactionStage {
                 max_messages: 0,
@@ -4259,10 +3752,7 @@ mod tests {
         provider
             .append(0, original.clone(), None, Bytes::from_static(b"context-1"))
             .await?;
-        let (compacted, reference) = DurableContextProvider::compact(
-            &original,
-            2,
-            Some(ContextSummary {
+        let (compacted, reference) = DurableContextProvider::compact(&original, 2, Some(ContextSummary {
                 operation_id: crate::OperationId::new(),
                 step: 0,
                 source_messages: 3,
@@ -4274,9 +3764,7 @@ mod tests {
                     .next()
                     .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
                     .clone(),
-            }),
-            CompactionRetention::default(),
-        )?;
+            }), CompactionRetention::default(), None)?;
         let mut forged = reference.clone();
         forged.source_digest[0] ^= 1;
         assert!(
@@ -4337,7 +3825,7 @@ mod tests {
                 selected_context: None,
                 step: 0,
                 prior_messages: vec![message(ModelRole::User, "current")?],
-            })
+            }, Limits::default(), None)
             .await?;
         assert_eq!(assembled.messages.len(), 4);
         assert_eq!(assembled.messages[3], message(ModelRole::User, "current")?);
@@ -4393,18 +3881,13 @@ mod tests {
             .next()
             .ok_or_else(|| crate::Error::Invalid("summary file is missing".into()))?
             .clone();
-        let (compacted, reference) = DurableContextProvider::compact(
-            &source,
-            2,
-            Some(ContextSummary {
+        let (compacted, reference) = DurableContextProvider::compact(&source, 2, Some(ContextSummary {
                 operation_id: crate::OperationId::new(),
                 step: 0,
                 source_messages: 2,
                 source_digest: crate::contract::canonical_json_digest(&covered)?,
                 output,
-            }),
-            CompactionRetention::default(),
-        )?;
+            }), CompactionRetention::default(), None)?;
         let key = Bytes::from_static(b"atomic-compaction");
         // Discard the first successful acknowledgement, as a caller whose receipt was lost would.
         provider
@@ -4603,94 +4086,5 @@ mod tests {
             assert!(payloads.files.lock().unwrap().is_empty());
         }
         Ok(())
-    }
-}
-
-/// Bounded request-admission model; no unbounded correctness claim.
-#[cfg(test)]
-mod admission_model {
-    use std::collections::{BTreeSet, VecDeque};
-
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-    struct State {
-        projection: u8,
-        admitted: Option<u8>,
-        intact: bool,
-        dispatches: u8,
-        completed: bool,
-    }
-
-    fn successors(state: State) -> Vec<State> {
-        let mut next = vec![State {
-            projection: 1 - state.projection,
-            ..state
-        }]; // future projection
-        if state.admitted.is_none() {
-            let claimed = State {
-                admitted: Some(state.projection),
-                intact: true,
-                ..state
-            };
-            next.push(claimed); // crash after claim
-            next.push(State {
-                dispatches: 1,
-                ..claimed
-            }); // claim then dispatch
-        } else {
-            next.push(State {
-                intact: false,
-                ..state
-            }); // storage fault
-            if state.dispatches > 0 && state.intact {
-                next.push(State {
-                    completed: true,
-                    ..state
-                }); // durable observation
-            }
-        }
-        next
-    }
-
-    fn check(replay: fn(State) -> Option<u8>) -> Result<usize, String> {
-        let initial = State {
-            projection: 0,
-            admitted: None,
-            intact: true,
-            dispatches: 0,
-            completed: false,
-        };
-        let mut pending = VecDeque::from([initial]);
-        let mut seen = BTreeSet::from([initial]);
-        while let Some(state) = pending.pop_front() {
-            if state.dispatches > 1 {
-                return Err("redispatch".to_owned());
-            }
-            if state.admitted.is_some() {
-                let value = replay(state);
-                if value != state.admitted.filter(|_| state.intact) {
-                    return Err("replay returned other than the retained admission".to_owned());
-                }
-                if state.completed && value.is_none() && state.intact {
-                    return Err("completion without retained admission".to_owned());
-                }
-            }
-            for next in successors(state) {
-                if seen.insert(next) {
-                    pending.push_back(next);
-                }
-            }
-        }
-        Ok(seen.len())
-    }
-
-    #[test]
-    fn retained_replay_holds_over_every_reachable_state() {
-        let retained: fn(State) -> Option<u8> = |state| state.admitted.filter(|_| state.intact);
-        assert_eq!(check(retained), Ok(26));
-        // Negative controls: replaying the current projection, or ignoring missing storage, must be rejected.
-        let fresh: fn(State) -> Option<u8> = |state| state.intact.then_some(state.projection);
-        let unchecked: fn(State) -> Option<u8> = |state| state.admitted;
-        assert!(check(fresh).is_err());
-        assert!(check(unchecked).is_err());
     }
 }

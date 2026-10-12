@@ -7400,7 +7400,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
 
             let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation)?;
-            let prefix_bytes = prefix.canonical_bytes()?;
+            let prefix_bytes = prefix.canonical_bytes(None)?;
             let mut materialized = seed.clone();
             materialized.inherited_context.push(FileRef::new(
                 seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",

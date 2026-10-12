@@ -21,7 +21,7 @@ use crate::{
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
-    executor::{ModelEventAdmission, ModelEventAdmissionState},
+    executor::ModelEventAdmission,
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
@@ -2623,7 +2623,7 @@ pub fn validate_tool_projection(
     let limits: Limits = from_js(limits)?;
     definition
         .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(limits))
+        .and_then(|content| content.validate_limits(limits, &mut None))
         .map_err(js_error)
 }
 
@@ -2657,7 +2657,7 @@ pub fn model_content_inventory(
 ) -> Result<JsValue, JsValue> {
     let content: ModelContent = from_js(content)?;
     content
-        .validate_limits(from_js(limits)?)
+        .validate_limits(from_js(limits)?, &mut None)
         .map_err(js_error)?;
     to_js_admitted(&WasmModelContentInventoryWire {
         files: content.file_refs(),
@@ -2713,7 +2713,7 @@ pub fn encode_model_prefix(
         }
     };
     crate::model::ModelPrefix::select(&request, selected)
-        .and_then(|prefix| prefix.canonical_bytes())
+        .and_then(|prefix| prefix.canonical_bytes(None))
         .map(|bytes| js_sys::Uint8Array::from(bytes.as_ref()))
         .map_err(js_error)
 }
@@ -2960,7 +2960,7 @@ pub fn validate_model_content(
 ) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
     let limits: Limits = from_js(limits)?;
-    content.validate_limits(limits).map_err(js_error)
+    content.validate_limits(limits, &mut None).map_err(js_error)
 }
 
 /// Validates a complete provider-neutral model message list with the native role, message-count, and content bounds.
@@ -2978,7 +2978,7 @@ pub fn validate_model_messages(
         return Err(JsValue::from_str("model context count is invalid"));
     }
     for message in messages {
-        message.content.validate_limits(limits).map_err(js_error)?;
+        message.content.validate_limits(limits, &mut None).map_err(js_error)?;
     }
     Ok(())
 }
@@ -2991,7 +2991,7 @@ pub fn validate_user_input(
     #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
 ) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
-    content.validate_user_input().map_err(js_error)
+    content.validate_user_input(&mut None).map_err(js_error)
 }
 
 /// Admits an already projected, provider-proven context with native model bounds.
@@ -3052,14 +3052,14 @@ pub fn admit_model_event(
         ));
     }
     let prior_text_bytes = state.text_bytes;
-    let admission_state = ModelEventAdmissionState {
+    let admission_state = ModelEventAdmission {
         count: state.count,
         calls: state.calls,
         completed: state.completed,
     };
     let mut admission =
         ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;
-    admission.observe(&event, limits).map_err(js_error)?;
+    admission.observe(&event, limits, None).map_err(js_error)?;
     let text_bytes = match &event {
         ModelEvent::Content { delta } => prior_text_bytes
             .checked_add(delta.len() as u64)
@@ -3072,9 +3072,9 @@ pub fn admit_model_event(
         return Err(JsValue::from_str("assistant output exceeds file limit"));
     }
     let state = WasmModelEventAdmissionState {
-        count: admission.state().count,
-        calls: admission.state().calls,
-        completed: admission.state().completed,
+        count: admission.count,
+        calls: admission.calls,
+        completed: admission.completed,
         text_bytes,
     };
     let output = WasmModelEventAdmission {

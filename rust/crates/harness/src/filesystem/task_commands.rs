@@ -274,7 +274,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         } else { 0 };
         io.retain_owned(self_bytes)?;
         io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-        let model = crate::model::model_model_clone_with_io(model, Some(&io))?;
+        let model = crate::model::clone_model(model, Some(&io))?;
         let context = context.clone_with_native_work(work)?;
         io.absorb_native_custody(context.1)?;
         let compaction = match compaction {
@@ -445,7 +445,7 @@ where
                             let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
                             let mut replay = crate::executor::ExecutionReplay::new(operation);
                             let mut dispatched = false;
-                            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                                 dispatched |= page.iter().any(|record| matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. }));
                             }
                             if !dispatched { return mail::reconciled(io); }
@@ -1227,7 +1227,7 @@ where
             let operation = super::task_runtime::execution_operation(task, turn);
             let mut replay = crate::executor::ExecutionReplay::new(operation);
             let mut dispatched = false;
-            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                 dispatched |= page.iter().any(|record| {
                     matches!(record.event, crate::executor::ExecutionEvent::ModelStarted { .. })
                 });
