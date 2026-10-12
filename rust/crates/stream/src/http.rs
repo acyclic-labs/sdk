@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{collections::VecDeque, net::IpAddr, time::Duration};
+use std::{net::IpAddr, time::Duration};
 use tracing::{Span, field::Empty};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
@@ -275,14 +275,14 @@ impl HttpStream {
                 self.clone(),
                 path,
                 from,
-                VecDeque::<Record>::new(),
+                Vec::<Record>::new().into_iter(),
                 delay,
                 observation,
             ),
             |(provider, path, mut next, mut queued, mut delay, mut observation)| async move {
                 let result = async {
                     loop {
-                        if let Some(record) = queued.pop_front() {
+                        if let Some(record) = queued.next() {
                             next = record
                                 .sequence
                                 .checked_add(1)
@@ -310,9 +310,9 @@ impl HttpStream {
                                 false,
                             ))
                             .await?
-                            .into();
+                            .into_iter();
                         observation.span.record("queued", queued.len());
-                        if queued.is_empty() {
+                        if queued.len() == 0 {
                             observation.span.record("phase", "sleep");
                             let sleep = obs::OperationSpan::new(tracing::debug_span!(
                                 "acyclic.stream.http.follow.sleep",

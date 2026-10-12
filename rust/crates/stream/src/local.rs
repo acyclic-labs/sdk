@@ -1301,8 +1301,7 @@ impl StreamProvider for LocalStream {
                 if maximum > MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded.into()); }
                 let maximum_frame = maximum.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                     .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
-                let frame = crate::memory::vec(Some(&meter), maximum_frame).map_err(LocalStreamError::Io)
-                    .map_err(publication_error)?;
+                let frame = crate::memory::vec(Some(&meter), maximum_frame)?;
                 self.inner.journal.lock()
                     .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
                     .admit_bytes(maximum_frame as u64).map_err(publication_error)?;

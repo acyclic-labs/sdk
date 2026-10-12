@@ -1,14 +1,13 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
 use std::{
-    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll},
+    task::Poll,
 };
 
 use async_trait::async_trait;
@@ -402,7 +401,7 @@ impl Client {
                     next: from,
                     remaining: limit,
                     active: None,
-                    buffered: VecDeque::new(),
+                    buffered: Vec::new().into_iter(),
                     completion,
                     acknowledgements: None,
                 },
@@ -412,7 +411,7 @@ impl Client {
                             cursor.completion.ok();
                             return None;
                         }
-                        if let Some(record) = cursor.buffered.pop_front() {
+                        if let Some(record) = cursor.buffered.next() {
                             if record.sequence == cursor.next {
                                 cursor.next = cursor.next.saturating_add(1);
                                 if let Some(remaining) = &mut cursor.remaining {
@@ -459,7 +458,7 @@ impl Client {
                                             cursor.completion.invalid_response();
                                             return cursor.failure(StreamError::Unavailable);
                                         }
-                                        if cursor.client.acknowledge_deliveries && !records.is_empty() {
+                                        if cursor.client.acknowledge_deliveries && records.len() != 0 {
                                             let worker = cursor.acknowledgements.get_or_insert_with(|| {
                                                 DeliveryAcknowledgements::new(cursor.client.clone())
                                             });
@@ -510,7 +509,7 @@ struct RecordCursor {
     remaining: Option<u32>,
     active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion)>,
     /// Decoded records from the latest frame that the caller has not yet taken.
-    buffered: VecDeque<Record>,
+    buffered: std::vec::IntoIter<Record>,
     completion: Completion,
     acknowledgements: Option<DeliveryAcknowledgements>,
 }
@@ -548,7 +547,7 @@ impl RecordCursor {
     fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
-        self.buffered.clear();
+        self.buffered = Vec::new().into_iter();
         self.acknowledgements = None;
         self.remaining = Some(0);
         Some((Err(error), self))
@@ -1318,34 +1317,23 @@ fn decode_response<T, U>(
     result
 }
 
-/// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
-struct ObservedBody<S> {
-    body: obs::Scoped<S>,
-    completion: Completion,
-}
-fn observe_body<S>(span: &tracing::Span, body: S) -> ObservedBody<S> {
-    let completion = Completion::new(span.clone());
-    let body = completion.span.scope(body);
-    ObservedBody { body, completion }
-}
-impl<S, T> Stream for ObservedBody<S>
+fn observe_body<S, T>(span: &tracing::Span, body: S) -> impl Stream<Item = Result<T, Status>> + Unpin
 where
     S: Stream<Item = Result<T, Status>> + Unpin,
 {
-    type Item = Result<T, Status>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if this.completion.finished {
-            return Poll::Ready(None);
-        }
-        let next = Pin::new(&mut this.body).poll_next(cx);
+    let completion = Completion::new(span.clone());
+    // Drop the producer under its origin before retiring completion.
+    let mut state = (completion.span.scope(body), completion);
+    stream::poll_fn(move |cx| {
+        if state.1.finished { return Poll::Ready(None); }
+        let next = Pin::new(&mut state.0).poll_next(cx);
         match &next {
-            Poll::Ready(Some(Err(error))) => this.completion.status(error),
-            Poll::Ready(None) => this.completion.ok(),
+            Poll::Ready(Some(Err(error))) => state.1.status(error),
+            Poll::Ready(None) => state.1.ok(),
             _ => {}
         }
         next
-    }
+    })
 }
 
 fn error_status(error: &StreamError) -> Status {
@@ -1400,12 +1388,12 @@ fn read_response(
     value: wire::ReadResponse,
     next: u64,
     remaining: Option<u32>,
-) -> Result<VecDeque<Record>, StreamError> {
-    let records: VecDeque<Record> = read_response_records(value)?
+) -> Result<std::vec::IntoIter<Record>, StreamError> {
+    let records: Vec<Record> = read_response_records(value)?
         .into_iter()
         .map(record)
         .collect::<Result<_, _>>()?;
-    let mut expected = records.front().map_or(next, |record| record.sequence);
+    let mut expected = records.first().map_or(next, |record| record.sequence);
     if expected > next {
         return Err(StreamError::Unavailable);
     }
@@ -1422,7 +1410,7 @@ fn read_response(
     if remaining.is_some_and(|remaining| new_records > u64::from(remaining)) {
         return Err(StreamError::Unavailable);
     }
-    Ok(records)
+    Ok(records.into_iter())
 }
 
 #[cfg(test)]
@@ -1889,10 +1877,6 @@ mod tests {
         }
     }
 
-    fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
-        provider_channel(Service::new(provider))
-    }
-
     fn provider_channel<S: StreamService + Clone>(service: S) -> Channel {
         Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
             tower::service_fn(move |_| {
@@ -1915,7 +1899,7 @@ mod tests {
     #[tokio::test]
     async fn grpc_transport_passes_the_public_suite()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let channel = in_memory_channel(Arc::new(MemoryStream::default()));
+        let channel = provider_channel(Service::new(Arc::new(MemoryStream::default())));
         let transport = Client::from_channels(Arc::from([channel.clone()]), Client::authorization("fixture")?);
         crate::conformance::verify(&transport).await?;
         let mut obsolete = tonic::client::Grpc::new(channel);
@@ -2222,7 +2206,7 @@ mod tests {
             drop(records);
             server.abort();
         }
-        let client = Client::from_channels(Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]), Client::authorization("fixture")?);
+        let client = Client::from_channels(Arc::from([provider_channel(Service::new(Arc::new(MemoryStream::default())))]), Client::authorization("fixture")?);
         assert_eq!(client.acknowledge_delivery(0, &[7; 32]).await, Err(StreamError::Unsupported));
         #[cfg(feature = "local")]
         {
@@ -2429,7 +2413,7 @@ mod tests {
         .await?;
         let client = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
-                in_memory_channel(live),
+                provider_channel(Service::new(live)),
             ]), Client::authorization("fixture")?);
         let mut cursor = client.follow(path, 0).await?;
         assert!(
@@ -2560,22 +2544,7 @@ mod tests {
     async fn client_reassembles_mixed_compressed_and_plain_read_frames()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), None, None);
-        let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-            tower::service_fn(move |_| {
-                let service = service.clone();
-                async move {
-                    let (client, server) = tokio::io::duplex(64 * 1024);
-                    tokio::spawn(async move {
-                        let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
-                        let _ = tonic::transport::Server::builder()
-                            .add_service(StreamServiceServer::new(service))
-                            .serve_with_incoming(incoming)
-                            .await;
-                    });
-                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
-                }
-            }),
-        );
+        let channel = provider_channel(service);
         let transport = Client::from_channels(Arc::from([channel]), Client::authorization("fixture")?);
         let path = StreamPath::new("accounts/mixed")?;
         let values = (0..20_u8)
@@ -2897,7 +2866,7 @@ mod tests {
             .await?;
         let transport = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
-                in_memory_channel(durable),
+                provider_channel(Service::new(durable)),
             ]), Client::authorization("fixture")?);
         let preferred = Arc::clone(&transport.preferred);
         let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
@@ -2922,7 +2891,7 @@ mod tests {
             next: 0,
             remaining: None,
             active: None,
-            buffered: VecDeque::new(),
+            buffered: Vec::new().into_iter(),
             completion: Completion::new(tracing::Span::none()),
             acknowledgements: None,
         };
