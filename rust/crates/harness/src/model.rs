@@ -409,7 +409,7 @@ fn model_tool_result_json_bound(
     model_json_bound(content, maximum, work)
 }
 
-fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
+pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     #[cfg(feature = "filesystem")]
@@ -422,20 +422,6 @@ fn model_hash(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Resu
     Ok(digest)
 }
 
-fn model_digest<T: Serialize>(
-    value: &T, io: Option<&crate::executor::PreparationIo>,
-) -> Result<[u8; 32]> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let _bytes;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_bytes(&bytes)?;
-        return model_hash(&bytes, Some(io));
-    }
-    crate::contract::canonical_json_digest(value)
-}
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Model {
@@ -981,7 +967,6 @@ impl FileProjectionPolicy {
         } else { Ok(()) }
     }
 
-
 }
 
 impl ToolResultContent {
@@ -1389,8 +1374,8 @@ impl PreparedModelRequest {
         {
             bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
-        let request_digest = model_hash(&bytes, io)?;
-        let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
+        let request_digest = hash_bytes(&bytes, io)?;
+        let binding_digest = crate::executor::preparation_digest(&(&request.model, &request.tools), io)?;
         #[cfg(feature = "filesystem")]
         let capacity = request.messages.len().checked_mul(std::mem::size_of::<[u8; 32]>())
             .ok_or_else(|| Error::Invalid("model message digest capacity overflow".into()))?;
@@ -1404,7 +1389,7 @@ impl PreparedModelRequest {
         let mut message_digests = Vec::with_capacity(request.messages.len());
         for message in &request.messages {
             model_step(io, 1)?;
-            message_digests.push(model_digest(message, io)?);
+            message_digests.push(crate::executor::preparation_digest(message, io)?);
         }
         let manifest = ModelRequestManifest {
             version: 1, request_digest, wire_bytes: bytes.len() as u64,
@@ -1553,7 +1538,7 @@ impl PreparedModelRequest {
         while let Some(reference) = next {
             model_step(io, 1)?;
             crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
-            let identity = model_digest(&reference, io)?;
+            let identity = crate::executor::preparation_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 // Concrete key slots only; opaque BTree allocator nodes excluded.
@@ -1576,11 +1561,11 @@ impl PreparedModelRequest {
             }
             #[cfg(feature = "filesystem")]
             let _bytes_hold;
+            crate::context::verify_file(&reference, verifier, io).await?;
             let bytes = match io {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("native branch retains original work");
-                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work)?.await?;
                     let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
                     )?.await?;
@@ -1588,13 +1573,10 @@ impl PreparedModelRequest {
                 }
                 #[cfg(feature = "filesystem")]
                 Some(io) => {
-                    io.receive_content(verifier.verify_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?;
                     io.receive_content(verifier.read_measured(&reference,
                         reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
                 }
                 _ => {
-                    verifier.verify(&reference).await?;
                     verifier.read(&reference).await?
                 }
             };
@@ -1655,7 +1637,7 @@ impl PreparedModelRequest {
         model_hasher_update(&mut message_hasher, b"harness:model-prefix:ordered:v1", io)?;
         for (segment, digest) in segments.into_iter().rev() {
             for message in &segment {
-                let digest = model_digest(message, io)?;
+                let digest = crate::executor::preparation_digest(message, io)?;
                 model_hasher_update(&mut message_hasher, &digest, io)?;
             }
             for message in segment { crate::executor::stock_vec_push(&mut messages, message, io)?; }
@@ -1666,10 +1648,13 @@ impl PreparedModelRequest {
             }
         }
         let local_messages = std::mem::replace(&mut local.messages, messages);
-        local.validate_with_io(limits, io)?;
+        local.validate(limits, io)?;
         for message in local_messages { crate::executor::stock_vec_push(&mut local.messages, message, io)?; }
         for message in &local.messages {
-            model_verify_content_files(&message.content, verifier, io).await?;
+            for file in message.content.file_refs() {
+                model_step(io, 1)?;
+                crate::context::verify_file(file, verifier, io).await?;
+            }
         }
         Self::prepare_engine(local, limits, io)
     }
@@ -1687,30 +1672,6 @@ fn model_hasher_update(
     hasher.update(bytes);
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { io.charge(work)?; }
-    Ok(())
-}
-
-
-async fn model_verify_content_files(
-    content: &ModelContent, verifier: &dyn crate::conversation::ContentResidencyVerifier,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    for file in content.file_refs() {
-        model_step(io, 1)?;
-        match io {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(io) if io.original_native_work().is_some() => {
-                verifier.verify_with_native_work(file, file.descriptor().byte_length(),
-                    io.original_native_work().expect("native branch retains original work"))?.await?;
-            }
-            #[cfg(feature = "filesystem")]
-            Some(io) => {
-                io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(),
-                    io.remaining()?, io.cancellation()).await)?;
-            }
-            _ => verifier.verify(file).await?,
-        }
-    }
     Ok(())
 }
 

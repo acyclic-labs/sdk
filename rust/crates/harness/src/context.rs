@@ -31,7 +31,7 @@ pub use compaction::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use compaction::{
     clone_context_native, clone_context_prefix_native,
-    clone_messages_native, clone_retention_native, mandatory_positions_native,
+    clone_messages_native, clone_retention_native,
 };
 mod snapshot;
 pub use snapshot::*;
@@ -129,27 +129,24 @@ impl CanonicalContextCheckpoint {
     pub fn validate(
         &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
         crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
-        #[cfg(not(feature = "filesystem"))]
-        limits.validate()?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
         {
-            return Err(context_checkpoint_error(io, "canonical checkpoint coverage is invalid"));
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint coverage is invalid"));
         }
         // Validate immutable references before the bounded scratch set grows.
         for reference in [&self.source, &self.retained, &self.compaction] {
-            context_checkpoint_file(limits, reference, io)?;
+            crate::executor::with_history_io(io, |work| limits.validate_file_with_work(reference, work))?;
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
             {
-                return Err(context_checkpoint_error(io, "canonical checkpoint payload scope is invalid"));
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint payload scope is invalid"));
             }
         }
         if let Some(previous) = &self.selection.checkpoint {
-            context_checkpoint_file(limits, previous, io)?;
+            crate::executor::with_history_io(io, |work| limits.validate_file_with_work(previous, work))?;
         }
         #[cfg(feature = "filesystem")]
         let mut history = io.map(crate::executor::PreparationIo::history_io);
@@ -161,7 +158,7 @@ impl CanonicalContextCheckpoint {
             // Logical borrowed entry slots only, never opaque allocator nodes.
             let bytes = self.selection.message_ids.len()
                 .checked_mul(std::mem::size_of::<&uuid::Uuid>())
-                .ok_or_else(|| context_checkpoint_error(io, "canonical checkpoint identity storage overflows"))?;
+                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint identity storage overflows"))?;
             crate::wire_codec::CodecQuota::new(&mut observed, bytes as u64)?
         };
         let mut unique = std::collections::BTreeSet::new();
@@ -170,7 +167,7 @@ impl CanonicalContextCheckpoint {
             unique.insert(id);
         }
         if unique.len() != self.selection.message_ids.len() {
-            return Err(context_checkpoint_error(io, "canonical checkpoint repeats source identities"));
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint repeats source identities"));
         }
         Ok(())
     }
@@ -206,29 +203,10 @@ impl CanonicalContextCheckpoint {
             .as_ref()
             .is_none_or(|summary| summary.operation_id != self.operation_id)
         {
-            return Err(context_checkpoint_error(io, "canonical checkpoint summary admission differs"));
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint summary admission differs"));
         }
         Ok(())
     }
-}
-
-fn context_checkpoint_error(io: Option<&crate::executor::PreparationIo>, reason: &'static str) -> crate::Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
-    }
-    let _ = io;
-    crate::Error::Invalid(reason.into())
-}
-
-fn context_checkpoint_file(limits: Limits, file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return limits.validate_file_with_work(file, &mut Some(&mut history));
-    }
-    let _ = io;
-    limits.validate_file(file)
 }
 
 fn context_checkpoint_step(io: Option<&crate::executor::PreparationIo>) -> Result<()> {
@@ -616,7 +594,7 @@ impl DurableContextProvider {
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Storage,
                 "context payload descriptor is invalid"));
         }
-        verify_context_file(&revision.context, self.content_verifier.as_ref(), io).await?;
+        verify_file(&revision.context, self.content_verifier.as_ref(), io).await?;
         let payload = match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
@@ -733,8 +711,6 @@ impl DurableContextProvider {
             .map_or_else(Context::default, |record| record.context))
     }
 
-
-
     /// Compacts a context on the optional original preparation ledger.
     pub fn compact(
         context: &Context, max_messages: usize, summary: Option<ContextSummary>,
@@ -797,15 +773,33 @@ fn clone_summary_native(
     }
 }
 
-pub(super) fn mandatory_positions(
-    context: &Context, covered: usize, retention: &CompactionRetention,
-) -> Vec<usize> {
-    let mut work = None;
-    let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)
-        .expect("unobserved compaction has no ledger denial");
-    let (selected, _) = compaction::mandatory_flags(context, covered, retention, &mut quota)
-        .expect("ordinary mandatory projection has no finite ledger failures");
-    selected.into_iter().enumerate().filter_map(|(position, selected)| selected.then_some(position)).collect()
+pub(crate) fn checked_compaction_budget(
+    policy: &ThresholdCompaction, context: &Context, count: &ModelTokenCount,
+    capacity: ModelContextCapacity, maximum_messages: usize,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<(usize, usize)> {
+    crate::executor::with_history_io(io, |work| {
+        let (through, maximum) = policy.projection_budget(context, count, maximum_messages, work)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let (selected, _pending) = compaction::mandatory_flags(context, through, &policy.retention, &mut quota)?;
+        let mandatory_tokens = selected.iter().enumerate().filter(|(_, selected)| **selected)
+            .try_fold(u64::from(count.fixed_tokens), |total, (position, _)| {
+                if let Some(work) = quota.work().as_deref_mut() {
+                    work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                }
+                let tokens = count.message_tokens.get(position).ok_or_else(||
+                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                        "mandatory token position is missing"))?;
+                total.checked_add(u64::from(*tokens)).ok_or_else(||
+                    crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                        "mandatory token count overflows"))
+            })?;
+        if policy.needs_compaction(capacity, mandatory_tokens)? {
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "mandatory content exceeds selected model capacity"));
+        }
+        Ok((through, maximum))
+    })
 }
 
 pub(crate) fn validate_compaction(
@@ -935,7 +929,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord>(
     Ok(value)
 }
 
-pub(super) async fn verify_context_file(
+pub(super) async fn verify_file(
     file: &FileRef, verifier: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -961,7 +955,7 @@ async fn validate_context_refs(
 ) -> Result<()> {
     validate_projected_context(context, limits, io)?;
     for message in &context.messages {
-        for file in message.content.file_refs() { verify_context_file(file, verifier, io).await?; }
+        for file in message.content.file_refs() { verify_file(file, verifier, io).await?; }
     }
     for (name, file) in &context.metadata {
         if !name.contains('.') || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
@@ -970,7 +964,7 @@ async fn validate_context_refs(
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "durable context metadata key is invalid"));
         }
-        verify_context_file(file, verifier, io).await?;
+        verify_file(file, verifier, io).await?;
     }
     Ok(())
 }
@@ -1694,23 +1688,20 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
-    /// Validates stage identities before installation or explicit reload.
-    pub fn validate(&self) -> Result<()> {
-        for stage in &self.0 {
-            stage.validate()?;
+    /// Validates stage identities on the optional preparation ledger.
+    pub fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            work.remaining().map_err(native_context_work_error)?;
+            if self.0.iter().any(|stage| !stage.supports_native()) {
+                return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
+                    "context stage has no native capability"));
+            }
+            for stage in &self.0 { stage.validate_native(work)?; }
+            return Ok(());
         }
-        Ok(())
-    }
-
-    /// Validates only the explicit native stage/source SPI before configuration copies or effects.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(native_context_work_error)?;
-        if self.0.iter().any(|stage| !stage.supports_native()) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context stage has no native capability"));
-        }
-        for stage in &self.0 { stage.validate_native(work)?; }
+        let _ = io;
+        for stage in &self.0 { stage.validate()?; }
         Ok(())
     }
 
@@ -1734,7 +1725,7 @@ impl ContextPipeline {
 
     /// Installs a structurally valid replacement for future operations only.
     pub fn reload(&self, replacement: Self) -> Result<Self> {
-        replacement.validate()?;
+        replacement.validate(None)?;
         Ok(replacement)
     }
 
@@ -1836,14 +1827,7 @@ impl ContextPipeline {
         crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native = io.and_then(crate::executor::PreparationIo::original_native_work);
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = native {
-            self.validate_with_native_work(work)?;
-        } else {
-            self.validate()?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        self.validate()?;
+        self.validate(io)?;
         if self.0.len() > limits.context_messages {
             return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "context stage count exceeds limit"));
@@ -1877,46 +1861,42 @@ impl ContextPipeline {
         Ok(context)
     }
 
-    /// Returns immutable stage contracts in exact execution order.
-    #[must_use]
-    pub fn contracts(&self) -> Vec<Value> {
-        self.0.iter().map(|stage| stage.contract()).collect()
+    /// Returns immutable stage contracts on the optional preparation ledger.
+    pub fn contracts(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<Value>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io && let Some(work) = io.original_native_work() {
+            if self.0.iter().any(|stage| !stage.supports_native()) {
+                return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
+                    "context stage has no native capability"));
+            }
+            let mut output = Vec::new();
+            io.absorb_native_custody(reserve_context_vec_native(&mut output, self.0.len(), work)?)?;
+            for stage in &self.0 {
+                let (value, custody) = stage.contract_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                output.push(value);
+            }
+            return Ok(output);
+        }
+        let _ = io;
+        Ok(self.0.iter().map(|stage| stage.contract()).collect())
     }
 
-    /// Copies only the real stage-handle vector; pinned stage implementations remain shared.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn clone_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut output = (Self(Vec::new()), work.retain_owned(0).map_err(native_context_work_error)?);
-        let mut vector_guard = reserve_context_vec_native(&mut output.0.0, self.0.len(), work)?;
-        output.1.absorb(&mut vector_guard).map_err(native_context_work_error)?;
-        let copied = self.0.len().checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>()).ok_or_else(||
-            crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, "context stage copy overflows"))?;
-        work.charge(acyclic_fs::WorkCounters { bytes_copied: copied as u64,
-            ..acyclic_fs::WorkCounters::default() }).map_err(native_context_work_error)?;
-        output.0.0.extend(self.0.iter().cloned());
-        Ok(output)
-    }
-
-    /// Produces each original immutable contract without invoking an ordinary custom callback.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn contracts_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<Value>, acyclic_fs::NativeAllocation)> {
-        if self.0.iter().any(|stage| !stage.supports_native()) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context stage has no native capability"));
-        }
-        let mut output = (Vec::new(), work.retain_owned(0).map_err(native_context_work_error)?);
-        let mut vector_guard = reserve_context_vec_native(&mut output.0, self.0.len(), work)?;
-        output.1.absorb(&mut vector_guard).map_err(native_context_work_error)?;
-        for stage in &self.0 {
-            let mut source = stage.contract_with_native_work(work)?;
-            output.1.absorb(&mut source.1).map_err(native_context_work_error)?;
-            output.0.push(source.0);
-        }
-        Ok(output)
+    /// Copies stage handles on the optional preparation ledger.
+    pub fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
+        let mut stages = Vec::new();
+        crate::executor::with_history_io(io, |work| {
+            compaction::reserve_vector_with_work(&mut stages, self.0.len(), work)?;
+            let copied = self.0.len().checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>()).ok_or_else(||
+                crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context stage copy overflows"))?;
+            if let Some(work) = work.as_deref_mut() {
+                work.admit_copy(copied as u64)?;
+                work.copy_bytes(copied as u64)?;
+            }
+            stages.extend(self.0.iter().cloned());
+            Ok(())
+        })?;
+        Ok(Self(stages))
     }
 
     pub(crate) fn summary_source(
@@ -3304,7 +3284,7 @@ mod tests {
             ContextRenderMode::Prompt,
             ContextRepresentation::Full,
         )?)?;
-        assert_ne!(snapshot.contracts(), current.contracts());
+        assert_ne!(snapshot.contracts(None)?, current.contracts(None)?);
         let rebuilt = current.run(&input, Limits::default(), None).await?;
         let update = attribute_pipeline(
             "new",
@@ -3346,7 +3326,7 @@ mod tests {
                 as Arc<dyn ContextStage>]))
                 .is_err()
         );
-        assert_eq!(old.contracts(), snapshot.contracts());
+        assert_eq!(old.contracts(None)?, snapshot.contracts(None)?);
         assert!(
             ContextAttribute::typed(
                 "example.role".into(),

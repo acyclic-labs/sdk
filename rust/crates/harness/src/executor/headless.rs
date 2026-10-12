@@ -33,12 +33,12 @@ impl StockExecution<'_> {
         let records = self.prefix_records(journal, input.operation_id, step).await?;
         match records.first() {
             Some(ExecutionRecord { sequence: 1, event: ExecutionEvent::Started { request_digest }, .. })
-                if self.matches_request_digest(input, request_digest)? => {}
+                if *request_digest == self.request_digest(input)? => {}
             _ => return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool settlement has another execution identity")),
         }
         let retained = retained_model_step(
-            journal, &records, step, ModelPurpose::Response, self.limits, self.io(),
+            journal, &records, step, ModelPurpose::Response, self.stock.limits, self.io(),
         ).await?;
         if !retained.admission.completed() {
             return Err(Error::Indeterminate(input.operation_id));
@@ -57,7 +57,7 @@ impl StockExecution<'_> {
                         arguments: crate::model::clone_value(&invocation.arguments, self.io())?,
                     }),
                 };
-                crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.limits, work))?;
+                crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.stock.limits, work))?;
                 stock_vec_push(&mut messages, message, self.io())?;
                 match self.resolve_tool_call(journal, input.operation_id, step, invocation, &mut messages).await? {
                     ToolCallProgress::Settled => {}
