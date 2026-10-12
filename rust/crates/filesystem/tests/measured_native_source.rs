@@ -290,7 +290,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         let (lazy, original) = recovered.value;
         assert_eq!(original.id(), initial.id());
         assert_eq!(original.workspace_id(), initial.workspace_id());
-        assert_eq!(lazy.workspace().head().await?.id(), head);
+        assert_eq!(lazy.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
         let state = store.inner.load_lazy_workspace(workspace.id()).await?
             .ok_or("retry did not publish the companion binding")?;
         assert_eq!(state.source, reference);
@@ -336,7 +336,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     lazy.workspace().write_text("/later.txt", "mutable authored head").await?;
     let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
-    let advanced = source.invalidate();
+    let advanced = source.invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))?;
     let rebound = lazy.rebind_source_measured(budget, &cancellation).await?;
     rebound.work.verify(budget)?;
     assert_eq!(rebound.value.source, advanced);
@@ -358,7 +358,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     recovered.work.verify(budget)?;
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
-    assert_eq!(recovered.value.0.workspace().head().await?.id(), head);
+    assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
     assert_eq!(recovered.value.0.snapshot().await?.source, advanced);
     assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
 
@@ -373,7 +373,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
     assert_eq!(store.load_lazy_workspace(workspace_id).await?, Some(rebound.value));
-    assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head().await?.id(), head);
+    assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())
 }

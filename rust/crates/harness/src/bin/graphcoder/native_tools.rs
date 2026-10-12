@@ -89,7 +89,7 @@ pub fn source(config: &Config, stream: StreamClient<LocalStream>, files: Arc<Fil
         forks: config.tools.forks.iter().map(|fork| {
             let command = WorkflowCommand::deserialize(&fork.admission.input)
                 .map_err(|error| Error::Invalid(format!("native child model command: {error}")))?;
-            command.validate()?;
+            command.validate(&mut None)?;
             if command.kind != acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND {
                 return Err(Error::Invalid("native child must retain the actual stock model command".into()));
             }

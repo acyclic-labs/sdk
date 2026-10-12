@@ -2,7 +2,7 @@
 
 use acyclic_harness::{Error, Result,
     context::{ModelContextCapacity, ModelTokenCount},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use serde::Serialize;
@@ -308,14 +308,14 @@ impl ModelProvider for Deterministic {
         }))
     }
 
-    fn reconcile<'a>(&'a self, attempt: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: ModelDispatch, observed: &'a [ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            self.observe_invocation("reconcile", attempt.dispatch())?;
-            let complete = events(attempt.dispatch());
-            if !complete.starts_with(&attempt.observed) {
+            self.observe_invocation("reconcile", dispatch)?;
+            let complete = events(dispatch);
+            if !complete.starts_with(observed) {
                 return Err(Error::Conflict("deterministic provider retained prefix changed".into()));
             }
-            Ok(Some(complete.into_iter().skip(attempt.observed.len()).collect()))
+            Ok(Some(complete.into_iter().skip(observed.len()).collect()))
         })
     }
 }

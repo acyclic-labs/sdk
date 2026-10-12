@@ -64,12 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let routed = view.route_mut(&tool_path)?;
     routed
         .checkout
-        .create_file(
-            routed.path,
-            bytes::Bytes::from_static(b"tool output"),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .create(acyclic_fs::AuthoredMutation::CreateFile { path: routed.path, bytes: (bytes::Bytes::from_static(b"tool output")).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
         .await?;
 
     let snapshot = view.snapshot();

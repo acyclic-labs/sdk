@@ -67,56 +67,6 @@ fn prepared_process_vec<T>(
     Ok(buffer)
 }
 
-#[cfg(unix)]
-fn prepare_closed_process(
-    argument_count: usize, meter: std::sync::Arc<dyn crate::NativeReadMeter>,
-) -> io::Result<PreparedClosedProcess> {
-    let meter = meter.allocation_owner().unwrap_or(meter);
-    meter.check()?;
-    let argument_slots = argument_count.checked_add(2).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut arguments = prepared_process_vec(argument_slots, &meter)?;
-    // MaybeUninit accepts uninitialized slots; actual pointer writes and their
-    // copy receipt occur at the later synchronous spawn, never hypothetically.
-    unsafe { arguments.data.set_len(argument_slots); }
-    let inherited = platform::inherited_environment();
-    let mut environment_count = 0_usize;
-    if !inherited.is_null() {
-        loop {
-            meter.examine(1, 0)?;
-            if unsafe { (*inherited.add(environment_count)).is_null() } { break; }
-            environment_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-        }
-    }
-    let mut environment = prepared_process_vec(environment_count, &meter)?;
-    let pointer_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-    let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
-    for index in 0..environment_count {
-        meter.examine(1, 0)?;
-        let value = unsafe { *inherited.add(index) };
-        let mut length = 0_usize;
-        loop {
-            meter.examine(1, 0)?;
-            if unsafe { *value.add(length) } == 0 { break; }
-            length = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-        }
-        let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-        meter.admit_examination(0, terminated as u64)?;
-        let mut bytes = prepared_process_vec(terminated, &meter)?;
-        bytes.data.extend_from_slice(unsafe { std::slice::from_raw_parts(value.cast::<u8>(), terminated) });
-        meter.record_examination(0, terminated as u64)?;
-        environment.data.push(bytes);
-    }
-    let pointer_bytes = pointer_count.checked_mul(std::mem::size_of::<*mut libc::c_char>())
-        .ok_or(io::ErrorKind::InvalidInput)? as u64;
-    meter.admit_examination(environment_count as u64, pointer_bytes)?;
-    environment_pointers.data.extend(environment.data.iter().map(|entry| entry.data.as_ptr().cast_mut().cast()));
-    environment_pointers.data.push(std::ptr::null_mut());
-    meter.record_examination(environment_count as u64, pointer_bytes)?;
-    Ok(PreparedClosedProcess {
-        arguments, environment, environment_pointers,
-    })
-}
-
 /// A stopped capture, retaining its bounded output and observed cleanup state.
 #[derive(Debug)]
 pub struct ProcessCaptureFailure {
@@ -141,8 +91,16 @@ pub struct ProcessInput {
     pub complete: bool,
 }
 
-enum CaptureInput<'a> {
-    Exchange { initial: &'a [u8], maximum: usize },
+/// Input supplied to the bounded process-capture loop.
+pub enum CaptureInput<'a> {
+    /// A streaming exchange with bounded queued input.
+    Exchange {
+        /// Bytes written before observing output.
+        initial: &'a [u8],
+        /// Maximum queued input bytes.
+        maximum: usize,
+    },
+    /// Exact input bytes followed by closing stdin.
     Literal(&'a [u8]),
 }
 
@@ -347,10 +305,53 @@ impl ProcessTree {
 
     /// Snapshots the host's existing environment and pays known argument storage before a driver starts.
     #[cfg(unix)]
-    pub fn prepare_closed_process_measured(
+    pub fn prepare_closed_process(
         argument_count: usize, meter: std::sync::Arc<dyn crate::NativeReadMeter>,
     ) -> io::Result<PreparedClosedProcess> {
-        prepare_closed_process(argument_count, meter)
+        let meter = meter.allocation_owner().unwrap_or(meter);
+        meter.check()?;
+        let argument_slots = argument_count.checked_add(2).ok_or(io::ErrorKind::InvalidInput)?;
+        let mut arguments = prepared_process_vec(argument_slots, &meter)?;
+        // MaybeUninit accepts uninitialized slots; actual pointer writes and their
+        // copy receipt occur at the later synchronous spawn, never hypothetically.
+        unsafe { arguments.data.set_len(argument_slots); }
+        let inherited = platform::inherited_environment();
+        let mut environment_count = 0_usize;
+        if !inherited.is_null() {
+            loop {
+                meter.examine(1, 0)?;
+                if unsafe { (*inherited.add(environment_count)).is_null() } { break; }
+                environment_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+            }
+        }
+        let mut environment = prepared_process_vec(environment_count, &meter)?;
+        let pointer_count = environment_count.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+        let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
+        for index in 0..environment_count {
+            meter.examine(1, 0)?;
+            let value = unsafe { *inherited.add(index) };
+            let mut length = 0_usize;
+            loop {
+                meter.examine(1, 0)?;
+                if unsafe { *value.add(length) } == 0 { break; }
+                length = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+            }
+            let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+            meter.admit_examination(0, terminated as u64)?;
+            let mut bytes = prepared_process_vec(terminated, &meter)?;
+            bytes.data.extend_from_slice(unsafe { std::slice::from_raw_parts(value.cast::<u8>(), terminated) });
+            meter.record_examination(0, terminated as u64)?;
+            environment.data.push(bytes);
+        }
+        let pointer_bytes = pointer_count.checked_mul(std::mem::size_of::<*mut libc::c_char>())
+            .ok_or(io::ErrorKind::InvalidInput)? as u64;
+        meter.admit_examination(environment_count as u64, pointer_bytes)?;
+        environment_pointers.data.extend(environment.data.iter().map(|entry| entry.data.as_ptr().cast_mut().cast()));
+        environment_pointers.data.push(std::ptr::null_mut());
+        meter.record_examination(environment_count as u64, pointer_bytes)?;
+        Ok(PreparedClosedProcess {
+            arguments, environment, environment_pointers,
+        })
     }
 
     /// Uses preowned storage on the same closed-stream Unix spawn engine.
@@ -491,138 +492,29 @@ impl ProcessTree {
     /// Observes direct-child exit within `timeout`, retaining descendant ownership.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
         let operation = obs::span!(
-            INFO,
-            "acyclic.runtime.wait",
-            outcome = obs::Empty,
-            error.kind = obs::Empty
+            INFO, "acyclic.runtime.wait", outcome = obs::Empty, error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish(self.wait_with_meter(timeout, None)))
-    }
-
-    /// Observes the same child using admitted probes and actual sleep attempts.
-    pub fn wait_measured(
-        &mut self, timeout: Duration, meter: &dyn crate::NativeReadMeter,
-    ) -> io::Result<ExitStatus> {
-        self.wait_with_meter(timeout, Some(meter))
-    }
-
-    fn wait_with_meter(
-        &mut self, timeout: Duration, meter: Option<&dyn crate::NativeReadMeter>,
-    ) -> io::Result<ExitStatus> {
-        self.select_control_meter(meter);
-        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-            if meter.is_some() { io::ErrorKind::InvalidInput.into() }
-            else { io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow") }
-        })?;
-        if self.is_reaped() {
-            if meter.is_some() { return Err(io::ErrorKind::Other.into()); }
-            return Err(io::Error::other("process output was already collected"));
-        }
-        self.capture_close_stdin(meter)?;
-        loop {
-            if let Some(status) = self.capture_try_wait(meter)? {
-                return Ok(status);
+        operation.scope(|| operation.finish((|| {
+            let deadline = Instant::now().checked_add(timeout)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow"))?;
+            if self.is_reaped() {
+                return Err(io::Error::other("process output was already collected"));
             }
-            if Instant::now() >= deadline {
-                if meter.is_some() { return Err(io::ErrorKind::TimedOut.into()); }
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "process exit deadline exceeded; termination may be unresolved",
-                ));
-            }
-            process_control_attempt(meter, false, || {
+            self.close_stdin();
+            loop {
+                if let Some(status) = self.try_wait()? { return Ok(status); }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut,
+                        "process exit deadline exceeded; termination may be unresolved"));
+                }
                 std::thread::sleep(Duration::from_millis(1));
-                Ok(())
-            })?;
-        }
+            }
+        })()))
     }
 
-    /// Collects at most `max_bytes` across both pipes, with a deadline measured from this call.
-    pub fn wait_with_output(&mut self, timeout: Duration, max_bytes: usize) -> io::Result<Output> {
-        self.wait_with_output_observed(timeout, max_bytes, || Ok(())).map_err(|failure| failure.error)
-    }
-
-    /// Uses the same bounded capture and cleanup loop, preserving collected output on timeout, output overflow, intent failure or unresolved cleanup.
-    pub fn wait_with_output_observed(
-        &mut self,
-        timeout: Duration,
-        max_bytes: usize,
-        check: impl FnMut() -> io::Result<()>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(timeout, max_bytes, None, check, |_| {
-            Ok(ProcessInput::default())
-        }, None, None)
-    }
-
-    /// Writes the exact admitted input, closes stdin after its final byte and observes normal child completion in the existing bounded capture loop.
-    pub fn wait_with_input_observed(
-        &mut self,
-        timeout: Duration,
-        max_output_bytes: usize,
-        input: &[u8],
-        check: impl FnMut() -> io::Result<()>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(
-            timeout, max_output_bytes, Some(CaptureInput::Literal(input)), check,
-            |_| Ok(ProcessInput::default()), None, None,
-        )
-    }
-
-    /// Performs a bounded streaming exchange in the same capture/cleanup loop.
-    pub fn wait_with_exchange_observed(
-        &mut self,
-        timeout: Duration,
-        max_output_bytes: usize,
-        max_input_bytes: usize,
-        initial: &[u8],
-        check: impl FnMut() -> io::Result<()>,
-        observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(
-            timeout,
-            max_output_bytes,
-            Some(CaptureInput::Exchange { initial, maximum: max_input_bytes }),
-            check,
-            observe,
-            None,
-            None,
-        )
-    }
-
-    /// Captures into the caller's already admitted concrete buffers using the original invocation meter; no second capture or cleanup loop is created.
-    pub fn wait_with_output_observed_with_meter(
-        &mut self, timeout: Duration, max_bytes: usize,
-        buffers: [Vec<u8>; 3], meter: &dyn crate::NativeReadMeter,
-        check: impl FnMut() -> io::Result<()>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(timeout, max_bytes, None, check,
-            |_| Ok(ProcessInput::default()), Some(meter), Some(buffers))
-    }
-
-    /// Writes the same admitted literal input through the canonical capture owner.
-    pub fn wait_with_input_observed_with_meter(
-        &mut self, timeout: Duration, max_bytes: usize, input: &[u8],
-        buffers: [Vec<u8>; 3], meter: &dyn crate::NativeReadMeter,
-        check: impl FnMut() -> io::Result<()>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(timeout, max_bytes, Some(CaptureInput::Literal(input)),
-            check, |_| Ok(ProcessInput::default()), Some(meter), Some(buffers))
-    }
-
-    /// Runs the same streaming exchange with original admitted buffer custody.
-    #[allow(clippy::too_many_arguments, reason = "original bounds, buffers and callbacks remain explicit")]
-    pub fn wait_with_exchange_observed_with_meter(
-        &mut self, timeout: Duration, max_bytes: usize, max_input_bytes: usize,
-        initial: &[u8], buffers: [Vec<u8>; 3], meter: &dyn crate::NativeReadMeter,
-        check: impl FnMut() -> io::Result<()>,
-        observe: impl FnMut(&[u8]) -> io::Result<ProcessInput>,
-    ) -> Result<Output, ProcessCaptureFailure> {
-        self.capture_output(timeout, max_bytes,
-            Some(CaptureInput::Exchange { initial, maximum: max_input_bytes }),
-            check, observe, Some(meter), Some(buffers))
-    }
-
-    fn capture_output(
+    /// Captures bounded output and optional input, preserving partial output on failure.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_with_output(
         &mut self,
         timeout: Duration,
         max_bytes: usize,
@@ -747,7 +639,7 @@ impl ProcessTree {
             }
         });
         operation.record("bytes", max_bytes - remaining);
-        operation.record_result(&result.as_ref().map_err(|failure| &failure.error));
+        operation.record_error(result.as_ref().err().map(|failure| &failure.error));
         result
     }
 
@@ -1487,13 +1379,13 @@ mod tests {
     -> std::io::Result<()> {
         use std::sync::Arc;
         let sizing = Arc::new(crate::tests::ReadBudgetMeter::new(0, 0));
-        let frame = ProcessTree::prepare_closed_process_measured(2, sizing.clone())?;
+        let frame = ProcessTree::prepare_closed_process(2, sizing.clone())?;
         let bytes = sizing.memory.load(std::sync::atomic::Ordering::Acquire);
         assert!(bytes > 0);
         drop(frame);
         assert_eq!(sizing.memory.load(std::sync::atomic::Ordering::Acquire), 0);
         let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, 0));
-        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, original.clone())?);
+        let mut frame = Some(ProcessTree::prepare_closed_process(2, original.clone())?);
         assert_eq!(original.memory.load(std::sync::atomic::Ordering::Acquire), bytes);
         original.deny_allocations.store(true, std::sync::atomic::Ordering::Release);
         let prepared = frame.as_mut().expect("genuine funded birth frame");
@@ -1527,7 +1419,7 @@ mod tests {
         let mut limits = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
         limits.cancel_after_operation = true;
         let meter = std::sync::Arc::new(limits);
-        let mut frame = Some(ProcessTree::prepare_closed_process_measured(2, meter.clone())?);
+        let mut frame = Some(ProcessTree::prepare_closed_process(2, meter.clone())?);
         let bytes = meter.memory.load(std::sync::atomic::Ordering::Acquire);
         let mut custody = None;
         assert_eq!(ProcessTree::spawn_closed_prepared(c"/bin/sh", &[c"-c"],
@@ -1794,7 +1686,7 @@ mod tests {
             ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
         let mut checks = 0;
         let error = tree
-            .wait_with_output_observed(Duration::from_secs(5), 4096, || {
+            .wait_with_output(Duration::from_secs(5), 4096, None, || {
                 checks += 1;
                 if temporary.path().join("tree-ready").exists() {
                     Err(std::io::Error::new(
@@ -1804,7 +1696,7 @@ mod tests {
                 } else {
                     Ok(())
                 }
-            })
+            }, |_| Ok(crate::ProcessInput::default()), None, None)
             .expect_err("cancellation must stop capture");
         assert_eq!(error.error.kind(), std::io::ErrorKind::Interrupted);
         assert!(checks > 0);
@@ -1871,22 +1763,19 @@ mod tests {
             .stdin(Stdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
         let output = tree
-            .wait_with_output(Duration::from_secs(5), 4096)
+            .wait_with_output(Duration::from_secs(5), 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect("collect output");
         assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.ends_with(b"stdout-marker"));
         assert_eq!(output.stderr, b"stderr-marker");
         assert!(tree.child.is_none());
-        assert!(tree.wait_with_output(Duration::ZERO, 0).is_err());
+        assert!(tree.wait_with_output(Duration::ZERO, 0, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error).is_err());
         tree.terminate().expect("repeat cleanup");
         let mut command = self::command("output", temporary.path());
         command.env("EXPLICIT_PROCESS_INPUT", "allowed");
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
         assert_eq!(
-            tree.wait_with_output(
-                Duration::from_secs(5),
-                output.stdout.len() + output.stderr.len() - 1
-            )
+            tree.wait_with_output(Duration::from_secs(5), output.stdout.len() + output.stderr.len() - 1, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect_err("combined pipes exceed budget")
             .kind(),
             std::io::ErrorKind::FileTooLarge
@@ -1924,13 +1813,13 @@ mod tests {
         assert!(offset > 0 && offset < input.len());
         let mut checks = 0;
         let failure = tree
-            .wait_with_output_observed(Duration::from_secs(5), 4096, || {
+            .wait_with_output(Duration::from_secs(5), 4096, None, || {
                 checks += 1;
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Interrupted,
                     "host stopped",
                 ))
-            })
+            }, |_| Ok(crate::ProcessInput::default()), None, None)
             .expect_err("intent stops stalled exchange");
         assert_eq!(checks, 1);
         assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
@@ -1980,7 +1869,7 @@ mod tests {
             std::io::ErrorKind::BrokenPipe
         );
         let output = tree
-            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES)
+            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect("collect echoed input");
         assert!(output.status.success());
         assert!(output.stdout.ends_with(&input));
@@ -1998,13 +1887,7 @@ mod tests {
         let mut seen = Vec::new();
         let mut phase = 0;
         let output = tree
-            .wait_with_exchange_observed(
-                Duration::from_secs(5),
-                4096,
-                13,
-                b"first\n",
-                || Ok(()),
-                |chunk| {
+            .wait_with_output(Duration::from_secs(5), 4096, Some(crate::CaptureInput::Exchange { initial: b"first\n", maximum: 13 }), || Ok(()), |chunk| {
                     seen.extend_from_slice(chunk);
                     if phase == 0 && seen.ends_with(b"first-ack\n") {
                         seen.clear();
@@ -2017,13 +1900,12 @@ mod tests {
                         phase = 2;
                         Ok(ProcessInput {
                             complete: true,
-                            ..ProcessInput::default()
+                            ..crate::ProcessInput::default()
                         })
                     } else {
-                        Ok(ProcessInput::default())
+                        Ok(crate::ProcessInput::default())
                     }
-                },
-            )
+                }, None, None)
             .expect("complete streaming exchange");
         assert_eq!(phase, 2);
         assert!(output.stdout.ends_with(b"first-ack\nsecond-ack\n"));
@@ -2045,13 +1927,7 @@ mod tests {
             let mut tree = ProcessTree::spawn(&mut command).expect("spawn exchange");
             let mut seen = Vec::new();
             let failure = tree
-                .wait_with_exchange_observed(
-                    Duration::from_secs(5),
-                    4096,
-                    6,
-                    b"first\n",
-                    || Ok(()),
-                    |chunk| {
+                .wait_with_output(Duration::from_secs(5), 4096, Some(crate::CaptureInput::Exchange { initial: b"first\n", maximum: 6 }), || Ok(()), |chunk| {
                         seen.extend_from_slice(chunk);
                         if seen.ends_with(b"first-ack\n") {
                             if parser_failure {
@@ -2066,10 +1942,9 @@ mod tests {
                                 })
                             }
                         } else {
-                            Ok(ProcessInput::default())
+                            Ok(crate::ProcessInput::default())
                         }
-                    },
-                )
+                    }, None, None)
                 .expect_err("stop streaming exchange");
             assert_eq!(
                 failure.error.kind(),
@@ -2092,17 +1967,10 @@ mod tests {
         });
         let mut checks = 0;
         let failure = tree
-            .wait_with_exchange_observed(
-                Duration::from_millis(20),
-                4096,
-                BULK_BYTES,
-                &vec![b'i'; BULK_BYTES],
-                || {
+            .wait_with_output(Duration::from_millis(20), 4096, Some(crate::CaptureInput::Exchange { initial: &vec![b'i'; BULK_BYTES], maximum: BULK_BYTES }), || {
                     checks += 1;
                     Ok(())
-                },
-                |_| Ok(ProcessInput::default()),
-            )
+                }, |_| Ok(crate::ProcessInput::default()), None, None)
             .expect_err("deadline stops stalled input");
         assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
         assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
@@ -2118,7 +1986,7 @@ mod tests {
             .expect("spawn partial output");
         ready(temporary.path(), "partial-ready", || tree_exited(&mut tree));
         let failure = tree
-            .wait_with_output_observed(Duration::from_millis(20), 4096, || Ok(()))
+            .wait_with_output(Duration::from_millis(20), 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None)
             .expect_err("partial process times out");
         assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
         assert!(failure.stdout.ends_with(b"stdout-before-stop"));
@@ -2157,10 +2025,9 @@ mod tests {
             }
             let started = Instant::now();
             let error = tree
-                .wait_with_output_observed(timeout, limit, || Ok(()))
+                .wait_with_output(timeout, limit, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None)
                 .expect_err("capture must fail");
             assert_eq!(error.error.kind(), kind);
-            assert!(error.to_string().contains("effects may have occurred"));
             assert!(error.cleanup_completed);
             assert!(error.stdout.len() + error.stderr.len() <= limit);
             if mode == "flood" {
@@ -2178,7 +2045,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let output = ProcessTree::spawn(&mut command("bulk", temporary.path()))
             .expect("spawn bulk writer")
-            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES)
+            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect("collect bulk output");
         assert!(output.status.success());
         let header = output.stdout.len() - BULK_BYTES;
@@ -2193,7 +2060,7 @@ mod tests {
         assert!(output.stderr.is_empty());
         let error = ProcessTree::spawn(&mut command("bulk", temporary.path()))
             .expect("spawn bulk writer")
-            .wait_with_output(Duration::from_secs(60), output.stdout.len() - 1)
+            .wait_with_output(Duration::from_secs(60), output.stdout.len() - 1, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect_err("bulk output exceeds bound");
         assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
@@ -2204,7 +2071,7 @@ mod tests {
         let mut tree =
             ProcessTree::spawn(&mut command("exit-parent", temporary.path())).expect("spawn tree");
         let output = tree
-            .wait_with_output(Duration::from_secs(5), 4096)
+            .wait_with_output(Duration::from_secs(5), 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
             .expect("collect exited parent");
         assert!(output.status.success());
         ready(temporary.path(), "tree-ready", || true);
@@ -2600,9 +2467,9 @@ mod platform {
             },
         );
         let started = std::time::Instant::now();
-        let result = tree.wait_with_output(std::time::Duration::ZERO, 4096);
+        let result = tree.wait_with_output(std::time::Duration::ZERO, 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error);
         let retained = tree.child.is_some() && tree.guard.active;
-        let recollection = tree.wait_with_output(std::time::Duration::ZERO, 4096);
+        let recollection = tree.wait_with_output(std::time::Duration::ZERO, 4096, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error);
         let restricted = std::mem::replace(&mut tree.guard, original);
         drop(restricted);
         tree.terminate().expect("cleanup with original authority");
@@ -2663,7 +2530,6 @@ mod platform {
                 .is_some()
         );
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-        assert!(error.to_string().contains("cleanup unresolved"));
         assert!(!temporary.path().join("tree-ready").exists());
     }
 

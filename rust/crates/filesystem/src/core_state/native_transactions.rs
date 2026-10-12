@@ -141,7 +141,7 @@ impl LocalCoreStateStore {
         };
         // This getter only clones the SAME original/resource/cancellation owner.
         // The runtime funds its actual queue/completion/closure, not a new budget.
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || source.run(), original.runtime_meter_owner())
+        let task = acyclic_native_runtime::run_blocking_io(move || source.run(), Some((original.runtime_meter_owner(), false)))
             .map_err(NativeTreeMaterializationError::from_runtime_error)?;
         task.await.map_err(NativeTreeMaterializationError::from_runtime_error)?
     }

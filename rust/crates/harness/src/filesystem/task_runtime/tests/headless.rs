@@ -2,11 +2,11 @@ use super::*;
 use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
-    FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), fixture.issuer.verifier(),
-        fixture.signed.clone(), fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(),
-        fixture.tools.clone(), SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
-        1, 65_536, fixture.clock.clone(),
+    FilesystemTaskRuntime::open(
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &fixture.issuer.verifier(),
+        &fixture.signed, &fixture.scope, &fixture.tasks, &fixture.machines,
+        &fixture.tools, SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
+        1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
     ).await
 }
 
@@ -117,10 +117,10 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     });
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     let signed = foreign_issuer.root_for_agent(agent, "owner", fixture.signed.capabilities().clone());
-    let foreign = FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), foreign_issuer.verifier(),
-        signed, fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(), fixture.tools.clone(),
-        SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(),
+    let foreign = FilesystemTaskRuntime::open(
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &foreign_issuer.verifier(),
+        &signed, &fixture.scope, &fixture.tasks, &fixture.machines, &fixture.tools,
+        SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
     ).await?;
     assert!(foreign.children(parent, None, None, 1).await.is_err());
     assert!(foreign.inspect_source(parent, parent).await.is_err());
@@ -147,9 +147,7 @@ impl ModelProvider for ModelFixture {
             Ok(crate::model::ModelEvent::Completed { metadata: json!({}) }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: crate::model::ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[tokio::test]

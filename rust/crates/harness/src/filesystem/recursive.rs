@@ -572,7 +572,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     use super::default_tools::{encode, recursive_observe, recursive_reject};
     recursive_observe(io, |work| {
         fork.validate_with_work(work)?;
-        command.validate_with_work(work)
+        command.validate(work)
     })?;
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
         || fork.operation_id != command.operation_id || command.operation_id == child.operation_id
@@ -718,7 +718,7 @@ impl ForkPreparationMachine {
             digest: preparation_implementation_digest(Some(&io))?,
         };
         let schema;
-        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA)?.into_native_parts()?;
+        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
         custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
@@ -805,7 +805,7 @@ impl ForkPreparationMachine {
         let state: State = decode(state, io)?;
         let (state, commands, status) = match state {
             State::Ready { command, request_digest } => {
-                recursive_observe(io, |work| command.validate_with_work(work))?;
+                recursive_observe(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "fork preparation initial trigger changed"));
                 }

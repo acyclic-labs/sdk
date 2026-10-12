@@ -160,25 +160,13 @@ pub(crate) struct PiTaskMachine {
     identity: MachineIdentity,
     schema: Value,
     #[cfg(not(target_arch = "wasm32"))]
-    _native_custody: Option<acyclic_fs::NativeAllocation>,
+    _native_custody: acyclic_fs::NativeAllocation,
 }
 
 impl PiTaskMachine {
-    pub(crate) fn new() -> Self {
-        Self {
-            identity: MachineIdentity {
-                name: "acyclic.pi".to_owned(),
-                version: "1".to_owned(),
-                digest: machine_digest(),
-            },
-            schema: serde_json::to_value(state_schema_descriptor()).expect("fixed Pi state schema"),
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody: None,
-        }
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn new_with_native_work(
+    pub(crate) fn new(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<Self>> {
         let source_bytes = machine_sources().iter().map(|source| source.len() as u64 + 8).sum();
@@ -206,24 +194,13 @@ impl PiTaskMachine {
             identity: identity.0,
             schema: schema.0,
             // Data fields are declared before their original custody.
-            _native_custody: Some(identity.1),
+            _native_custody: identity.1,
         }))
     }
 
-    pub(crate) fn definition(
-        self: &Arc<Self>,
-    ) -> acyclic_harness::Result<TaskDefinition<PiTaskInput, FileRef>> {
-        TaskDefinition::resumable(
-            self.clone(),
-            serde_json::to_value(task_input_schema(PiRootIntent::schema_descriptor()))
-                .map_err(|error| invalid(error.to_string()))?,
-            serde_json::to_value(TypeSchema { kind: "object" })
-                .map_err(|error| invalid(error.to_string()))?,
-        )
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn definition_with_native_work(
+    pub(crate) fn definition(
         self: &Arc<Self>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(TaskDefinition<PiTaskInput, FileRef>, acyclic_fs::NativeAllocation)> {
@@ -470,7 +447,7 @@ fn task_input_schema<R>(root: R) -> ObjectSchema<[&'static str; 2], InputPropert
 fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
     command.validate()?;
     if command.kind != EFFECT_TASK_COMMAND_KIND {
-        return Err(invalid("Pi task requires the existing effect command"));
+        return Err(transition_error("Pi task requires the existing effect command"));
     }
     Ok(())
 }
@@ -478,7 +455,7 @@ fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result
 fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
     command.validate()?;
     if command.kind != EFFECT_TASK_COMMAND_KIND && command.kind != NATIVE_LAUNCH_TASK_COMMAND_KIND {
-        return Err(invalid("Pi child requires its retained native launch command"));
+        return Err(transition_error("Pi child requires its retained native launch command"));
     }
     Ok(())
 }
@@ -493,52 +470,29 @@ fn validate_control_command(command: &WorkflowCommand) -> acyclic_harness::Resul
         "acyclic.pi.observe-source" | "acyclic.pi.inspect" | "acyclic.pi.diff" |
         "acyclic.pi.operator-approval" | "acyclic.pi.builtin")
     {
-        return Err(invalid("Pi control command has no installed scoped adapter"));
+        return Err(transition_error("Pi control command has no installed scoped adapter"));
     }
     Ok(())
 }
 
-pub(crate) fn hosting_allocation(state: &Value) -> acyclic_harness::Result<Option<FileRef>> {
-    Ok(match decode::<PiTaskState>(state)? {
-        PiTaskState::Hosting { allocation, .. } | PiTaskState::Controlling { allocation, .. } => Some(allocation),
-        _ => None,
-    })
-}
 
-pub(crate) fn control_reply(state: &Value) -> acyclic_harness::Result<Option<PiControlReply>> {
-    Ok(match decode::<PiTaskState>(state)? {
-        PiTaskState::Hosting { reply, .. } => reply,
-        _ => None,
-    })
-}
 
 /// The caller retains the checkpoint's original custody through extraction and transfers it to the moved body.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn control_reply_owned(
+pub(crate) fn control_reply(
     mut state: Value,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(Option<PiControlReply>, acyclic_fs::NativeAllocation)> {
     let (metadata, custody) = native_metadata::<PiTaskState>(
         &MetadataValue(&state, MetadataRole::State), work,
     )?;
-    Ok((extract_control_reply(&mut state, metadata, true)?, custody))
+    let PiTaskState::Hosting { reply: Some(mut reply), .. } = metadata else { return Ok((None, custody)); };
+    reply.value = state.get_mut("reply").and_then(Value::as_object_mut)
+        .and_then(|reply| reply.remove("value"))
+        .ok_or_else(|| transition_error("Pi control reply has no value"))?;
+    Ok((Some(reply), custody))
 }
 
-fn extract_control_reply(
-    state: &mut Value,
-    metadata: PiTaskState,
-    native: bool,
-) -> acyclic_harness::Result<Option<PiControlReply>> {
-    let PiTaskState::Hosting { reply: Some(mut reply), .. } = metadata else {
-        return Ok(None);
-    };
-    // Closed-state and FileRef validation completed before touching the body.
-    let body = state.get_mut("reply").and_then(Value::as_object_mut)
-        .and_then(|reply| reply.remove("value"))
-        .ok_or_else(|| transition_error("Pi control reply has no value", native))?;
-    reply.value = body;
-    Ok(Some(reply))
-}
 
 impl ResumableMachine for PiTaskMachine {
     fn identity(&self) -> &MachineIdentity {
@@ -557,8 +511,9 @@ impl ResumableMachine for PiTaskMachine {
         &self.schema
     }
 
-    fn initialize(&self, input: &Value) -> acyclic_harness::Result<Value> {
-        encode(&initial_state(decode(input)?, false)?)
+    fn initialize(&self, _input: &Value) -> acyclic_harness::Result<Value> {
+        Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+            reason: "Pi initialization requires native work" })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -568,7 +523,7 @@ impl ResumableMachine for PiTaskMachine {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
         let mut decoded = native_metadata::<PiTaskInput>(input, work)?;
-        let state = initial_state(decoded.0, true)?;
+        let state = initial_state(decoded.0)?;
         let mut encoded = super::pi_root_provider::guarded_pi_value(
             &state, NATIVE_METADATA_MAXIMUM, work,
         )?;
@@ -576,19 +531,9 @@ impl ResumableMachine for PiTaskMachine {
         Ok((encoded.0, decoded.1))
     }
 
-    fn transition(
-        &self,
-        state: &Value,
-        input: &Value,
-    ) -> acyclic_harness::Result<MachineTransition> {
-        let state = decode(state)?;
-        let input = transition_input(&state, input)?;
-        let (state, command, status) = advance(state, input, false, |value| encode(value))?;
-        Ok(MachineTransition {
-            state: encode(&state)?,
-            commands: command.into_iter().collect(),
-            status,
-        })
+    fn transition(&self, _state: &Value, _input: &Value) -> acyclic_harness::Result<MachineTransition> {
+        Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unsupported,
+            reason: "Pi transition requires native work" })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -616,7 +561,7 @@ impl ResumableMachine for PiTaskMachine {
                 TransitionInput::Control(decoded.0)
             }
             PiTaskState::Controlling { .. } => {
-                require_single_command(&input, true)?;
+                require_single_command(&input)?;
                 let mut decoded = native_metadata::<ControlResults>(
                     &MetadataValue(&input, MetadataRole::Results), work,
                 )?;
@@ -625,7 +570,7 @@ impl ResumableMachine for PiTaskMachine {
                 TransitionInput::Controls(decoded.0)
             }
             PiTaskState::Allocating { .. } | PiTaskState::Awaiting { .. } => {
-                require_single_command(&input, true)?;
+                require_single_command(&input)?;
                 let mut decoded = native_metadata::<CommandResults>(&input, work)?;
                 state_metadata.1.absorb(&mut decoded.1).map_err(native_work_error)?;
                 TransitionInput::Results(decoded.0)
@@ -633,11 +578,16 @@ impl ResumableMachine for PiTaskMachine {
             _ if input.is_null() => TransitionInput::Null,
             _ => TransitionInput::Other,
         };
-        let (next, command, status) = advance(state_metadata.0, typed_input, true, |result| {
-            let mut encoded = guarded_pi_value(result, NATIVE_METADATA_MAXIMUM, work)?;
-            state_metadata.1.absorb(&mut encoded.1).map_err(native_work_error)?;
-            Ok(encoded.0)
-        })?;
+        let (next, command) = advance(state_metadata.0, typed_input)?;
+        let status = match &next {
+            PiTaskState::Completed { result } => {
+                let mut encoded = guarded_pi_value(result, NATIVE_METADATA_MAXIMUM, work)?;
+                state_metadata.1.absorb(&mut encoded.1).map_err(native_work_error)?;
+                MachineStatus::Completed { value: encoded.0 }
+            }
+            PiTaskState::Failed { message } => MachineStatus::Failed { message: message.clone() },
+            _ => MachineStatus::Suspended,
+        };
         let mut encoded_state = if unchanged_hosting {
             #[derive(Serialize)]
             struct HostingCheckpoint<'a> {
@@ -654,7 +604,7 @@ impl ResumableMachine for PiTaskMachine {
                 Some(reply) => Some(ReplyCheckpoint {
                     operation_id: reply.operation_id,
                     value: state.get("reply").and_then(|reply| reply.get("value"))
-                        .ok_or_else(|| transition_error("Pi control reply has no value", true))?,
+                        .ok_or_else(|| transition_error("Pi control reply has no value"))?,
                 }),
                 None => None,
             };
@@ -666,7 +616,7 @@ impl ResumableMachine for PiTaskMachine {
         state_metadata.1.absorb(&mut encoded_state.1).map_err(native_work_error)?;
         if let Some(body) = moved_reply {
             *encoded_state.0.get_mut("reply").and_then(|reply| reply.get_mut("value"))
-                .ok_or_else(|| transition_error("Pi native reply header is missing", true))? = body;
+                .ok_or_else(|| transition_error("Pi native reply header is missing"))? = body;
         }
         Ok((MachineTransition {
             state: encoded_state.0,
@@ -677,19 +627,10 @@ impl ResumableMachine for PiTaskMachine {
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> acyclic_harness::Result<T> {
-    serde_json::from_value(value.clone()).map_err(|error| invalid(error.to_string()))
-}
 
-fn encode(value: &impl Serialize) -> acyclic_harness::Result<Value> {
-    serde_json::to_value(value).map_err(|error| invalid(error.to_string()))
-}
 
-fn invalid(message: impl Into<String>) -> acyclic_harness::Error {
-    acyclic_harness::Error::Invalid(message.into())
-}
 
-fn initial_state(input: PiTaskInput, native: bool) -> acyclic_harness::Result<PiTaskState> {
+fn initial_state(input: PiTaskInput) -> acyclic_harness::Result<PiTaskState> {
     input.binding.validate(None,
         input.binding.project_volumes.keys().map(String::as_str), true)?;
     if let PiScratchAllocation::Created(creation) = &input.binding.scratch.allocation {
@@ -699,23 +640,17 @@ fn initial_state(input: PiTaskInput, native: bool) -> acyclic_harness::Result<Pi
     Ok(match input.execution {
         PiTaskExecution::Host { root, preparation } => {
             if !matches!(input.binding.scratch.allocation, PiScratchAllocation::Preparing) {
-                return Err(transition_error("Pi root admission must precede scratch allocation", native));
+                return Err(transition_error("Pi root admission must precede scratch allocation"));
             }
-            root.validate(&input.binding).map_err(|error| {
-                if native {
-                    transition_error("Pi root intent differs from its admitted binding", true)
-                } else {
-                    acyclic_harness::Error::Invalid(error)
-                }
-            })?;
+            root.validate(&input.binding).map_err(|_| transition_error("Pi root intent differs from its admitted binding"))?;
             validate_effect_command(&preparation).map_err(|error| native_validation(
-                error, native, "Pi task requires the existing effect command",
+                error, "Pi task requires the existing effect command",
             ))?;
             PiTaskState::Preparing { command: preparation }
         }
         PiTaskExecution::Child { launch } => {
             validate_native_command(&launch).map_err(|error| native_validation(
-                error, native, "Pi child requires its retained native launch command",
+                error, "Pi child requires its retained native launch command",
             ))?;
             PiTaskState::Ready { command: launch }
         }
@@ -730,37 +665,24 @@ enum TransitionInput {
     Other,
 }
 
-fn transition_input(state: &PiTaskState, input: &Value) -> acyclic_harness::Result<TransitionInput> {
-    Ok(match state {
-        PiTaskState::Hosting { .. } if !input.is_null() => TransitionInput::Control(decode(input)?),
-        PiTaskState::Controlling { .. } => TransitionInput::Controls(decode(input)?),
-        PiTaskState::Allocating { .. } | PiTaskState::Awaiting { .. } =>
-            TransitionInput::Results(decode(input)?),
-        _ if input.is_null() => TransitionInput::Null,
-        _ => TransitionInput::Other,
-    })
-}
 
-/// One pure typed engine serves both ordinary and original-work transitions.
 fn advance(
     state: PiTaskState,
     input: TransitionInput,
-    native: bool,
-    mut encode_result: impl FnMut(&FileRef) -> acyclic_harness::Result<Value>,
-) -> acyclic_harness::Result<(PiTaskState, Option<WorkflowCommand>, MachineStatus)> {
-    let reject = |reason| transition_error(reason, native);
+) -> acyclic_harness::Result<(PiTaskState, Option<WorkflowCommand>)> {
+    let reject = transition_error;
     Ok(match (state, input) {
         (PiTaskState::Hosting { allocation, reply }, TransitionInput::Null) => (
-            PiTaskState::Hosting { allocation, reply }, None, MachineStatus::Suspended,
+            PiTaskState::Hosting { allocation, reply }, None,
         ),
         (PiTaskState::Hosting { allocation, reply }, TransitionInput::Control(input)) => {
             validate_control_command(&input.command)
-                .map_err(|error| native_validation(error, native, "Pi control command has no installed scoped adapter"))?;
+                .map_err(|error| native_validation(error, "Pi control command has no installed scoped adapter"))?;
             if reply.as_ref().is_some_and(|reply| reply.operation_id == input.command.operation_id) {
                 return Err(reject("Pi control result is already committed"));
             }
             (PiTaskState::Controlling { allocation, operation: input.command.operation_id },
-                Some(input.command), MachineStatus::Suspended)
+                Some(input.command))
         }
         (PiTaskState::Controlling { allocation, operation }, TransitionInput::Controls(input)) => {
             let [reply]: [PiControlReply; 1] = input.commands.try_into()
@@ -768,17 +690,17 @@ fn advance(
             if reply.operation_id != operation {
                 return Err(reject("Pi control differs from its retained command"));
             }
-            (PiTaskState::Hosting { allocation, reply: Some(reply) }, None, MachineStatus::Suspended)
+            (PiTaskState::Hosting { allocation, reply: Some(reply) }, None)
         }
         (PiTaskState::Preparing { command }, TransitionInput::Null) => {
             validate_effect_command(&command)
-                .map_err(|error| native_validation(error, native, "Pi task requires the existing effect command"))?;
-            (PiTaskState::Allocating { operation: command.operation_id }, Some(command), MachineStatus::Suspended)
+                .map_err(|error| native_validation(error, "Pi task requires the existing effect command"))?;
+            (PiTaskState::Allocating { operation: command.operation_id }, Some(command))
         }
         (PiTaskState::Ready { command }, TransitionInput::Null) => {
             validate_native_command(&command)
-                .map_err(|error| native_validation(error, native, "Pi child requires its retained native launch command"))?;
-            (PiTaskState::Awaiting { operation: command.operation_id }, Some(command), MachineStatus::Suspended)
+                .map_err(|error| native_validation(error, "Pi child requires its retained native launch command"))?;
+            (PiTaskState::Awaiting { operation: command.operation_id }, Some(command))
         }
         (state @ (PiTaskState::Allocating { .. } | PiTaskState::Awaiting { .. }), TransitionInput::Results(input)) => {
             let allocating = matches!(&state, PiTaskState::Allocating { .. });
@@ -794,16 +716,15 @@ fn advance(
             match result.value {
                 Outcome::Succeeded(result) => {
                     result.validate()
-                        .map_err(|error| native_validation(error, native, "Pi result reference is invalid"))?;
+                        .map_err(|error| native_validation(error, "Pi result reference is invalid"))?;
                     if allocating {
-                        (PiTaskState::Hosting { allocation: result, reply: None }, None, MachineStatus::Suspended)
+                        (PiTaskState::Hosting { allocation: result, reply: None }, None)
                     } else {
-                        let value = encode_result(&result)?;
-                        (PiTaskState::Completed { result }, None, MachineStatus::Completed { value })
+                        (PiTaskState::Completed { result }, None)
                     }
                 }
                 Outcome::Failed { message } => (
-                    PiTaskState::Failed { message: message.clone() }, None, MachineStatus::Failed { message },
+                    PiTaskState::Failed { message }, None,
                 ),
                 Outcome::Cancelled | Outcome::Indeterminate { .. } =>
                     return Err(reject("unsettled Pi effect cannot advance its workflow")),
@@ -815,24 +736,16 @@ fn advance(
 
 fn native_validation(
     error: acyclic_harness::Error,
-    native: bool,
     reason: &'static str,
 ) -> acyclic_harness::Error {
     match error {
-        acyclic_harness::Error::Invalid(_) if native => transition_error(reason, true),
+        acyclic_harness::Error::Invalid(_) => transition_error(reason),
         error => error,
     }
 }
 
-fn transition_error(reason: &'static str, native: bool) -> acyclic_harness::Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        return acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid, reason,
-        };
-    }
-    let _ = native;
-    invalid(reason)
+fn transition_error(reason: &'static str) -> acyclic_harness::Error {
+    acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason }
 }
 
 enum MetadataRole { State, Results, Replies, Reply }
@@ -915,17 +828,17 @@ fn native_metadata<T: NativeMetadata>(
     drop(bytes);
     drop(bytes_custody);
     decoded.map_err(|error| match error {
-        acyclic_harness::Error::Invalid(_) => transition_error("Pi native metadata is malformed", true),
+        acyclic_harness::Error::Invalid(_) => transition_error("Pi native metadata is malformed"),
         error => error,
     })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn require_single_command(input: &Value, native: bool) -> acyclic_harness::Result<()> {
+fn require_single_command(input: &Value) -> acyclic_harness::Result<()> {
     if input.get("commands").and_then(Value::as_array).is_some_and(|commands| commands.len() == 1) {
         Ok(())
     } else {
-        Err(transition_error("Pi result differs from its retained command", native))
+        Err(transition_error("Pi result differs from its retained command"))
     }
 }
 
@@ -934,7 +847,7 @@ fn take_result_body(input: &mut Value) -> acyclic_harness::Result<Value> {
     input.get_mut("commands").and_then(Value::as_array_mut)
         .and_then(|commands| commands.first_mut()).and_then(Value::as_object_mut)
         .and_then(|reply| reply.remove("value"))
-        .ok_or_else(|| transition_error("Pi control reply has no value", true))
+        .ok_or_else(|| transition_error("Pi control reply has no value"))
 }
 
 #[cfg(test)]

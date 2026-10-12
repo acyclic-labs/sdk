@@ -36,11 +36,7 @@ pub struct ResourceCreationProofRef {
 
 impl ResourceCreationProofRef {
     /// Validates reference structure without authenticating provider evidence.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -229,7 +225,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation_with_code::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = decoded.into_native_parts()?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
@@ -356,7 +352,7 @@ impl ResourcePreparationRequest {
             authorization.validate_with_work(work)?;
         }
         if let Some(command) = &self.command {
-            command.validate_with_work(work)?;
+            command.validate(work)?;
             if command.operation_id == self.child.operation_id {
                 return Err(Self::invalid(
                     "preparation effect and intended child identities must differ", work,
@@ -1135,14 +1131,4 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger fence",
-        })
-    }
 }

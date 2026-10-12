@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, watch};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    OwnedNativeByteReservation, OwnedNativeOperationReservation, ReadAllocation,
+    ReadAllocation,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -84,7 +84,7 @@ pub(crate) struct MemoryOutput<T> {
 
 struct MemoryByteReservation<'a> {
     #[cfg(not(target_arch = "wasm32"))]
-    reservation: Option<NativeByteReservation<'a>>,
+    reservation: Option<NativeByteReservation<&'a dyn NativeReadMeter>>,
     #[cfg(target_arch = "wasm32")]
     _observer: &'a MemoryObserver,
 }
@@ -388,7 +388,7 @@ impl MemoryStream {
         )
     }
 
-    pub(crate) async fn read_commit_inner(
+    async fn read_commit_inner(
         &self,
         commit_id: CommitId,
         observer: &MemoryObserver,
@@ -768,10 +768,10 @@ impl MemoryStream {
             let key = request.idempotency_key.0.clone();
             let replay_entry = observer.adopt(std::mem::size_of::<(OwnedBytes, Arc<Replay>)>())?;
             let commit_entry = observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?;
-            let write_operation = OwnedNativeOperationReservation::new(
+            let write_operation = NativeOperationReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, 1,
             )?;
-            let write_bytes = OwnedNativeByteReservation::new(
+            let write_bytes = NativeByteReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, maximum,
             )?;
             // Bound request, state, and preallocated output visits.
@@ -804,10 +804,10 @@ impl MemoryStream {
         };
         let target = append.path.clone();
         let start = append.start;
-        let read_operation = OwnedNativeOperationReservation::new(
+        let read_operation = NativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
-        let read_bytes = OwnedNativeByteReservation::new(
+        let read_bytes = NativeByteReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, prepared.maximum,
         )?;
         // Bound lookup, output slots, and comparisons against two held conditions.
@@ -1382,8 +1382,8 @@ pub(crate) struct NativeMemoryPreparedCommit {
     observations: [PreparedPathObservation; 2],
     key: OwnedBytes,
     reservation: Option<PreparedCapacityReservation>,
-    write_operation: OwnedNativeOperationReservation,
-    write_bytes: OwnedNativeByteReservation,
+    write_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    write_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
     maximum: usize,
     replay_entry: MemoryAllocation,
@@ -1399,8 +1399,8 @@ struct NativeMemoryPreparedRecovery {
     target: StreamPath,
     start: u64,
     maximum: usize,
-    read_operation: OwnedNativeOperationReservation,
-    read_bytes: OwnedNativeByteReservation,
+    read_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    read_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
 }
 
@@ -1954,10 +1954,10 @@ impl StreamProvider for MemoryStream {
     {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let mut input = crate::CommitInput::capture(&request, &meter)?;
+            let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
             let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-            match self.apply_commit(&mut input.request, deadline_unix_millis, &observer, Some(&mut before)).await {
+            match self.apply_commit(&mut input.value, deadline_unix_millis, &observer, Some(&mut before)).await {
                 Ok(Ok((outcome, error, _))) => match error {
                     Some(error) => Err(error),
                     None => native(Ok(outcome), &meter).map(|result| result.map_err(E::from)),
@@ -1977,10 +1977,10 @@ impl StreamProvider for MemoryStream {
     ) -> NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let mut input = crate::CommitInput::capture(&request, &meter)?;
+            let mut input = crate::capture_commit(&request, &meter)?;
             drop(request);
             let prepared = match self.native_prepare_commit_borrowed_inner(
-                &mut input.request, maximum_record_bytes, Arc::clone(&meter),
+                &mut input.value, maximum_record_bytes, Arc::clone(&meter),
             ).await? {
                 Ok(prepared) => prepared,
                 Err(error) => return Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
@@ -2004,10 +2004,10 @@ impl StreamProvider for MemoryStream {
                         error, ReadAllocation::empty(&finish_meter),
                     ))),
                 };
-                let [CommitMutation::Append { records, .. }] = input.request.mutations.as_mut_slice()
+                let [CommitMutation::Append { records, .. }] = input.value.mutations.as_mut_slice()
                     else { unreachable!("the private template was validated before issuance") };
                 records[0] = body;
-                match provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut input.request).await? {
+                match provider.native_finish_prepared_commit_borrowed_inner(prepared, &mut input.value).await? {
                     Ok((outcome, error)) => match error {
                         Some(error) => Err(error),
                         None => native(Ok(outcome), &finish_meter),
@@ -2032,18 +2032,6 @@ impl StreamProvider for MemoryStream {
         self.commit_future(request, Some(deadline_unix_millis), meter)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_read_commit(
-        &self,
-        commit_id: CommitId,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommittedEnvelope> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&original, async move {
-            native(self.read_commit_inner(commit_id, &observer).await, &meter)
-        })
-    }
 }
 
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
@@ -2080,41 +2068,21 @@ pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamErro
         .ok_or(StreamError::LimitExceeded)
 }
 
-fn missing_paths(state: &State, path: &StreamPath) -> usize {
-    let mut count = 0;
-    let mut current = Some(path.clone());
+fn reserve_paths(state: &State, path: &StreamPath, limits: MemoryLimits) -> Result<(), StreamError> {
+    let (mut count, mut bytes) = (0, 0_usize);
+    let mut current = Some(path.as_str());
     while let Some(path) = current {
-        count += usize::from(!state.paths.contains_key(&path));
-        current = path.parent();
+        if !state.paths.contains_key(path) {
+            count += 1;
+            bytes = bytes.saturating_add(path.len());
+        }
+        current = path.rsplit_once('/').map(|(parent, _)| parent);
     }
-    count
-}
-
-fn reserve_paths(
-    state: &State,
-    path: &StreamPath,
-    limits: MemoryLimits,
-) -> Result<(), StreamError> {
-    let missing_path_bytes = missing_path_bytes(state, path);
-    if state.paths.len().saturating_add(missing_paths(state, path)) > limits.paths
-        || state.path_bytes.saturating_add(missing_path_bytes) > limits.path_bytes
+    if state.paths.len().saturating_add(count) > limits.paths
+        || state.path_bytes.saturating_add(bytes) > limits.path_bytes
     {
         Err(StreamError::Capacity)
-    } else {
-        Ok(())
-    }
-}
-
-fn missing_path_bytes(state: &State, path: &StreamPath) -> usize {
-    let mut bytes = 0_usize;
-    let mut current = Some(path.clone());
-    while let Some(path) = current {
-        if !state.paths.contains_key(&path) {
-            bytes = bytes.saturating_add(path.as_str().len());
-        }
-        current = path.parent();
-    }
-    bytes
+    } else { Ok(()) }
 }
 
 fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
@@ -2690,7 +2658,9 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest, observer: &MemoryObs
         }
         observer.record_item()?;
     }
-    validate_commit_size(request, observer)?;
+    if crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, Some(observer))? > MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded.into());
+    }
     request.conditions.sort_unstable_by(|left, right| {
         condition_path(left)
             .cmp(condition_path(right))
@@ -2713,14 +2683,6 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest, observer: &MemoryObs
         let duplicate = matches!(pair, [left, right] if mutation_path(left) == mutation_path(right));
         observer.record_item()?;
         if duplicate { return Err(StreamError::InvalidArgument.into()); }
-    }
-    Ok(())
-}
-
-fn validate_commit_size(request: &CommitRequest, observer: &MemoryObserver) -> MemoryResult<()> {
-    let length = crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, Some(observer))?;
-    if length > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded.into());
     }
     Ok(())
 }

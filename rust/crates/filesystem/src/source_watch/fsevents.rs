@@ -59,7 +59,7 @@ impl PlatformWatch {
         let mut ordinary_owned_bytes = 0_u64;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
         let result = (|| {
-            let root = held_path_measured(directory.directory_fd(), work)?;
+            let root = held_path(directory.directory_fd(), work)?;
             let root_bytes = root.capacity() as u64;
             ordinary_owned_bytes = root_bytes;
             ownership.retain(root_bytes, work)?;
@@ -94,7 +94,7 @@ impl PlatformWatch {
             let handler = Arc::new(move |events: EventBatch<'_>| {
                 let mut callback = reader.delivery.callback_work();
                 let count = events.len();
-                if let Err(error) = reader.events_measured(events.iter(), count, &mut callback) {
+                if let Err(error) = reader.events(events.iter(), count, &mut callback) {
                     reader.delivery.failed_with_work(error, &mut callback);
                 }
             });
@@ -233,7 +233,7 @@ impl PlatformWatch {
     #[cfg(test)]
     pub(super) fn inject(&self, path: &std::path::Path, flags: u32) {
         let mut work = self.shared.delivery.callback_work();
-        if let Err(error) = self.shared.events_measured(
+        if let Err(error) = self.shared.events(
             std::iter::once((path, flags)), 1, &mut work,
         ) {
             self.shared.delivery.failed_with_work(error, &mut work);
@@ -264,7 +264,7 @@ impl Shared {
         self.delivery.exact.store(false, Ordering::Release);
         self.completed.store(true, Ordering::Release);
     }
-    fn events_measured<'a, W: SourceDemandReadWork>(
+    fn events<'a, W: SourceDemandReadWork>(
         &self, mut events: impl Iterator<Item = (&'a std::path::Path, u32)>,
         count: usize, work: &mut W,
     ) -> Result<(), DemandError> {
@@ -272,12 +272,12 @@ impl Shared {
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup = u64::try_from(count).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -292,7 +292,7 @@ impl Shared {
                 } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
-                    work.preflight(copy)?;
+                    work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
                     work.allocate(owned)?;
                     payload = retained;
@@ -307,9 +307,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
@@ -359,7 +359,7 @@ fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// The real path of a held directory, as `FSEvents` reports paths.
-fn held_path_measured<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
+fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
     use crate::native_host::NativeHostWork as _;
     // F_GETPATH's fixed native bound requires no request-owned heap buffer.
     let mut buffer = [0_u8; libc::PATH_MAX as usize];
@@ -459,7 +459,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        shared.events_measured(
+        shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         )?;
         assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -488,7 +488,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        let error = shared.events_measured(
+        let error = shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ).err().ok_or("callback copied a denied path")?;
         assert!(matches!(error, crate::DemandError::Work(_)));
@@ -521,7 +521,7 @@ mod tests {
         };
         cancellation.cancel();
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
+        assert!(matches!(shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work(), crate::WorkCounters::default());
@@ -848,7 +848,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
+        assert!(matches!(shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work().items_examined, 2);

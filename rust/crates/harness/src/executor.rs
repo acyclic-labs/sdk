@@ -8,7 +8,7 @@ use crate::{
     conversation::{Attachment, FileRef, Limits, VolumeClass},
     interaction::{Interaction, InteractionOutcome},
     model::{
-        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
         ModelProvider, ModelRequest, ModelRole,
     },
     projection::SelectedModelContext,
@@ -580,7 +580,7 @@ impl ExecutionReplay {
                     page
                 } else {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -589,7 +589,7 @@ impl ExecutionReplay {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -2361,33 +2361,22 @@ impl StockExecution<'_> {
         let model_events = if replay_completed {
             replayed_model
         } else if started {
-            let ordinary_attempt = || -> Result<ModelAttempt> {
-                let observed = replayed_model.clone();
-                Ok(ModelAttempt {
-                    operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
-                    step,
-                    request_digest,
-                    observed,
-                })
+            let dispatch = crate::model::ModelDispatch {
+                operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
+                step, request_digest,
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let continuation = if let Some(work) = self.native_work() {
                 let (continuation, custody) = self.provider.reconcile_with_native_work(
-                    crate::model::ModelDispatch {
-                        operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
-                        step,
-                        request_digest,
-                    },
-                    &replayed_model, work,
+                    dispatch, &replayed_model, work,
                 )?.await?;
-                io.expect("native stock session retains its original IO")
-                    .absorb_native_custody(custody)?;
+                io.expect("native stock session retains its original IO").absorb_native_custody(custody)?;
                 continuation
             } else {
-                self.provider.reconcile(ordinary_attempt()?).await?
+                self.provider.reconcile(dispatch, &replayed_model).await?
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let continuation = self.provider.reconcile(ordinary_attempt()?).await?;
+            let continuation = self.provider.reconcile(dispatch, &replayed_model).await?;
             let Some(mut continuation) = continuation else {
                 return Err(Error::Indeterminate(input.operation_id));
             };
@@ -3298,7 +3287,7 @@ async fn verify_model_contents_scoped<'a>(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_model_content_measured(
-                content, io.remaining()?, &io.cancellation).await)?,
+                content, io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_model_content(content).await?,
         }
     }
@@ -3445,7 +3434,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, &io.cancellation).await;
+            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3486,7 +3475,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         #[cfg(feature = "filesystem")]
         Some(io) => {
             let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, &io.cancellation).await;
+                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3790,7 +3779,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             let attachments = match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
-                    item_count, io.remaining()?, &io.cancellation).await)?,
+                    item_count, io.remaining()?, io.cancellation()).await)?,
                 _ => self.inner.load_manifest(manifest, item_count).await?,
             };
             if attachments.len() as u64 != u64::from(item_count) {
@@ -3809,7 +3798,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.read_measured(file,
-                    self.limits.render_bytes, io.remaining()?, &io.cancellation).await),
+                    self.limits.render_bytes, io.remaining()?, io.cancellation()).await),
                 _ => self.inner.read(file).await,
             }
         })
@@ -3880,7 +3869,7 @@ pub async fn load_canonical_checkpoint(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_input_file_measured(file,
-                io.remaining()?, &io.cancellation).await)?,
+                io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_input_file(file).await?,
         }
     }
@@ -3926,7 +3915,7 @@ async fn load_json_bytes(
         )?.await?,
         #[cfg(feature = "filesystem")]
         Some(io) => receive_preparation(io, journal.load_measured(
-            reference, io.remaining()?, &io.cancellation,
+            reference, io.remaining()?, io.cancellation(),
         ).await)?,
         _ => journal.load(reference).await?,
     };
@@ -4048,7 +4037,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         let _bytes_hold;
         _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes)?;
+            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
             let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
@@ -4057,7 +4046,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes)?.into_parts();
+        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
         return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {
@@ -4371,10 +4360,7 @@ mod tests {
             ]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async move {
                 if !self.interrupt_summary {
                     return Ok(None);
@@ -4383,10 +4369,10 @@ mod tests {
                     self.dispatches
                         .lock()
                         .unwrap()
-                        .contains(&attempt.dispatch())
+                        .contains(&dispatch)
                 );
                 assert_eq!(
-                    attempt.observed,
+                    observed,
                     vec![ModelEvent::Content {
                         delta: "partial-".into()
                     }]
@@ -4934,12 +4920,7 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
+
     }
 
     struct FakeModel {
@@ -5188,12 +5169,7 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
+
     }
 
     struct RecoverableModel {
@@ -5243,19 +5219,16 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             assert!(
                 self.dispatches
                     .lock()
                     .unwrap()
-                    .contains(&attempt.dispatch())
+                    .contains(&dispatch)
             );
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
-                if attempt.observed
+                if observed
                     != vec![
                         ModelEvent::Content {
                             delta: "partial-".into(),
@@ -5958,12 +5931,7 @@ mod tests {
                 metadata: Value::Null,
             })]))
         }
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     struct OnceStage(AtomicUsize);
@@ -6356,11 +6324,8 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
         }
     }
 
@@ -7714,10 +7679,7 @@ mod tests {
                     })
                 }))
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
                 Box::pin(async { Err(Error::Unsupported("completed attempts must replay".into())) })
             }
         }

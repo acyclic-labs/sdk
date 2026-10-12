@@ -44,7 +44,7 @@ const OWNER_LOCK: &str = "owner.lock";
 async fn run_local_transaction<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, LocalCoreStateStoreError> + Send + 'static,
 ) -> Result<T, LocalCoreStateStoreError> {
-    acyclic_native_runtime::run_blocking_io(operation).await?
+    acyclic_native_runtime::run_blocking_io(operation, None).expect("unmetered task construction cannot fail").await?
 }
 
 /// One journaled private namespace shared by core control-plane state.
@@ -674,8 +674,6 @@ pub enum LocalCoreStateStoreError {
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
 }
-
-
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -3666,7 +3664,6 @@ fn measured_decode_slice<T: DeserializeOwned>(bytes: &[u8], work: &crate::materi
     measured_decode_reader(std::io::Cursor::new(bytes), work, std::marker::PhantomData::<T>)
 }
 
-
 fn measured_read_record<T: DeserializeOwned>(paths: &RecordPaths, work: &crate::materializer::NativeMaterializationWork) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
     match measured_read_file(&paths.current, work) {
         Ok(Some(value)) => Ok(Some(value)),
@@ -4214,7 +4211,6 @@ fn lazy_digest<T: Serialize>(
             .map_err(LocalCoreStateStoreError::LazyWork)
     }).map(|(value, _allocation)| value)
 }
-
 
 fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {
     use crate::LazyWorkspaceError as Lazy;
@@ -4938,7 +4934,6 @@ mod tests {
     use crate::{
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
-
 
     #[test]
     fn local_transactions_work_without_a_tokio_runtime() {
@@ -5808,7 +5803,6 @@ mod tests {
         ));
         assert_eq!(work.receipt(), before);
     }
-
 
     #[tokio::test]
     async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {

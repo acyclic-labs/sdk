@@ -30,10 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.original_native_work().is_some() {
-        return Ok(None);
-    }
+    if io.uses_native_work() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -323,7 +320,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -405,7 +402,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => io.decode_preparation::<FileRef>(&entry.value)?.into_retained(),
+                Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -522,17 +519,9 @@ where
     async fn verify_observation_owner(
         &self, owner: &TaskJournalOwner<P>, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        match io {
-            Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    return owner.verify_with_native_work(true, work).await;
-                }
-                let mut borrowed = io.history_io();
-                owner.verify(true, &mut Some(&mut borrowed)).await
-            }
-            None => owner.verify(true, &mut None).await,
-        }
+        let mut history = io.map(PreparationIo::history_io);
+        owner.verify(true, &mut history.as_mut().map(
+            |history| history as &mut dyn crate::store::history::HistoryIo)).await
     }
 
     fn observation_stream<'a>(
@@ -600,19 +589,8 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let native_work = io.original_native_work();
-                #[cfg(target_arch = "wasm32")]
-                let native_work: Option<()> = None;
-                if native_work.is_none() {
-                    let _metadata;
-                    let metadata = io.encode(reference, io.remaining()?.bytes_encoded, false)?;
-                    _metadata = io.guard_bytes(&metadata)?;
-                    reference.validate()?;
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = native_work {
-                    reference.validate_with_native_work(work)?;
+                if !io.uses_native_work() {
+                    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
@@ -627,7 +605,7 @@ where
                 let read = ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
                 )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes).await.map(Into::into)
+                self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
         }
     }
@@ -835,7 +813,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => io.decode_preparation::<FileRef>(&entry.value)?.into_retained(),
+            Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -861,7 +839,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -970,9 +948,9 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), bytes, Some(revision), key, operation,
-                    identity, &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [bytes], 0, Some(revision), key, operation,
+                    &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![bytes], Some(revision), Some(key)).await.map_err(|error| match error {
@@ -1192,7 +1170,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes)?.into_retained(),
+                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };
