@@ -423,7 +423,7 @@ where
         )?;
         match read {
             Some(packet) => Ok(packet),
-            None => adapter::NativeDemandCarrier::Native(work).empty_source_chunk(),
+            None => Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0)),
         }
     }
 

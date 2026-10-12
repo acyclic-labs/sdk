@@ -38,33 +38,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         acknowledged: &mut Option<crate::NativePublicationSnapshot>,
     ) -> Result<(), (E, Option<MountSourceError>)>
     where
-        E: From<FsError> + From<MountSourceError> + Send + 'static,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
+        E: From<FsError> + From<MountSourceError> + Send + 'static,
     {
-        let early = |cause: MountSourceError| (E::from(cause), None);
         let mut carrier = NativeDemandCarrier::Native(work);
-        let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime).await.map_err(early)?;
+        let mut state = await_lock(self.lock(), &mut carrier, cancellation, lifetime)
+            .await
+            .map_err(|error| (E::from(error), None))?;
+        let force = state.has_retained_operation();
+        let operation = state.retained_operation_id();
+        let early = |error: MountSourceError| (E::from(error), None);
         let projection = state
             .checkout
             .private_candidate(work, cancellation)
-            .map_err(fs_error).map_err(early)?;
+            .map_err(fs_error)
+            .map_err(early)?;
         let notification = self
             .ledger
-            .prepare_everything_notification(work).map_err(early)?;
-        let force = state.has_retained_operation();
-        let operation = state.retained_operation_id();
-        let evidence = context.map(|context| {
-            crate::lazy_workspace::publication_evidence(
-                context, operation, permit, &mut crate::kernel::KernelAccounting::native(work, cancellation),
-            )
-        }).transpose().map_err(fs_error).map_err(early)?;
+            .prepare_everything_notification(work)
+            .map_err(early)?;
         let projected = SharedCheckoutState {
             recorded_view: projection.root().file_table,
             checkout: projection,
             publication_operation: Some(operation),
+            publication_evidence: None,
             publication: state.publication,
-            revision: Arc::clone(&state.revision),
             ledger: Arc::clone(&state.ledger),
         };
         carrier.check(cancellation, lifetime).map_err(early)?;
@@ -75,62 +74,100 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             notification: Some(notification),
         };
         drop(state);
-        let original = publication.original.as_mut().expect("original checkout");
-        let producer = original.checkout.private_control_custody();
-        let mut before = before_publication.clone();
-        let source_lifetime = lifetime.cloned();
-        let mut guarded = move |work: &crate::NativeMaterializationWork| {
-            if source_lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                return futures::future::Either::Left(std::future::ready(Err(E::from(MountSourceError::Stale))));
+        let mut before_publication = before_publication.clone();
+        let result: Result<(), E> = async {
+            carrier.check(cancellation, lifetime)?;
+            let original = publication.original.as_mut().expect("original checkout");
+            if original.publication_evidence.is_none()
+                && (force || original.checkout.has_pending_mutations())
+                && let Some(context) = context
+            {
+                let (digest, evidence) = crate::lazy_workspace::publication_evidence(
+                    context,
+                    operation,
+                    permit,
+                    &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                )
+                .map_err(fs_error)?;
+                original.publication_evidence = Some((context, permit, digest, evidence));
             }
-            let verified = before(work);
-            let lifetime = source_lifetime.clone();
-            futures::future::Either::Right(async move {
-                if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                    return Err(E::from(MountSourceError::Stale));
+            let (context, fingerprint_permit, digest, evidence) =
+                match &original.publication_evidence {
+                    Some((context, permit, digest, evidence)) => (
+                        Some(*context),
+                        Some(*permit),
+                        Some(*digest),
+                        Some(evidence.clone()),
+                    ),
+                    None => (context, None, None, None),
+                };
+            let producer = original.checkout.private_control_custody();
+            let source_lifetime = lifetime.cloned();
+            let mut guarded = move |work: &crate::NativeMaterializationWork| {
+                if source_lifetime
+                    .as_ref()
+                    .is_some_and(CancellationToken::is_cancelled)
+                {
+                    return futures::future::Either::Left(std::future::ready(Err(E::from(
+                        MountSourceError::Stale,
+                    ))));
                 }
-                verified.await?;
-                if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
-                    return Err(E::from(MountSourceError::Stale));
-                }
-                Ok(())
-            })
-        };
-        let result = super::publication::seal_checkout_with_permit_guarded_with_native_work(
-            &mut original.checkout,
-            operation,
-            permit,
-            force,
-            work,
-            cancellation,
-            &mut guarded,
-            Some(&producer),
-            evidence.as_ref().map(|(digest, _)| *digest),
-            evidence.map(|(_, bytes)| bytes),
-            context.map(|_| permit),
-        )
-        .await;
-        let result = result.and_then(|ack| {
+                let future = before_publication(work);
+                let lifetime = source_lifetime.clone();
+                futures::future::Either::Right(async move {
+                    if lifetime
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                    {
+                        return Err(E::from(MountSourceError::Stale));
+                    }
+                    future.await?;
+                    if lifetime
+                        .as_ref()
+                        .is_some_and(CancellationToken::is_cancelled)
+                    {
+                        return Err(E::from(MountSourceError::Stale));
+                    }
+                    Ok(())
+                })
+            };
+            let ack = super::publication::seal_checkout_with_permit_guarded_with_native_work(
+                &mut original.checkout,
+                operation,
+                permit,
+                force,
+                work,
+                cancellation,
+                &mut guarded,
+                Some(&producer),
+                digest,
+                evidence,
+                fingerprint_permit,
+            )
+            .await?;
             if ack.is_some()
                 || original.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay
             {
                 original.clear_retained_operation(operation);
             }
-            if let (Some((operation, generation)), Some(context)) = (ack, context) {
+            let (operation, generation) = ack.ok_or(MountSourceError::Stale)?;
+            if let Some(context) = context {
                 *acknowledged = Some(match operation {
-                    Some(operation) => crate::NativePublicationSnapshot::published(context, operation, generation),
+                    Some(operation) => {
+                        crate::NativePublicationSnapshot::published(context, operation, generation)
+                    }
                     None => crate::NativePublicationSnapshot::unchanged(context, generation),
                 });
             }
-            ack.map(|_| ()).ok_or_else(|| E::from(MountSourceError::Stale))
-        });
+            Ok(())
+        }
+        .await;
         drop(publication);
         drop(self.lock().await);
         match (result, carrier.check(cancellation, lifetime)) {
             (Ok(()), Ok(())) => Ok(()),
-            (Err(cause), Ok(())) => Err((cause, None)),
-            (Ok(()), Err(cause)) => Err((E::from(cause), None)),
-            (Err(cause), Err(accounting)) => Err((cause, Some(accounting))),
+            (Err(primary), secondary) => Err((primary, secondary.err())),
+            (Ok(_), Err(error)) => Err((E::from(error), None)),
         }
     }
 }

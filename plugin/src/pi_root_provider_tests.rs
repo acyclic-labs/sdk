@@ -822,11 +822,10 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
     let snapshot = handle
         .workspace
         .snapshot(
-            &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                &fixture.startup,
-                fixture.startup.cancellation(),
-            )
-            .unwrap(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &fixture.startup,
+                cancellation: fixture.startup.cancellation(),
+            },
         )
         .await
         .unwrap();

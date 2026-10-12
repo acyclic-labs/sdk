@@ -42,15 +42,36 @@ fn decode_filename(name: &[u8], work: &Work) -> Result<Option<WorkspaceContextId
     Ok(Some(WorkspaceContextId::from_bytes(bytes)))
 }
 
+fn include_id(
+    ids: &mut BTreeSet<WorkspaceContextId>,
+    id: WorkspaceContextId,
+    work: &Work,
+    held: &mut NativeAllocation,
+) -> Result<(), Error> {
+    work.charge(crate::WorkCounters {
+        items_examined: 1,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    if !ids.contains(&id) {
+        held.absorb(&mut work.claim(
+            std::mem::size_of::<WorkspaceContextId>() as u64,
+            0,
+            crate::WorkCounters::UNCHARGED,
+        )?)?;
+        ids.insert(id);
+    }
+    Ok(())
+}
+
 fn live_ids(
     root: &Namespace,
     log: &mut CoreLog,
     work: &Work,
     cxl: &CancellationToken,
-) -> Result<Owned<Vec<WorkspaceContextId>>, Error> {
+) -> Result<Owned<BTreeSet<WorkspaceContextId>>, Error> {
     check(work, cxl)?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut ids = Vec::new();
+    let mut ids = BTreeSet::new();
     let mut path_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let directory_path = measured_record_path(
         &root.root,
@@ -64,21 +85,20 @@ fn live_ids(
         Err(error) => return Err(error.into()),
     };
     if let Some(directory) = directory {
-        let mut reader_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let (mut reader, mut allocation) =
+        let (reader, _reader_allocation) =
             crate::native_host::read_dir_held(&directory, &mut &*work)?;
-        reader_allocation.absorb(&mut allocation)?;
+        let mut reader = reader;
         loop {
             check(work, cxl)?;
-            let mut entry_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
             #[cfg(unix)]
             let next = reader.next(&mut &*work)?;
             #[cfg(windows)]
             let next = reader.next(&mut &*work)?;
-            let Some((entry, allocation)) = next else {
+            let Some((entry, entry_allocation)) = next else {
                 break;
             };
-            let entry = transfer((entry, allocation), work, &mut entry_allocation)?;
+            // Retire the entry before its allocation on every exit.
+            let entry = entry;
             #[cfg(unix)]
             let id = decode_filename(entry.name.as_encoded_bytes(), work)?;
             #[cfg(windows)]
@@ -100,9 +120,7 @@ fn live_ids(
             drop(entry);
             drop(entry_allocation);
             if let Some(id) = id {
-                let needed = ids.len() + 1;
-                reserve(&mut ids, needed, work, &mut held)?;
-                ids.push(id);
+                include_id(&mut ids, id, work, &mut held)?;
             }
         }
     }
@@ -111,161 +129,31 @@ fn live_ids(
         for key in residents.keys() {
             check(work, cxl)?;
             if let RecordKey::Context(id) = key {
-                let needed = ids.len() + 1;
-                reserve(&mut ids, needed, work, &mut held)?;
-                ids.push(*id);
+                include_id(&mut ids, *id, work, &mut held)?;
             }
         }
     }
-    canonical_records(&mut ids, work, Ord::cmp)?;
-    let mut index = 0;
-    while index < ids.len() {
-        let id = ids[index];
-        match log.get_native_value(root, RecordKey::Context(id), work, cxl)? {
+    let mut live = BTreeSet::new();
+    for id in ids {
+        match load::<WorkspaceContext>(root, log, id, work, cxl)? {
             Some(context) => {
-                if context_link((&context.0))?.0 != id {
+                if context.0.context_id != id {
                     return Err(Error::Integrity);
                 }
-                index += 1;
+                // Both retained identifiers remain funded during the move.
+                held.absorb(&mut work.claim(
+                    std::mem::size_of::<WorkspaceContextId>() as u64,
+                    0,
+                    crate::WorkCounters::UNCHARGED,
+                )?)?;
+                live.insert(id);
             }
-            None => {
-                work.charge(crate::WorkCounters {
-                    bytes_copied: ((ids.len() - index - 1)
-                        * std::mem::size_of::<WorkspaceContextId>())
-                        as u64,
-                    ..Default::default()
-                })?;
-                ids.remove(index);
-            }
+            None => {}
         }
+        held.release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
     }
+    let ids = live;
     Ok((ids, held))
-}
-
-struct Bucket {
-    parent: WorkspaceContextId,
-    children: Vec<WorkspaceContextId>,
-    allocation: NativeAllocation,
-}
-
-fn add_child(bucket: &mut Bucket, child: WorkspaceContextId, work: &Work) -> Result<(), Error> {
-    for existing in &bucket.children {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if *existing == child {
-            return Ok(());
-        }
-    }
-    let needed = bucket.children.len() + 1;
-    reserve(&mut bucket.children, needed, work, &mut bucket.allocation)?;
-    bucket.children.push(child);
-    canonical_records(&mut bucket.children, work, Ord::cmp)
-}
-
-fn bucket_position(
-    buckets: &[Bucket],
-    parent: WorkspaceContextId,
-    work: &Work,
-) -> Result<Option<usize>, Error> {
-    for (index, bucket) in buckets.iter().enumerate() {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if bucket.parent == parent {
-            return Ok(Some(index));
-        }
-    }
-    Ok(None)
-}
-
-fn empty_bucket(
-    buckets: &mut Vec<Bucket>,
-    parent: WorkspaceContextId,
-    work: &Work,
-    held: &mut NativeAllocation,
-) -> Result<usize, Error> {
-    if let Some(index) = bucket_position(buckets, parent, work)? {
-        return Ok(index);
-    }
-    let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let needed = buckets.len() + 1;
-    reserve(buckets, needed, work, held)?;
-    buckets.push(Bucket {
-        parent,
-        children: Vec::new(),
-        allocation,
-    });
-    Ok(buckets.len() - 1)
-}
-
-fn put_buckets(change: &mut Change, mut buckets: Vec<Bucket>, work: &Work) -> Result<(), Error> {
-    // Match ordinary BTreeMap iteration order without allocating another map.
-    sort_records(&mut buckets, work, |left, right| {
-        left.parent.cmp(&right.parent)
-    })?;
-    for bucket in buckets {
-        let parent = bucket.parent;
-        let count = (!bucket.children.is_empty())
-            .then_some(ContextChildCount(bucket.children.len() as u64));
-        if count.is_none() {
-            // Retire the actual empty backing before its intrinsic guard; the
-            // afterimage removes BOTH bucket and count, just as ordinary CAS.
-            drop(bucket);
-            change.put_scalar(RecordKey::Children(parent), None, work)?;
-            change.put_scalar(RecordKey::ChildCount(parent), None, work)?;
-        } else {
-            let Bucket {
-                parent,
-                children,
-                allocation,
-            } = bucket;
-            change.put_owned(
-                RecordKey::Children(parent),
-                (RecordValue::FlatChildren(children), allocation),
-                work,
-            )?;
-            change.put_scalar(
-                RecordKey::ChildCount(parent),
-                count.map(RecordValue::ChildCount),
-                work,
-            )?;
-        }
-    }
-    Ok(())
-}
-
-fn context_link(
-    value: &RecordValue,
-) -> Result<(WorkspaceContextId, Option<WorkspaceContextId>), Error> {
-    match value {
-        RecordValue::Context(context) => Ok((context.context_id, context.parent_context_id)),
-        _ => Err(Error::Integrity),
-    }
-}
-
-fn commit_index(
-    root: &Namespace,
-    log: &mut CoreLog,
-    buckets: Owned<Vec<Bucket>>,
-    work: &Work,
-    cxl: &CancellationToken,
-) -> Result<(), Error> {
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let buckets = transfer(buckets, work, &mut held)?;
-    let mut change = Change::new(work)?;
-    put_buckets(&mut change, buckets, work)?;
-    drop(held);
-    change.put_scalar(
-        RecordKey::ChildIndex,
-        Some(RecordValue::ChildIndex(ContextChildIndex(1))),
-        work,
-    )?;
-    cxl.check()
-        .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
-    log.commit(root, change)
 }
 
 fn rebuild_index(
@@ -276,21 +164,56 @@ fn rebuild_index(
 ) -> Result<(), Error> {
     let ids = live_ids(root, log, work, cxl)?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut buckets = Vec::new();
-    for id in (&ids.0) {
-        let value = log
-            .get_native_value(root, RecordKey::Context(*id), work, cxl)?
-            .ok_or(Error::Integrity)?;
-        let (identity, parent) = context_link((&value.0))?;
-        if identity != *id {
+    let mut children = WorkspaceContextChildren::new();
+    for id in &ids.0 {
+        let context =
+            load::<WorkspaceContext>(root, log, *id, work, cxl)?.ok_or(Error::Integrity)?;
+        if context.0.context_id != *id {
             return Err(Error::Integrity);
         }
-        if let Some(parent) = parent {
-            let index = empty_bucket(&mut buckets, parent, work, &mut held)?;
-            add_child(&mut buckets[index], identity, work)?;
+        if let Some(parent) = context.0.parent_context_id {
+            work.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            if !children.contains_key(&parent) {
+                held.absorb(&mut work.claim(
+                    std::mem::size_of::<(WorkspaceContextId, BTreeSet<WorkspaceContextId>)>()
+                        as u64,
+                    0,
+                    crate::WorkCounters::UNCHARGED,
+                )?)?;
+            }
+            held.absorb(&mut work.claim(
+                std::mem::size_of::<WorkspaceContextId>() as u64,
+                0,
+                crate::WorkCounters::UNCHARGED,
+            )?)?;
+            children.entry(parent).or_default().insert(*id);
         }
     }
-    commit_index(root, log, (buckets, held), work, cxl)
+    let mut change = Change::new(work)?;
+    for (parent, descendants) in children {
+        let bytes = descendants
+            .len()
+            .checked_mul(std::mem::size_of::<WorkspaceContextId>())
+            .ok_or_else(overflow)? as u64;
+        change.put_children(Resident {
+            key: RecordKey::Children(parent),
+            value: Some(RecordValue::Children(ContextChildren(descendants))),
+            allocation: Some(held.split_off(bytes)?),
+        })?;
+    }
+    drop(held);
+    change.put(
+        (
+            RecordKey::ChildIndex,
+            Some(RecordValue::ChildIndex(ContextChildIndex(1))),
+        )
+            .into(),
+    )?;
+    cxl.check().map_err(|_| NativeError::Cancelled)?;
+    log.commit(root, change)
 }
 
 pub(in crate::core_state) fn compare_native_context(
@@ -303,9 +226,9 @@ pub(in crate::core_state) fn compare_native_context(
     cxl: &CancellationToken,
 ) -> Result<bool, Error> {
     check(work, cxl)?;
-    let current = load_native_context(root, log, id, work, cxl)?;
-    if current.as_ref().map_or(0, |record| (&record.0).revision) != expected
-        || (&replacement.0).context_id != id
+    let current = load::<WorkspaceContext>(root, log, id, work, cxl)?;
+    if current.as_ref().map_or(0, |record| record.0.revision) != expected
+        || replacement.0.context_id != id
     {
         return Ok(false);
     }
@@ -314,65 +237,53 @@ pub(in crate::core_state) fn compare_native_context(
     }
     let old_parent = current
         .as_ref()
-        .and_then(|record| (&record.0).parent_context_id);
-    let new_parent = (&replacement.0).parent_context_id;
-    let old_id = current.as_ref().map_or(id, |record| (&record.0).context_id);
-    let mut bucket_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let mut buckets = Vec::new();
+        .and_then(|record| record.0.parent_context_id);
+    let new_parent = replacement.0.parent_context_id;
+    let old_id = current.as_ref().map_or(id, |record| record.0.context_id);
+    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+    let mut children = WorkspaceContextChildren::new();
     for parent in old_parent.into_iter().chain(new_parent) {
-        if bucket_position(&buckets, parent, work)?.is_some() {
+        check(work, cxl)?;
+        work.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        if children.contains_key(&parent) {
             continue;
         }
-        let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let mut children = Vec::new();
-        if let Some(owned) = log.get_native_value(root, RecordKey::Children(parent), work, cxl)? {
-            let value = transfer(owned, work, &mut held)?;
-            match value {
-                RecordValue::FlatChildren(value) => children = value,
-                _ => return Err(Error::Integrity),
+        let descendants = match load::<ContextChildren>(root, log, parent, work, cxl)? {
+            Some(mut owned) => {
+                held.absorb(&mut owned.1)?;
+                owned.0.0
             }
-        }
-        let needed = buckets.len() + 1;
-        reserve(&mut buckets, needed, work, &mut bucket_allocation)?;
-        buckets.push(Bucket {
-            parent,
-            children,
-            allocation: held,
-        });
+            None => BTreeSet::new(),
+        };
+        held.absorb(&mut work.claim(
+            std::mem::size_of::<(WorkspaceContextId, BTreeSet<WorkspaceContextId>)>() as u64,
+            0,
+            crate::WorkCounters::UNCHARGED,
+        )?)?;
+        children.insert(parent, descendants);
     }
     if old_parent != new_parent {
-        if let Some(parent) = old_parent {
-            if let Some(index) = bucket_position(&buckets, parent, work)? {
-                let bucket = &mut buckets[index];
-                let mut found = None;
-                for (position, child) in bucket.children.iter().enumerate() {
-                    work.charge(crate::WorkCounters {
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
-                    if *child == old_id {
-                        found = Some(position);
-                        break;
-                    }
-                }
-                if let Some(position) = found {
-                    work.charge(crate::WorkCounters {
-                        bytes_copied: ((bucket.children.len() - position - 1)
-                            * std::mem::size_of::<WorkspaceContextId>())
-                            as u64,
-                        ..Default::default()
-                    })?;
-                    bucket.children.remove(position);
-                }
-            }
+        if new_parent.is_some_and(|parent| !children[&parent].contains(&id)) {
+            held.absorb(&mut work.claim(
+                std::mem::size_of::<WorkspaceContextId>() as u64,
+                0,
+                crate::WorkCounters::UNCHARGED,
+            )?)?;
         }
-        if let Some(parent) = new_parent {
-            let index = empty_bucket(&mut buckets, parent, work, &mut bucket_allocation)?;
-            add_child(&mut buckets[index], id, work)?;
+        let removed = old_parent.is_some_and(|parent| children[&parent].contains(&old_id));
+        update_context_children(
+            &mut children,
+            current.as_ref().map(|record| &record.0),
+            Some(&replacement.0),
+        );
+        if removed {
+            held.release(std::mem::size_of::<WorkspaceContextId>() as u64)?;
         }
     }
     drop(current);
-    let mut change = Change::new(work)?;
     for root in replacement.0.roots.values() {
         check(work, cxl)?;
         root.source_path.to_str().ok_or(Error::Integrity)?;
@@ -380,16 +291,32 @@ pub(in crate::core_state) fn compare_native_context(
             mount.to_str().ok_or(Error::Integrity)?;
         }
     }
+    let mut change = Change::new(work)?;
     let (record, allocation) = replacement;
-    change.put_owned(
-        RecordKey::Context(id),
-        (RecordValue::Context(record), allocation),
-        work,
-    )?;
-    put_buckets(&mut change, buckets, work)?;
-    drop(bucket_allocation);
-    cxl.check()
-        .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+    change.put(Resident {
+        key: RecordKey::Context(id),
+        value: Some(RecordValue::Context(record)),
+        allocation: Some(allocation),
+    })?;
+    for parent in old_parent.into_iter().chain(new_parent) {
+        let descendants = children.remove(&parent);
+        let bytes = descendants
+            .as_ref()
+            .map_or(0, BTreeSet::len)
+            .checked_mul(std::mem::size_of::<WorkspaceContextId>())
+            .ok_or_else(overflow)? as u64;
+        change.put_children(Resident {
+            key: RecordKey::Children(parent),
+            value: descendants.map(|set| RecordValue::Children(ContextChildren(set))),
+            allocation: Some(held.split_off(bytes)?),
+        })?;
+        if old_parent == new_parent {
+            break;
+        }
+    }
+    drop(children);
+    drop(held);
+    cxl.check().map_err(|_| NativeError::Cancelled)?;
     log.commit(root, change)?;
     Ok(true)
 }
