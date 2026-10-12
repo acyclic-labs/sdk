@@ -2505,7 +2505,7 @@ impl NativeJoinPlan {
             .apply(ApplyOptions {
                 if_target,
                 idempotency_key,
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map(native_join_result)
             .map_err(napi_error)
@@ -5614,7 +5614,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         let receipt = Box::pin(checkout.list_directory_records(
             &path,
-            after.as_ref(),
+            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
             maximum_entries,
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,

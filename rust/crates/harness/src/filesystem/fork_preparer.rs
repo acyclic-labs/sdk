@@ -234,7 +234,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
         let mut work = None;
-        this.stream_provider.validate_with_work(&mut work)?;
+        this.stream_provider.validate(&mut work)?;
         if this.stream_provider.family() != "stream" || this.parent.authority().kind != crate::core::AggregateKind::Conversation {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork requires Stream history and a parent conversation"));
         }
@@ -342,7 +342,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 
     /// Registers an exact provider-owned resource capture.
     pub fn with_capture_provider(mut self, provider: Arc<dyn ForkCaptureProvider>) -> Result<Self> {
-        provider.provider().validate()?;
+        provider.provider().validate(&mut None)?;
         if self
             .capture_providers
             .iter()
@@ -393,7 +393,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         if selected.len() > request.preparation.maximum_inherited_references as usize {
                             return Err(bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "summary reader grants exceed capture allowance"));
                         }
-                        grants.push(ReferenceGrant { file: bounded_io::clone_file(file, io)?,
+                        grants.push(ReferenceGrant { file: crate::executor::with_history_io(io, |work| file.copy(work))?,
                             reader, attachment_manifest: None });
                     }
                 }
@@ -462,7 +462,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let provider = crate::core::copy_provider(resource.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(resource.key(), &mut quota)?;
                 let version = resource.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let copied = ResourceRef::new_with_work(resource.kind(), provider, key, version, quota.work())?;
+                let copied = ResourceRef::new(resource.kind(), provider, key, version, quota.work())?;
                 quota.transfer();
                 Ok::<_, Error>(copied)
             })?;
@@ -567,8 +567,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     }
                 }
                 ResourceRevision::PrivateVolume { volume, .. } => {
-                    let agent = self.scope.agent().ok_or_else(|| reject(crate::wire::ErrorCode::Unauthorized,
-                        "scratch fork requires a parent agent"))?;
+                    let agent = self.scope.agent().expect("fork scope is bound to its parent agent");
                     if volume.owner() != &crate::conversation::VolumeOwner::Agent(agent)
                         || !read_granted(volume)?
                     {
@@ -780,10 +779,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         use crate::store::history::HistoryIo as _;
         self.io.as_ref().map_or_else(|| Ok(value.clone()),
             |io| io.history_io().clone_authority(value))
-    }
-
-    fn clone_generation(&self, value: &crate::resources::GenerationRef) -> Result<crate::resources::GenerationRef> {
-        self.io.as_ref().map_or_else(|| Ok(value.clone()), |io| value.clone_with_io(io))
     }
 
     fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
@@ -1048,7 +1043,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )
                 .await?;
         }
-        let private = crate::executor::with_history_io(self.io.as_ref(), |work| (&request.preparation.child_private_volume).copy(work))?;
+        let private = crate::executor::with_history_io(self.io.as_ref(), |work| request.preparation.child_private_volume.copy(work))?;
         let (source_private, private_generation, paths) = request
             .selections
             .iter()
@@ -1103,7 +1098,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             attachment_manifests,
         ) = if request.preparation.inherited_through_sequence == 0 {
             (
-                self.clone_generation(&private_observation.generation)?,
+                self.io.as_ref().map_or_else(|| Ok(private_observation.generation.clone()), |io| private_observation.generation.clone_with_io(io))?,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -1162,20 +1157,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 .first()
                 .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork omitted its logical prefix"))?;
             let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
-            let mut planned_grants = BTreeSet::new();
+            let mut granted = BTreeSet::new();
             for grant in &reference_grants {
-                reference_selection(&mut planned_grants, &grant.file, grant.reader, self.io.as_ref())?;
+                reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }
             for reader in
                 std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
             {
                 for file in summary_references.values() {
                     if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
-                        reference_selection(&mut planned_grants, file, reader, self.io.as_ref())?;
+                        reference_selection(&mut granted, file, reader, self.io.as_ref())?;
                     }
                 }
             }
-            if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
+            if granted.len() > request.preparation.maximum_inherited_references as usize {
                 return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork reader grants exceed capture allowance"));
             }
             let (capture, generation) = controller
@@ -1196,7 +1191,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.native_creation_guard.as_ref(),
                 )
                 .await?;
-            let mut granted = BTreeSet::new();
+            granted.clear();
             for grant in &reference_grants {
                 reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }
@@ -1213,7 +1208,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         && reference_selection(&mut granted, file, reader, self.io.as_ref())?
                     {
                         reference_grants.push(ReferenceGrant {
-                            file: bounded_io::clone_file(file, self.io.as_ref())?,
+                            file: crate::executor::with_history_io(self.io.as_ref(), |work| file.copy(work))?,
                             reader,
                             attachment_manifest: None,
                         });
@@ -1224,7 +1219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary context count overflows"))?;
             bounded_io::reserve(&mut inherited_context, capacity, self.io.as_ref())?;
             for file in capture.inherited_files() {
-                inherited_context.push(bounded_io::clone_file(file, self.io.as_ref())?);
+                inherited_context.push(crate::executor::with_history_io(self.io.as_ref(), |work| file.copy(work))?);
             }
             child_private_generation = generation;
             Some(capture)
@@ -1243,11 +1238,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 ResourceRevision::History(_) => crate::executor::with_history_io(self.io.as_ref(), |work| selection.revision.copy(work).map(|(value, _)| value))?,
                 ResourceRevision::Project { .. } => ResourceRevision::Project {
                     volume: crate::executor::with_history_io(self.io.as_ref(), |work| request.preparation.child_project_volume.copy(work))?,
-                    generation: self.clone_generation(&child_project.generation)?,
+                    generation: self.io.as_ref().map_or_else(|| Ok(child_project.generation.clone()), |io| child_project.generation.clone_with_io(io))?,
                 },
                 ResourceRevision::PrivateVolume { paths, .. } => ResourceRevision::PrivateVolume {
                     volume: crate::executor::with_history_io(self.io.as_ref(), |work| private.copy(work))?,
-                    generation: self.clone_generation(&private_observation.generation)?,
+                    generation: self.io.as_ref().map_or_else(|| Ok(private_observation.generation.clone()), |io| private_observation.generation.clone_with_io(io))?,
                     paths: self.clone_paths(paths)?,
                 },
                 ResourceRevision::SharedVolume(volume) if volume.provider() == &self.preparer.host.provider => {
@@ -1395,12 +1390,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let source_project = seed
             .resources
             .iter()
-            .find_map(|resource| {
-                if let ResourceRevision::Project { volume, .. } = &resource.source {
-                    Some(volume)
-                } else {
-                    None
-                }
+            .find_map(|resource| match &resource.source {
+                ResourceRevision::Project { volume, .. } => Some(volume),
+                _ => None,
             })
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
@@ -1446,20 +1438,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         let digest = seed_digest(seed, MAX_REPORT_BYTES, None)?;
-        let child_project = seed
-            .resources
-            .iter()
-            .find_map(|resource| {
-                if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                    Some(volume)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
         if source_project.provider() != &self.provider
-            || child_project.provider() != &self.provider
-            || seed.child_private_volume.provider() != &self.provider
+            || seed_creation_volumes(seed)?.any(|(volume, _)| volume.provider() != &self.provider)
         {
             return Err(Error::Invalid(
                 "fork allocation belongs to another Filesystem provider".into(),
@@ -1687,14 +1667,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "native allocation claim requires its original issued creation guard"))?.verify_creation_with_native_work(work)?.await?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            claim.volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            claim.volume.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        claim.volume.validate()?;
+        crate::executor::with_history_io(io.filter(|io| io.uses_native_work()),
+            |work| claim.volume.validate(work))?;
         if claim.volume.provider() != &self.provider {
             return Err(bounded_io::failure(
                 io, crate::wire::ErrorCode::Invalid, "fork allocation belongs to another Filesystem provider",
@@ -1984,7 +1958,7 @@ mod task_origin_tests {
 
     #[tokio::test]
     async fn allocation_retains_creation_fence_and_rejects_foreign_task_origins() -> Result<()> {
-        let provider = ProviderRef::new("task-origin-test", "filesystem", "2")?;
+        let provider = ProviderRef::new("task-origin-test".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?;
         let parent = Authority {
             kind: AggregateKind::Task,

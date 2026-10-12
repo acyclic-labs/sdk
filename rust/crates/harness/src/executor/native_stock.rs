@@ -410,7 +410,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json::<T>(journal, reference, Some(&io)).await?.into_retained();
+        let value: T = retain_preparation(load_json::<T>(journal, reference, Some(&io)).await?);
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;
@@ -845,7 +845,7 @@ impl StockExecution<'_> {
         let work = native.io.original_native_work().ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
-            let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
+            let Some(((approval_operation, request), custody)) = context.stock_policy_approval(
                 policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;

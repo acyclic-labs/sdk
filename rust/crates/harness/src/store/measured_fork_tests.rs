@@ -132,7 +132,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     use crate::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
     let fixture = crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
     let created = fixture.create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"]).await?;
-    let stream_provider = crate::resources::ProviderRef::new("created-controls", "stream", "2")?;
+    let stream_provider = crate::resources::ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
     let verifier = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
@@ -151,7 +151,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
@@ -178,7 +178,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     fork.selections[2].revision = ResourceRevision::PrivateVolume {
         volume: created.private.clone(), generation: created.seed.child_private_generation.clone(), paths: Vec::new(),
     };
-    let history = crate::history::HistoryReader::new(&fixture.stream, &fork.parent, parent_issuer.verifier(&mut None).expect("verifier copy"))?
+    let history = crate::history::HistoryReader::new(&fixture.stream, &fork.parent, &(parent_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?
         .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
     let resolver = Arc::new(FilesystemContentVerifier::new(
         fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
@@ -640,7 +640,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         };
         let publication = checkpoints::publication_with_work(&client, aggregate.reducer(), &event, &mut None).await?;
         let mut request = publication.request(
-            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?).await?;
+            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?, &mut None).await?.0;
         let canonical_path = authority().stream_path(&mut None)?;
         let suffix = canonical_path.strip_prefix("harness/v2/").expect("original canonical authority prefix");
         let head = format!("harness/v3/projection-checkpoints/{suffix}");

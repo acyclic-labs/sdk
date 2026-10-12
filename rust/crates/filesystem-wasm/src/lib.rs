@@ -1080,7 +1080,7 @@ mod bindings {
                 if_target,
                 idempotency_key,
             };
-            let result = browser_join_result(self.engine.apply(options).await.map_err(js_error)?);
+            let result = browser_join_result(self.engine.apply(options, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(js_error)?);
             ts(result)
         }
     }
@@ -4591,7 +4591,7 @@ mod bindings {
                 .engine
                 .list_directory_records(
                     &path,
-                    after.as_ref(),
+                    after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     acyclic_fs::performance::BOUNDARY_BUDGET,
                     &cancellation,

@@ -28,7 +28,7 @@ const { deriveInferenceHttpRoutes, validateInferenceHttpPath, RunTerminal } = aw
 const routes = deriveInferenceHttpRoutes();
 assert.equal(routes.length, 14);
 assert.equal(new Set(routes.map(route => `${route.method.parent.typeName}.${route.method.name}`)).size, routes.length);
-assert.equal(routes.find(route => route.method.name === "Watch")?.methodKind, "server_streaming");
+assert.equal(routes.find(route => route.method.name === "Watch")?.method.methodKind, "server_streaming");
 validateInferenceHttpPath("Models/model.v2_~");
 assert.throws(() => validateInferenceHttpPath("runs/../escape"));
 const { RUN_TERMINAL_METADATA: terminals } = await import(pathToFileURL(join(root, "generated/terminal-metadata.js")).href);

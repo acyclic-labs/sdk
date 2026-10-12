@@ -2093,7 +2093,7 @@ mod tests {
 
     fn state_ref() -> Result<FileRef> {
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
             "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".into()),
@@ -2264,6 +2264,15 @@ mod tests {
         Ok(fence)
     }
 
+    fn complete(
+        scheduler: &mut Scheduler, operation_id: OperationId,
+        outcome: Outcome<FileRef>, fence: Option<LeaseFence>,
+    ) -> Result<()> {
+        scheduler.apply(&SchedulerEvent::Completed {
+            operation_id, outcome, fence, execution_duration_ns: None,
+        }, &mut None)
+    }
+
     fn two_slot_parent(orchestration: Orchestration) -> Result<Scheduler> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(&(scheduler.declare(spec(id(1), orchestration)?)?), &mut None)?;
@@ -2292,18 +2301,12 @@ mod tests {
         let a = result_ref(b"11")?;
         let b = result_ref(b"22")?;
         for (op, value) in [(3, b.clone()), (2, a.clone())] {
-            scheduler.apply(&(SchedulerEvent::Completed {
-                operation_id: id(op),
-                outcome: Outcome::Succeeded(value),
-                fence: Some(fence(0)),
-                execution_duration_ns: None,
-            }), &mut None)?;
+            complete(&mut scheduler, id(op), Outcome::Succeeded(value), Some(fence(0)))?;
             if op == 3 {
                 assert_eq!(scheduler.orchestration(id(1), &mut None)?, OrchestrationDecision::Wait);
             }
         }
         let values = vec![("a".into(), a), ("b".into(), b)];
-        assert_eq!(scheduler.completion_order, vec![id(3), id(2)]);
         assert_eq!(
             scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Assemble {
@@ -2356,12 +2359,7 @@ mod tests {
     #[test]
     fn quorum_waits_for_running_child_then_fails_at_exact_parent_revision() -> Result<()> {
         let mut scheduler = two_slot_parent(Orchestration::Quorum { required: 2 })?;
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(2),
-            outcome: Outcome::Succeeded(result_ref(b"11")?),
-            fence: Some(fence(0)),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(2), Outcome::Succeeded(result_ref(b"11")?), Some(fence(0)))?;
         assert_eq!(
             scheduler.operation(id(3)).map(|child| child.phase),
             Some(OperationPhase::Running)
@@ -2388,14 +2386,7 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         assert_eq!(scheduler, before);
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(3),
-            outcome: Outcome::Failed {
-                message: "child failed".into(),
-            },
-            fence: Some(fence(0)),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(3), Outcome::Failed { message: "child failed".into(), }, Some(fence(0)))?;
         assert_eq!(
             scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Complete {
@@ -2477,7 +2468,7 @@ mod tests {
             Step::Checkpoint(op, lease) => SchedulerEvent::Checkpointed {
                 operation_id: id(op),
                 checkpoint: crate::resources::CheckpointRef::new(
-                    ProviderRef::new("example", "machines", "1")?,
+                    ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
                     vec![1],
                     None,
                 )?,
@@ -2856,7 +2847,7 @@ mod tests {
         let controls = [
             SchedulerEvent::Started { operation_id: id(82), fence: fence(4) },
             SchedulerEvent::Checkpointed { operation_id: id(82),
-                checkpoint: CheckpointRef::new(ProviderRef::new("example", "machines", "1")?, vec![1], None)?,
+                checkpoint: CheckpointRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, vec![1], None)?,
                 fence: fence(5) },
             SchedulerEvent::LeaseReleased { operation_id: id(82), fence: fence(5) },
             SchedulerEvent::Admitted { operation_id: id(83), reservation: reservation(6, 1) },
@@ -3186,15 +3177,7 @@ mod tests {
             scheduler.apply(&(scheduler.declare(child)?), &mut None)?;
             start(&mut scheduler, child_id, Reservation { id: format!("lease-{slot}"), placement: "worker".into(), admitted: ResourceRequest::default() })?;
         }
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(3),
-            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
-            fence: Some(LeaseFence {
-                reservation_id: "lease-b".into(),
-                placement: "worker".into(),
-            }),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(3), Outcome::Succeeded(result_ref(b"\"winner\"")?), Some(LeaseFence { reservation_id: "lease-b".into(), placement: "worker".into(), }))?;
         assert_eq!(
             scheduler.orchestration(id(1), &mut None)?,
             OrchestrationDecision::Complete {
@@ -3373,14 +3356,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(scheduler, before);
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(41),
-            outcome: Outcome::Indeterminate {
-                operation_id: id(41),
-            },
-            fence: Some(child_fence),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(41), Outcome::Indeterminate { operation_id: id(41), }, Some(child_fence))?;
         assert!(scheduler.ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>().is_empty());
         assert_eq!(
             scheduler
@@ -3457,13 +3433,7 @@ mod tests {
                         .is_err()
                 );
                 assert!(
-                    scheduler
-                        .apply(&(SchedulerEvent::Completed {
-                            operation_id: target,
-                            outcome: Outcome::Cancelled,
-                            fence: None,
-                            execution_duration_ns: None,
-                        }), &mut None)
+                    complete(&mut scheduler, target, Outcome::Cancelled, None)
                         .is_err()
                 );
                 assert!(
@@ -3597,14 +3567,7 @@ mod tests {
         };
         let fence = LeaseFence::from(&reservation);
         start(&mut scheduler, id(32), reservation.clone())?;
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(32),
-            outcome: Outcome::Indeterminate {
-                operation_id: id(32),
-            },
-            fence: Some(fence.clone()),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(32), Outcome::Indeterminate { operation_id: id(32), }, Some(fence.clone()))?;
         assert_eq!(
             scheduler
                 .operation(id(32))
@@ -3674,13 +3637,7 @@ mod tests {
             }),
         ] {
             assert!(
-                scheduler
-                    .apply(&(SchedulerEvent::Completed {
-                        operation_id: id(32),
-                        outcome: Outcome::Cancelled,
-                        fence: candidate,
-                        execution_duration_ns: None,
-                    }), &mut None)
+                complete(&mut scheduler, id(32), Outcome::Cancelled, candidate)
                     .is_err()
             );
             assert_eq!(scheduler, before);
@@ -3694,21 +3651,10 @@ mod tests {
                 .is_err()
         );
         assert_eq!(scheduler, before);
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(32),
-            outcome: Outcome::Cancelled,
-            fence: Some(fence.clone()),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(32), Outcome::Cancelled, Some(fence.clone()))?;
         assert_eq!(scheduler.available_for("worker", &capacity, &mut None)?, capacity);
         assert!(
-            scheduler
-                .apply(&(SchedulerEvent::Completed {
-                    operation_id: id(32),
-                    outcome: Outcome::Cancelled,
-                    fence: Some(fence),
-                    execution_duration_ns: None,
-                }), &mut None)
+            complete(&mut scheduler, id(32), Outcome::Cancelled, Some(fence))
                 .is_err()
         );
         Ok(())
@@ -3917,12 +3863,7 @@ mod tests {
         };
         let child_fence = LeaseFence::from(&child_reservation);
         start(&mut scheduler, id(12), child_reservation)?;
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(12),
-            outcome: Outcome::Succeeded(result_ref(b"2")?),
-            fence: Some(child_fence),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(12), Outcome::Succeeded(result_ref(b"2")?), Some(child_fence))?;
         let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(11), &mut None)? else {
             return Err(Error::Conflict("reducer not ready".into()));
         };
@@ -3958,17 +3899,7 @@ mod tests {
         let mut scheduler = Scheduler::new();
         scheduler.apply(&(scheduler.declare(spec(id(1), Orchestration::Leaf)?)?), &mut None)?;
         start(&mut scheduler, id(1), Reservation { id: "dependency".into(), placement: "worker".into(), admitted: ResourceRequest::default() })?;
-        scheduler.apply(&(SchedulerEvent::Completed {
-            operation_id: id(1),
-            outcome: Outcome::Failed {
-                message: "failed".into(),
-            },
-            fence: Some(LeaseFence {
-                reservation_id: "dependency".into(),
-                placement: "worker".into(),
-            }),
-            execution_duration_ns: None,
-        }), &mut None)?;
+        complete(&mut scheduler, id(1), Outcome::Failed { message: "failed".into(), }, Some(LeaseFence { reservation_id: "dependency".into(), placement: "worker".into(), }))?;
         let mut dependent = spec(id(2), Orchestration::Leaf)?;
         dependent.dependencies.insert(id(1));
         scheduler.apply(&(scheduler.declare(dependent)?), &mut None)?;

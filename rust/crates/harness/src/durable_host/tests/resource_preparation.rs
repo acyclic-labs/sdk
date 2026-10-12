@@ -49,19 +49,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let (identity, machine, tasks, machines) = test_registries::<Value>(
         implementation, schema.clone(), schema.clone(),
     )?;
-    let mut host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
-        stream.clone(),
-        payloads.clone(),
-        payloads,
-        authority,
-        signed,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        tasks.clone(),
-        machines,
-        Arc::new(SystemUnixMillisClock),
-    )?;
+    let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream.clone(), payloads.clone(), payloads, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?;
     if configured {
         host = host.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 2,
@@ -118,12 +106,12 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         Some(root),
         serde_json::json!({}),
     );
-    let provider = ProviderRef::new("custom", "allocator", "1")?;
+    let provider = ProviderRef::new("custom".into(), "allocator".into(), "1".into(), &mut None)?;
     let resource = ResourceRef::new(
         ResourceKind::Sandbox,
         provider.clone(),
-        b"one".to_vec(),
-        None,
+        b"one".to_vec().into(),
+        None, &mut None
     )?;
     child = child.with_resource_proofs(vec![
         crate::resource_preparation::ResourceCreationProofRef {
@@ -137,8 +125,8 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             evidence: ResourceRef::new(
                 ResourceKind::Stream,
                 provider.clone(),
-                b"allocation".to_vec(),
-                None,
+                b"allocation".to_vec().into(),
+                None, &mut None
             )?,
         },
     ])?;
@@ -212,8 +200,8 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         evidence: ResourceRef::new(
             ResourceKind::Stream,
             request.provider.clone(),
-            b"allocation".to_vec(),
-            None,
+            b"allocation".to_vec().into(),
+            None, &mut None
         )?,
     };
     let proved_child = child.clone().with_resource_proofs(vec![unbound])?;
@@ -232,14 +220,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             0 => changed.child.resource_proofs.clear(),
             1 => {
                 changed.child.resource_proofs[0].provider =
-                    ProviderRef::new("foreign", "creator", "1")?
+                    ProviderRef::new("foreign".into(), "creator".into(), "1".into(), &mut None)?
             }
             _ => {
                 changed.child.resource_proofs[0].resource = ResourceRef::new(
                     ResourceKind::Sandbox,
                     request.provider.clone(),
-                    b"other".to_vec(),
-                    None,
+                    b"other".to_vec().into(),
+                    None, &mut None
                 )?
             }
         }

@@ -662,24 +662,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
-    /// Atomically moves this workspace head to one of its own exact immutable
-    pub async fn restore_generation(
-        &self,
-        generation: &Generation<A, O>,
-        if_current: GenerationId,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<WorkspaceRestore<Generation<A, O>>, WorkspaceError> {
-        self.restore_generation_with_permit(
-            generation,
-            if_current,
-            idempotency_key,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await
-    }
-
     /// Restores one exact generation only while the supplied writer permit remains valid.
-    pub async fn restore_generation_with_permit(
+    pub async fn restore_generation(
         &self,
         generation: &Generation<A, O>,
         if_current: GenerationId,
@@ -956,30 +940,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         ).await
     }
 
-    /// Applies only the paths changed between `base` and `source`, rejecting
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one atomic path application keeps conflict classification and publication together"
-    )]
-    pub async fn apply_paths_from(
-        &self,
-        base: Option<&Generation<A, O>>,
-        source: Option<&Generation<A, O>>,
-        paths: &[String],
-        if_current: GenerationId,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<WorkspacePathApply<A, O>, WorkspaceError> {
-        self.apply_paths_from_with_permit(
-            base,
-            source,
-            paths,
-            if_current,
-            idempotency_key,
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await
-    }
-
     /// Whether a path holds the same thing in two states: the same record,
     async fn same_path_state(
         &self,
@@ -1002,7 +962,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         clippy::too_many_lines,
         reason = "one transaction keeps path planning, typed conflicts, and fenced publication atomic"
     )]
-    pub async fn apply_paths_from_with_permit(
+    pub async fn apply_paths_from(
         &self,
         base: Option<&Generation<A, O>>,
         source: Option<&Generation<A, O>>,
@@ -1211,31 +1171,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None).await
     }
 
-    /// Forks the supplied immutable source on the invocation's original scope.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn fork_with_native_work(
-        &self,
-        destination: &str,
-        options: ForkOptions<A, O>,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Self, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let result = async {
-            let (named, options) = self.prepare_fork_with_native_work(
-                destination, options, original, cancellation,
-            )?;
-            let ForkOptions { generation, idempotency_key, paths } = options;
-            self.volume.fs.fork_workspace::<_, fn(crate::WorkBudget) -> std::future::Ready<crate::FsResult<()>>, _>(
-                named, &generation, idempotency_key, paths, crate::PublicationPermit::Unrestricted,
-                original, cancellation, None,
-            ).await
-        }.await;
-        result.map_err(|error| (error, None))
-    }
-
     /// Seals each real destination publication with the original native owner guard.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn fork_with_permit_guarded_with_native_work<'original, E, F, Fut>(
+    pub async fn fork_with_native_work<'original, E, F, Fut>(
         &self, destination: &str, options: ForkOptions<A, O>,
         permit: crate::PublicationPermit, original: &'original crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, before_publication: &mut F,
@@ -1245,34 +1183,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let (named, options) = self.prepare_fork_with_native_work(
-            destination, options, original, cancellation,
-        )?;
+        let (named, options) = (|| -> Result<_, WorkspaceError> {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+            let path_bytes = options.paths.as_ref().map_or(Ok(0), |paths|
+                workspace_owned_strings_bytes(paths))?;
+            let (allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
+            let mut options = (options, allocation);
+            admitted?;
+            if options.0.generation.workspace.id != self.id {
+                return Err(WorkspaceError::ForeignGeneration);
+            }
+            accounting.check()?;
+            let named = WorkspaceName::new(destination, original, cancellation)?;
+            accounting.release_owned(&mut options.1, path_bytes)?;
+            Ok((named, options.0))
+        })()?;
         let ForkOptions { generation, idempotency_key, paths } = options;
         self.volume.fs.fork_workspace_guarded_with_native_work(
             named, &generation, idempotency_key, paths, permit, original, cancellation,
             before_publication,
         ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_fork_with_native_work(
-        &self, destination: &str, options: ForkOptions<A, O>,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(WorkspaceName, ForkOptions<A, O>), WorkspaceError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let path_bytes = options.paths.as_ref().map_or(Ok(0), |paths|
-            workspace_owned_strings_bytes(paths))?;
-        let (allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
-        let mut options = (options, allocation);
-        admitted?;
-        if options.0.generation.workspace.id != self.id {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        accounting.check()?;
-        let named = WorkspaceName::new(destination, original, cancellation)?;
-        accounting.release_owned(&mut options.1, path_bytes)?;
-        Ok((named, options.0))
     }
 
     /// Opens a head transaction under supplied work limits.
@@ -1773,8 +1703,8 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
-        let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-            &path.value, after, false, maximum_entries, &mut accounting, cancellation,
+        let (page, allocation) = checkout.value.list_directory_with_accounting(
+            &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &mut accounting, cancellation,
         ).await?;
         Ok::<_, WorkspaceError>({ drop(allocation); page })
     }.await;
@@ -1852,7 +1782,7 @@ async fn plan_generation_extents<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// One unpublished sparse atomic workspace transaction.
 pub struct Transaction<A, O> {
     workspace: Workspace<A, O>,
-    checkout: Checkout<A, O>,
+    pub(crate) checkout: Checkout<A, O>,
     idempotency_key: IdempotencyKey,
     requires_rebase: bool,
 }
@@ -1901,14 +1831,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
             requires_rebase: false,
         })
-    }
-
-    pub(crate) fn into_checkout_candidate(self) -> Checkout<A, O> {
-        self.checkout
-    }
-
-    pub(crate) fn workspace_id(&self) -> WorkspaceId {
-        self.workspace.id()
     }
 
     fn mutation_path_with_accounting(
@@ -2049,16 +1971,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let mut accounting = work.accounting(cancellation);
         let result = self.create_dir_all_with_accounting(path, &mut accounting, cancellation).await;
         work.finish(result, &accounting)
-    }
-
-    /// Admits a bounded ordered capture as one unpublished candidate update.
-    pub(crate) async fn apply_authored_bulk_measured(
-        &mut self, operations: Vec<AuthoredMutation>,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
-        self.checkout.apply_authored_bulk_transaction(operations, budget, cancellation)
-            .await.map(|receipt| receipt.work)
-            .map_err(|failure| failure.map_with_prior_work(crate::WorkCounters::default(), WorkspaceError::from))
     }
 
     /// Creates one directory with canonical metadata and bounded work.
@@ -2395,16 +2307,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let records_result = source_records.retire(accounting);
         let root_result = source_root.retire(accounting);
         records_result.and(root_result).map_err(WorkspaceError::from)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn apply_authored_bulk_with_native_work(
-        &mut self, operations: Vec<AuthoredMutation>, allocation: crate::NativeAllocation,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(), WorkspaceError> {
-        self.checkout.apply_authored_bulk_transaction_with_native_work(
-            operations, allocation, original, cancellation,
-        ).await.map_err(WorkspaceError::from)
     }
 
     /// Streams immutable content under the supplied work limits.
@@ -3782,62 +3684,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
         ).await
     }
 
-    /// Plans a join from exact immutable endpoints while requiring `target`
-    pub async fn plan_at(
-        self,
-        source: &Generation<A, O>,
-        target: &Generation<A, O>,
-    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-            WorkBudget::UNBOUNDED, &cancellation,
-        );
-        self.plan_at_with_accounting(source, target, &mut accounting, &cancellation)
-            .await.map(|(plan, allocation)| { drop(allocation); plan })
-    }
-
-    /// Plans the same bounded join on the caller's original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn plan_at_with_native_work(
-        self,
-        source: &Generation<A, O>,
-        target: &Generation<A, O>,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(JoinPlan<A, O>, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let result = self.plan_at_with_accounting(source, target, &mut accounting, cancellation).await;
-        result.map(|(plan, allocation)| match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (plan, allocation),
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                unreachable!("native planning retains original invocation custody"),
-        }).map_err(|error| (error, None))
-    }
-
-    async fn plan_at_with_accounting(
-        self,
-        source: &Generation<A, O>,
-        target: &Generation<A, O>,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(JoinPlan<A, O>, crate::kernel::allocation::KernelOwnedAllocation), WorkspaceError> {
-        self.validate_endpoints(source, target)?;
-        let allocation = accounting.claim_owned(0, 0)?;
-        let (target_head_id, target_authority_head) = self.target.volume.fs
-            .workspace_head_state(&self.target.volume, accounting, cancellation).await?;
-        if target.id != target_head_id { return Err(WorkspaceError::StaleTarget); }
-        let copied = crate::WorkCounters {
-            bytes_copied: (2 * std::mem::size_of::<Generation<A, O>>()) as u64,
-            ..crate::WorkCounters::UNCHARGED
-        };
-        accounting.admit(copied)?;
-        let source = source.clone();
-        let target = target.clone();
-        accounting.record_completed(copied)?;
-        let plan = self.plan_generations_with_accounting(
-            source, target, target_authority_head, accounting, cancellation,
-        ).await?;
-        Ok((plan, allocation))
+    /// Plans exact immutable endpoints under supplied work limits.
+    pub async fn plan_at<W: crate::facade::FsWork>(
+        self, source: &Generation<A, O>, target: &Generation<A, O>,
+        work: W, cancellation: &CancellationToken,
+    ) -> W::Output<JoinPlan<A, O>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            self.validate_endpoints(source, target)?;
+            let (target_head_id, target_authority_head) = self.target.volume.fs
+                .workspace_head_state(&self.target.volume, &mut accounting, cancellation).await?;
+            if target.id != target_head_id { return Err(WorkspaceError::StaleTarget); }
+            let copied = crate::WorkCounters {
+                bytes_copied: (2 * std::mem::size_of::<Generation<A, O>>()) as u64,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            accounting.admit(copied)?;
+            let source = source.clone();
+            let target = target.clone();
+            accounting.record_completed(copied)?;
+            let plan = self.plan_generations_with_accounting(
+                source, target, target_authority_head, &mut accounting, cancellation,
+            ).await?;
+            Ok::<_, WorkspaceError>(plan)
+        }.await;
+        work.finish(result, &accounting)
     }
 
     /// Plans against caller-pinned immutable source and target generations.
@@ -3954,74 +3825,44 @@ impl<A, O> JoinPlan<A, O> {
         &self.source
     }
 
-    /// Captures exact provider-owned inputs for later verification of this
-    pub fn commit_witness(
-        &self,
-        application: &JoinApplication<A, O>,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<crate::JoinCommitWitness, WorkspaceError> {
-        let cancellation = CancellationToken::new();
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
-            WorkBudget::UNBOUNDED, &cancellation,
-        );
-        self.commit_witness_with_accounting(application, idempotency_key, &mut accounting)
-            .map(|(witness, allocation)| { drop(allocation); witness })
-    }
-
-    /// Copies the same durable witness fields on the original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn commit_witness_with_native_work(
-        &self,
-        application: &JoinApplication<A, O>,
-        idempotency_key: IdempotencyKey,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(crate::JoinCommitWitness, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        self.commit_witness_with_accounting(application, idempotency_key, &mut accounting)
-            .map(|(witness, allocation)| match allocation {
-                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (witness, allocation),
-                crate::kernel::allocation::KernelOwnedAllocation::Standalone =>
-                    unreachable!("native witness retains original invocation custody"),
-            }).map_err(|error| (error, None))
-    }
-
-    fn commit_witness_with_accounting(
-        &self,
-        application: &JoinApplication<A, O>,
-        idempotency_key: IdempotencyKey,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    ) -> Result<(crate::JoinCommitWitness, crate::kernel::allocation::KernelOwnedAllocation), WorkspaceError> {
-        let examined = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-        accounting.admit(examined)?;
-        let incompatible = application.generation.workspace.id() != self.target.id()
-            || application.generation.id() == self.target_head.id();
-        accounting.record_completed(examined)?;
-        if incompatible { return Err(WorkspaceError::IncompatibleWorkspace); }
-        let allocation = accounting.claim_owned(0, 0)?;
-        let copied = crate::WorkCounters {
-            bytes_copied: std::mem::size_of::<crate::JoinCommitWitness>() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        };
-        accounting.admit(copied)?;
-        let witness = crate::JoinCommitWitness {
-            source_workspace: self.source.id().volume_id(),
-            source_generation: self.source_head.id,
-            target_workspace: self.target.id().volume_id(),
-            expected_target: self.target_head.id,
-            base_workspace: self.base.volume_id,
-            base_generation: self.base.id,
-            history: self.history,
-            maximum_generations: self.maximum_generations,
-            maximum_changes: self.maximum_changes,
-            maximum_conflicts: self.maximum_conflicts,
-            resolutions_digest: application.resolutions_digest,
-            expected_head: self.target_authority_head,
-            operation_id: idempotency_key.operation_id(),
-            result_generation: application.generation.id,
-        };
-        accounting.record_completed(copied)?;
-        Ok((witness, allocation))
+    /// Captures exact join inputs under supplied work limits.
+    pub fn commit_witness<W: crate::facade::FsWork>(
+        &self, application: &JoinApplication<A, O>, idempotency_key: IdempotencyKey,
+        work: W, cancellation: &CancellationToken,
+    ) -> W::Output<crate::JoinCommitWitness, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = (|| -> Result<_, WorkspaceError> {
+            let examined = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
+            accounting.admit(examined)?;
+            let incompatible = application.generation.workspace.id() != self.target.id()
+                || application.generation.id() == self.target_head.id();
+            accounting.record_completed(examined)?;
+            if incompatible { return Err(WorkspaceError::IncompatibleWorkspace); }
+            let copied = crate::WorkCounters {
+                bytes_copied: std::mem::size_of::<crate::JoinCommitWitness>() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            accounting.admit(copied)?;
+            let witness = crate::JoinCommitWitness {
+                source_workspace: self.source.id().volume_id(),
+                source_generation: self.source_head.id,
+                target_workspace: self.target.id().volume_id(),
+                expected_target: self.target_head.id,
+                base_workspace: self.base.volume_id,
+                base_generation: self.base.id,
+                history: self.history,
+                maximum_generations: self.maximum_generations,
+                maximum_changes: self.maximum_changes,
+                maximum_conflicts: self.maximum_conflicts,
+                resolutions_digest: application.resolutions_digest,
+                expected_head: self.target_authority_head,
+                operation_id: idempotency_key.operation_id(),
+                result_generation: application.generation.id,
+            };
+            accounting.record_completed(copied)?;
+            Ok(witness)
+        })();
+        work.finish(result, &accounting)
     }
 }
 
@@ -4163,14 +4004,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .await.map(|receipt| crate::FsReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| failure.error)
     }
 
-    /// Applies this immutable plan through one target-head CAS.
-    pub async fn apply(&self, options: ApplyOptions) -> Result<JoinOutcome<A, O>, WorkspaceError> {
-        self.apply_with_permit(options, crate::PublicationPermit::Unrestricted)
-            .await
-    }
-
     /// Applies this immutable plan only while the supplied writer permit remains valid.
-    pub async fn apply_with_permit(
+    pub async fn apply(
         &self,
         options: ApplyOptions,
         permit: crate::PublicationPermit,
@@ -4179,32 +4014,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .await
     }
 
-    /// Applies this plan on the invocation's original native work.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_with_native_work(
-        &self, options: ApplyOptions, original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(JoinOutcome<A, O>, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.apply_with_permit_with_native_work(
-            options, crate::PublicationPermit::Unrestricted, original, cancellation,
-        ).await
-    }
-
-    /// Applies the same join under its actual writer permit and original work.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_with_permit_with_native_work(
-        &self, options: ApplyOptions, permit: crate::PublicationPermit,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<(JoinOutcome<A, O>, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut before_publication = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-        self.apply_with_permit_guarded_with_native_work(
-            options, permit, original, cancellation, &mut before_publication,
-        ).await.map_err(|error| (error, None))
-    }
-
     /// Seals publication through the canonical native publisher before its CAS.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn apply_with_permit_guarded_with_native_work<'original, F, Fut, E>(
+    pub async fn apply_with_native_work<'original, F, Fut, E>(
         &self, options: ApplyOptions, permit: crate::PublicationPermit,
         original: &'original crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken, before_publication: &mut F,
@@ -4233,11 +4045,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         &self, options: ApplyOptions, registry: &MergeDriverRegistry,
         cache: &mut C, replanning: bool,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self.apply(options).await?;
+        let initial = self.apply(options, crate::PublicationPermit::Unrestricted).await?;
         let JoinOutcome::Conflicted { conflicts, truncated } = initial else { return Ok(initial); };
         let plan = self.typed_merge_plan(conflicts, truncated).await?;
         let candidate = resolve_merge_plan(plan, registry, cache, replanning)?;
-        self.apply_candidate(options, &candidate).await
+        self.apply_candidate(options, &candidate, crate::PublicationPermit::Unrestricted).await
     }
 
     /// Applies caller-selected immutable sides after validating that they
@@ -4246,7 +4058,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         options: ApplyOptions,
         selections: BTreeMap<MergeConflict, ConflictSide>,
     ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        let initial = self.apply(options).await?;
+        let initial = self.apply(options, crate::PublicationPermit::Unrestricted).await?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -4294,7 +4106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<FsError> + From<WorkspaceError> + From<DrivenJoinError> + Send + 'static,
     {
-        let (initial, allocation) = self.apply_with_permit_guarded_with_native_work(
+        let (initial, allocation) = self.apply_with_native_work(
             options, permit, original, cancellation, before_publication,
         ).await?;
         let JoinOutcome::Conflicted { conflicts, truncated } = initial else {
@@ -4317,18 +4129,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         applied
     }
 
-    /// Validates caller-selected declarations against this exact immutable
-    pub async fn apply_candidate(
-        &self,
-        options: ApplyOptions,
-        candidate: &UnpublishedMergeCandidate,
-    ) -> Result<JoinOutcome<A, O>, DrivenJoinError> {
-        self.apply_candidate_with_permit(options, candidate, crate::PublicationPermit::Unrestricted)
-            .await
-    }
-
     /// Validates and publishes a declarative candidate under one writer permit.
-    pub async fn apply_candidate_with_permit(
+    pub async fn apply_candidate(
         &self,
         options: ApplyOptions,
         candidate: &UnpublishedMergeCandidate,
@@ -5324,8 +5126,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let (mut checkout, path) = self.workspace.open_read_path(
                 GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
             ).await?;
-            let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-                &path.value, after, false, maximum, &mut accounting, cancellation,
+            let (page, allocation) = checkout.value.list_directory_with_accounting(
+                &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum, &mut accounting, cancellation,
             ).await?;
             let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!() };
             Ok((page, allocation))

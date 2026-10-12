@@ -5,7 +5,7 @@ use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudg
 use std::sync::Mutex;
 
 /// Per-attempt filesystem work and allocation limits.
-pub(crate) enum PreparationIo {
+pub enum PreparationIo {
     Owned { budget: WorkBudget, work: Mutex<(WorkCounters, u64, Option<OrdinaryPublicationBorrow>)>, cancellation: CancellationToken },
     #[cfg(not(target_arch = "wasm32"))]
     Native { work: acyclic_fs::NativeMaterializationWork, custody: Mutex<acyclic_fs::NativeAllocation> },
@@ -280,7 +280,8 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+    /// Uses the original native ledger for filesystem operations.
+    pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
         let custody = work.retain_owned(0).map_err(Error::from)?;
         Ok(Self::Native { work: work.clone(), custody: Mutex::new(custody) })
@@ -968,10 +969,6 @@ pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wi
     }
 }
 
-pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))
-}
-
 pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => crate::store::history::HistoryIo::clone_text(&mut io.history_io(), value),
@@ -1075,13 +1072,6 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
     Ok(())
 }
 
-pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
-    match io {
-        Some(io) => reference.copy(&mut Some(&mut io.history_io())),
-        None => Ok(reference.clone()),
-    }
-}
-
 pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => io.capability(reference, "file:read:"),
@@ -1174,7 +1164,7 @@ pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1189,7 +1179,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1237,7 +1227,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
                 let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
                 let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let resource = ResourceRef::new(reference.kind(), provider, key, version, quota.work())?;
                 let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
                 quota.transfer();
                 workspace
@@ -1609,7 +1599,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 let work = work.clone();
                 async move { guard.verify_creation_with_native_work(&work)?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+            workspace.fork_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
         } else {
             io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?
@@ -1656,7 +1646,7 @@ mod tests {
 
     #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("ordinary-owner-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
             VolumeOwner::Project("ordinary-owner-control".into()))?;
@@ -1689,7 +1679,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("source-read-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()));
@@ -1783,7 +1773,6 @@ impl crate::store::history::HistoryIo for &PreparationIo {
         self.remaining()?;
         self.retain_owned(bytes)
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { PreparationIo::retain_owned(self, bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;

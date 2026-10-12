@@ -2,7 +2,7 @@
 import { DEFAULT_LIMITS,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
-import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef, type NativeSelectedModelContext } from "./native-contracts.js";
+import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef } from "./native-contracts.js";
 import type { ContentBindings } from "./runtime.js";
 import {
   HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
@@ -149,9 +149,16 @@ export async function selectModelContext(
   const projected = await contracts.selectModelContext(
     nativeConversation,
     nativeSelection,
-    files, clampWasmU32(maxMessages), clampWasmU32(maxAttachments), maxRenderBytes, maxProjectedAttachments,
+    files, Math.min(maxMessages, 0xffff_ffff), Math.min(maxAttachments, 0xffff_ffff), maxRenderBytes, maxProjectedAttachments,
   );
-  return projectNativeContext(projected);
+  return Object.freeze({
+    selection: Object.freeze({
+      conversationRevision: projected.selection.conversation_revision,
+      messageIds: Object.freeze([...projected.selection.message_ids]),
+      ...(projected.selection.checkpoint === undefined ? {} : { checkpoint: publicFile(projected.selection.checkpoint) }),
+    }),
+    messages: Object.freeze(projected.messages.map(message => Object.freeze({ role: message.role, content: publicModelContent(message.content) }))),
+  });
 }
 
 async function captureProjectionFiles(
@@ -258,17 +265,6 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
     : mapContentPart(content as NativeModelContentPart);
 }
 
-function projectNativeContext(value: NativeSelectedModelContext): SelectedModelContext {
-  return Object.freeze({
-    selection: Object.freeze({
-      conversationRevision: value.selection.conversation_revision,
-      messageIds: Object.freeze([...value.selection.message_ids]),
-      ...(value.selection.checkpoint === undefined ? {} : { checkpoint: publicFile(value.selection.checkpoint) }),
-    }),
-    messages: Object.freeze(value.messages.map(message => Object.freeze({ role: message.role, content: publicModelContent(message.content) }))),
-  });
-}
-
 function normalizeModelJson(value: unknown): unknown {
   if (typeof value === "bigint") return normalizeModelInteger(value);
   if (typeof value === "number" && (!Number.isFinite(value) || Object.is(value, -0)
@@ -286,9 +282,4 @@ function normalizeModelInteger(value: number | bigint): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number)) throw new TypeError("model projection integer exceeds JavaScript precision");
   return number;
-}
-
-const WASM_U32_MAX = 4_294_967_295;
-function clampWasmU32(value: number): number {
-  return Math.min(value, WASM_U32_MAX);
 }

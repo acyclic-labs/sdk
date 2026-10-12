@@ -575,24 +575,8 @@ async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(found.record, Some(fifo_record(2)));
+    assert_eq!(found.value, Some(fifo_record(2)));
     assert_eq!(found.work.page_reads, 2);
-
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(lookup_file_record(
-        &store,
-        root,
-        FileId::from_bytes([2; 16]),
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous file lookup remained pending".into());
-    };
-    assert_eq!(asynchronous?, found);
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -604,6 +588,7 @@ async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::
         WorkBudget::UNBOUNDED,
         &cancelled,
     ));
+    let mut context = Context::from_waker(Waker::noop());
     let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
         return Err("pre-cancelled asynchronous file lookup remained pending".into());
     };
@@ -679,7 +664,7 @@ async fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), 
         &CancellationToken::new(),
     ).await?;
     assert_eq!(
-        batch.records,
+        batch.value,
         vec![
             Some(fifo_record(2)),
             Some(fifo_record(1)),

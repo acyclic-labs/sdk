@@ -11,14 +11,6 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Reconciles only the original retained outbox under its exact lease.
-    pub async fn reconcile_task(
-        &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
-        maximum_commands: u32, maximum_wait_millis: u32,
-    ) -> TaskWorkerAttempt {
-        self.reconcile_task_observed(lease, commands, maximum_commands, maximum_wait_millis, None).await
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn reconcile_task_with_native_work(
         &self, lease: crate::distributed::WorkLease, recovery_custody: acyclic_fs::NativeAllocation,
@@ -35,12 +27,13 @@ where
             }, recovery_custody));
         }
         let io = super::super::PreparationIo::from_native_custody(recovery_custody);
-        let value = self.reconcile_task_observed(lease, commands, maximum_commands, maximum_wait_millis, Some(&io)).await;
+        let value = self.reconcile_task(lease, commands, maximum_commands, maximum_wait_millis, Some(&io)).await;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
         Ok((value, custody))
     }
 
-    async fn reconcile_task_observed(
+    /// Reconciles the retained outbox under the exact lease and optional original IO.
+    pub async fn reconcile_task(
         &self, lease: crate::distributed::WorkLease, commands: &dyn TaskCommandHost,
         maximum_commands: u32, maximum_wait_millis: u32,
         io: Option<&super::super::PreparationIo>,
@@ -66,12 +59,12 @@ where
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native reconciliation requires original work"))?;
-                        self.host.expire_task_deadline_with_native_work(task, Some(observed::clone_fence(&fence, Some(io))?), work).await?;
+                        self.host.expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::native_work_io(work)?)).await?;
                     } else {
-                        self.host.expire_task_deadline(task, Some(fence.clone())).await?;
+                        self.host.expire_task_deadline(task, Some(&fence), &mut None).await?;
                     }
                     #[cfg(target_arch = "wasm32")]
-                    self.host.expire_task_deadline(task, Some(fence.clone())).await?;
+                    self.host.expire_task_deadline(task, Some(&fence), &mut None).await?;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 let journal = if let Some(io) = io {
@@ -90,15 +83,7 @@ where
                 #[cfg(target_arch = "wasm32")]
                 let present = journal.admission().await?.is_some();
                 if !present { return self.finish_known_reconciliation(task, &fence, io).await; }
-                #[cfg(not(target_arch = "wasm32"))]
-                let transition = if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native outbox requires original work"))?;
-                    let (transition, custody) = journal.observe_latest_outbox_with_native_work(work)?.await?;
-                    io.absorb_native_custody(custody)?;
-                    transition
-                } else { journal.observe_latest_outbox().await? };
-                #[cfg(target_arch = "wasm32")]
-                let transition = journal.observe_latest_outbox().await?;
+                let transition = journal.observe_latest_outbox(io).await?;
                 let Some(transition) = transition else { return self.finish_known_reconciliation(task, &fence, io).await; };
                 #[cfg(not(target_arch = "wasm32"))]
                 let context = if let Some(io) = io {

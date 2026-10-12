@@ -33,14 +33,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                host.provider.validate_with_native_work(work)?;
                 Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
                     crate::store::history::native_work_io(work)?))
             }
-            None => { host.provider.validate()?; None }
+            None => None,
         };
-        #[cfg(target_arch = "wasm32")]
-        host.provider.validate()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -192,16 +189,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let context = crate::resource_preparation::RootBootstrapContentContext::from_verified_root_with_native_work(
                 owner, &original_root, root, work,
             ).await?;
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-            if owner.root_bootstrap_owner() != self.issuer.audience() || volume.provider() != &self.host.provider
-                || !match role {
-                    crate::resource_preparation::RootBootstrapContentRole::Project =>
-                        volume.class() == crate::conversation::VolumeClass::Project,
-                    crate::resource_preparation::RootBootstrapContentRole::Scratch =>
-                        volume.class() == crate::conversation::VolumeClass::AgentPrivate
-                            && volume.owner() == &crate::conversation::VolumeOwner::Agent(root.agent()),
-                }
-            {
+            if role == crate::resource_preparation::RootBootstrapContentRole::Scratch
+                && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured creator, actor or namespace"));
             }
             owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
@@ -499,8 +488,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         if volume != &self.allocation.request.volume {
             return Err(io.invalid("Root source path names another namespace"));
         }
-        if !path.is_empty() { bounded_io::validate_content_path(path, Some(io))?; }
-        if !prefix.is_empty() { bounded_io::validate_content_path(prefix, Some(io))?; }
+        if !path.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?; }
+        if !prefix.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(prefix, work))?; }
         if crate::conversation::is_internal_path(path) || crate::conversation::is_internal_path(prefix)
             || (!prefix.is_empty() && path != prefix
                 && !path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')))
@@ -555,7 +544,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         {
             return Err(io.invalid("Root path differs from its immutable source selection or limit"));
         }
-        bounded_io::validate_content_path(path, Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?;
         self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, Some(io)).await?;
         let bytes = self.read_snapshot_bytes(snapshot, path, maximum, io).await?;
@@ -1504,7 +1493,7 @@ mod tests {
         let (scope, retained) = fixture.root_scope.with_created_access_with_work(&admission, Some(access), &mut Some(&mut io))?;
         scope_custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
         assert_eq!(scope.grants(), fixture.root_scope.grants());
-        assert_eq!(scope.current_created_private_volume_with_native_work(&work)?, Some(&scratch.request.volume));
+        assert_eq!(scope.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&scratch.request.volume));
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;

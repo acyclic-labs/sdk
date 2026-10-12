@@ -362,12 +362,12 @@ impl NativeSession {
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         self.runtime.poll_task_wake(task, None).await?;
-        self.runtime.task_host().pull_operation(worker, admission.operation_id).await
+        self.runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await
     }
 
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.task_host().cancel(task).await?;
+        self.runtime.task_host().cancel(task, None).await?;
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
     }
 
@@ -561,12 +561,12 @@ impl HarnessWireApi for NativeSession {
             }
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
-            let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
+            let reader = HistoryReader::new(&self.stream, &binding.authority, &(binding.verifier()?), &mut None)?;
             let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
-            }).await?;
+            }, None).await?;
             if page.events.is_empty() {
                 return Ok(Box::pin(stream::empty()) as BoxProviderStream<'static, Result<wire::Delivery>>);
             }

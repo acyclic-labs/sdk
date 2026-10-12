@@ -10,11 +10,11 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
-pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
+pub(crate) async fn replay(provider: &MemoryStream, command: Command, committed_at: u64) -> Result<(), StreamError> {
     match command {
-        Command::Append(request) => provider.append(request).await.map(|_| ()),
+        Command::Append(request) => crate::memory::provider_result(provider.apply_append(&request, None, Some(committed_at)).await).map(|_| ()),
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(request) => provider.commit(request).await.map(|_| ()),
+        Command::Commit(request) => provider.commit_value(request, None, Some(committed_at)).await.map(|_| ()),
     }
 }
 
@@ -121,7 +121,7 @@ mod tests {
             idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
         };
         let encoded = crate::wire_codec::CanonicalWire::Journal(&Command::Append(request.clone())).encode_to_vec().map_err(|_| StreamError::Capacity)?;
-        replay(&provider, decode_command(&encoded)?).await?;
+        replay(&provider, decode_command(&encoded)?, 0).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);
         };

@@ -9,10 +9,6 @@ pub struct NativeProcessDrainProof {
     receipt: NativeProcessReceipt,
 }
 
-fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
-
 fn same_manifest(
     actual: &NativeViewManifest, expected: &NativeViewManifest,
     work: &NativeMaterializationWork,
@@ -109,7 +105,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             }
             let quiescent = match &self.invocation {
                 Some(_) => {
-                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, original)
+                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation)
                         .await?)
                 }
                 None => None,
@@ -153,8 +149,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             self.authenticate_cleanup_owner(work).await?;
             drop((request, request_custody));
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
-            receipt._custody.as_mut().expect("authenticated receipt retains its allocation")
-                .absorb(&mut custody)?;
+            receipt._custody.absorb(&mut custody)?;
             let proof = NativeProcessDrainProof { view: held_view, receipt };
             proof.require_view_binding::<P, A, O>(
                 view.as_ref(), &self.owner, original,

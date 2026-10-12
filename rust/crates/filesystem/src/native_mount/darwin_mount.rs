@@ -1082,9 +1082,9 @@ impl DarwinMountContext {
         mutate(&mut metadata)?;
         // Metadata of any node kind: only a handle names a regular file.
         if handle == 0 {
-            self.mutate(|| self.source.set_attributes_with_meter(path, metadata, None, work.native), work)
+            self.mutate(|| self.source.set_attributes(path, metadata, None, work.native), work)
         } else {
-            self.mutate_file(path, handle, |file| file.set_attributes_with_meter(metadata, None, work.native), work)
+            self.mutate_file(path, handle, |file| file.set_attributes(metadata, None, work.native), work)
         }
     }
 
@@ -3578,7 +3578,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         let lookup = context.mutate(|| {
-            context.source.create_file_with_meter(&path, create_metadata(mode, IFREG, uid, gid), work.native)
+            context.source.create_file(&path, create_metadata(mode, IFREG, uid, gid), None, work.native)
         }, work)?;
         context.remember_current_lookup(&path, Some(lookup), work)?;
         context.namespace_changed();
@@ -3980,7 +3980,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_directory_with_meter(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
+            context.source.create_directory(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4005,7 +4005,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
             });
         }
         context.unlink(&path, lookup, || {
-            context.source.remove_with_meter(&path, Some(lookup.node.file_id), work.native)
+            context.source.remove(&path, Some(lookup.node.file_id), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4026,7 +4026,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
         }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename_with_meter(&source, &destination, replace, work.native);
+        let rename = || context.source.rename(&source, &destination, replace, work.native);
         // Replacing the destination unlinks it.
         match replace.then(|| context.lookup(&destination, work)) {
             Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
@@ -4070,7 +4070,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         let target = work.copy_bytes(target)?;
         let destination = mount_path(destination, work)?;
         context.mutate(|| {
-            context.source.create_symbolic_link_with_meter(
+            context.source.create_symbolic_link(
                 &destination,
                 target,
                 create_metadata(0o777, IFLNK, uid, gid), work.native)
@@ -4263,7 +4263,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         let copied = work.copy_bytes(bytes)?;
         context.mutate(|| {
-            context.source.write_attribute_with_meter(&path, name, copied, mode, work.native)
+            context.source.write_attribute(&path, name, copied, mode, work.native)
         }, work)?;
         Ok(0)
     })
@@ -4334,7 +4334,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     let _span = callback_span!(TRACE, removexattr);
     ffi(address, &_span, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
-        context.mutate(|| context.source.remove_attribute_with_meter(&path, name, work.native), work)?;
+        context.mutate(|| context.source.remove_attribute(&path, name, work.native), work)?;
         Ok(0)
     })
 }
@@ -4912,8 +4912,8 @@ mod tests {
         let (source, context, guard, original) = authored_guard_context(true)?;
         let path = MountPath::root().child(b"already-created".to_vec());
         let result = context.run_request(true, |work| {
-            context.mutate(|| context.source.create_file_with_meter(
-                &path, create_metadata(0o644, IFREG, 0, 0), work.native,
+            context.mutate(|| context.source.create_file(
+                &path, create_metadata(0o644, IFREG, 0, 0), None, work.native,
             ), work)?;
             guard.writable.store(false, Ordering::Release);
             Ok(())
@@ -4964,7 +4964,7 @@ mod tests {
         assert!(miss.items_examined > 0);
         assert!(context.handler_failure.lock().map_err(|_| "poisoned callback failure")?.first_fatal.is_none());
         assert!(!context.handler_failed.load(Ordering::Acquire));
-        source.create_file(&MountPath::root().child(b"later".to_vec()), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"later".to_vec()), FileMetadata::default(), None, work))?;
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(address, path.as_ptr(), 0, output.as_mut_ptr()) }, 0);
         cancellation.cancel();
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(address, path.as_ptr(), 0, output.as_mut_ptr()) }, -libc::ECANCELED);
@@ -5174,7 +5174,7 @@ mod tests {
     fn raw_write_denies_the_actual_incoming_copy_without_touching_existing_contents() -> TestResult {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"original".to_vec());
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         source.write_range(&path, 0, Bytes::from_static(b"before"))?;
         let cancellation = crate::CancellationToken::new();
         let context = callback_context(&source, crate::WorkBudget { bytes_copied: 0, ..CALLBACK_POLICY }, &cancellation)?;
@@ -5197,7 +5197,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::CloseAndSync)?;
         let epoch = || source.generation_id();
         let path = MountPath::root().child(b"published".to_vec());
-        context.run_request(true, |work| context.mutate(|| source.create_file(&path, FileMetadata::default()), work))
+        context.run_request(true, |work| context.mutate(|| crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work)), work))
             .map_err(os)?;
         let created = context.run_request(false, |work| context.open(&path, context.ledger.latest(), work))
             .map_err(os)?;
@@ -5243,7 +5243,7 @@ mod tests {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let epoch = || source.generation_id();
         let path = MountPath::root().child(b"manual".to_vec());
-        context.run_request(true, |work| context.mutate(|| source.create_file(&path, FileMetadata::default()), work))
+        context.run_request(true, |work| context.mutate(|| crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work)), work))
             .map_err(os)?;
         let created = context.run_request(false, |work| context.open(&path, context.ledger.latest(), work))
             .map_err(os)?;
@@ -5274,7 +5274,7 @@ mod tests {
         let first = root.child(b"first".to_vec());
         let second = root.child(b"second".to_vec());
         for path in [&first, &second] {
-            context.run_request(true, |work| context.mutate(|| source.create_file(path, FileMetadata::default()), work))
+            context.run_request(true, |work| context.mutate(|| crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(path, FileMetadata::default(), None, work)), work))
                 .map_err(os)?;
         }
         let (root_label, first_label, second_label) =
@@ -5301,7 +5301,7 @@ mod tests {
             "a content write keeps the listing"
         );
 
-        source.remove(&second, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&second, None, work))?;
         assert!(
             label(&root)? > root_label,
             "a namespace change relabels its directory"
@@ -5337,7 +5337,7 @@ mod tests {
         let observer: std::sync::Weak<dyn ViewObserver> = observer;
         source.observe_view(observer);
         let path = MountPath::root().child(b"kept".to_vec());
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         // The creation was made around the mount; take it as waited out.
         let made = context.around.made.load(Ordering::Acquire);
         context.around.settled.store(made, Ordering::Release);
@@ -5372,7 +5372,7 @@ mod tests {
     fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"raced".to_vec());
-        let created = source.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let file_id = created.node.file_id;
         let binding = source.binding_epoch();
         let before = context.run_request(false, |work| context.cache_stamp(work)).map_err(os)?
@@ -5400,7 +5400,7 @@ mod tests {
     fn forgetting_the_view_rereads_what_the_source_did_not_record() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"unrecorded".to_vec());
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let handle = context.run_request(false, |work| context.open(&path, 0, work)).map_err(os)?;
         let size = |handle| {
             context.run_request(false, |work| context.attributes(&path, handle, work))
@@ -5492,10 +5492,7 @@ mod tests {
             let (began, ended) = barrier();
             assert!(ended - began < CALLBACK_GRACE_INTERVAL, "once per change");
         };
-        source.create_file(
-            &MountPath::root().child(b"around".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"around".to_vec()) , FileMetadata::default(), None, work))?;
         waits_out_the_timeout();
         context.forget_view();
         waits_out_the_timeout();
@@ -5567,7 +5564,7 @@ mod tests {
     fn handles_open_their_source_file_only_when_used() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"deferred".to_vec());
-        let created = source.create_file(&path, FileMetadata::default())?;
+        let created = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         source.write_range(&path, 0, Bytes::from_static(b"kept"))?;
         let bound = |handle: u64| -> Result<bool, Box<dyn std::error::Error>> {
             let files = context.files.read().map_err(|_| "poisoned handles")?;
@@ -5594,8 +5591,8 @@ mod tests {
         assert!(bound(read)?, "the first read binds the source file");
 
         let stale = context.run_request(false, |work| context.open(&path, 0, work)).map_err(os)?;
-        source.remove(&path, Some(created.node.file_id))?;
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         assert_eq!(context.run_request(false, |work| context.file_target(&path, stale, work).map(|target| target.0)).err(), Some(libc::ESTALE));
         Ok(())
     }
@@ -5607,9 +5604,9 @@ mod tests {
             MountPath::root().child(b"replaced".to_vec()),
             MountPath::root().child(b"replacement".to_vec()),
         );
-        let original = source.create_file(&replaced, FileMetadata::default())?;
+        let original = crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&replaced, FileMetadata::default(), None, work))?;
         source.write_range(&replaced, 0, Bytes::from_static(b"original"))?;
-        source.create_file(&replacement, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&replacement, FileMetadata::default(), None, work))?;
         let handle = context.run_request(false, |work| context.open(&replaced, 0, work))
             .map_err(os)?;
         let rename_over = |from: &CStr| {
@@ -5642,7 +5639,7 @@ mod tests {
     fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"plain".to_vec());
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         assert!(!context.run_request(false, |work| context.may_have_named_attributes(&path, work)).map_err(os)?);
         // SAFETY: the names are NUL-terminated and `context` outlives the call.
         let probe = || unsafe {
@@ -5655,12 +5652,7 @@ mod tests {
             )
         };
         assert_eq!(probe(), -libc::ENOATTR);
-        source.write_attribute(
-            &path,
-            b"com.apple.provenance",
-            Bytes::from_static(b"origin"),
-            MountAttributeWriteMode::Upsert,
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.write_attribute(&path, b"com.apple.provenance", crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"origin").into(), 0), MountAttributeWriteMode::Upsert, work))?;
         assert!(context.run_request(false, |work| context.may_have_named_attributes(&path, work)).map_err(os)?);
         assert_eq!(probe(), 6, "a present attribute is read from the source");
         Ok(())
@@ -5699,7 +5691,7 @@ mod tests {
             changed_ns: MetadataField::Value(1),
             ..create_metadata(0o644, IFREG, 0, 0)
         };
-        context.run_request(true, |work| context.mutate(|| source.create_file(&path, created), work))
+        context.run_request(true, |work| context.mutate(|| crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, created, None, work)), work))
             .map_err(os)?;
         let times = || -> Result<_, Box<dyn std::error::Error>> {
             let metadata = source.lookup(&path)?.ok_or("file absent")?.metadata;
@@ -5809,10 +5801,7 @@ mod tests {
             0,
             Bytes::from_static(b"newer"),
         )?;
-        source.create_file(
-            &MountPath::root().child(b"created".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"created".to_vec()) , FileMetadata::default(), None, work))?;
         mount.revalidate()?;
         assert_eq!(std::fs::metadata(&changed)?.len(), 5);
         assert!(created.is_file(), "the absent name is looked up again");
@@ -5960,19 +5949,13 @@ mod tests {
     #[test]
     fn directory_page_rejects_a_native_mutation_between_reads() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
-        source.create_file(
-            &MountPath::root().child(b"in-page".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"in-page".to_vec()) , FileMetadata::default(), None, work))?;
         let root = MountPath::root();
         let mut directory =
             DirectoryHandle::new(DarwinOwned::empty(root), source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
         context.run_request(false, |work| advance_directory_to_offset(&context, &mut directory, 3, work))
             .map_err(std::io::Error::from_raw_os_error)?;
-        source.create_file(
-            &MountPath::root().child(b"after-page".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"after-page".to_vec()) , FileMetadata::default(), None, work))?;
         assert_eq!(
             context.run_request(false, |work| finish_directory_page(&context, &directory, false, work)),
             Err(libc::ESTALE)
@@ -5992,10 +5975,7 @@ mod tests {
             DirectoryHandle::new(DarwinOwned::empty(root), source.binding_epoch(), context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?);
         context.run_request(false, |work| ensure_directory_page(&context, &mut directory, work))
             .map_err(std::io::Error::from_raw_os_error)?;
-        source.create_file(
-            &MountPath::root().child(b"after-page".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"after-page".to_vec()) , FileMetadata::default(), None, work))?;
         // Only `.` and `..` were delivered: the listing starts again.
         assert_eq!(context.run_request(false, |work| finish_directory_page(&context, &directory, false, work)), Ok(()));
         assert_eq!(context.run_request(false, |work| ensure_directory_page(&context, &mut directory, work)), Ok(()));
@@ -6006,7 +5986,7 @@ mod tests {
     fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let nested = MountPath::root().child(b"nested".to_vec());
-        source.create_directory(&nested, FileMetadata::default())?;
+        super::adapter::boundary(source.cancellation(), |work| source.create_directory(&nested, FileMetadata::default(), work))?;
         let epochs = context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?.ok_or("checkout has no view stamp")?;
         let root = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), Some(epochs.binding), Some(epochs));
         let directory = DirectoryHandle::new(DarwinOwned::empty(nested.clone()), Some(epochs.binding), Some(epochs));
@@ -6022,13 +6002,10 @@ mod tests {
         assert!(context.run_request(false, |work| directory.is_current(&context, work)).map_err(os)?);
         assert!(!context.run_request(false, |work| rebound.is_current(&context, work)).map_err(os)?);
 
-        source.create_file(
-            &MountPath::root().child(b"sibling".to_vec()),
-            FileMetadata::default(),
-        )?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&MountPath::root().child(b"sibling".to_vec()) , FileMetadata::default(), None, work))?;
         assert!(!context.run_request(false, |work| root.is_current(&context, work)).map_err(os)?);
         assert!(context.run_request(false, |work| directory.is_current(&context, work)).map_err(os)?);
-        source.create_file(&nested.child(b"child".to_vec()), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&nested.child(b"child".to_vec()), FileMetadata::default(), None, work))?;
         assert!(!context.run_request(false, |work| directory.is_current(&context, work)).map_err(os)?);
 
         let unrecorded =

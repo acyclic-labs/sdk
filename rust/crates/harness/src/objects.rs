@@ -55,7 +55,7 @@ impl ObjectContentStore {
         maximum_bytes: u64,
     ) -> Result<Arc<Self>> {
         volume.validate(&mut None)?;
-        expected_provider.validate()?;
+        expected_provider.validate(&mut None)?;
         verifier.verify(&scope, &mut None)?;
         ContentGrant::verify(&verifier, &owner_scope, &volume, VolumeOperation::Write, maximum_bytes, &mut None)?;
         if maximum_bytes == 0
@@ -275,7 +275,7 @@ impl ObjectContentStore {
     }
 
     async fn verify_artifact(&self, artifact: &ArtifactRef) -> Result<()> {
-        artifact.validate()?;
+        artifact.validate(&mut None)?;
         ContentGrant::verify(
             &self.verifier,
             &self.scope,
@@ -627,7 +627,7 @@ mod tests {
         let owner = AgentId::from_bytes([7; 16]);
         let reader = AgentId::from_bytes([8; 16]);
         let volume = VolumeRef::new(
-            ProviderRef::new("local", "objects", "1")?,
+            ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
             bucket.name.clone(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner), &mut None
@@ -704,11 +704,11 @@ mod tests {
         owner_store.verify_artifact(&artifact).await?;
         let missing_version = ArtifactRef::new(
             provider.clone(),
-            artifact.as_resource().key(),
+            artifact.as_resource().key().into(),
             Some("missing-version".into()),
         )?;
         assert!(owner_store.verify_artifact(&missing_version).await.is_err());
-        let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key(), None)?;
+        let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key().into(), None)?;
         owner_store.verify_artifact(&unpinned).await?;
         let traversal = ArtifactRef::new(
             provider.clone(),
@@ -723,7 +723,7 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "artifact-parent".into(),
         };
-        let filesystem = ProviderRef::new("local", "filesystem", "2")?;
+        let filesystem = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let project_owner = VolumeOwner::Project("artifact-project".into());
         let child_agent = AgentId::from_bytes([14; 16]);
         let request = ForkRequest {
@@ -767,14 +767,14 @@ mod tests {
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([1; 16])), &mut None
                         )?,
-                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                        generation: GenerationRef::new(filesystem.clone(), [99; 32].into(), None)?,
                         paths: Vec::new(),
                     },
                 },
                 ForkSelection {
                     required: true,
                     revision: ResourceRevision::History(StreamRef::new(
-                        ProviderRef::new("local", "stream", "2")?,
+                        ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?,
                         parent.stream_path(&mut None)?.into_bytes(),
                         Some("1".into()),
                     )?),
@@ -788,7 +788,7 @@ mod tests {
                             VolumeClass::Project,
                             project_owner, &mut None
                         )?,
-                        generation: GenerationRef::new(filesystem, [16; 32], Some("1".into()))?,
+                        generation: GenerationRef::new(filesystem, [16; 32].into(), Some("1".into()))?,
                     },
                 },
                 ForkSelection {
@@ -834,7 +834,7 @@ mod tests {
                     volume: request.preparation.child_private_volume.clone(),
                     generation: GenerationRef::new(
                         request.preparation.child_private_volume.provider().clone(),
-                        [18; 32],
+                        [18; 32].into(),
                         Some("1".into()),
                     )?,
                     paths: Vec::new(),
@@ -850,7 +850,7 @@ mod tests {
                     volume: request.preparation.child_project_volume.clone(),
                     generation: GenerationRef::new(
                         request.preparation.child_project_volume.provider().clone(),
-                        [17; 32],
+                        [17; 32].into(),
                         Some("1".into()),
                     )?,
                 },
@@ -864,7 +864,7 @@ mod tests {
         child_private_volume: request.preparation.child_private_volume.clone(),
         child_private_generation: GenerationRef::new(
             request.preparation.child_private_volume.provider().clone(),
-            [18; 32],
+            [18; 32].into(),
             Some("1".into()),
         )?,
         inherited_context: Vec::new(),
@@ -985,7 +985,7 @@ mod tests {
             ObjectContentStore::new(
                 objects.clone(),
                 bucket.clone(),
-                ProviderRef::new("impostor", "objects", "1")?,
+                ProviderRef::new("impostor".into(), "objects".into(), "1".into(), &mut None)?,
                 volume.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
                 owner_scope.clone(),
@@ -1083,7 +1083,7 @@ mod tests {
                 id: "objects-mount-test".into(),
             },
         );
-        let provider = ProviderRef::new("local", "objects", "1")?;
+        let provider = ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?;
         let volume_a = VolumeRef::new(
             provider.clone(),
             bucket_a.name.clone(),

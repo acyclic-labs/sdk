@@ -363,7 +363,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Mutates exact metadata and optional size through the same engine.
-    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Reads an owned named attribute without erasing capacity.
     fn read_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
@@ -372,18 +372,18 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted attribute value.
-    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Removes the actual named attribute through the same engine.
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Settles this actual handle's queued effects before durability acknowledgement.
-    fn settle_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Returns the owned sparse range and its original producer's exact claim.
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
         -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
     /// Consumes the exact already-admitted sparse payload, including capacities known before each span's conversion to `Bytes`.
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
 
     /// Returns current identity, size, and metadata for `fstat`-style calls.
@@ -405,12 +405,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError>;
-    /// Replaces complete metadata and optionally logical size atomically from the native handle's perspective.
-    fn set_attributes(
-        &self,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
@@ -419,89 +413,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError>;
-    /// Applies whatever this handle holds back from the view, as a durability request must; most handles hold nothing back.
-    fn settle(&self) -> Result<(), MountSourceError> {
-        Ok(())
-    }
-
-    /// Reads one bounded sparse range without materializing holes.
-    fn read_sparse_range(
-        &self,
-        offset: u64,
-        length: u32,
-    ) -> Result<MountSparseRange, MountSourceError> {
-        let logical_bytes = u64::from(length);
-        let end = offset.checked_add(logical_bytes).ok_or_else(|| {
-            MountSourceError::Invalid("sparse range overflows the file address space".to_owned())
-        })?;
-        let mut spans = Vec::new();
-        let mut cursor = offset;
-        while cursor < end {
-            let Some(data_offset) = self.seek(cursor, MountSeekTarget::Data)? else {
-                break;
-            };
-            if data_offset >= end {
-                break;
-            }
-            let hole_offset = self
-                .seek(data_offset, MountSeekTarget::Hole)?
-                .unwrap_or(end)
-                .min(end);
-            if hole_offset <= data_offset {
-                return Err(MountSourceError::Engine(
-                    "sparse seek made no forward progress".to_owned(),
-                ));
-            }
-            let span_length = u32::try_from(hole_offset - data_offset).map_err(|_| {
-                MountSourceError::Invalid("sparse span exceeds callback bounds".to_owned())
-            })?;
-            let bytes = self.read_range(data_offset, span_length)?;
-            if bytes.len() != usize::try_from(span_length).unwrap_or(usize::MAX) {
-                return Err(MountSourceError::Stale);
-            }
-            spans.push(MountSparseSpan {
-                relative_offset: data_offset - offset,
-                bytes,
-            });
-            cursor = hole_offset;
-        }
-        Ok(MountSparseRange {
-            logical_bytes,
-            spans,
-        })
-    }
-
-    /// Replaces one range from a sparse snapshot, preserving every hole.
-    fn write_sparse_range(
-        &self,
-        offset: u64,
-        range: &MountSparseRange,
-    ) -> Result<(), MountSourceError> {
-        let end = offset.checked_add(range.logical_bytes).ok_or_else(|| {
-            MountSourceError::Invalid("sparse range overflows the file address space".to_owned())
-        })?;
-        let current = self.lookup()?.node.logical_bytes;
-        if end > current {
-            self.resize(end)?;
-        }
-        self.allocate_range(offset, range.logical_bytes, MountRangeAllocation::PunchHole)?;
-        for span in &range.spans {
-            let destination = offset.checked_add(span.relative_offset).ok_or_else(|| {
-                MountSourceError::Invalid("sparse span offset overflows".to_owned())
-            })?;
-            self.write_range(destination, Bytes::copy_from_slice(span.bytes.as_ref()))?;
-        }
-        Ok(())
-    }
 }
 
 /// One bounded directory item.
@@ -1022,44 +933,23 @@ impl std::future::Future for NativeMountCallbackFuture<'_> {
     }
 }
 
-/// One callback's preadmitted failure payload, never a shared diagnostic slot.
-struct NativeMountCallbackCause<E> {
-    source: Option<E>,
-}
-
-impl<E> std::fmt::Debug for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("NativeMountCallbackCause")
-    }
-}
-
-impl<E> std::fmt::Display for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("native callback authorization failed")
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for NativeMountCallbackCause<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|source| source as &dyn std::error::Error)
-    }
-}
-
 fn callback_failure_slot<E>(
     work: &NativeMaterializationWork,
-) -> Result<(Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), NativeMountError> {
-    let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+) -> Result<(Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), NativeMountError> {
+    let slot_bytes = std::mem::size_of::<E>();
     let allocation = work.claim_allocation(
         slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
-    Ok((Box::new(NativeMountCallbackCause { source: None }), allocation))
+    Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
-    (mut source, custody): (Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), error: E,
+    (mut source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
-    source.source = Some(error);
+    source.write(error);
+    // SAFETY: the same preallocated slot now contains the complete original error.
+    let source = unsafe { source.assume_init() };
     NativeMountError::CallbackDenied { source, custody }
 }
 
@@ -1273,16 +1163,16 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
     /// Removes the exact binding on a shared original invocation.
-    fn remove_with_meter(
+    fn remove(
         &self, path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Renames the exact binding with original source grants.
-    fn rename_with_meter(
+    fn rename(
         &self, source: &MountPath, destination: &MountPath, replace: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
-    fn set_attributes_with_meter(
+    fn set_attributes(
         &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
@@ -1300,17 +1190,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Captures the actual detached open-file identity with its original claim.
     fn detach_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-    /// Creates an empty regular file through the original source engine.
-    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
-        -> Result<MountLookup, MountSourceError>;
-    /// Preserves the source's actual absent-since proof while creating.
-    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata,
-        absent_since: ViewStamp, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    /// Creates an empty file, preserving an optional absent-since proof.
+    fn create_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>,
+        work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
-    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
+    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
     /// Consumes the exact already-admitted opaque symbolic-link target.
-    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+    fn create_symbolic_link(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates the exact native special-file kind and device identity.
     fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
@@ -1322,11 +1209,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted native attribute value.
-    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8],
+    fn write_attribute(&self, path: &MountPath, name: &[u8],
         value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Removes the exact native attribute.
-    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Clones the actual immutable range between authenticated file identities.
     fn clone_range_by_id(&self, source_file_id: FileId, source_offset: u64,
@@ -1538,42 +1425,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
-    /// Creates one empty regular file, failing with [`MountSourceError::AlreadyExists`] when `path` names anything.
-    fn create_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one empty regular file at `path`, which the caller found absent in the view as of `absent_since`; the source verifies the absence still holds as it creates, and fails with [`MountSourceError::AlreadyExists`] otherwise.
-    fn create_absent_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        let _ = absent_since;
-        self.create_file(path, metadata)
-    }
-    /// Creates one empty directory.
-    fn create_directory(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one symbolic link with an exact opaque target.
-    fn create_symbolic_link(
-        &self,
-        path: &MountPath,
-        target: Bytes,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Atomically replaces complete metadata and optionally logical size.
-    fn set_attributes(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(
         &self,
@@ -1587,16 +1438,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        path: &MountPath,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
     /// Replaces one exact file range.
     fn write_range(
         &self,
@@ -1622,15 +1463,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         destination_offset: u64,
         length: u64,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one namespace binding.
-    fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
-    /// Renames one binding atomically within the volume.
-    fn rename(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-        replace: bool,
     ) -> Result<(), MountSourceError>;
     /// Reconciles exact final host state for one projected path and seals it.
     fn capture_host_path(
@@ -2657,17 +2489,6 @@ impl NativeMountSession {
         Ok(OwnedNativeMountOriginalWorkScope { _driver: scope })
     }
 
-    /// Runs native I/O under this original accounting scope.
-    pub async fn with_original_work<T, F: std::future::Future<Output = T>>(
-        &self, work: &NativeMaterializationWork,
-        operation: impl FnOnce(&OwnedNativeMountOriginalWorkScope) -> F,
-    ) -> Result<T, NativeMountError> {
-        let scope = self.begin_original_work(work)?;
-        let value = operation(&scope).await;
-        drop(scope);
-        Ok(value)
-    }
-
     /// Authenticated active kernel-root identity captured by this driver during its original constructor.
     #[must_use]
     pub fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
@@ -3210,7 +3031,6 @@ const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
 struct MountDestinationGuard {
     file: Option<File>,
     lock_path: PathBuf,
-    registry_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     parent_directory: Option<cap_std::fs::Dir>,
     fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
@@ -3410,7 +3230,7 @@ impl MountDestinationGuard {
             &parent_directory, Path::new(std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8")),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
-        let admitted = Self { file: Some(file), lock_path: PathBuf::new(), registry_path: PathBuf::new(),
+        let admitted = Self { file: Some(file), lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory), fence_name: Some(name),
             registry_file: Some(registry), cleanup_name, birth_cleanup };
         if recovery {
@@ -3460,7 +3280,6 @@ impl MountDestinationGuard {
         Ok(Self {
             file: Some(file),
             lock_path,
-            registry_path,
             parent_directory: None,
             fence_name: None,
             registry_file: None,
@@ -3555,14 +3374,12 @@ impl MountDestinationGuard {
                 &opened_directory
             }
         };
-        let registry_name = if self.fence_name.is_some() { Path::new(NATIVE_REGISTRY_NAME) }
-            else { Path::new(self.registry_path.file_name().ok_or(NativeMountError::InvalidDestination)?) };
         let lock_name = match self.fence_name.as_ref() {
             Some(name) => Path::new(std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8")),
             None => Path::new(self.lock_path.file_name().ok_or(NativeMountError::InvalidDestination)?),
         };
         let registry = crate::native_host::open_leaf_with_work(
-            directory, registry_name,
+            directory, Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
@@ -3753,8 +3570,8 @@ mod tests {
         };
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let cancellation = CancellationToken::new();
         let checkout = runtime.block_on(async {
-            let cancellation = CancellationToken::new();
             let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
             private_checkout(&volume, &cancellation).await
         })?;
@@ -3772,7 +3589,7 @@ mod tests {
 
     pub(super) async fn memory_volume(
         id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
-    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>, Box<dyn std::error::Error>> {
         Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 
@@ -3807,13 +3624,6 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()?,
             limits,
         )?)
-    }
-
-    #[test]
-    fn probe_names_exactly_one_target_driver() {
-        let probe = probe_native_mount();
-        assert!(probe.kind.is_some());
-        assert_eq!(probe.available, probe.unavailable_reason.is_none());
     }
 
     fn await_recovery_worker(thread: std::thread::JoinHandle<()>) -> Result<(), Box<dyn std::error::Error>> {
@@ -4368,30 +4178,24 @@ mod tests {
         let host = tempfile::tempdir()?;
         std::fs::write(host.path().join("a"), b"shared")?;
         std::fs::hard_link(host.path().join("a"), host.path().join("b"))?;
-        let path = |name: &str| -> Result<NamespacePath, Box<dyn std::error::Error>> {
-            Ok(NamespacePath::new(
-                vec![LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.as_bytes().to_vec(),
-                    limits.maximum_component_bytes,
-                )?],
-                limits,
-            )?)
+        let path = |name: &str| portable_path(limits, &[name.as_bytes()]);
+        let options = CaptureOptions {
+            expected_root_identity: capture_root_identity(host.path())?,
+            source_root: host.path().to_path_buf(),
+            maximum_paths: 2,
+            maximum_extent_spans: 16,
         };
         let paths = [path("a")?, path("b")?];
-        crate::native_capture::capture_paths_batched_with_baseline(
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        crate::native_capture::capture_paths_batched(
             &mut checkout,
             &paths,
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &options,
             1,
-            WorkBudget::UNBOUNDED,
             &cancellation,
             None,
+            &original,
         )
         .await?;
         let first = checkout
@@ -4407,52 +4211,18 @@ mod tests {
             .record
             .ok_or("second captured link missing")?;
         assert_eq!(first.file_id, second.file_id);
-        std::fs::hard_link(host.path().join("a"), host.path().join("z"))?;
-        let additional = path("z")?;
-        capture_paths(
-            &mut checkout,
-            &[paths[0].clone(), additional.clone()],
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        let additional_id = checkout
-            .lookup_no_follow(&additional, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .record
-            .ok_or("additional link missing")?
-            .file_id;
-        assert_eq!(additional_id, first.file_id);
-        std::fs::hard_link(host.path().join("a"), host.path().join("0"))?;
-        let earlier_alias = path("0")?;
-        capture_paths(
-            &mut checkout,
-            &[paths[0].clone(), earlier_alias.clone()],
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        let earlier_id = checkout
-            .lookup_no_follow(&earlier_alias, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .record
-            .ok_or("earlier alias missing")?
-            .file_id;
-        assert_eq!(earlier_id, first.file_id);
+        for name in ["z", "0"] {
+            std::fs::hard_link(host.path().join("a"), host.path().join(name))?;
+            let additional = path(name)?;
+            capture_paths(
+                &mut checkout, &[paths[0].clone(), additional.clone()], &options,
+                WorkBudget::UNBOUNDED, &cancellation,
+            ).await?;
+            let additional_id = checkout
+                .lookup_no_follow(&additional, WorkBudget::UNBOUNDED, &cancellation)
+                .await?.value.record.ok_or("additional link missing")?.file_id;
+            assert_eq!(additional_id, first.file_id);
+        }
         std::fs::hard_link(host.path().join("a"), host.path().join("c"))?;
         let third = path("c")?;
         let watch = capture_watch_batch(
@@ -4464,12 +4234,7 @@ mod tests {
                 changes: vec![WatchChange::Created(third.clone())],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -4495,12 +4260,7 @@ mod tests {
         capture_paths(
             &mut checkout,
             std::slice::from_ref(&existing),
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options.clone() },
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4523,12 +4283,7 @@ mod tests {
                 changes: vec![WatchChange::Created(existing.clone())],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,

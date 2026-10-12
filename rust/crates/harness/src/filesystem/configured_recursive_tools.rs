@@ -36,9 +36,9 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 }
 
 impl ConfiguredRecursiveAuthorityBinding {
-    /// Retains the original installed signer; setup authenticates its scope through the same configured source validation used for wire bindings.
+    /// Retains the signer and scope for configured-source validation.
     #[must_use]
-    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
+    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self { Self { issuer, scope } }
 
     #[must_use]
     pub fn authority(&self) -> &Authority { self.issuer.audience() }
@@ -101,7 +101,7 @@ pub struct ConfiguredRecursiveFork {
 
 fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
     -> std::result::Result<TaskAdmissionRecord, D::Error> {
-    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?)
+    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None).map(|(admission, _)| admission)
         .map_err(serde::de::Error::custom)
 }
 
@@ -253,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             verifier(&fork.child)?;
             fork.project.validate(&mut None)?;
             fork.private_volume.validate(&mut None)?;
-            fork.admission.validate()?;
+            fork.admission.validate(&mut None)?;
             let agent = fork.child.scope.agent().ok_or_else(|| Error::Unauthorized("configured child has no signed agent".into()))?;
             if let Some(result) = &fork.result_volume {
                 validate_result_volume(result, &fork.private_volume, agent, provider)?;
@@ -332,8 +332,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if admission.parent.is_some() {
             let inspection = runtime.inspect_source(task, task).await?;
             if inspection.project()?.volume != caller.project
-                || context.scope().current_created_authority()? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume()? != Some(&caller.private_volume)
+                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
+                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume)
                 || inspection.volumes().iter().filter(|snapshot| snapshot.volume == caller.private_volume).count() != 1
                 || caller.result_volume.as_ref().is_some_and(|result|
                     inspection.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
@@ -511,8 +511,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
-            verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
+        let pinned = StreamAggregate::open_measured(&self.stream, caller.owner.authority().clone(),
+            verifier(&caller.owner)?, SchemaRegistry::default(), Some(intent.request.parent_revision),
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
         let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None)?;
@@ -670,8 +670,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
-                verifier(&binding.owner)?, SchemaRegistry::default(), request.parent_revision,
+            aggregate = StreamAggregate::open_measured(&self.stream, binding.owner.authority().clone(),
+                verifier(&binding.owner)?, SchemaRegistry::default(), Some(request.parent_revision),
                 self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
@@ -697,9 +697,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::Unauthorized("configured checkpoint is not original authenticated caller cut".into()));
         }
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let page = HistoryReader::new(&self.stream, binding.authority(), verifier(binding)?)?.read_page(&HistoryCursor {
+        let page = HistoryReader::new(&self.stream, binding.authority(), &(verifier(binding)?), &mut None)?.read_page(&HistoryCursor {
             authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
-        }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
+        }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }, None).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
             return Err(Error::Unauthorized("configured checkpoint head differs from original canonical Stream event".into()));
@@ -768,8 +768,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
             }
             if project != 1 || scratch != 1 || (caller.result_volume.is_some() && result != 1)
-                || context.scope().current_created_authority()? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume()? != Some(&caller.private_volume) {
+                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
+                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source binding differs from authenticated current allocation" });
             }
@@ -864,12 +864,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         drop(observer);
         drop(history);
         let provider = crate::resources::ProviderRef::new(
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?, crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?,
-            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?,
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.namespace(), Some(&io))?.into(), crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.family(), Some(&io))?.into(),
+            crate::filesystem::fork_preparer_io::clone_text(self.config.stream_provider.version(), Some(&io))?.into(), &mut None
         )?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let reference = crate::resources::ResourceRef::new_with_work(
+        let reference = crate::resources::ResourceRef::new(
             crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
         )?;
         let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
@@ -1010,10 +1010,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         let verifier = binding.issuer().verifier(&mut observer)?;
-        let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
+        let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let reader = HistoryReader::new(&self.stream, binding.authority(), &verifier, &mut Some(&mut reader_io))?;
+        let _reader_custody = reader_io.into_custody();
         let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
-        let (head, retained) = reader.0.operation_event(
+        let (head, retained) = reader.operation_event(
             expected.operation_id, self.config.history_limits.maximum_bytes, &mut observer,
         ).await?;
         let head_hold = io.guard_owned(retained)?;
@@ -1139,7 +1141,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let temporary = capabilities.logical_owned_bytes()?;
         drop(capabilities);
         observer.as_deref_mut().expect("native child issuer observer").release_owned(temporary)?;
-        child.validate_with_work(&mut observer)?;
+        child.validate(&mut observer)?;
         drop(observer);
         drop(history);
         let retained = io.owned_bytes()?;
@@ -1306,7 +1308,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         let generation = original.map_or(&selected.generation, |original| &original.source_generation).clone_with_io(&io)?;
-        let notice = original.map_or(&allocation.notice, |original| &original.notice).copy(&mut Some(&mut io.history_io()))?;
+        let mut observer = io.history_io();
+        let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
+        let notice = original.map_or(&allocation.notice, |original| &original.notice).clone_in_quota(&mut quota)?;
+        quota.transfer();
+        drop(quota);
         let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
             Some(owner.restore_project_source_authorization_with_native_work(
                 context.task(), authorization, work,
@@ -1426,7 +1433,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native child claims changed after immutable source choice" });
         }
         let checkpoint = match original {
-            Some(original) => Some(super::fork_preparer_io::clone_file(&original.source_checkpoint, Some(&io))?),
+            Some(original) => Some(crate::executor::with_history_io(Some(&io), |work| original.source_checkpoint.copy(work))?),
             None => {
                 let observed = context.observe_staged_file_once_with_native_work(
                     checkpoint_operation(context.operation_id()), work,
@@ -1504,7 +1511,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let child_message_file_pointer = allocation.child_message_file_pointer.as_deref().map(|value| super::fork_preparer_io::clone_text(value, Some(&io))).transpose()?;
         let mut input_files = Vec::new();
         for file in &allocation.input_files {
-            let file = super::fork_preparer_io::clone_file(file, Some(&io))?;
+            let file = crate::executor::with_history_io(Some(&io), |work| file.copy(work))?;
             crate::executor::stock_vec_push(&mut input_files, file, Some(&io))?;
         }
         let retained = io.owned_bytes()?;

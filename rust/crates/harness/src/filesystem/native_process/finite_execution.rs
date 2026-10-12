@@ -20,8 +20,7 @@ pub(super) async fn execute<P: StreamProvider>(
                 view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                 authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
                 if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native result reader has no original finite SDK engine" });
+                    return Err(boundary(crate::wire::ErrorCode::Unsupported, "native result reader has no original finite SDK engine"));
                 }
                 publication_slot = Some(crate::filesystem::native_execution::reserve_box::<NativeViewPublicationError>(original)?);
                 original.admit(WorkCounters { bytes_encoded: u64::from(request.maximum_result_bytes),
@@ -34,8 +33,7 @@ pub(super) async fn execute<P: StreamProvider>(
 
     }
             if view.manifest() != &request.view {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "native dispatch view changed after observation" });
+                return Err(boundary(crate::wire::ErrorCode::Conflict, "native dispatch view changed after observation"));
             }
             owner.verify_with_native_work(false, original).await?;
             let scopes = view.retain_native_namespace_scopes(original)?.await?;
@@ -60,7 +58,7 @@ pub(super) async fn execute<P: StreamProvider>(
                 let (result, guard) = authority.results.stage_once(
                     OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
                     &bytes, "application/json", "Native process result", Some(&io))?.await?;
-                let guard = guard.ok_or(receipt_error("native result publisher omitted admitted custody"))?;
+                let guard = guard.ok_or(boundary(crate::wire::ErrorCode::Storage, "native result publisher omitted admitted custody"))?;
                 let retained = guard.bytes();
                 guard.into_retained();
                 let mut guard = io.take_native_custody(retained)?;
@@ -69,8 +67,7 @@ pub(super) async fn execute<P: StreamProvider>(
                     ..WorkCounters::default() })?;
                 result.descriptor().verify(&bytes, &mut Some(&mut io.history_io()))?;
                 if result.descriptor().media_type() != "application/json" {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "native effect result must be JSON content" });
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "native effect result must be JSON content"));
                 }
                 authority.result_content.verify(
                     &result, u64::from(request.maximum_result_bytes), Some(&io),
@@ -80,8 +77,7 @@ pub(super) async fn execute<P: StreamProvider>(
     };
             drop(bytes);
             if result.volume() != authority.results.volume() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native result publisher returned another owner volume" });
+                return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native result publisher returned another owner volume"));
             }
             let mut published = Vec::new();
             if publish {
@@ -97,8 +93,7 @@ pub(super) async fn execute<P: StreamProvider>(
                     Ok(receipt) => {
                         let checked = async {
                             if view.manifest() != &request.view {
-                                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                                    reason: "native publication view changed after publication" });
+                                return Err(boundary(crate::wire::ErrorCode::Conflict, "native publication view changed after publication"));
                             }
                             owner.verify_with_native_work(false, original).await
                         }.await;
@@ -231,7 +226,6 @@ async fn capture<P: StreamProvider>(
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
-            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
                     &mut command, original.runtime_meter(), &mut process,
@@ -239,10 +233,9 @@ async fn capture<P: StreamProvider>(
 };
             if let Err(error) = spawned {
                 if let Some(process) = process {
-                    let retained = NativeRetainedProcess { process,
-                        _scopes: scopes,
-                        _custody: process_custody };
-                    *capture_supervisor.process.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retained);
+                    let retained = (process, scopes.0, scopes.1);
+                    capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut().expect("original capture attempt").process = Some(retained);
                 }
                 return Err(error);
             }
@@ -281,10 +274,9 @@ async fn capture<P: StreamProvider>(
             if !process.is_reaped()
                 || output.as_ref().is_err_and(|failure| !failure.cleanup_completed)
             {
-                let retained = NativeRetainedProcess { process,
-                    _scopes: scopes,
-                    _custody: process_custody };
-                *capture_supervisor.process.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retained);
+                let retained = (process, scopes.0, scopes.1);
+                capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut().expect("original capture attempt").process = Some(retained);
             }
             Ok(output)
         })();
@@ -373,7 +365,7 @@ mod supervisor_tests {
 
     #[test]
     fn missing_owned_tree_cannot_report_quiescence() {
-        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) };
+        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new() };
         let attempt = crate::EffectAttemptId::from_bytes([41; 16]);
         supervisor.begin(attempt).unwrap();
         supervisor.record_quiescence(false).unwrap();

@@ -142,7 +142,7 @@ fn copy_checkpoint(source: &CheckpointRef, quota: &mut CodecQuota<'_, '_>) -> Re
     let provider = crate::core::copy_provider(reference.provider(), quota)?;
     let key = crate::core::copy_copy_vector(reference.key(), quota)?;
     let version = reference.version().map(|version| copy_text(version, quota)).transpose()?;
-    let reference = crate::resources::ResourceRef::new_with_work(
+    let reference = crate::resources::ResourceRef::new(
         reference.kind(), provider, key, version, quota.work(),
     )?;
     CheckpointRef::from_resource_with_work(reference, quota.work())

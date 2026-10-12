@@ -54,10 +54,6 @@ pub enum AppendOutcome {
 }
 
 /// Optional authority-side admission condition for one publication.
-///
-/// Ordinary SDK callers use [`PublicationPermit::Unrestricted`]. Managed
-/// operation windows issue lease permits whose gate is checked in the same
-/// storage transaction as the generation append.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PublicationPermit {
     /// No operation-window admission is required.
@@ -139,9 +135,6 @@ pub enum FenceOutcome {
 }
 
 
-
-
-
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
 
@@ -154,8 +147,7 @@ pub enum AuthorityStoreError {
     /// Operation was cancelled before durable authority work began.
     #[error("authority operation was cancelled")]
     Cancelled,
-    /// This custom provider cannot fund the canonical producer in the original
-    /// native allocation ledger. Rejected before provider I/O.
+    /// This custom provider cannot fund the canonical producer in the original native allocation ledger.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("authority provider does not support original native work")]
     NativeOriginalUnsupported,
@@ -227,7 +219,6 @@ pub enum AuthorityStoreError {
     #[error("authority sequence exhausted")]
     SequenceExhausted,
     /// A surviving reservation identity lacks authenticated original head evidence.
-    /// This is queryable uncertainty, never permission to adopt a current head.
     #[error("original publication reservation head is unavailable for authority {authority_id:?}, operation {operation_id:?}, gate {gate_tail}")]
     ReservationOriginalHeadUnavailable {
         /// Original authority selected by the reservation.
@@ -298,10 +289,6 @@ impl ObjectKind {
     }
 
     /// Parses one stable canonical object-class tag.
-    ///
-    /// # Errors
-    ///
-    /// Rejects unknown tags instead of guessing a future object class.
     pub const fn from_canonical_tag(tag: u8) -> Result<Self, ObjectKindError> {
         match tag {
             1 => Ok(Self::Blob),
@@ -387,9 +374,6 @@ pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
 }
 
 /// Canonical immutable object bytes and the identity their hash proves.
-///
-/// The only constructor hashes the bytes, so holding one proves its identity:
-/// a store may admit it without hashing the same bytes again.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HashedObject {
     object_id: ObjectId,
@@ -434,11 +418,6 @@ impl HashedObject {
     }
 
     /// Transfers a guarded vector into the physical immutable byte owner.
-    ///
-    /// Validation failures leave caller inputs unchanged. After the actual
-    /// vector/guard transfer, constructor denial physically drops that failed
-    /// payload before returning its original cause; every successful alias
-    /// retains the original vector capacity until its final drop.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_vec(
         kind: ObjectKind,
@@ -521,19 +500,16 @@ pub struct ByteRange {
 /// How the bytes returned by one immutable-object read remain resident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectReadRetention {
-    /// The returned view shares backend-owned immutable storage and adds no
-    /// operation-owned byte buffer.
+    /// The returned view shares backend-owned immutable storage and adds no operation-owned byte buffer.
     Shared,
-    /// The backend allocated this exact logical byte capacity and transfers
-    /// ownership to the caller until the value is dropped.
+    /// The backend allocated this exact logical byte capacity and transfers ownership to the caller until the value is dropped.
     Owned {
         /// Exact requested capacity retained by the returned value.
         logical_bytes: u64,
     },
 }
 
-/// Immutable bytes plus explicit retention evidence for zero-copy and peak
-/// allocation accounting.
+/// Immutable bytes plus explicit retention evidence for zero-copy and peak allocation accounting.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectRead {
     /// Complete canonical object bytes.
@@ -573,9 +549,6 @@ pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
 pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
-
-
-
 
 
 /// Typed immutable-object failures.
@@ -639,8 +612,7 @@ pub enum ObjectStoreError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     Native(#[from] crate::materializer::NativeTreeMaterializationError),
-    /// The original Objects failure, including every acknowledged prefix and
-    /// intrinsically owned diagnostic or failed request packet.
+    /// The original Objects failure, including every acknowledged prefix and intrinsically owned diagnostic or failed request packet.
     #[cfg(all(feature = "distributed", not(target_arch = "wasm32")))]
     #[error(transparent)]
     NativeObjects(#[from] acyclic_objects::v1::NativeObjectsError),

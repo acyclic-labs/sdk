@@ -97,8 +97,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
-    let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
+    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
@@ -220,7 +220,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
         planned_commands, cancellation: cancellation.clone() };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
-        imported_generation.id().digest().into_bytes(), None)?;
+        imported_generation.id().digest().into_bytes().into(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
         &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
     let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),
@@ -266,11 +266,9 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
                 native_snapshot: None, result_volume: caller.result.clone() });
         }
         identities.insert(label, caller.task);
-        caller_records.insert(label, json!({ "task": caller.task, "agent": caller.binding.scope.agent(),
+        caller_records.insert(label, json!({ "agent": caller.binding.scope.agent(),
             "authority": caller.binding.authority, "project": caller.project, "private_volume": caller.private,
-            "result_volume": caller.result,
-            "admission": producer.runtime.task_host().observe_admission(caller.task).await?,
-            "volume_snapshots": producer.runtime.task_host().observe_volume_snapshots(caller.task).await? }));
+            "admission": producer.runtime.task_host().observe_admission(caller.task).await? }));
     }
     let cursor = acyclic_harness::wire::ReplayCursor {
         authority: Some(acyclic_harness::wire_codec::encode_authority(&producer.config.owner.authority)),
@@ -342,8 +340,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "preparations": producer.preparations, "files": producer.references,
         "leases": producer.leases, "cursor_protobuf": cursor_path,
         "native_command": native_command, "native_publication": publication, "native_publication_request": publication_path,
-        "limits": producer.config.limits, "session_limits": producer.config.session_limits,
-        "history_limits": HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
+        "session_limits": producer.config.session_limits,
         "negative_control": negative_control,
         "qualification_ready": true,
         "missing_prerequisites": []
@@ -404,7 +401,7 @@ impl Producer {
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
             "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?).await?;
         let digest = request.approval_digest(caller.task, operation)?;
-        let interaction = Interaction::approval("Run the exact native qualification command", operation, digest)?;
+        let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
             "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;
@@ -661,7 +658,7 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
 
 async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkLease> {
     let admission = runtime.task_host().observe_admission(task).await?;
-    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id).await? {
+    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await? {
         WorkPull::Claimed(lease) => lease,
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),

@@ -15,7 +15,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     let owner = WasmReducer::new(to_js(&Authority { kind: AggregateKind::Task, id: id.clone() })?,
         "headless-browser".into(), vec![41; 32], to_js(&Vec::<Value>::new())?)?;
     let agent = AgentId::from_bytes([42; 16]);
-    let provider = ProviderRef::new("headless-browser", "filesystem", "2").map_err(js_error)?;
+    let provider = ProviderRef::new("headless-browser".into(), "filesystem".into(), "2".into(), &mut None).map_err(js_error)?;
     let volume = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(js_error)?;
     let scope = owner.issuer.issue("owner", &Capabilities::new([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
@@ -74,7 +74,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     assert_eq!(js_sys::Array::from(&field(&page,"entries")).length(), 0);
     assert!(runtime.children(task.clone(), None, None, 0).await.is_err());
     let generate: Function = Function::new_no_args("let calls=0; const f=()=>{calls++; let i=0; const events=[{kind:'tool_call',call_id:'exact-call',name:'test.headless',arguments:null},{kind:'completed',metadata:{}}]; return {next:()=>Promise.resolve(i<events.length?{done:false,value:events[i++]}:{done:true}),return:()=>({done:true})};}; f.calls=()=>calls; return f;").call0(&JsValue::UNDEFINED)?.unchecked_into();
-    runtime.configure_model(to_js(&Model::new("fixture", "headless", "1", serde_json::json!({})).map_err(js_error)?)?,
+    runtime.configure_model(to_js(&Model::new("fixture".into(), "headless".into(), "1".into(), serde_json::json!({})).map_err(js_error)?)?,
         generate.clone(), Function::new_no_args("return null;"),
         Some(Function::new_no_args("return {context_tokens:131072,output_tokens:8192};")),
         Some(Function::new_with_args("bytes,request_digest", "return {request_digest,fixed_tokens:bytes.byteLength,message_tokens:JSON.parse(new TextDecoder().decode(bytes)).messages.map(()=>0)};")),
