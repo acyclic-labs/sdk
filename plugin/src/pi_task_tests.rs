@@ -443,34 +443,8 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
 }
 
 #[test]
-fn pi_root_intent_and_execution_mode_are_required_and_bounded() {
-    let binding = binding();
-    let machine = PiTaskMachine::new(&work()).unwrap();
-    for input in [
-        json!({"binding":binding,"launch":null}),
-        json!({"binding":binding,"execution":{"kind":"host"}}),
-        json!({"binding":binding,"execution":{"kind":"child","launch":null}}),
-        json!({"binding":binding,"execution":{"kind":"host","root":{"kind":"scratch_only"}}}),
-        json!({"binding":binding,"execution":{"kind":"host","root":{"kind":"scratch_only","paths":{}},"preparation":preparation()}}),
-    ] {
-        assert!(
-            machine.initialize_with_native_work(&input, &work()).is_err(),
-            "accepted invalid input: {input}"
-        );
-    }
-    let input = PiTaskInput {
-        binding: binding.clone(),
-        execution: PiTaskExecution::Host {
-            root: PiRootIntent::ScratchOnly {},
-            preparation: preparation(),
-        },
-    };
-    let encoded = serde_json::to_value(input).unwrap();
-    assert_eq!(
-        machine.initialize_with_native_work(&encoded, &work()).unwrap().0,
-        json!({"state":"preparing","command":preparation()})
-    );
-    let mut binding = binding;
+fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
+    let mut binding = binding();
     let root_id = [2; 16];
     let key = hex::encode(root_id);
     binding.project_volumes.insert(
@@ -1509,6 +1483,11 @@ mod native_transition {
         assert_eq!(original.live_allocation_bytes(), original_baseline);
         assert_eq!(input, preserved);
         for malformed in [
+            json!({"binding":binding(),"launch":null}),
+            json!({"binding":binding(),"execution":{"kind":"host"}}),
+            json!({"binding":binding(),"execution":{"kind":"child","launch":null}}),
+            json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"}}}),
+            json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only","paths":{}},"preparation":preparation()}}),
             json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"},"preparation":preparation()},"unknown":true}),
             json!({"binding":{},"execution":{"kind":"child","launch":preparation()}}),
             json!({"binding":binding(),"execution":{"kind":"host","root":{"kind":"scratch_only"},"preparation":preparation(),"unknown":true}}),
