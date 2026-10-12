@@ -27,10 +27,10 @@ fn root_source_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
     { Error::Storage(source.to_string()) }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn root_lazy_mutations(mutations: &[super::WorkspaceMutation])
-    -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'_>> + Send
+fn root_lazy_mutations<'a>(mutations: &'a [super::WorkspaceMutation])
+    -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'a>> + Send + 'a
 {
-    mutations.iter().filter_map(|mutation| match mutation {
+    mutations.iter().filter_map(|mutation: &'a super::WorkspaceMutation| match mutation {
         super::WorkspaceMutation::CreateDirectory { path } =>
             Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path }),
         super::WorkspaceMutation::PutFile { path, bytes } =>
