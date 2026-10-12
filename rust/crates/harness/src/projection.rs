@@ -770,7 +770,7 @@ fn projection_native_image(
     projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
     Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
         intent: crate::model::NativeMediaIntent::Image { detail: crate::model::ImageDetail::Auto },
-        maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+        maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
         maximum_work,
         configuration: None,
     })))

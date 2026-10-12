@@ -4,14 +4,8 @@ use super::*;
 use crate::filesystem::{PreparationIo, PreparationRecord};
 use acyclic_fs::WorkCounters;
 
-impl PreparationRecord for MailSendTaskCommand {
-    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
-    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
-}
-impl PreparationRecord for MailReceiveTaskCommand {
-    fn maximum_slot_bytes() -> u64 { crate::filesystem::fork_preparer::bounded_io::preparation_slot_bytes::<Self>() }
-    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
-}
+impl PreparationRecord for MailSendTaskCommand {}
+impl PreparationRecord for MailReceiveTaskCommand {}
 
 fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
     let Some(io) = io else { return Ok(()); };

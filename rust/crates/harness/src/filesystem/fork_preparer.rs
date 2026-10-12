@@ -141,9 +141,7 @@ pub struct FilesystemForkPreparer<A, O> {
     task_preparation: Option<Arc<TaskResourcePreparation>>,
     project_source: Option<ProjectSourceReadHandle>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_work: Option<acyclic_fs::NativeMaterializationWork>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_custody: Option<acyclic_fs::NativeAllocation>,
+    native: Option<(acyclic_fs::NativeMaterializationWork, acyclic_fs::NativeAllocation)>,
 }
 
 struct BoundSummary {
@@ -236,9 +234,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             task_preparation: None,
             project_source: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native_work: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
+            native: None,
         })
     }
 
@@ -262,10 +258,10 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             host, parent, verifier, scope, project, stream_provider, resolver,
             capture_providers: Vec::new(), summary: None, history: Some(history),
             task_preparation: None, project_source: source_read,
-            native_work: Some(work.clone()), native_custody: Some(custody),
+            native: Some((work.clone(), custody)),
         };
         let reject = |code, reason| Error::NativeBoundary { code, reason };
-        if !this.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
+        if !this.native.as_ref().is_some_and(|(_, guard)| guard.matches_work(work)) {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork custody belongs to another original resource"));
         }
         this.stream_provider.validate_with_native_work(work)?;
@@ -306,12 +302,12 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     /// Shares this preparer on its native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        if !self.native_custody.as_ref().is_some_and(|guard| guard.matches_work(work)) {
+        if !self.native.as_ref().is_some_and(|(_, guard)| guard.matches_work(work)) {
             return Err(native_error(crate::wire::ErrorCode::Invalid, "fork preparer belongs to another original resource"));
         }
         let mut header = work.claim(std::mem::size_of::<Self>() as u64)
             .map_err(Error::from)?;
-        self.native_custody.as_mut().expect("native custody was checked").absorb(&mut header)
+        self.native.as_mut().expect("native custody was checked").1.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
         Ok(Arc::new(self))
     }
@@ -350,10 +346,9 @@ impl<A, O> FilesystemForkPreparer<A, O> {
     ) -> Result<Self> {
         let mut io = None;
         #[cfg(not(target_arch = "wasm32"))]
-        match (&self.native_work, custody) {
-            (Some(work), Some(mut custody)) if custody.matches_work(work) => {
-                self.native_custody.as_mut().expect("native preparer retains its input custody")
-                    .absorb(&mut custody).map_err(|cause| Error::NativeWork { cause, custody: Some(custody) })?;
+        match (self.native.as_mut(), custody) {
+            (Some((work, retained)), Some(mut custody)) if custody.matches_work(work) => {
+                retained.absorb(&mut custody).map_err(|cause| Error::NativeWork { cause, custody: Some(custody) })?;
                 let binding = PreparationIo::from_native_work(work)?;
                 binding.retain_owned(std::mem::size_of::<OriginalSummaryHistory<P>>() as u64)?;
                 binding.allocation_attempt(std::mem::size_of::<OriginalSummaryHistory<P>>() as u64)?;
@@ -378,7 +373,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         if let Some(io) = io {
             let retained = io.owned_bytes()?;
             let mut custody = io.into_native_custody(retained)?;
-            self.native_custody.as_mut().expect("native preparer retains its input custody")
+            self.native.as_mut().expect("native preparer retains its input custody").1
                 .absorb(&mut custody).map_err(|cause| Error::NativeWork { cause, custody: Some(custody) })?;
         }
         self.summary = Some(BoundSummary {
@@ -541,7 +536,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     fn require_native_projection_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         work.remaining().map_err(Error::from)?;
-        if !self.native_custody.as_ref().is_some_and(|custody| custody.matches_work(work)) {
+        if !self.native.as_ref().is_some_and(|(_, custody)| custody.matches_work(work)) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "fork projection belongs to another original resource"));
         }
         Ok(())
@@ -731,7 +726,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     ) -> Result<Option<PreparedSummaryFork>> {
         let Some(selection) = &request.preparation.summary else { return Ok(None) };
         #[cfg(not(target_arch = "wasm32"))]
-        match (&self.native_work, io.and_then(PreparationIo::original_native_work)) {
+        match (&self.native, io.and_then(PreparationIo::original_native_work)) {
             (Some(_), Some(work)) => self.require_native_projection_work(work)?,
             (None, None) => {}
             _ => return Err(native_error(crate::wire::ErrorCode::Unauthorized,
@@ -760,7 +755,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     ) -> Result<PreparationAttempt<'a, A, O>> {
         let mut io = None;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.native_work { io = Some(PreparationIo::from_native_work(work)?); }
+        if let Some((work, _)) = &self.native { io = Some(PreparationIo::from_native_work(work)?); }
         if io.is_none() {
             io = task.map(|task| {
                 let cancellation = task.cancellation().ok_or_else(|| Error::Unauthorized(

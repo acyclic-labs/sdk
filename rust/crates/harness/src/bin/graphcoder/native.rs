@@ -207,7 +207,7 @@ impl NativeSession {
         let source = super::native_tools::source(&config, stream.clone(), files.clone())?;
         if let Some(graph_root) = config.project_source_root {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
-                files.clone(), config.owner.authority.clone(), graph_root,
+                files.clone(), &config.owner.authority, graph_root, None,
             )?;
             source.with_project_source_policy(
                 AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
@@ -362,7 +362,7 @@ impl NativeSession {
 
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.poll_task_wake(task).await?;
+        self.runtime.poll_task_wake(task, None).await?;
         self.runtime.task_host().pull_operation(worker, admission.operation_id).await
     }
 
@@ -378,7 +378,7 @@ impl NativeSession {
             self.context.read().map_err(|_| Error::Storage("context lock poisoned".into()))?.pipeline()?,
             Default::default(),
         );
-        render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
+        render_attempt(self.runtime.resume_task(lease, &commands, 16, None).await)
     }
 
     /// Resolve the caller through canonical admission and verify its actual retained fence before granting any scoped file/mail/workflow handle.

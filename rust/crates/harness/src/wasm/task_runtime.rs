@@ -683,7 +683,7 @@ impl WasmTaskRuntime {
             if let Some(graph_root) = graph_root {
                 source.with_project_source_policy(owner.issuer.clone(), Arc::new(
                     crate::filesystem::FsRootProjectSourceProvider::new(
-                        filesystem.clone(), owner.issuer.audience().clone(), graph_root,
+                        filesystem.clone(), &owner.issuer.audience(), graph_root, None,
                     )?,
                 ))?;
             }
@@ -817,10 +817,10 @@ impl WasmTaskRuntime {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let store = FilesystemSchedulerPayloadStore::new(
             self.filesystem.clone(),
-            self.volume.clone(),
+            &self.volume,
             &self.verifier,
             &self.scope,
-            self.maximum_payload_bytes,
+            self.maximum_payload_bytes, None,
         )
         .map_err(js_error)?;
         let file: FileRef = store
@@ -879,7 +879,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         match self
             .runtime
-            .run_operation(&worker, task, &self.commands(), maximum_transitions)
+            .run_operation(&worker, task, &self.commands(), maximum_transitions, None)
             .await
             .map_err(js_error)?
         {
@@ -976,7 +976,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime
-                .resume_task(lease, &self.commands(), maximum_transitions)
+                .resume_task(lease, &self.commands(), maximum_transitions, None)
                 .await,
         ))
     }

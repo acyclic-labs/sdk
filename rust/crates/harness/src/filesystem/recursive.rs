@@ -217,7 +217,8 @@ where
         if authorization.caller_task != caller {
             return Err(Error::Unauthorized("selected source approval belongs to another caller".into()));
         }
-        source_read.require_selection(operation_id, selected, &authorization.project, &authorization.generation, authorization.native_snapshot.as_ref(), None)?;
+        source_read.require_selection(operation_id, selected, &authorization.project,
+            &authorization.generation, authorization.native_snapshot.as_ref(), None)?;
         arguments.select_project(caller, selected, authorization.project.clone(),
             authorization.generation.clone(), config.limits, &mut request)?;
         request.authorized_source = Some(authorization.clone());
@@ -235,197 +236,7 @@ where
     }
     Ok(RetainedSourceBinding { preparer: Arc::new(preparer), request })
 }
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct RecursiveForkSourceView<'a> {
-    pub caller: TaskId,
-    pub scope: &'a crate::core::Scope,
-    pub project: &'a VolumeRef,
-    pub project_generation: &'a GenerationRef,
-    pub private_volume: &'a VolumeRef,
-    pub private_generation: &'a GenerationRef,
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct RecursiveForkAllocationView<'a> {
-    pub child: &'a crate::core::Authority,
-    pub project: &'a VolumeRef,
-    pub private_volume: &'a VolumeRef,
-    pub result_volume: Option<&'a VolumeRef>,
-    pub limits: Limits,
-    pub inherited_messages: u64,
-    pub inherited_bytes: u64,
-    pub inherited_references: u32,
-}
-
-/// The shared native field factory for installed configured defaults and the public ordinary recursive source constructor.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments, reason = "original source and child role identities stay explicit")]
-pub(crate) fn recursive_fork_request_with_native_work(
-    parent: &crate::core::Reducer, source: RecursiveForkSourceView<'_>,
-    allocation: RecursiveForkAllocationView<'_>, stream_provider: &crate::resources::ProviderRef,
-    operation: OperationId, arguments: &ForkToolArguments,
-    source_read: Option<&crate::source_authorization::ProjectSourceReadHandle>,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(ForkRequest, acyclic_fs::NativeAllocation)> {
-    use std::fmt::Write as _;
-    let io = super::PreparationIo::from_native_work(work)?;
-    let mut history = io.history_io();
-    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-    let selected = arguments.source_task(source.caller, allocation.limits, &mut observer)?;
-    let caller_agent = parent.conversation().and_then(|conversation| conversation.agent);
-    if caller_agent.is_none() || caller_agent != source.scope.agent()
-        || caller_agent != match source.private_volume.owner() {
-            crate::conversation::VolumeOwner::Agent(agent) => Some(*agent), _ => None,
-        }
-    {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native fork source is not the admitted current caller agent" });
-    }
-    let parent_authority = observer.as_deref_mut().expect("native fork observer").clone_authority(parent.authority())?;
-    let child = observer.as_deref_mut().expect("native fork observer").clone_authority(allocation.child)?;
-    let path = parent.authority().stream_path(&mut observer)?.into_bytes();
-    let mut version = String::new();
-    observer.as_deref_mut().expect("native fork observer").reserve_text(&mut version, 20)?;
-    observer.as_deref_mut().expect("native fork observer").admit_copy(20)?;
-    write!(&mut version, "{}", parent.revision()).map_err(|_| Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid, reason: "native revision formatting failed",
-    })?;
-    observer.as_deref_mut().expect("native fork observer").copy_bytes(version.len() as u64)?;
-    drop(observer);
-    drop(history);
-    let provider = crate::resources::ProviderRef::new(
-        crate::filesystem::fork_preparer_io::clone_text(stream_provider.namespace(), Some(&io))?, crate::filesystem::fork_preparer_io::clone_text(stream_provider.family(), Some(&io))?,
-        crate::filesystem::fork_preparer_io::clone_text(stream_provider.version(), Some(&io))?,
-    )?;
-    let mut history = io.history_io();
-    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-    let reference = crate::resources::ResourceRef::new_with_work(
-        crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
-    )?;
-    let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
-    let child_project = allocation.project.copy(&mut observer)?;
-    let child_private = allocation.private_volume.copy(&mut observer)?;
-    let child_result = allocation.result_volume.map(|volume| volume.copy(&mut observer)).transpose()?;
-    let source_project = source_read.map_or(source.project, |handle| &handle.authorization().project)
-        .copy(&mut observer)?;
-    let scratch = source.private_volume.copy(&mut observer)?;
-    let mut selections = Vec::new();
-    let slots = 3 * std::mem::size_of::<crate::fork::ForkSelection>() as u64;
-    observer.as_deref_mut().expect("native fork observer").admit_owned(slots)?;
-    observer.as_deref_mut().expect("native fork observer").admit_allocation(slots)?;
-    selections.try_reserve_exact(3).map_err(|cause|
-        observer.as_deref().expect("native fork observer").allocation_failure(cause))?;
-    observer.as_deref_mut().expect("native fork observer")
-        .retain_owned(selections.capacity() as u64 * std::mem::size_of::<crate::fork::ForkSelection>() as u64)?;
-    drop(observer);
-    drop(history);
-    let generation = source_read.map_or(source.project_generation, |handle| &handle.authorization().generation);
-    let generation = GenerationRef::new_with_native_work(
-        generation.as_resource().provider(), generation.as_resource().key(), generation.as_resource().version(), work)?;
-    io.absorb_native_custody(generation.1)?;
-    let private_generation = GenerationRef::new_with_native_work(
-        source.private_generation.as_resource().provider(), source.private_generation.as_resource().key(),
-        source.private_generation.as_resource().version(), work)?;
-    io.absorb_native_custody(private_generation.1)?;
-    selections.push(crate::fork::ForkSelection { required: true, revision: ResourceRevision::History(reference) });
-    selections.push(crate::fork::ForkSelection { required: true,
-        revision: ResourceRevision::Project { volume: source_project, generation: generation.0 } });
-    selections.push(crate::fork::ForkSelection { required: true,
-        revision: ResourceRevision::PrivateVolume { volume: scratch, generation: private_generation.0, paths: Vec::new() } });
-    let mut history = io.history_io();
-    let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-    let authorized_source = match source_read {
-        Some(handle) => {
-            let authorization = handle.authorization();
-            if authorization.caller_task != source.caller {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native source approval belongs to another caller" });
-            }
-            handle.require_selection(operation, selected, &authorization.project, &authorization.generation, authorization.native_snapshot.as_ref(), Some(work))?;
-            Some(authorization.clone_with_work_and_custody(&mut observer)?.0)
-        }
-        None if selected != source.caller => return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized, reason: "foreign fork has no operation-sealed Project reader",
-        }),
-        None => None,
-    };
-    if selected == source.caller && source_read.is_some() {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "current fork cannot substitute a foreign reader" });
-    }
-    let request = ForkRequest {
-        operation_id: operation, parent: parent_authority, parent_revision: parent.revision(),
-        child, child_agent: arguments.id, attached_agents: Vec::new(),
-        preparation: crate::fork::ForkPreparation {
-            child_project_volume: child_project, child_private_volume: child_private,
-            child_result_volume: child_result, summary: None, inherited_through_sequence: 0,
-            maximum_inherited_messages: allocation.inherited_messages,
-            maximum_inherited_bytes: allocation.inherited_bytes,
-            maximum_inherited_references: allocation.inherited_references,
-        }, selections, boundary: None, authorized_source,
-    }.with_history_policy(parent, if selected == source.caller {
-        crate::fork::ForkHistoryPolicy::default()
-    } else { crate::fork::ForkHistoryPolicy::Fresh }, &mut observer)?;
-    drop(observer);
-    drop(history);
-    let retained = io.owned_bytes()?;
-    Ok((request, io.into_native_custody(retained)?))
-}
-
-/// Opens a native ordinary recursive fork at the actual caller's authenticated cut.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments, reason = "original provider, source and authority identities stay explicit")]
-pub async fn recursive_fork_source_with_native_work<P, A, O>(
-    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &Arc<P>,
-    parent: crate::core::Reducer, verifier: &crate::core::AuthorityVerifier,
-    signed: &crate::core::Scope, context: &crate::runtime::TaskContext,
-    source: &RecursiveSourceSnapshot, stream_provider: &crate::resources::ProviderRef,
-    operation: OperationId, arguments: &ForkToolArguments, config: &RecursiveForkConfig,
-    source_read: Option<&crate::source_authorization::ProjectSourceReadHandle>,
-    resolver: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-    cancellation: &acyclic_fs::CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>
-where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
-    work.remaining()?;
-    cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-    if context.durable_task_id() != Some(source.task) || !context.scope().grants().contains("fork:publish") {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native fork caller/source authority differs" });
-    }
-    if context.scope().current_created_authority_with_native_work(work)?
-        .is_some_and(|authority| authority != parent.authority())
-        || context.scope().current_created_private_volume_with_native_work(work)?
-            .is_some_and(|volume| volume != &source.private_volume)
-    {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native descendant source differs from its original created caller" });
-    }
-    let io = super::PreparationIo::from_native_work(work)?;
-    {
-        let mut history = io.history_io();
-        verifier.verify_scope_for_with_work(parent.authority(), signed, &mut Some(&mut history))?;
-    }
-    for volume in [&source.project, &source.private_volume] {
-        if !io.contains_capability(context.scope().grants(), volume, "volume:read:")? {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native caller lacks selected source read authority" });
-        }
-        crate::conversation::ContentGrant::verify_original_volume_with_io(
-            verifier, signed, volume, VolumeOperation::Read, &io)?;
-    }
-    let request = recursive_fork_request_with_native_work(&parent, RecursiveForkSourceView {
-        caller: source.task, scope: signed, project: &source.project,
-        project_generation: &source.project_generation, private_volume: &source.private_volume,
-        private_generation: &source.private_generation,
-    }, RecursiveForkAllocationView { child: &config.child, project: &config.child_project,
-        private_volume: &config.child_private, result_volume: config.child_result_volume.as_ref(),
-        limits: config.limits, inherited_messages: config.inherited_messages,
-        inherited_bytes: config.inherited_bytes, inherited_references: config.inherited_references,
-    }, stream_provider, operation, arguments, source_read, work)?;
-    restore_recursive_fork_source_with_native_work(filesystem, stream, parent, verifier, signed,
-        &source.project, stream_provider, request, config.history_limits, source_read,
-        resolver, cancellation, work).await
-}
 
 /// Rebinds one supported original request to its exact authenticated parent checkpoint.
 #[allow(clippy::too_many_arguments, reason = "original owner/provider/source identities stay explicit")]
@@ -634,8 +445,6 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 pub struct ForkPreparationMachine {
     identity: MachineIdentity,
     schema: Value,
-    #[cfg(not(target_arch = "wasm32"))]
-    _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -696,30 +505,7 @@ impl ForkPreparationMachine {
             identity: MachineIdentity { name: "acyclic.fork_preparation".into(), version: "1".into(),
                 digest: preparation_implementation_digest(None).expect("static preparation implementation") },
             schema: serde_json::from_slice(PREPARATION_STATE_SCHEMA).expect("static preparation state schema"),
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody: None,
         }
-    }
-
-    /// Constructs the genuine machine on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let mut metadata;
-        let mut custody;
-        let bytes = std::mem::size_of::<Self>() as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
-        let identity = MachineIdentity {
-            name: crate::filesystem::fork_preparer_io::clone_text("acyclic.fork_preparation", Some(&io))?,
-            version: crate::filesystem::fork_preparer_io::clone_text("1", Some(&io))?,
-            digest: preparation_implementation_digest(Some(&io))?,
-        };
-        let schema;
-        (schema, custody) = crate::filesystem::native_decoded(io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?)?;
-        metadata = io.take_native_custody(io.owned_bytes()?)?;
-        custody.absorb(&mut metadata).map_err(Error::from)?;
-        Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
     }
 
     /// The exact request is ordinary task input, not an out-of-band authority bag.
