@@ -83,8 +83,8 @@ struct MemoryPublicationProof {
     _envelope: MemoryEntryEnvelope,
 }
 
-struct AuthorityBuffer<T> {
-    values: Vec<T>,
+struct AuthorityBuffer {
+    values: Vec<DurableCommit>,
     #[cfg(not(target_arch = "wasm32"))]
     custody: Option<crate::materializer::NativeAllocation>,
 }
@@ -93,7 +93,7 @@ enum MemoryAppendPlan {
     Resolved(AppendOutcome),
     Publish {
         durable: DurableCommit,
-        commits: Option<AuthorityBuffer<DurableCommit>>,
+        commits: Option<AuthorityBuffer>,
         operation: MemoryEntryEnvelope,
     },
 }
@@ -124,7 +124,7 @@ fn metadata_copy_work<T>(
     Ok(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
 }
 
-fn install_authority_commits(state: &mut AuthorityState, mut buffer: AuthorityBuffer<DurableCommit>) {
+fn install_authority_commits(state: &mut AuthorityState, mut buffer: AuthorityBuffer) {
     buffer.values.append(&mut state.commits);
     drop(std::mem::replace(&mut state.commits, buffer.values));
     #[cfg(not(target_arch = "wasm32"))]
@@ -306,7 +306,7 @@ impl MemoryAuthorityStore {
             accounting.logical_entry::<(AuthorityId, AuthorityState)>()?
         } else { MemoryEntryEnvelope::default() };
         let operation = accounting.logical_entry::<(OperationId, MemoryOperationIndex)>()?;
-        let mut commits = accounting.allocate_vector::<DurableCommit>(1)?;
+        let mut commits = accounting.allocate_commits(1)?;
         let mut operations = HashMap::new();
         accounting.reserve_map_entry(&mut operations)?;
         if new_authority { accounting.reserve_map_entry(&mut authorities)?; }
@@ -869,7 +869,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
             let plan = self.plan_first_record(authority, &commit, &mut accounting)
                 .map_err(AuthorityMemoryFailure::into_fs)?;
             if !matches!(&plan, MemoryFirstRecordPlan::Resolved(false)) {
-                let live = accounting.allocations.live_bytes();
+                let live = accounting.allocations.as_ref().expect("ordinary funding").live_bytes();
                 let mut remaining = accounting.work.remaining(budget)
                     .map_err(|error| accounting.work_failure(error).into_fs())?;
                 remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(live)
@@ -1002,7 +1002,7 @@ impl From<AuthorityMemoryFailure> for AuthorityFailure {
 struct AuthorityAccounting<'a> {
     work: WorkCounters,
     budget: WorkBudget,
-    allocations: StandaloneAuthorityAllocations,
+    allocations: Option<crate::kernel::allocation::AllocationLedger>,
     cancellation: Option<&'a crate::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     native: Option<&'a crate::materializer::NativeMaterializationWork>,
@@ -1010,26 +1010,11 @@ struct AuthorityAccounting<'a> {
     output_custody: Option<crate::materializer::NativeAllocation>,
 }
 
-struct StandaloneAuthorityAllocations(Option<crate::kernel::allocation::AllocationLedger>);
-
-impl std::ops::Deref for StandaloneAuthorityAllocations {
-    type Target = crate::kernel::allocation::AllocationLedger;
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("standalone authority allocations require ordinary funding")
-    }
-}
-
-impl std::ops::DerefMut for StandaloneAuthorityAllocations {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().expect("standalone authority allocations require ordinary funding")
-    }
-}
-
 impl<'a> AuthorityAccounting<'a> {
     fn ordinary(budget: WorkBudget) -> Self {
         Self {
             work: WorkCounters::default(), budget,
-            allocations: StandaloneAuthorityAllocations(Some(Default::default())),
+            allocations: Some(Default::default()),
             cancellation: None,
             #[cfg(not(target_arch = "wasm32"))]
             native: None,
@@ -1047,7 +1032,7 @@ impl<'a> AuthorityAccounting<'a> {
         original.admit(WorkCounters::UNCHARGED)?;
         Ok(Self {
             work: original.receipt(), budget: WorkBudget::default(),
-            allocations: StandaloneAuthorityAllocations(None), cancellation: Some(cancellation),
+            allocations: None, cancellation: Some(cancellation),
             native: Some(original), output_custody: None,
         })
     }
@@ -1132,7 +1117,7 @@ impl<'a> AuthorityAccounting<'a> {
                 .map_err(|error| self.failure(AuthorityStoreError::NativeOriginal(error)))?;
             return Ok(MemoryEntryEnvelope { _custody: Some(guard) });
         }
-        self.allocations.claim_bytes(bytes, 0, &mut self.work, self.budget)
+        self.allocations.as_mut().expect("ordinary funding").claim_bytes(bytes, 0, &mut self.work, self.budget)
             .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
         Ok(MemoryEntryEnvelope::default())
     }
@@ -1146,9 +1131,9 @@ impl<'a> AuthorityAccounting<'a> {
             .map_err(|error| self.failure(AuthorityStoreError::MemoryReplayAllocationFailed(error)))
     }
 
-    fn allocate_vector<T>(&mut self, capacity: usize) -> Result<AuthorityBuffer<T>, AuthorityMemoryFailure> {
+    fn allocate_commits(&mut self, capacity: usize) -> Result<AuthorityBuffer, AuthorityMemoryFailure> {
         self.check()?;
-        let requested = capacity.checked_mul(size_of::<T>())
+        let requested = capacity.checked_mul(size_of::<DurableCommit>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| self.work_failure(crate::WorkError::Overflow))?;
         // Guard is declared before the vector, including allocator failure paths.
@@ -1163,13 +1148,13 @@ impl<'a> AuthorityAccounting<'a> {
         #[cfg(target_arch = "wasm32")]
         let portable = true;
         if portable {
-            self.allocations.claim_bytes(requested, u64::from(requested != 0), &mut self.work, self.budget)
+            self.allocations.as_mut().expect("ordinary funding").claim_bytes(requested, u64::from(requested != 0), &mut self.work, self.budget)
                 .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
         }
         let mut values = Vec::new();
         values.try_reserve_exact(capacity)
             .map_err(|error| self.failure(AuthorityStoreError::MemoryReplayAllocationFailed(error)))?;
-        let actual = values.capacity().checked_mul(size_of::<T>())
+        let actual = values.capacity().checked_mul(size_of::<DurableCommit>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| self.work_failure(crate::WorkError::Overflow))?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1177,7 +1162,7 @@ impl<'a> AuthorityAccounting<'a> {
             guard.reconcile_capacity(actual).map_err(|error| self.failure(error.into()))?;
         }
         if portable && actual > requested {
-            self.allocations.record_owned_bytes(actual - requested, &mut self.work)
+            self.allocations.as_mut().expect("ordinary funding").record_owned_bytes(actual - requested, &mut self.work)
                 .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
             self.work.verify(self.budget).map_err(|error| self.work_failure(error))?;
         }
@@ -1188,16 +1173,16 @@ impl<'a> AuthorityAccounting<'a> {
         })
     }
 
-    fn replacement<T>(&mut self, values: &Vec<T>) -> Result<Option<AuthorityBuffer<T>>, AuthorityMemoryFailure> {
+    fn replacement(&mut self, values: &Vec<DurableCommit>) -> Result<Option<AuthorityBuffer>, AuthorityMemoryFailure> {
         if values.len() < values.capacity() { return Ok(None); }
         let capacity = values.len().checked_add(1)
             .and_then(|needed| values.capacity().checked_mul(2).map(|double| needed.max(double)))
             .ok_or_else(|| self.work_failure(crate::WorkError::Overflow))?;
-        self.allocate_vector(capacity).map(Some)
+        self.allocate_commits(capacity).map(Some)
     }
 
     fn clone_page(&mut self, commits: &[DurableCommit]) -> Result<Vec<DurableCommit>, AuthorityMemoryFailure> {
-        let mut page = self.allocate_vector::<DurableCommit>(commits.len())?;
+        let mut page = self.allocate_commits(commits.len())?;
         for commit in commits {
             self.examine()?;
             #[cfg(not(target_arch = "wasm32"))]

@@ -4,7 +4,7 @@ import { descriptorFor, NativeContracts, type FileRef, type ModelRequest } from 
 
 const request: ModelRequest = { model: { provider: "pi", name: "x", revision: "1", options: {} }, messages: [{ role: "user", content: "hello" }], tools: [] };
 test("Pi bridge receives the typed request and preserves terminal metadata", async () => {
-  const events: readonly PiEvent<{ readonly session: string }>[] = [
+  const events: readonly PiEvent[] = [
     { type: "text_delta", text: "ok" }, { type: "complete", metadata: { session: "s" } },
   ];
   const provider = piProvider({

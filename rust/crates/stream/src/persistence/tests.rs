@@ -200,7 +200,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             encode_envelope(&broken, BOUND),
             Err(StreamError::InvalidArgument)
         );
-        let bytes = wire_codec::envelope_wire(broken).encode_to_vec();
+        let bytes = wire_codec::envelope_to_wire(broken).encode_to_vec();
         assert_eq!(
             decode_envelope(&bytes, BOUND),
             Err(StreamError::InvalidArgument)

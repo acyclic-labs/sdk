@@ -318,7 +318,7 @@ where
         2
     );
     let segment = ModelPrefix::select(&completed, previous)?;
-    let wire: Value = serde_json::from_slice(&segment.canonical_bytes()?)
+    let wire: Value = serde_json::from_slice(&segment.canonical_bytes(None)?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         wire.get("messages").and_then(Value::as_array).map(Vec::len),
@@ -1106,7 +1106,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     action: Action::PublishProjectMerge {
                         receipt: Box::new(receipt),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert_eq!(
                 host.read(

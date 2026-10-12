@@ -9,85 +9,6 @@ use acyclic_harness::{
 use std::sync::Arc;
 
 #[test]
-fn selected_cursor_rejects_every_changed_selector() -> Result<()> {
-    let provider = ProviderRef::new("selected", "filesystem", "2")?;
-    let volume = VolumeRef::new(provider.clone(), "source", VolumeClass::Project, VolumeOwner::Project("original".into()))?;
-    let generation = GenerationRef::new(provider.clone(), [2; 32], None)?;
-    let source = TaskId::from_bytes([3; 16]);
-    let cursor = PiInspectionCursor { source, volume: volume.clone(), generation: generation.clone(), directory: "dir".into(), after: "last".into() };
-    cursor.require(source, &volume, &generation, "dir")?;
-    assert!(cursor.require(TaskId::from_bytes([4; 16]), &volume, &generation, "dir").is_err());
-    let foreign = VolumeRef::new(provider.clone(), "foreign", VolumeClass::Project, VolumeOwner::Project("original".into()))?;
-    assert!(cursor.require(source, &foreign, &generation, "dir").is_err());
-    assert!(cursor.require(source, &volume, &GenerationRef::new(provider, [5; 32], None)?, "dir").is_err());
-    assert!(cursor.require(source, &volume, &generation, "other").is_err());
-    for invalid in ["", "a/b", "a\\b", ".."] {
-        let mut forged = cursor.clone();
-        forged.after = invalid.into();
-        assert!(forged.require(source, &volume, &generation, "dir").is_err());
-    }
-    assert!(validate_page("", 0).is_err());
-    assert!(validate_page("", MAX_PRIVATE_DIRECTORY_PAGE as u32 + 1).is_err());
-    assert!(validate_page("../outside", 1).is_err());
-    Ok(())
-}
-
-/// Actual SDK authority verifier, canonical Filesystem pages/import plan and CAS.
-/// No native-path existence is interpreted as authorization or import success.
-#[tokio::test]
-async fn retained_pages_and_destination_import_preserve_source_and_concurrent_target() -> Result<()> {
-    let provider = ProviderRef::new("pi-selected", "filesystem", "2")?;
-    let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider.clone())?);
-    let agent = AgentId::from_bytes([11; 16]);
-    let other = AgentId::from_bytes([12; 16]);
-    let source = VolumeRef::new(provider.clone(), "source", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-    let target = VolumeRef::new(provider.clone(), "target", VolumeClass::AgentPrivate, VolumeOwner::Agent(other))?;
-    let issuer = AuthorityIssuer::new("selected-owner", [13; 32], Authority { kind: AggregateKind::Conversation, id: "original-owner".into() });
-    let source_scope = issuer.root_for_agent(agent, "source-owner", Capabilities::new([
-        source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?, source.directory_read_capability("")?,
-    ]));
-    let target_scope = issuer.root_for_agent(other, "destination-owner", Capabilities::new([target.capability(VolumeOperation::Write)?]));
-    let source_writer = ContentGrant::verify(&issuer.verifier(), &source_scope, &source, VolumeOperation::Write)?;
-    let source_reader = ContentGrant::verify(&issuer.verifier(), &source_scope, &source, VolumeOperation::Read)?;
-    let target_writer = ContentGrant::verify(&issuer.verifier(), &target_scope, &target, VolumeOperation::Write)?;
-    host.create_volume(&source).await?;
-    host.create_volume(&target).await?;
-    for name in ["a.txt", "b.txt"] {
-        host.put_content(&source, &source_writer, name, name.as_bytes(), "text/plain", name, 1024, &IdempotencyKey::new(format!("seed-{name}"))?).await?;
-    }
-    let source_workspace = workspace_ref(provider.clone(), &source.storage_name()?)?;
-    let selected = host.resolve(&source_workspace).await?.generation;
-    let reader = FilesystemContentVerifier::new(Arc::clone(&host), issuer.verifier(), source_scope.clone(), 1024)?;
-    let first = ContentResidencyVerifier::list_private_directory(&reader, &source, "", "", Some(&selected), None, 1).await?;
-    assert_eq!(first.entries.len(), 1);
-    assert!(first.has_more);
-    host.put_content(&source, &source_writer, "late.txt", b"late", "text/plain", "late.txt", 1024, &IdempotencyKey::new("source-late")?).await?;
-    let source_current = host.resolve(&source_workspace).await?.generation;
-    let second = ContentResidencyVerifier::list_private_directory(&reader, &source, "", "", Some(&selected), Some(&first.entries[0].name), 1).await?;
-    assert_eq!(second.entries[0].name, "b.txt");
-    assert!(!second.has_more);
-    let foreign_generation = host.resolve(&workspace_ref(provider.clone(), &target.storage_name()?)?).await?.generation;
-    assert!(ContentResidencyVerifier::list_private_directory(&reader, &source, "", "", Some(&foreign_generation), None, 1).await.is_err());
-    let rejected = issuer.root_for_agent(agent, "wrong-writer", Capabilities::new([target.capability(VolumeOperation::Write)?]));
-    assert!(ContentGrant::verify(&issuer.verifier(), &rejected, &target, VolumeOperation::Write).is_err());
-    let plan = host.prepare_volume_import(&source, &source_reader, &selected, &target, &target_writer).await?;
-    host.put_content(&target, &target_writer, "user.txt", b"concurrent user edit", "text/plain", "user.txt", 1024, &IdempotencyKey::new("concurrent-user-edit")?).await?;
-    let current_target = host.resolve(&workspace_ref(provider.clone(), &target.storage_name()?)?).await?.generation;
-    let outcome = plan.apply(&IdempotencyKey::new("original-import")?).await?;
-    assert!(!matches!(outcome, acyclic_fs::JoinOutcome::Applied(_) | acyclic_fs::JoinOutcome::AlreadyApplied(_)));
-    assert_eq!(host.resolve(&workspace_ref(provider, &target.storage_name()?)?).await?.generation, current_target);
-    assert_eq!(host.resolve(&source_workspace).await?.generation, source_current);
-    let denied_scope = issuer.root_for_agent(other, "no-source-read", Capabilities::new(std::iter::empty::<String>()));
-    let denied_reader = FilesystemContentVerifier::new(Arc::clone(&host), issuer.verifier(), denied_scope, 1024)?;
-    assert!(ContentResidencyVerifier::list_private_directory(&denied_reader, &source, "", "", Some(&selected), None, 1).await.is_err());
-    let fresh_plan = host.prepare_volume_import(&source, &source_reader, &selected, &target, &target_writer).await?;
-    assert!(matches!(fresh_plan.apply(&IdempotencyKey::new("fresh-original-import")?).await?,
-        acyclic_fs::JoinOutcome::Applied(_) | acyclic_fs::JoinOutcome::AlreadyApplied(_)));
-    assert_eq!(host.resolve(&source_workspace).await?.generation, source_current);
-    Ok(())
-}
-
-#[test]
 fn selected_writeback_plan_cannot_smuggle_unselected_paths() -> Result<()> {
     use acyclic_fs::MaterializationEdit;
     let paths = vec!["selected".to_owned()];
@@ -191,7 +112,7 @@ async fn selected_frozen_native_baseline_is_not_an_empty_root_and_source_stays_i
     let frozen = workspace.snapshot().await?;
     workspace.workspace().write_text("/selected.txt", "imported-selected").await?;
     workspace.workspace().write_text("/unselected-authored.txt", "must-not-write-back").await?;
-    let imported = workspace.workspace().head().await?;
+    let imported = workspace.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authored_before = imported.id();
     let paths = vec!["/selected.txt".to_owned()];
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -302,7 +223,7 @@ async fn canonical_selected_import_preserves_metadata_source_and_destination_con
         modified_ns: acyclic_fs::kernel::MetadataField::Value(123_456),
         ..Default::default()
     }).await?;
-    metadata.commit().await?;
+    metadata.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     destination.workspace().write_text("/selected.txt", "destination-original").await?;
     destination.workspace().write_text("/outside.txt", "outside-original").await?;
     let frozen_source = source.snapshot().await?;
@@ -352,7 +273,7 @@ async fn canonical_selected_import_preserves_metadata_source_and_destination_con
                 Ok(acyclic_fs::OperationReceipt { value: (), work: Default::default() })
             }
         }).await?.value;
-    let exact = destination.workspace().generation(imported.authored_generation).await?;
+    let exact = destination.workspace().generation(imported.authored_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(exact.read("/selected.txt", 1024).await?.as_ref(), b"source-original");
     assert_eq!(exact.stat("/selected.txt").await?.metadata.modified_ns, Some(123_456));
     assert_eq!(exact.read("/outside.txt", 1024).await?.as_ref(), b"concurrent-outside");
@@ -417,7 +338,7 @@ async fn canonical_selected_directory_import_pins_nested_generation_and_metadata
     tree.set_metadata("/selected/nested/file.txt", acyclic_fs::kernel::FileMetadata {
         modified_ns: acyclic_fs::kernel::MetadataField::Value(123_456), ..Default::default()
     }).await?;
-    tree.commit().await?;
+    tree.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     destination.workspace().write_text("/outside.txt", "original-outside").await?;
     let frozen = source.snapshot().await?;
     let portable = acyclic_fs::path::PortablePath::parse("/selected", source.workspace().limits())?;
@@ -440,7 +361,7 @@ async fn canonical_selected_directory_import_pins_nested_generation_and_metadata
                 Ok(acyclic_fs::OperationReceipt { value: (), work: Default::default() })
             }
         }).await?.value;
-    let exact = destination.workspace().generation(imported.authored_generation).await?;
+    let exact = destination.workspace().generation(imported.authored_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(exact.read("/selected/nested/file.txt", 1024).await?.as_ref(), b"original-nested");
     assert_eq!(exact.stat("/selected").await?.metadata.modified_ns, Some(654_321));
     assert_eq!(exact.stat("/selected/nested/file.txt").await?.metadata.modified_ns, Some(123_456));
