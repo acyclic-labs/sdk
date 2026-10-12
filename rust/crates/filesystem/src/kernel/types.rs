@@ -256,20 +256,6 @@ impl LogicalName {
         Ok((encoding, bytes))
     }
 
-    pub(crate) fn decode_cursor_with_accounting(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        maximum_bytes: u32,
-        accounting: &mut super::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(Self, super::allocation::KernelOwnedAllocation), crate::FsError> {
-        let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = Self::decode_cursor(
-            decoder, profile, maximum_bytes, cancellation, &mut owned,
-        );
-        owned.finish(result)
-    }
-
     pub(super) fn decode_cursor(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,

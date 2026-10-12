@@ -57,16 +57,6 @@ fn completed_backend_failure(
     }
 }
 
-fn remaining_callback(
-    prior: WorkCounters, budget: WorkBudget, resident: u64,
-) -> Result<WorkBudget, OperationFailure<crate::FsError>> {
-    let cancellation = CancellationToken::new();
-    let accounting = KernelAccounting::Standalone {
-        allocations: AllocationLedger::default(), work: prior, budget, cancellation: &cancellation,
-    };
-    provider_remaining(&accounting, resident).map_err(|error| OperationFailure::new(error, accounting.spent()))
-}
-
 fn config() -> VolumeConfig {
     VolumeConfig {
         profile: FilesystemProfile::Portable,

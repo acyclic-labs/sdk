@@ -363,25 +363,6 @@ impl NamespacePath {
         owned.finish(result)
     }
 
-    pub(crate) fn names_with_steps<E: From<NamespacePathError>>(
-        names: &[LogicalName],
-        limits: VolumeLimits,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<Self, E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        let encoded_bytes = Self::validate_component_lengths_with_steps(
-            names.iter().map(|name| name.as_bytes().len()), limits, || {
-                cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-                steps(NamespacePathStep::Charge(&WorkCounters {
-                    source_path_components: 1, items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                }))
-            },
-        )?;
-        Self::copy_names_with_steps(names, None, encoded_bytes, cancellation, steps)
-    }
-
     pub(crate) fn unicode_text_with_accounting(
         &self,
         accounting: &mut KernelAccounting<'_>,

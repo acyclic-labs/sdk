@@ -293,10 +293,6 @@ impl Encoder {
         Ok(())
     }
 
-    pub(crate) fn capacity(&self) -> usize {
-        self.bytes.capacity()
-    }
-
     pub(crate) fn remaining_capacity(&self) -> usize {
         self.bytes.capacity() - self.bytes.len()
     }
