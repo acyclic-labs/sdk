@@ -381,13 +381,11 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     ))
     .await
     .unwrap();
-    fixture.filesystem = Arc::new(
-        FilesystemHost::new(
+    fixture.filesystem = FilesystemHost::new(
             fixture.raw.clone(),
-            fixture.owner.policy.journal.provider().clone(),
+            fixture.owner.policy.journal.provider(), None,
         )
-        .unwrap(),
-    );
+        .unwrap();
     fixture.runtime = open(
         fixture.session.path(),
         &fixture.owner,

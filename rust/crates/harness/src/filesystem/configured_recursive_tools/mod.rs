@@ -295,7 +295,8 @@ fn allocation_digest(
         message_file_pointer: allocation.child_message_file_pointer.as_deref(),
         input_files: &allocation.input_files, limits: allocation.limits,
     };
-    super::task_runtime::observed::digest(&descriptor, io, acyclic_stream::MAX_RECORD_BYTES as u64)
+    crate::executor::with_history_io(io, |work| crate::contract::canonical_json_digest_with_work(
+        &descriptor, if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))
 }
 
 fn checkpoint_operation(effect: OperationId) -> OperationId {
