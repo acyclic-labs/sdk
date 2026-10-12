@@ -41,15 +41,26 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
         const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
         if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
         if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
-        let exited = false;
-        for await (const frame of machines.exec(query, { ...callOptions, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 })) {
-          checkMachine(query.machine, frame.machine);
-          if (exited) throw new ConnectError("exec frame follows terminal exit code", Code.DataLoss);
-          if (frame.output.case === "exitCode") exited = true;
-          else if (frame.output.case !== "data" || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
-          yield frame;
+        const controller = new AbortController();
+        const signal = callOptions?.signal;
+        const abort = () => controller.abort(signal?.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+        try {
+          let exited = false;
+          for await (const frame of machines.exec(query, { ...callOptions, signal: controller.signal, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 })) {
+            checkMachine(query.machine, frame.machine);
+            if (exited) throw new ConnectError("exec frame follows terminal exit code", Code.DataLoss);
+            if (frame.output.case === "exitCode") exited = true;
+            else if (frame.output.case !== "data" || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
+            yield frame;
+          }
+          if (!exited) throw new ConnectError("exec stream ended without exit code", Code.DataLoss);
+        } finally {
+          // Connect's promise-client iterator does not forward return() to the RPC.
+          controller.abort();
+          signal?.removeEventListener("abort", abort);
         }
-        if (!exited) throw new ConnectError("exec stream ended without exit code", Code.DataLoss);
       },
       async readOutput(request: MessageInitShape<typeof wire.ReadOutputRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ReadOutputRequestSchema, request);

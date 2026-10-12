@@ -156,6 +156,47 @@ test("exec yields output before the command completes", async t => {
   assert.equal((await iterator.next()).done, true);
 });
 
+for (const mode of ["early-exit", "malformed"]) {
+  test(`exec cancels ${mode} without canceling another active RPC`, { timeout: 5000 }, async t => {
+    let cancelled;
+    let finishWatch;
+    let watchCancelled = false;
+    const cancellation = new Promise(resolve => { cancelled = resolve; });
+    const watchCompletion = new Promise(resolve => { finishWatch = resolve; });
+    const { machines } = await fixture(t, {
+      async *exec(_query, context) {
+        authenticate(context);
+        context.signal.addEventListener("abort", cancelled, { once: true });
+        yield { machine, output: { case: "data", value: new Uint8Array(mode === "malformed" ? 0 : 1) } };
+        await cancellation;
+      },
+      async *watchOperation(_query, context) {
+        authenticate(context);
+        context.signal.addEventListener("abort", () => { watchCancelled = true; finishWatch(); }, { once: true });
+        yield { operation, status: wire.OperationStatus.PENDING };
+        await watchCompletion;
+        yield { operation, status: wire.OperationStatus.SUCCEEDED };
+      },
+    });
+    const watch = machines.watchOperation({ protocol, operation }, { timeoutMs: 0 })[Symbol.asyncIterator]();
+    assert.equal((await watch.next()).value.status, wire.OperationStatus.PENDING);
+    const request = { protocol, machine, argv: ["sleep"], timeoutMs: 60000 };
+    if (mode === "malformed") {
+      await assert.rejects(exec(machines, request, { timeoutMs: 0 }), error => error.code === Code.DataLoss);
+    } else {
+      for await (const frame of machines.exec(request, { timeoutMs: 0 })) {
+        assert.equal(frame.output.case, "data");
+        break;
+      }
+    }
+    await cancellation;
+    assert.equal(watchCancelled, false);
+    finishWatch();
+    assert.equal((await watch.next()).value.status, wire.OperationStatus.SUCCEEDED);
+    assert.equal((await watch.next()).done, true);
+  });
+}
+
 test("exec rejects incomplete, malformed and post-terminal streams", async t => {
   const { machines } = await fixture(t, {
     async *exec(query) {
