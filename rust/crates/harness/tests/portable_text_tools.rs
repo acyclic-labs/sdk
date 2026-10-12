@@ -89,10 +89,10 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,
-        "workspace",
+        "workspace".into(),
         VolumeClass::Project,
         VolumeOwner::Agent(agent),
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "tool-context",
@@ -102,8 +102,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             id: "tool-context".into(),
         },
     );
-    let read_cap = volume.capability(VolumeOperation::Read)?;
-    let write_cap = volume.capability(VolumeOperation::Write)?;
+    let read_cap = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write_cap = volume.capability(VolumeOperation::Write, &mut None)?;
     let scope = issuer.issue("owner", &Capabilities::new([read_cap.clone(), write_cap.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
     let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
@@ -113,9 +113,9 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             "source.txt",
             b"one two",
             "text/plain",
-            "source.txt",
+            "source.txt", None
         )
-        .await?;
+        ?.await?.0;
     let task = content_context(
         reader.clone(),
         Some(writer.clone()),
@@ -186,9 +186,9 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             "source.txt",
             b"user edit",
             "text/plain",
-            "source.txt",
+            "source.txt", None
         )
-        .await?;
+        ?.await?.0;
     assert_eq!(
         tool.executor
             .reconcile_with_context(context, invocation.clone())
@@ -261,9 +261,9 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             "second.txt",
             b"later user edit",
             "text/plain",
-            "second.txt",
+            "second.txt", None
         )
-        .await?;
+        ?.await?.0;
     assert_eq!(
         patch_tool
             .executor
@@ -378,10 +378,10 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert_eq!(ordinary.calls.load(Ordering::SeqCst), 0);
     let foreign_volume = VolumeRef::new(
         volume.provider().clone(),
-        "foreign",
+        "foreign".into(),
         VolumeClass::Project,
         VolumeOwner::Agent(agent),
-    )?;
+     &mut None)?;
     let foreign = Arc::new(OrdinaryPublisher {
         volume: foreign_volume.clone(),
         calls: AtomicUsize::new(0),
@@ -389,7 +389,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     let foreign_context = content_context(
         reader,
         Some(foreign.clone()),
-        Capabilities::new([read_cap, foreign_volume.capability(VolumeOperation::Write)?]),
+        Capabilities::new([read_cap, foreign_volume.capability(VolumeOperation::Write, &mut None)?]),
     )
     .await?;
     assert!(matches!(
@@ -431,10 +431,10 @@ async fn single_file_publication_never_falls_back_to_ordinary_staging() -> Resul
     let ordinary = OrdinaryPublisher {
         volume: VolumeRef::new(
             ProviderRef::new("once".into(), "filesystem".into(), "2".into(), &mut None)?,
-            "workspace",
+            "workspace".into(),
             VolumeClass::Project,
             VolumeOwner::Agent(AgentId::new()),
-        )?,
+         &mut None)?,
         calls: AtomicUsize::new(0),
     };
     assert!(matches!(
@@ -465,12 +465,12 @@ impl ContentPublisher for OrdinaryPublisher {
         _: &'a [u8],
         _: &'a str,
         _: &'a str,
-    ) -> BoxProviderFuture<'a, Result<FileRef>> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async {
-            Err(Error::Storage(
-                "ordinary publication must not be called".into(),
-            ))
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a,
+        (FileRef, Option<acyclic_harness::conversation::ContentHold<'a>>)>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Storage("ordinary publication must not be called".into()))
         })
     }
 }
@@ -487,16 +487,16 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "source",
+        "source".into(),
         VolumeClass::Project,
         VolumeOwner::Agent(owner),
-    )?;
+     &mut None)?;
     let other = VolumeRef::new(
         provider.clone(),
-        "other",
+        "other".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner),
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     host.create_volume(&other).await?;
     let issuer = AuthorityIssuer::new(
@@ -508,13 +508,13 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         },
     );
     let scope = issuer.issue("owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
-            other.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+            other.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(owner), None, &mut None).expect("scope proof");
-    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
-    let foreign = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &other, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+    let foreign = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &other, VolumeOperation::Write, u64::MAX, &mut None)?;
     let source = host
         .put_content(
             &volume,
@@ -566,7 +566,7 @@ async fn exact_edit_retains_pinned_result_and_rejects_stale_or_foreign_writes() 
         host.read_content(&source, &read, 64, None).await?.as_ref(),
         b"one\r\ntwo\n"
     );
-    let workspace = workspace_ref(provider.clone(), &volume.storage_name()?)?;
+    let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace).await?.generation;
     let user = host
         .put_content(
@@ -636,10 +636,10 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
-        "files",
+        "files".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner),
-    )?;
+     &mut None)?;
     let issuer = AuthorityIssuer::new(
         "persistent-edit",
         [4; 32],
@@ -649,11 +649,11 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         },
     );
     let scope = issuer.issue("owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(owner), None, &mut None).expect("scope proof");
-    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let replacement = ExactTextReplacement {
         old_text: "before".into(),
         new_text: "after".into(),
@@ -698,7 +698,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let host = FilesystemHost::new(filesystem, provider.clone())?;
-    let workspace = workspace_ref(provider, &volume.storage_name()?)?;
+    let workspace = workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     let head = host.resolve(&workspace).await?.generation;
     for maximum_bytes in [0, u64::MAX] {
         assert!(matches!(
@@ -752,15 +752,15 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let options = acyclic_fs::LocalOptions::new(directory.path().join("bounded-content"));
     let provider = ProviderRef::new("bounded-content".into(), "filesystem".into(), "1".into(), &mut None)?;
     let owner = AgentId::from_bytes([91; 16]);
-    let volume = VolumeRef::new(provider.clone(), "content", VolumeClass::AgentPrivate, VolumeOwner::Agent(owner))?;
+    let volume = VolumeRef::new(provider.clone(), "content".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(owner), &mut None)?;
     let issuer = AuthorityIssuer::new("bounded-content", [92; 32], Authority {
         kind: AggregateKind::Conversation, id: "bounded-content".into(),
     });
     let scope = issuer.issue("owner", &Capabilities::new([
-        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+        volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
     ]), Some(owner), None, &mut None).expect("scope proof");
-    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let key = IdempotencyKey::new("original-content")?;
     let cancellation = acyclic_fs::CancellationToken::new();
     {
@@ -822,7 +822,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     let io = acyclic_harness::filesystem::PreparationIo::from_budget(CONTENT_WORK_BUDGET, &cancellation)?;
     assert_eq!(host.content_for_operation(&volume, &write, &IdempotencyKey::new("denied-content")?,
         "denied", 64, Some(&io)).await?, None);
-    let workspace = acyclic_harness::filesystem::workspace_ref(provider, &volume.storage_name()?)?;
+    let workspace = acyclic_harness::filesystem::workspace_ref(provider, &volume.storage_name(&mut None)?)?;
     assert_eq!(host.read(&workspace, None, "/result.json", 64).await?.as_ref(), b"later");
     Ok(())
 }

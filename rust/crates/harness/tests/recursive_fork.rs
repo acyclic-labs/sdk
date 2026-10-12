@@ -54,7 +54,7 @@ fn volume(
     id: String,
     owner: VolumeOwner,
 ) -> Result<VolumeRef> {
-    VolumeRef::new(provider.clone(), id, class, owner)
+    VolumeRef::new(provider.clone(), id, class, owner, &mut None)
 }
 
 fn scope(
@@ -78,19 +78,20 @@ fn scope(
         format!("{}-{next}", "project"),
         VolumeClass::Project,
         project.owner().clone(),
+        &mut None,
     )?;
-    let source_reads = [selected.capability(VolumeOperation::Read)?];
+    let source_reads = [selected.capability(VolumeOperation::Read, &mut None)?];
     Ok(issuer.issue("agent", &Capabilities::new(
             [
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 "fork:publish".to_owned(),
                 "project:merge".to_owned(),
-                project.capability(VolumeOperation::Read)?,
-                project.capability(VolumeOperation::Write)?,
-                private.capability(VolumeOperation::Read)?,
-                private.capability(VolumeOperation::Write)?,
-                shared.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Read, &mut None)?,
+                project.capability(VolumeOperation::Write, &mut None)?,
+                private.capability(VolumeOperation::Read, &mut None)?,
+                private.capability(VolumeOperation::Write, &mut None)?,
+                shared.capability(VolumeOperation::Read, &mut None)?,
             ]
             .into_iter()
             .chain(source_reads),
@@ -180,7 +181,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -200,6 +201,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &grant_scope,
         &private,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let mut previous_file = host
         .put_content(
@@ -270,6 +272,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &grant_scope,
         &project,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let project_reference = host
         .put_content(
@@ -284,12 +287,13 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
          None, None)
         .await?;
     project_head = host.resolve(&project_head.workspace).await?;
-    let shared_writer = issuer.issue("shared-writer", &Capabilities::new([shared.capability(VolumeOperation::Write)?]), None, None, &mut None).expect("scope proof");
+    let shared_writer = issuer.issue("shared-writer", &Capabilities::new([shared.capability(VolumeOperation::Write, &mut None)?]), None, None, &mut None).expect("scope proof");
     let shared_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &shared_writer,
         &shared,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let shared_reference = host
         .put_content(
@@ -342,7 +346,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             VolumeOwner::Agent(child_agent),
         )?;
 
-        assert_ne!(private.storage_name()?, child_private.storage_name()?);
+        assert_ne!(private.storage_name(&mut None)?, child_private.storage_name(&mut None)?);
         let child_project = volume(
             &provider,
             VolumeClass::Project,
@@ -374,14 +378,16 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &child_scope,
             &shared,
             VolumeOperation::Read,
+            u64::MAX, &mut None,
         )?;
-        assert!(shared_read.require(&shared, VolumeOperation::Read).is_ok());
+        assert!(shared_read.require(&shared, VolumeOperation::Read, None).is_ok());
         assert!(
             ContentGrant::verify(
                 &child_issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope,
                 &private,
                 VolumeOperation::Read,
+                u64::MAX, &mut None,
             )
             .is_err()
         );
@@ -390,9 +396,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &child_scope,
             &child_private,
             VolumeOperation::Write,
+            u64::MAX, &mut None,
         )?;
         let source_private_generation = host
-            .resolve(&workspace_ref(provider.clone(), &private.storage_name()?)?)
+            .resolve(&workspace_ref(provider.clone(), &private.storage_name(&mut None)?)?)
             .await?
             .generation;
         let parent_read = ContentGrant::verify(
@@ -400,6 +407,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &grant_scope,
             &private,
             VolumeOperation::Read,
+            u64::MAX, &mut None,
         )?;
         let private_fork = host
             .fork_volume(
@@ -579,7 +587,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         attachment_manifests: captured.attachment_manifests,
         inherited_through_sequence: if level == 1 { 2 } else { 1 },
         boundary: None, };
-        seed.validate()?;
+        seed.validate(&mut None)?;
         if level == DEEP_RETRY {
             let attached = AgentId::from_bytes([201; 16]);
             let readable = seed.reference_capabilities(attached)?;
@@ -588,27 +596,28 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(readable.contains(&previous_attachment.read_capability()?));
             assert!(readable.contains(&inherited.read_capability()?));
             assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
-            assert!(!readable.contains(&child_private.capability(VolumeOperation::Write)?));
+            assert!(!readable.contains(&child_private.capability(VolumeOperation::Write, &mut None)?));
             assert!(
                 seed.shared_capabilities(attached)?
-                    .contains(&shared.capability(VolumeOperation::Read)?)
+                    .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
             );
             let reader_scope =
                 child_issuer.issue("deep-attached-reader", &readable, Some(attached), None, &mut None).expect("scope proof");
             let reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
             reader
-                .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default())
+                .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default(), None)?
                 .await?;
             let environment = seed.attached_read_capabilities(attached)?;
-            assert!(environment.contains(&child_project.capability(VolumeOperation::Read)?));
-            assert!(environment.contains(&shared.capability(VolumeOperation::Read)?));
-            assert!(!environment.contains(&child_project.capability(VolumeOperation::Write)?));
+            assert!(environment.contains(&child_project.capability(VolumeOperation::Read, &mut None)?));
+            assert!(environment.contains(&shared.capability(VolumeOperation::Read, &mut None)?));
+            assert!(!environment.contains(&child_project.capability(VolumeOperation::Write, &mut None)?));
             let environment_scope = child_issuer.issue("deep-attached-environment-reader", &environment, Some(attached), None, &mut None).expect("scope proof");
             let project_read = ContentGrant::verify(
                 &child_issuer.verifier(&mut None).expect("verifier copy"),
                 &environment_scope,
                 &child_project,
                 VolumeOperation::Read,
+                u64::MAX, &mut None,
             )?;
             assert_eq!(
                 host.read(
@@ -622,7 +631,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             assert!(
                 project_read
-                    .require(&child_project, VolumeOperation::Read)
+                    .require(&child_project, VolumeOperation::Read, None)
                     .is_ok()
             );
         }
@@ -640,13 +649,15 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let mut forged_prefix = seed.clone();
             forged_prefix.inherited_context[0] = FileRef::new(
                 child_private.clone(),
-                inherited.path(),
-                inherited.version(),
+                inherited.path().into(),
+                inherited.version().into(),
                 FileDescriptor::from_bytes(
                     b"forged parent transcript",
                     "application/vnd.acyclic.harness.inherited-conversation+json",
+                    &mut None,
                 )?,
-                inherited.display_name(),
+                inherited.display_name().into(),
+                &mut None,
             )?;
             assert!(
                 aggregate
@@ -663,10 +674,11 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let mut renamed_prefix = seed.clone();
             renamed_prefix.inherited_context[0] = FileRef::new(
                 child_private.clone(),
-                inherited.path(),
-                inherited.version(),
+                inherited.path().into(),
+                inherited.version().into(),
                 inherited.descriptor().clone(),
-                "misleading-name.json",
+                "misleading-name.json".into(),
+                &mut None,
             )?;
             assert!(
                 aggregate
@@ -686,10 +698,11 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 .push(acyclic_harness::fork::ReferenceGrant {
                     file: FileRef::new(
                         previous_file.volume().clone(),
-                        previous_file.path(),
-                        previous_file.version(),
+                        previous_file.path().into(),
+                        previous_file.version().into(),
                         previous_file.descriptor().clone(),
-                        "unpublished-display-name.txt",
+                        "unpublished-display-name.txt".into(),
+                        &mut None,
                     )?,
                     reader: child_agent,
                     attachment_manifest: None,
@@ -710,7 +723,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let child_reference_scope = child_issuer.issue("child-reference-reader", &seed.reference_capabilities(child_agent)?, None, None, &mut None).expect("scope proof");
             let child_reference_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_reference_scope, 1_024, None)?;
             child_reference_resolver
-                .verify_manifest(&root_manifest, 1, &Limits::default())
+                .verify_manifest(&root_manifest, 1, &Limits::default(), None)?
                 .await?;
             let inherited_reader = AgentId::from_bytes([201; 16]);
             let capabilities = seed.reference_capabilities(inherited_reader)?;
@@ -719,7 +732,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(capabilities.contains(&root_attachment.read_capability()?));
             assert!(
                 seed.shared_capabilities(inherited_reader)?
-                    .contains(&shared.capability(VolumeOperation::Read)?)
+                    .contains(&shared.capability(VolumeOperation::Read, &mut None)?)
             );
             let reader_scope =
                 child_issuer.issue("attached-reader", &capabilities, Some(inherited_reader), None, &mut None).expect("scope proof");
@@ -735,27 +748,31 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 b"root"
             );
             let inherited_resolver = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
-            inherited_resolver.verify(&previous_file).await?;
-            inherited_resolver.verify(&root_attachment).await?;
+            inherited_resolver.verify(&previous_file, 1_024, None)?.await?;
+            inherited_resolver.verify(&root_attachment, 1_024, None)?.await?;
             inherited_resolver
-                .verify_manifest(&root_manifest, 1, &Limits::default())
+                .verify_manifest(&root_manifest, 1, &Limits::default(), None)?
                 .await?;
             inherited_resolver
                 .verify(
                     previous_project_reference.as_ref().ok_or_else(|| {
                         acyclic_harness::Error::Invalid("project ref missing".into())
                     })?,
-                )
+                    1_024,
+                    None,
+                )?
                 .await?;
             inherited_resolver
                 .verify(
                     previous_shared_reference.as_ref().ok_or_else(|| {
                         acyclic_harness::Error::Invalid("shared ref missing".into())
                     })?,
-                )
+                    1_024,
+                    None,
+                )?
                 .await?;
-            assert!(exact.require_file_read(&inherited).is_err());
-            assert!(exact.require(&private, VolumeOperation::Write).is_err());
+            assert!(exact.require_file_read(&inherited, None).is_err());
+            assert!(exact.require(&private, VolumeOperation::Write, None).is_err());
         }
         if level == 1 {
             let mut missing_manifest_reader = seed.clone();
@@ -764,14 +781,14 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     && grant.file == seed.attachment_manifests[0]
                     && grant.attachment_manifest.is_none())
             });
-            assert!(missing_manifest_reader.validate().is_err());
+            assert!(missing_manifest_reader.validate(&mut None).is_err());
             let mut missing_member = seed.clone();
             missing_member.reference_grants.retain(|grant| {
                 !(grant.reader == child_agent
                     && grant.file == previous_attachment
                     && grant.attachment_manifest.is_some())
             });
-            assert!(missing_member.validate().is_ok());
+            assert!(missing_member.validate(&mut None).is_ok());
             assert!(
                 aggregate
                     .execute(fork_command(
@@ -788,11 +805,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024, Some(1), None)?,
-                ,
                 Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
             ], &mut None)?));
             assert!(
@@ -811,7 +827,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
             ], &mut None)?));
@@ -836,7 +852,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             )?);
             foreign_history.resources[1].source = reference.clone();
             foreign_history.resources[1].revision = reference;
-            foreign_history.validate()?;
+            foreign_history.validate(&mut None)?;
             assert!(
                 aggregate
                     .execute(fork_command(
@@ -852,10 +868,11 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let mut missing = seed.clone();
             missing.inherited_context[0] = FileRef::new(
                 child_private.clone(),
-                ".system/inherited-conversation/missing.txt",
-                missing.inherited_context[0].version(),
+                ".system/inherited-conversation/missing.txt".into(),
+                missing.inherited_context[0].version().into(),
                 missing.inherited_context[0].descriptor().clone(),
-                "missing.txt",
+                "missing.txt".into(),
+                &mut None,
             )?;
             for grant in &mut missing.reference_grants {
                 if grant.file == inherited {
@@ -894,6 +911,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &rogue_scope,
                 &rogue_private,
                 VolumeOperation::Write,
+                u64::MAX, &mut None,
             )?;
             host.put_content(
                 &rogue_private,
@@ -927,7 +945,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             for grant in &mut rogue_seed.reference_grants {
                 grant.reader = rogue_agent;
             }
-            rogue_seed.validate()?;
+            rogue_seed.validate(&mut None)?;
             assert!(
                 aggregate
                     .execute(fork_command(
@@ -1016,7 +1034,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &stream,
             child_authority.clone(),
             child_issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+            SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
         .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -1029,7 +1047,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &prebound_stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?;
             prebound_child
                 .execute(command(
@@ -1223,7 +1241,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -1234,7 +1252,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -1306,6 +1324,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &child_scope,
             &child_private,
             VolumeOperation::Read,
+            u64::MAX, &mut None,
         )?;
         assert_eq!(
             host.read_content(&child_attachment, &child_read, 1_024, None)
@@ -1399,6 +1418,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &grant_scope,
         &private,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let image = host
         .put_content(
@@ -1495,7 +1515,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &host
                 .resolve(&workspace_ref(
                     provider.clone(),
-                    &(project).storage_name()?,
+                    &(project).storage_name(&mut None)?,
                 )?)
                 .await?
                 .generation,
@@ -1590,8 +1610,8 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         "conversation:bind".to_owned(),
         "fork:publish".to_owned(),
         "project:merge".to_owned(),
-        root.capability(VolumeOperation::Read)?,
-        root.capability(VolumeOperation::Write)?,
+        root.capability(VolumeOperation::Read, &mut None)?,
+        root.capability(VolumeOperation::Write, &mut None)?,
     ];
     for index in 1..=32_u8 {
         capabilities.push(
@@ -1601,7 +1621,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 format!("wide-child-{index}"),
                 VolumeOwner::Project("wide".into()),
             )?
-            .capability(VolumeOperation::Read)?,
+            .capability(VolumeOperation::Read, &mut None)?,
         );
     }
     let parent_scope =
@@ -1646,7 +1666,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     );
     let ungranted = parent_issuer.issue("no-promotion", &Capabilities::new([
             "fork:publish".to_owned(),
-            root.capability(VolumeOperation::Read)?,
+            root.capability(VolumeOperation::Read, &mut None)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let ungranted_controller = ParentProjectController::new(
         &host,
@@ -1740,7 +1760,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 &host
                     .resolve(&workspace_ref(
                         provider.clone(),
-                        &(siblings[0]).storage_name()?
+                        &(siblings[0]).storage_name(&mut None)?
                     )?)
                     .await?
                     .generation
@@ -1759,7 +1779,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 &host
                     .resolve(&workspace_ref(
                         provider.clone(),
-                        &(siblings[0]).storage_name()?
+                        &(siblings[0]).storage_name(&mut None)?
                     )?)
                     .await?
                     .generation
@@ -1775,7 +1795,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .prepare_project_import(&siblings[0], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
-                    &(siblings[0]).storage_name()?,
+                    &(siblings[0]).storage_name(&mut None)?,
                 )?)
                 .await?
                 .generation, None)
@@ -1784,7 +1804,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .prepare_project_import(&siblings[1], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
-                    &(siblings[1]).storage_name()?,
+                    &(siblings[1]).storage_name(&mut None)?,
                 )?)
                 .await?
                 .generation, None)
@@ -1805,7 +1825,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .prepare_project_import(&siblings[1], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
-                    &(siblings[1]).storage_name()?,
+                    &(siblings[1]).storage_name(&mut None)?,
                 )?)
                 .await?
                 .generation, None)
@@ -1856,6 +1876,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_scope,
         &root,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let notice_file = host
         .put_content(
