@@ -842,102 +842,101 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     }
 }
 
+macro_rules! created_publisher {
+    ($this:ident, $budget:ident, $cancellation:ident, $io:expr) => {
+        fn stage_once<'a>(&'a $this, operation: OperationId, path: &'a str, bytes: &'a [u8],
+            media_type: &'a str, display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
+            Box::pin(async move { $this.publish(operation, path, bytes, media_type, display_name, None, None).await })
+        }
+        fn stage_once_measured<'a>(&'a $this, operation: OperationId, path: &'a str, bytes: &'a [u8],
+            media_type: &'a str, display_name: &'a str, $budget: WorkBudget, $cancellation: &'a CancellationToken)
+            -> ContentFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
+            Box::pin(async move {
+                let io = $io.map_err(OperationFailure::before_work)?;
+                let result = $this.publish(operation, path, bytes, media_type, display_name, None, Some(&io)).await;
+                content_result(&io, result)
+            })
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        fn stage_once_with_native_work<'a>(&'a $this, operation: OperationId, path: &'a str, bytes: &'a [u8],
+            media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork)
+            -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+            crate::NativeFutureBundle::new(work, || async move {
+                let io = PreparationIo::from_native_work(work)?;
+                let file = $this.publish(operation, path, bytes, media_type, display_name, None, Some(&io)).await?;
+                let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
+                Ok((file, custody))
+            })
+        }
+        fn observe_staged_once<'a>(&'a $this, operation: OperationId, maximum_bytes: u64) -> BoxFuture<'a, Result<Option<FileRef>>> {
+            Box::pin(async move { $this.observe(operation, maximum_bytes, None).await })
+        }
+        fn observe_staged_once_measured<'a>(&'a $this, operation: OperationId, maximum_bytes: u64,
+            $budget: WorkBudget, $cancellation: &'a CancellationToken)
+            -> ContentFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
+            Box::pin(async move {
+                let io = $io.map_err(OperationFailure::before_work)?;
+                let result = $this.observe(operation, maximum_bytes, Some(&io)).await;
+                content_result(&io, result)
+            })
+        }
+        fn stage_at<'a>(&'a $this, operation: OperationId, source: &'a FileRef, bytes: &'a [u8]) -> BoxFuture<'a, Result<FileRef>> {
+            Box::pin(async move { $this.publish(operation, source.path(), bytes,
+                source.descriptor().media_type(), source.display_name(), Some(source), None).await })
+        }
+    };
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
-    for RootCreatedFilesystemAccess<A, O>
-{
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreatedFilesystemAccess<A, O> {
+    async fn publish(&self, operation: OperationId, path: &str, bytes: &[u8], media_type: &str,
+        display_name: &str, source: Option<&FileRef>, io: Option<&PreparationIo>) -> Result<FileRef> {
+        let lease = self.publication_lease()?;
+        let volume = source.map_or(&self.allocation.request.volume, FileRef::volume);
+        match io {
+            Some(io) => { io.verify_publication_lease(lease).await?; self.authenticate(volume, io).await?; }
+            None => { lease.verify().await?; self.authenticate_original(volume).await?; }
+        }
+        if let Some(source) = source {
+            let ordinary;
+            let source_io = match io {
+                Some(io) => io,
+                None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
+            };
+            if self.allocation.source_generation_for_file_with_io(source, Some(source_io))?.is_some() {
+                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, source_io).await?
+                    .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
+                drop(original);
+            }
+            self.writer()?.stage_at_with_io(operation, source, bytes, io, Some(lease), Some(&self.allocation)).await
+        } else {
+            self.writer()?.stage_once_with_io(operation, path, bytes, media_type, display_name, io, Some(lease), Some(&self.allocation)).await
+        }
+    }
+    async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
+        match io {
+            Some(io) => self.authenticate(&self.allocation.request.volume, io).await?,
+            None => self.authenticate_original(&self.allocation.request.volume).await?,
+        }
+        self.writer()?.observe_once_with_io(operation, maximum_bytes, io).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher for RootCreatedFilesystemAccess<A, O> {
     fn volume(&self) -> &VolumeRef { &self.allocation.request.volume }
-    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.writer()?.supports_native_stage(work)
-    }
+    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> { self.writer()?.supports_native_stage(work) }
     fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str,
-        display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move { self.stage_once(operation, path, bytes, media_type, display_name).await })
-    }
-    fn stage_once<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str,
-        display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            self.publication_lease()?.verify().await?;
-            self.authenticate_original(&self.allocation.request.volume).await?;
-            self.writer()?.stage_once_with_publication_lease(operation, path, bytes, media_type, display_name,
-                self.publication_lease()?, self.allocation.as_ref()).await
-        })
-    }
-    fn observe_staged_once<'a>(&'a self, operation: OperationId, maximum_bytes: u64) -> BoxFuture<'a, Result<Option<FileRef>>> {
-        Box::pin(async move {
-            self.authenticate_original(&self.allocation.request.volume).await?;
-            self.writer()?.observe_staged_once(operation, maximum_bytes).await
-        })
-    }
-    fn stage_once_measured<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation).map_err(OperationFailure::before_work)?;
-            let result = async {
-                io.verify_publication_lease(self.publication_lease()?).await?;
-                self.authenticate(&self.allocation.request.volume, &io).await?;
-                io.receive_content(self.writer()?.stage_once_with_publication_lease_measured(operation, path, bytes,
-                    media_type, display_name, io.remaining()?, cancellation, self.publication_lease()?,
-                    self.allocation.as_ref()).await)
-            }.await;
-            content_result(&io, result)
-        })
-    }
-    fn stage_once_with_native_work<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            self.publication_lease()?.verify_with_native_work(work)?.await?;
-            let io = PreparationIo::from_native_work(work)?;
-            self.authenticate(&self.allocation.request.volume, &io).await?;
-            drop(io);
-            self.writer()?.stage_once_with_publication_lease_with_native_work(operation, path, bytes,
-                media_type, display_name, work, self.publication_lease()?, self.allocation.as_ref())?.await
-        })
-    }
-    fn observe_staged_once_measured<'a>(&'a self, operation: OperationId, maximum_bytes: u64,
-        budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation).map_err(OperationFailure::before_work)?;
-            let result = async {
-                self.authenticate(&self.allocation.request.volume, &io).await?;
-                io.receive_content(self.writer()?.observe_staged_once_measured(
-                    operation, maximum_bytes, io.remaining()?, cancellation).await)
-            }.await;
-            content_result(&io, result)
-        })
-    }
-    fn stage_at<'a>(&'a self, operation: OperationId, source: &'a FileRef, bytes: &'a [u8]) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            self.publication_lease()?.verify().await?;
-            self.authenticate_original(source.volume()).await?;
-            let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-            if self.allocation.source_generation_for_file_with_io(source, Some(&io))?.is_some() {
-                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, &io).await?
-                    .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
-                drop(original);
-            }
-            self.writer()?.stage_at_with_publication_lease(operation, source, bytes,
-                self.publication_lease()?, self.allocation.as_ref()).await
-        })
-    }
+        display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> { self.stage_once(operation, path, bytes, media_type, display_name) }
+    created_publisher!(self, budget, cancellation, PreparationIo::from_budget(budget, cancellation));
     fn stage_at_with_native_work<'a>(&'a self, operation: OperationId, source: &'a FileRef, bytes: &'a [u8],
-        work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
+        work: &'a acyclic_fs::NativeMaterializationWork) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            self.publication_lease()?.verify_with_native_work(work)?.await?;
             let io = PreparationIo::from_native_work(work)?;
-            self.authenticate(source.volume(), &io).await?;
-            if self.allocation.source_generation_for_file_with_io(source, Some(&io))?.is_some() {
-                let original = self.read_snapshot_file(source, self.reader.maximum_bytes, &io).await?
-                    .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
-                drop(original);
-            }
-            drop(io);
-            self.writer()?.stage_at_with_publication_lease_with_native_work(operation, source, bytes,
-                work, self.publication_lease()?, self.allocation.as_ref())?.await
+            let file = self.publish(operation, source.path(), bytes, source.descriptor().media_type(),
+                source.display_name(), Some(source), Some(&io)).await?;
+            let custody = io.into_native_custody(file.logical_owned_bytes()?)?;
+            Ok((file, custody))
         })
     }
 }
@@ -964,7 +963,6 @@ struct AuthenticatedAllocation {
     default_writer: bool,
     artifact_writer: bool,
     creation_operation: acyclic_fs::OperationId,
-    source_binding_digest: [u8; 32],
     reference_files: Vec<FileRef>,
 }
 
@@ -1149,7 +1147,6 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 artifact_writer: role == ForkAllocationRole::Result,
                 authority: (role == ForkAllocationRole::Scratch).then(|| fork.child.clone()),
                 creation_operation: acyclic_fs::OperationId::from_bytes(key.into_bytes()),
-                source_binding_digest: binding.digest,
                 reference_files: Vec::new(),
             });
         }
@@ -1701,67 +1698,40 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
     }
 }
 
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemAccess<A, O> {
+    async fn publish(&self, operation: OperationId, path: &str, bytes: &[u8], media_type: &str,
+        display_name: &str, source: Option<&FileRef>, io: Option<&PreparationIo>) -> Result<FileRef> {
+        let volume = source.map_or(&self.volume, FileRef::volume);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+            let authentication = PreparationIo::from_native_work(work)?;
+            self.reauthenticate(volume, Some(&authentication)).await?;
+        } else { self.reauthenticate(volume, io).await?; }
+        #[cfg(target_arch = "wasm32")]
+        self.reauthenticate(volume, io).await?;
+        match source {
+            Some(source) => self.writer.stage_at_with_io(operation, source, bytes, io, None, None).await,
+            None => self.writer.stage_once_with_io(operation, path, bytes, media_type, display_name, io, None, None).await,
+        }
+    }
+    async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
+        self.reauthenticate(&self.volume, io).await?;
+        self.writer.observe_once_with_io(operation, maximum_bytes.min(self.request.maximum_bytes), io).await
+    }
+}
+
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher for CreatedFilesystemAccess<A, O> {
     fn volume(&self) -> &VolumeRef { &self.volume }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if self.writer.volume() != &self.volume {
-            return Err(Error::Unauthorized("created writer is not its exact bound namespace".into()));
-        }
+        if self.writer.volume() != &self.volume { return Err(Error::Unauthorized("created writer is not its exact bound namespace".into())); }
         self.writer.supports_native_stage(work)
     }
-    fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str, display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
+    fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str,
+        display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move { self.reauthenticate(&self.volume, None).await?; self.writer.stage(operation, path, bytes, media_type, display_name).await })
     }
-    fn stage_once<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str, display_name: &'a str) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move { self.reauthenticate(&self.volume, None).await?; self.writer.stage_once(operation, path, bytes, media_type, display_name).await })
-    }
-    fn observe_staged_once<'a>(&'a self, operation: OperationId, maximum_bytes: u64) -> BoxFuture<'a, Result<Option<FileRef>>> {
-        Box::pin(async move {
-            self.reauthenticate(&self.volume, None).await?;
-            self.writer.observe_staged_once(operation, maximum_bytes.min(self.request.maximum_bytes)).await
-        })
-    }
-    fn stage_once_measured<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<FileRef>, Error>> {
-        Box::pin(async move {
-            let io = content_io(&self.request, budget, cancellation).map_err(OperationFailure::before_work)?;
-            let result = async {
-                self.reauthenticate(&self.volume, Some(&io)).await?;
-                io.receive_content(self.writer.stage_once_measured(operation, path, bytes, media_type, display_name,
-                    io.remaining()?, cancellation).await)
-            }.await;
-            content_result(&io, result)
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_once_with_native_work<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork)
-        -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.reauthenticate(&self.volume, Some(&io)).await?;
-            drop(io);
-            self.writer.stage_once_with_native_work(operation, path, bytes, media_type, display_name, work)?.await
-        })
-    }
-    fn observe_staged_once_measured<'a>(&'a self, operation: OperationId, maximum_bytes: u64,
-        budget: WorkBudget, cancellation: &'a CancellationToken)
-        -> ContentFuture<'a, MeasuredResult<OperationReceipt<Option<FileRef>>, Error>> {
-        Box::pin(async move {
-            let io = content_io(&self.request, budget, cancellation).map_err(OperationFailure::before_work)?;
-            let result = async {
-                self.reauthenticate(&self.volume, Some(&io)).await?;
-                io.receive_content(self.writer.observe_staged_once_measured(operation, maximum_bytes.min(self.request.maximum_bytes),
-                    io.remaining()?, cancellation).await)
-            }.await;
-            content_result(&io, result)
-        })
-    }
-    fn stage_at<'a>(&'a self, operation: OperationId, source: &'a FileRef, bytes: &'a [u8]) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move { self.reauthenticate(source.volume(), None).await?; self.writer.stage_at(operation, source, bytes).await })
-    }
+    created_publisher!(self, budget, cancellation, content_io(&self.request, budget, cancellation));
 }
 
 #[cfg(test)]
@@ -1769,25 +1739,6 @@ mod tests {
     use super::*;
     use crate::conversation::{VolumeClass, VolumeOwner};
     use crate::core::AggregateKind;
-
-    #[test]
-    fn raw_allocation_has_no_created_task_authority() -> Result<()> {
-        let claim = AllocationClaim {
-            operation_id: OperationId::from_bytes([81; 16]),
-            preparation_digest: [82; 32],
-            task_origin: None,
-            parent: Authority { kind: AggregateKind::Task, id: "parent".into() },
-            child: Authority { kind: AggregateKind::Task, id: "child".into() },
-            volume: VolumeRef::new(
-                ProviderRef::new("created-test", "filesystem", "2")?,
-                "scratch", VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(crate::AgentId::from_bytes([83; 16])),
-            )?,
-            role: ForkAllocationRole::Scratch,
-        };
-        assert!(matches!(task_origin(&claim), Err(Error::Unauthorized(_))));
-        Ok(())
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
@@ -1836,45 +1787,17 @@ mod tests {
         fixture: &crate::durable_host::tests::created_resource_access::CreationFixture,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::durable_host::TaskJournalOwner<acyclic_stream::MemoryStream>> {
-        use crate::core::{Action, Command};
-        use crate::store::history::HistoryIo as _;
         let owner = fixture.host.journal_owner(fixture.root,
             (&fixture.root_lease.reservation).into()).await?;
-        let configured_audience = Authority { kind: AggregateKind::Conversation, id: "genuine-original-root-bootstrap".into() };
-        assert_ne!(configured_audience.id, fixture.root.to_string());
-        let configured_issuer = AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
         let agent = owner.authenticated_binding_agent_with_native_work(work)?.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "fixture has no original Root actor"))?;
         let authority_custody;
         let (authority, custody) = original_root_fixture_authority(agent, work)?;
         authority_custody = custody;
         let scratch = &fixture.original_root_births.as_ref().expect("real pre-admission births")[1];
-        let operation = super::super::super::native_root_output_binding_operation(
-            &authority.0, &scratch.volume, scratch.operation, work,
-        )?;
-        let encoded = super::super::super::bind_original_root_conversation_with_native_work(
+        super::super::super::bind_original_root_conversation_with_native_work(
             &fixture.stream, authority, authority_custody, &owner,
             &scratch.volume, scratch.operation, fixture.root_scope.limits(), work,
         ).await?;
-        let command: Command = crate::contract::json_from_slice(encoded.as_ref())
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(command.operation_id, operation);
-        assert_eq!(command.expected_revision, 0);
-        assert_eq!(command.causal_parent, None);
-        assert_eq!(command.action, Action::BindConversation { agent });
-        assert_eq!(command.scope.agent(), Some(agent));
-        assert!(command.scope.capabilities().contains("conversation:bind"));
-        configured_issuer.verifier().verify(&command.scope)?;
-        let witness = owner.root_bootstrap_binding_witness_with_native_work(work).await?;
-        assert_eq!(witness.binding().bind_operation(), command.operation_id);
-        assert_eq!(witness.binding().audience(), &configured_audience);
-        assert_eq!(witness.binding().agent(), agent);
-        let mut metadata = crate::store::history::native_work_io(work)
-            .map_err(Error::from)?;
-        assert_eq!(witness.binding().intent_digest(),
-            crate::core::canonical_intent_with_work(&command, &mut Some(&mut metadata))?);
-        drop(command);
-        drop(encoded);
-        assert_eq!(owner.root_bootstrap_owner(), fixture.filesystem_creator.issuer.audience());
         Ok(owner)
     }
 
@@ -2017,7 +1940,6 @@ mod tests {
                     VolumeClass::Project, VolumeOwner::Project("created-project".into()))?,
                 _ => request.role = RootBootstrapContentRole::Scratch,
             }
-            let before = work.receipt();
             let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
             assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
 

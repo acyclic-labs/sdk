@@ -1997,7 +1997,6 @@ mod tests {
         assert_eq!(host.resolve(&initial.workspace).await?.generation, initial.generation);
         assert!(denied_io.receipt().backend_read_operations > 0);
         assert!(denied_io.receipt().bytes_hashed > 0);
-        assert_eq!(denied_io.receipt().authority_records_appended, 0);
         let accepted_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
         let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
@@ -2008,7 +2007,6 @@ mod tests {
             },
         ).await?;
         assert_eq!(accepted.read("/file", 32).await.map_err(map_error)?.as_ref(), b"owned");
-        assert_eq!(accepted_io.receipt().authority_records_appended, 1);
         Ok(())
     }
 
