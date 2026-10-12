@@ -163,6 +163,7 @@ include!("namespace.rs");
 include!("source.rs");
 mod source_factory;
 include!("work.rs");
+include!("locks.rs");
 include!("inputs.rs");
 include!("native_names.rs");
 mod capture;
