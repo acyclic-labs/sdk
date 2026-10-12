@@ -414,7 +414,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
         }
         for file in &input_files {
-            file.validate()?;
+            file.validate(&mut None)?;
             grants.push(file.read_capability()?);
         }
         child.grants = Capabilities::new(grants);

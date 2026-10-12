@@ -156,14 +156,6 @@ fn model_media_policy_in_quota(
 ) -> Result<NativeMediaPolicy> {
     if quota.work().is_none() { return Ok(policy.clone()); }
     model_copy_node(quota)?;
-    let intent = match &policy.intent {
-        NativeMediaIntent::Image { detail } => NativeMediaIntent::Image { detail: *detail },
-        NativeMediaIntent::Audio { maximum_duration_ms } => NativeMediaIntent::Audio { maximum_duration_ms: *maximum_duration_ms },
-        NativeMediaIntent::Video { maximum_duration_ms, maximum_frames } => NativeMediaIntent::Video {
-            maximum_duration_ms: *maximum_duration_ms, maximum_frames: *maximum_frames,
-        },
-        NativeMediaIntent::Document { maximum_pages } => NativeMediaIntent::Document { maximum_pages: *maximum_pages },
-    };
     let configuration = policy.configuration.as_ref().map(|binding| -> Result<NativeConfigurationBinding> {
         model_copy_node(quota)?;
         Ok(NativeConfigurationBinding {
@@ -172,7 +164,7 @@ fn model_media_policy_in_quota(
             implementation_digest: binding.implementation_digest,
         })
     }).transpose()?;
-    Ok(NativeMediaPolicy { intent, maximum_bytes: policy.maximum_bytes,
+    Ok(NativeMediaPolicy { intent: policy.intent.clone(), maximum_bytes: policy.maximum_bytes,
         maximum_work: policy.maximum_work, configuration })
 }
 
