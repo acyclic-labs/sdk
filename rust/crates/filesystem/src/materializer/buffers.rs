@@ -1,47 +1,39 @@
 use super::*;
 
-pub(super) fn check_native_plan(
-    plan: &MaterializationPlan,
-    work: &NativeMaterializationWork,
-) -> Result<(), NativeTreeMaterializationError> {
-    let count = plan
-        .edits
-        .len()
-        .checked_mul(2)
-        .ok_or(crate::WorkError::Overflow)?;
-    let paths = crate::native_host::native_buffer::<&str>(count, work)?;
-    if validate_plan(plan, paths.data, || {
-        work.charge(NativeResourceCredit::Items.delta(1))
-    })? {
-        Ok(())
-    } else {
-        Err(NativeTreeMaterializationError::InvalidLayout)
-    }
+pub(super) fn owned_size(
+    count: usize,
+    width: usize,
+) -> Result<u64, NativeTreeMaterializationError> {
+    Ok(crate::foundation::usize_to_u64(
+        count.checked_mul(width).ok_or(crate::WorkError::Overflow)?,
+    ))
 }
-
-#[cfg(feature = "native-mount")]
-pub(super) fn native_absolute_string(
-    path: &str,
-    work: &NativeMaterializationWork,
-) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
-    work.display(&format_args!("/{path}"))
-}
-use crate::WorkCounters;
-
 pub(super) fn copy_image(
-    image: &[u8],
+    bytes: &[u8],
     allocation: &mut NativeAllocation,
 ) -> Result<Vec<u8>, NativeTreeMaterializationError> {
-    let (image, mut copied) = allocation.work().copy_bytes(image)?;
+    let (bytes, mut copied) = allocation.work().copy_bytes(bytes)?;
     allocation.absorb(&mut copied)?;
-    Ok(image)
+    Ok(bytes)
 }
 pub(super) fn copy_string(
     text: &str,
     allocation: &mut NativeAllocation,
 ) -> Result<String, NativeTreeMaterializationError> {
-    String::from_utf8(copy_image(text.as_bytes(), allocation)?)
-        .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    Ok(String::from_utf8(copy_image(text.as_bytes(), allocation)?).expect("copied UTF-8"))
+}
+pub(super) fn copy_slice<T, U>(
+    values: &[T],
+    allocation: &mut NativeAllocation,
+    mut copy: impl FnMut(&T, &mut NativeAllocation) -> Result<U, NativeTreeMaterializationError>,
+) -> Result<Vec<U>, NativeTreeMaterializationError> {
+    let (mut copied, mut capacity) =
+        crate::native_host::buffer(values.len(), &mut allocation.work())?;
+    allocation.absorb(&mut capacity)?;
+    for value in values {
+        copied.push(copy(value, allocation)?);
+    }
+    Ok(copied)
 }
 pub(super) fn duplicate_edit(
     edit: &MaterializationEdit,
@@ -65,14 +57,6 @@ pub(super) fn duplicate_edit(
         },
     })
 }
-
-pub(super) fn owned_size(
-    count: usize,
-    width: usize,
-) -> Result<u64, NativeTreeMaterializationError> {
-    u64::try_from(count.checked_mul(width).ok_or(crate::WorkError::Overflow)?)
-        .map_err(|_| crate::WorkError::Overflow.into())
-}
 pub(super) fn plan_owned_bytes(
     plan: &MaterializationPlan,
 ) -> Result<u64, NativeTreeMaterializationError> {
@@ -80,92 +64,79 @@ pub(super) fn plan_owned_bytes(
         plan.edits.capacity(),
         std::mem::size_of::<MaterializationEdit>(),
     )?;
+    let mut add = |count: usize, width: usize| -> Result<(), NativeTreeMaterializationError> {
+        bytes = bytes
+            .checked_add(owned_size(count, width)?)
+            .ok_or(crate::WorkError::Overflow)?;
+        Ok(())
+    };
     for edit in &plan.edits {
-        let (a, b) = match edit {
+        match edit {
             MaterializationEdit::Install { path, image }
             | MaterializationEdit::SetMetadata { path, image } => {
-                (path.capacity(), image.capacity())
+                add(path.capacity(), 1)?;
+                add(image.capacity(), 1)?;
             }
-            MaterializationEdit::Remove { path } => (path.capacity(), 0),
-            MaterializationEdit::Rename { from, to } => (from.capacity(), to.capacity()),
-        };
-        bytes = bytes
-            .checked_add(owned_size(
-                a.checked_add(b).ok_or(crate::WorkError::Overflow)?,
-                1,
-            )?)
-            .ok_or(crate::WorkError::Overflow)?;
+            MaterializationEdit::Remove { path } => add(path.capacity(), 1)?,
+            MaterializationEdit::Rename { from, to } => {
+                add(from.capacity(), 1)?;
+                add(to.capacity(), 1)?;
+            }
+        }
     }
     if let MaterializationIntent::NativePreparation {
         selection,
         original,
     } = &plan.intent
     {
-        bytes = bytes
-            .checked_add(original.capacity() as u64)
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    owned_size(
-                        selection.capacity(),
-                        std::mem::size_of::<MaterializationPreparationSelection>(),
-                    )
-                    .ok()?,
-                )
-            })
-            .ok_or(crate::WorkError::Overflow)?;
-        for selected in selection {
-            bytes = bytes
-                .checked_add(selected.provider_identity.capacity() as u64)
-                .ok_or(crate::WorkError::Overflow)?;
+        add(
+            selection.capacity(),
+            std::mem::size_of::<MaterializationPreparationSelection>(),
+        )?;
+        add(original.capacity(), 1)?;
+        for item in selection {
+            add(item.provider_identity.capacity(), 1)?;
         }
     }
     Ok(bytes)
 }
-/// Actual retained journal payload, excluding the allocation guard itself.
+/// Capacity retained by a journal's owned payloads.
 pub fn journal_owned_bytes(
     journal: &MaterializationJournal,
 ) -> Result<u64, NativeTreeMaterializationError> {
-    let mut bytes = plan_owned_bytes(&journal.plan)?
-        .checked_add(owned_size(
-            journal.preimages.capacity(),
-            std::mem::size_of::<MaterializationPreimage>(),
-        )?)
-        .ok_or(crate::WorkError::Overflow)?;
-    for preimage in &journal.preimages {
-        bytes = bytes
-            .checked_add(preimage.image.capacity() as u64)
-            .ok_or(crate::WorkError::Overflow)?;
-    }
-    Ok(bytes)
+    journal.preimages.iter().try_fold(
+        plan_owned_bytes(&journal.plan)?
+            .checked_add(owned_size(
+                journal.preimages.capacity(),
+                std::mem::size_of::<MaterializationPreimage>(),
+            )?)
+            .ok_or(crate::WorkError::Overflow)?,
+        |bytes, image| {
+            bytes
+                .checked_add(image.image.capacity() as u64)
+                .ok_or(crate::WorkError::Overflow.into())
+        },
+    )
 }
-pub(super) fn native_vec_push<T>(
-    values: &mut Vec<T>,
-    value: T,
-    allocation: &mut NativeAllocation,
+pub(super) fn check_native_plan(
+    plan: &MaterializationPlan,
+    work: &NativeMaterializationWork,
 ) -> Result<(), NativeTreeMaterializationError> {
-    if values.len() == values.capacity() {
-        let added = values.capacity().max(1);
-        let before = owned_size(values.capacity(), std::mem::size_of::<T>())?;
-        let mut growth = allocation.work().claim(
-            owned_size(added, std::mem::size_of::<T>())?,
-            1,
-            WorkCounters::UNCHARGED,
-        )?;
-        let reserved = values.try_reserve_exact(added);
-        let reconciled = growth.reconcile_capacity(
-            owned_size(values.capacity(), std::mem::size_of::<T>())?
-                .checked_sub(before)
-                .ok_or(crate::WorkError::Overflow)?,
-        );
-        allocation.absorb(&mut growth)?;
-        reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
-        reconciled?;
+    let count = plan
+        .edits
+        .len()
+        .checked_mul(2)
+        .ok_or(crate::WorkError::Overflow)?;
+    let (paths, _allocation) = crate::native_host::buffer::<&str, _>(count, &mut &*work)?;
+    work.charge(NativeResourceCredit::Items.delta(plan.edits.len() as u64))?;
+    if validate_plan(plan, paths) {
+        Ok(())
+    } else {
+        Err(NativeTreeMaterializationError::InvalidLayout)
     }
-    values.push(value);
-    Ok(())
 }
 impl NativeMaterializationWork {
-    /// Copies a lexical path with admitted capacity.
+    /// Copies a lexical path into admitted capacity.
     pub fn path(
         &self,
         root: &Path,
@@ -184,7 +155,7 @@ impl NativeMaterializationWork {
         let mut allocation = self.claim(
             capacity as u64,
             u64::from(capacity != 0),
-            WorkCounters::UNCHARGED,
+            crate::WorkCounters::UNCHARGED,
         )?;
         let mut path = PathBuf::new();
         path.try_reserve_exact(capacity)
@@ -197,16 +168,16 @@ impl NativeMaterializationWork {
         allocation.reconcile_capacity(path.capacity() as u64)?;
         Ok((path, allocation))
     }
-    /// Copies the admitted prefix before reporting a byte-limit failure.
+    /// Copies the admitted prefix before reporting a byte limit.
     pub fn copy_bytes(
         &self,
-        source: &[u8],
+        bytes: &[u8],
     ) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
         let mut writer = ImageWriter::new(self)?;
-        writer.append(source)?;
+        writer.append(bytes)?;
         Ok((writer.bytes, writer.allocation))
     }
-    /// Formats directly into an admitted buffer.
+    /// Formats directly into admitted capacity.
     pub fn display<T: std::fmt::Display + ?Sized>(
         &self,
         value: &T,
@@ -219,8 +190,7 @@ impl NativeMaterializationWork {
                 .unwrap_or(NativeTreeMaterializationError::InvalidLayout));
         }
         Ok((
-            String::from_utf8(writer.bytes)
-                .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
+            String::from_utf8(writer.bytes).expect("formatted UTF-8"),
             writer.allocation,
         ))
     }
@@ -228,15 +198,7 @@ impl NativeMaterializationWork {
 pub(super) struct ImageWriter {
     pub(super) bytes: Vec<u8>,
     pub(super) allocation: NativeAllocation,
-    pub(super) failure: Option<NativeTreeMaterializationError>,
-}
-impl std::fmt::Write for ImageWriter {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        self.append(text.as_bytes()).map_err(|error| {
-            self.failure = Some(error);
-            std::fmt::Error
-        })
-    }
+    failure: Option<NativeTreeMaterializationError>,
 }
 impl ImageWriter {
     pub(super) fn new(
@@ -244,18 +206,8 @@ impl ImageWriter {
     ) -> Result<Self, NativeTreeMaterializationError> {
         Ok(Self {
             bytes: Vec::new(),
-            allocation: work.claim(0, 0, WorkCounters::UNCHARGED)?,
+            allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
             failure: None,
-        })
-    }
-    pub(super) fn json(
-        &mut self,
-        value: &impl Serialize,
-    ) -> Result<(), NativeTreeMaterializationError> {
-        serde_json::to_writer(&mut *self, value).map_err(|_| {
-            self.failure
-                .take()
-                .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
         })
     }
     fn append(&mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
@@ -267,24 +219,24 @@ impl ImageWriter {
             work.admit(NativeResourceCredit::Copy.delta(1))?;
         }
         let delta = NativeResourceCredit::Copy.delta(copied as u64);
-        let credit = work.reserve_work(delta)?;
+        let reserved = work.reserve_work(delta)?;
         let length = self
             .bytes
             .len()
             .checked_add(copied)
             .ok_or(crate::WorkError::Overflow)?;
         if length > self.bytes.capacity() {
-            let before = self.bytes.capacity();
-            self.allocation.grow((length - before) as u64)?;
-            let reserved = self.bytes.try_reserve_exact(length - self.bytes.len());
+            self.allocation
+                .grow((length - self.bytes.capacity()) as u64)?;
+            let attempted = self.bytes.try_reserve_exact(length - self.bytes.len());
             let reconciled = self
                 .allocation
                 .reconcile_capacity(self.bytes.capacity() as u64);
-            reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
+            attempted.map_err(NativeTreeMaterializationError::AllocationFailed)?;
             reconciled?;
         }
         self.bytes.extend_from_slice(&bytes[..copied]);
-        credit.record_completed(delta)?;
+        reserved.record_completed(delta)?;
         if copied != bytes.len() {
             work.admit(NativeResourceCredit::Copy.delta(1))?;
             return Err(NativeTreeMaterializationError::InvalidLayout);
@@ -292,22 +244,11 @@ impl ImageWriter {
         Ok(())
     }
 }
-impl std::io::Write for ImageWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if let Err(error) = self.allocation.work().charge(crate::WorkCounters {
-            bytes_encoded: bytes.len() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        }) {
+impl std::fmt::Write for ImageWriter {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        self.append(value.as_bytes()).map_err(|error| {
             self.failure = Some(error);
-            return Err(std::io::ErrorKind::Other.into());
-        }
-        self.append(bytes).map_err(|error| {
-            self.failure = Some(error);
-            std::io::Error::from(std::io::ErrorKind::Other)
-        })?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+            std::fmt::Error
+        })
     }
 }

@@ -37,9 +37,10 @@ pub enum MaterializationEdit {
 pub struct MaterializationPlan {
     /// Stable retry and recovery identity.
     pub operation_id: OperationId,
-    /// Exact generation transition or authenticated preparation.
+    /// Authenticated generation transition or preparation input.
     pub intent: MaterializationIntent,
-    /// Ordered nonoverlapping edits; metadata may follow descendant edits.
+    /// Ordered path edits. Destructive edits do not overlap; metadata edits may
+    /// follow edits to descendants so directory identity is preserved.
     pub edits: Vec<MaterializationEdit>,
 }
 
@@ -48,12 +49,11 @@ pub struct MaterializationPlan {
 pub struct MaterializationPreimage {
     /// Backend-defined bytes sufficient to restore every representable fact.
     pub image: Vec<u8>,
-    /// Live capacity while the preimage is outside its journal.
+    /// Retained native capacity outside a journal.
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
     pub custody: Option<NativeAllocation>,
 }
-
 impl PartialEq for MaterializationPreimage {
     fn eq(&self, other: &Self) -> bool {
         self.image == other.image
@@ -79,7 +79,7 @@ pub enum MaterializationObservation {
 /// Durable application phase.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MaterializationPhase {
-    /// Intent is durable; staging or preimage capture is incomplete.
+    /// Intent is durable; staging or capture is incomplete.
     Preparing,
     /// Every preimage is durable and no edit has been applied.
     Prepared,
@@ -104,11 +104,11 @@ pub struct MaterializationJournal {
     pub plan: MaterializationPlan,
     /// Original checkout allocation.
     pub root_identity: Option<[u8; 16]>,
-    /// Original operation and child allocations.
+    /// Original staging and backup allocations.
     pub preparation_identity: Option<MaterializationPreparationIdentity>,
-    /// Durable prefix of directory creation.
+    /// Acknowledged directory creation prefix.
     pub preparation_progress: Option<MaterializationPreparationProgress>,
-    /// Work acknowledged at the last durable boundary.
+    /// Durable work prefix.
     pub work: crate::WorkCounters,
     /// Preimages in exact edit order.
     pub preimages: Vec<MaterializationPreimage>,
@@ -118,12 +118,11 @@ pub struct MaterializationJournal {
     pub applied: u32,
     /// Number of applied edits restored from the end.
     pub restored: u32,
-    /// Capacity retained by the primary journal.
+    /// Capacity retained by this journal.
     #[cfg(not(target_arch = "wasm32"))]
     #[serde(skip)]
     pub custody: Option<NativeAllocation>,
 }
-
 impl PartialEq for MaterializationJournal {
     fn eq(&self, other: &Self) -> bool {
         self.version == other.version
@@ -141,7 +140,7 @@ impl PartialEq for MaterializationJournal {
 }
 impl Eq for MaterializationJournal {}
 impl MaterializationJournal {
-    /// Whether this journal is compatible with the requested operation.
+    /// Whether durable progress is valid for this operation.
     pub fn is_valid_for(&self, operation: OperationId) -> bool {
         valid_journal(self, operation)
     }
@@ -152,13 +151,12 @@ pub trait MaterializationJournalStore: Send + Sync {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Acknowledgement admitted before a native staging effect.
+    /// Completion admitted before a native staging effect.
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a>: Future<Output = Result<MaterializationJournal, Self::Error>> + Send
     where
         Self: 'a;
-
-    /// Prepares the durable acknowledgement while its original record is held.
+    /// Prepares a durable acknowledgement while holding its original record.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_action<'a>(
         &'a self,
@@ -185,16 +183,12 @@ pub trait MaterializationBackend: Send + Sync {
     /// Backend error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Uses the backend's existing context for native journal work.
+    /// Uses the existing native context when the backend has one.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_work<T>(
-        &self,
-        _operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeTreeMaterializationError>,
-    ) -> Result<Option<T>, Self::Error> {
-        Ok(None)
+    fn native_work(&self) -> Option<&NativeMaterializationWork> {
+        None
     }
-
-    /// Original checkout allocation, when independently observable.
+    /// Original checkout allocation.
     fn allocation_identity(&self) -> Option<[u8; 16]> {
         None
     }
@@ -215,7 +209,7 @@ pub trait MaterializationBackend: Send + Sync {
     {
         async { Ok(self.preparation_identity()) }
     }
-    /// Completes durability barriers following a lost acknowledgement.
+    /// Completes barriers after a lost acknowledgement.
     fn settle_observed(
         &self,
         _edit: &MaterializationEdit,
@@ -230,6 +224,9 @@ pub trait MaterializationBackend: Send + Sync {
     ) -> impl Future<Output = Result<MaterializationPreimage, Self::Error>> + Send;
 
     /// Classifies the current path against both durable endpoints.
+    ///
+    /// Backends that cannot independently witness physical state may retain
+    /// the default only when equivalent exclusion is provided externally.
     fn observe(
         &self,
         _edit: &MaterializationEdit,
@@ -271,6 +268,10 @@ pub enum MaterializationError<S: std::error::Error + 'static, B: std::error::Err
     /// Host checkout access failed.
     #[error("materialization backend failed: {0}")]
     Backend(B),
+    /// Native work admission failed.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    Native(#[from] NativeTreeMaterializationError),
     /// A retry supplied different immutable plan input.
     #[error("materialization retry conflicts with its durable plan")]
     PlanConflict,

@@ -1,13 +1,11 @@
 use super::*;
 use std::sync::Arc;
 
-/// Bytes retained on the original demand ledger.
+/// Capacity retained on the original SDK demand ledger.
 pub struct NativeAllocation {
     pub(super) meter: NativeMaterializationWork,
     pub(super) bytes: u64,
-    pub(super) capture: Option<Arc<crate::demand::CaptureTransientCustody>>,
 }
-
 impl std::fmt::Debug for NativeAllocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeAllocation")
@@ -15,9 +13,8 @@ impl std::fmt::Debug for NativeAllocation {
             .finish_non_exhaustive()
     }
 }
-
 impl NativeAllocation {
-    /// Current retained capacity.
+    /// Retained capacity.
     pub const fn bytes(&self) -> u64 {
         self.bytes
     }
@@ -25,11 +22,11 @@ impl NativeAllocation {
     pub const fn work(&self) -> &NativeMaterializationWork {
         &self.meter
     }
-    /// Whether both allocations use the same ledger.
+    /// Whether allocations share a ledger.
     pub fn shares_ledger(&self, other: &Self) -> bool {
         self.meter.shares_ledger(&other.meter)
     }
-    /// Transfers an already admitted runtime allocation.
+    /// Takes paid runtime capacity without allocating again.
     pub fn from_runtime_allocation(
         work: &NativeMaterializationWork,
         allocation: acyclic_native_runtime::ReadAllocation,
@@ -47,34 +44,23 @@ impl NativeAllocation {
             .map(|bytes| Self {
                 meter: work.allocation_work(),
                 bytes,
-                capture: None,
             })
             .map_err(|allocation| (NativeTreeMaterializationError::InvalidLayout, allocation))
     }
-    /// Combines capacities with identical ledger and capture attribution.
+    /// Combines capacity with identical accounting attribution.
     pub fn absorb(&mut self, other: &mut Self) -> Result<(), NativeTreeMaterializationError> {
-        let captures_match = match (&self.capture, &other.capture) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if !self.meter.shares_allocation_context(&other.meter)
-            || !captures_match && self.bytes != 0 && other.bytes != 0
-        {
+        if !self.meter.shares_allocation_context(&other.meter) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let bytes = self
             .bytes
             .checked_add(other.bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        if self.bytes == 0 {
-            self.capture = other.capture.clone();
-        }
         self.bytes = bytes;
         other.bytes = 0;
         Ok(())
     }
-    /// Splits paid capacity without allocating again.
+    /// Splits admitted capacity.
     pub fn split_off(&mut self, bytes: u64) -> Result<Self, NativeTreeMaterializationError> {
         self.bytes = self
             .bytes
@@ -83,21 +69,19 @@ impl NativeAllocation {
         Ok(Self {
             meter: self.meter.clone(),
             bytes,
-            capture: self.capture.clone(),
         })
     }
-    /// Admits a physical buffer growth before attempting it.
+    /// Admits physical growth before allocation.
     pub fn grow(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         self.bytes
             .checked_add(bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        let mut added =
+        let mut growth =
             self.meter
                 .claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-        added.capture = self.capture.clone();
-        self.absorb(&mut added)
+        self.absorb(&mut growth)
     }
-    /// Releases capacity after destroying its backing storage.
+    /// Releases destroyed backing capacity.
     pub fn release(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         self.bytes = self
             .bytes
@@ -112,7 +96,7 @@ impl NativeAllocation {
             self.meter.poison(error);
         }
     }
-    /// Changes logical retained capacity without another physical allocation.
+    /// Changes logical retained capacity without a physical allocation.
     pub fn resize(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         if bytes <= self.bytes {
             return self.release(self.bytes - bytes);
@@ -123,21 +107,17 @@ impl NativeAllocation {
         self.bytes = bytes;
         Ok(())
     }
-    /// Records actual allocation excess even when it exceeds the limit.
+    /// Records actual allocator excess before returning a limit failure.
     pub fn reconcile_capacity(&mut self, bytes: u64) -> Result<(), NativeTreeMaterializationError> {
         if bytes < self.bytes {
             return self.release(self.bytes - bytes);
         }
-        let (mut added, result) = self
-            .meter
-            .record_completed_allocation(bytes - self.bytes, self.capture.clone());
-        self.absorb(&mut added)?;
-        result
+        let (mut growth, recorded) = self.meter.record_completed_allocation(bytes - self.bytes);
+        self.absorb(&mut growth)?;
+        recorded
     }
     fn root_metadata_for(&self, meter: &Arc<crate::demand::NativeDemandReadMeter>) -> bool {
-        Arc::ptr_eq(&self.meter.state, meter)
-            && self.meter.resource.is_none()
-            && self.capture.is_none()
+        Arc::ptr_eq(&self.meter.original.state, meter) && self.meter.original.resource.is_none()
     }
     pub(crate) fn is_checkout_header_for(
         &self,
@@ -165,9 +145,8 @@ impl NativeAllocation {
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         Ok(NativeResourceRetirement {
-            original: self.meter.state.clone(),
-            resource: self.meter.resource.clone(),
-            _capture: self.capture.clone(),
+            original: self.meter.original.state.clone(),
+            resource: self.meter.original.resource.clone(),
             bytes,
         })
     }
@@ -176,7 +155,7 @@ impl NativeAllocation {
         owner: &Arc<crate::kernel::ProofDataCustody>,
         scope: &crate::demand::NativeCheckoutControlWitness,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.state, owner) {
+        if !scope.owns(&self.meter.original.state, owner) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_control(
@@ -190,7 +169,7 @@ impl NativeAllocation {
         owner: &Arc<crate::kernel::ProofDataCustody>,
         scope: &crate::demand::NativeCheckoutControlWitness,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.state, owner) {
+        if !scope.owns(&self.meter.original.state, owner) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_data(
@@ -199,17 +178,14 @@ impl NativeAllocation {
         ))
     }
 }
-
 impl Drop for NativeAllocation {
     fn drop(&mut self) {
         self.release_deferred(self.bytes);
     }
 }
-
 pub(crate) struct NativeResourceRetirement {
     original: Arc<crate::demand::NativeDemandReadMeter>,
     resource: Option<Arc<NativeResourceAllowance>>,
-    _capture: Option<Arc<crate::demand::CaptureTransientCustody>>,
     bytes: u64,
 }
 impl std::fmt::Debug for NativeResourceRetirement {

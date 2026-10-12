@@ -2,39 +2,24 @@ use super::*;
 
 pub(super) const NATIVE_WITNESS_VERSION: u8 = 2;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(super) struct NativeMetadataImage {
-    pub(super) readonly: bool,
-    pub(super) posix_mode: Option<u32>,
-    pub(super) windows_attributes: Option<u32>,
-}
-
-pub(super) type NativeFingerprint = [u8; 32];
-
-pub(super) type NativeWitness = (Option<NativeFingerprint>, Option<NativeFingerprint>);
-
 pub(super) fn encode_native_witness(
     before: Option<[u8; 32]>,
     after: Option<[u8; 32]>,
-    metadata: Option<NativeMetadataImage>,
-    work: &NativeMaterializationWork,
-) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
-    use std::io::Write as _;
-    let mut header = [0; 67];
-    header[0] = NATIVE_WITNESS_VERSION;
-    for (index, fingerprint) in [before, after].into_iter().enumerate() {
-        let offset = 1 + index * 33;
-        header[offset] = u8::from(fingerprint.is_some());
-        header[offset + 1..offset + 33].copy_from_slice(&fingerprint.unwrap_or([0; 32]));
-    }
-    let mut writer = ImageWriter::new(work)?;
-    if let Err(error) = writer.write_all(&header) {
-        return Err(writer.failure.take().unwrap_or_else(|| error.into()));
+    metadata: Option<crate::WorkspaceMetadata>,
+) -> Result<Vec<u8>, NativeTreeMaterializationError> {
+    let mut image = Vec::with_capacity(67);
+    image.push(NATIVE_WITNESS_VERSION);
+    for fingerprint in [before, after] {
+        image.push(u8::from(fingerprint.is_some()));
+        image.extend_from_slice(&fingerprint.unwrap_or([0; 32]));
     }
     if let Some(metadata) = metadata {
-        writer.json(&metadata)?;
+        image.extend_from_slice(
+            &serde_json::to_vec(&metadata)
+                .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
+        );
     }
-    Ok((writer.bytes, writer.allocation))
+    Ok(image)
 }
 
 pub(super) fn decode_native_witness(
@@ -59,8 +44,34 @@ pub(super) fn decode_native_witness(
     Ok((decode(&header[1..34])?, decode(&header[34..67])?))
 }
 
+pub(super) fn decode_native_preimage_metadata(
+    image: &[u8],
+) -> Result<Option<crate::WorkspaceMetadata>, NativeTreeMaterializationError> {
+    let metadata = image
+        .get(67..)
+        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+    if metadata.is_empty() {
+        Ok(None)
+    } else {
+        serde_json::from_slice(metadata)
+            .map(Some)
+            .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    }
+}
+
 pub(super) fn decode_native_metadata(
     image: &[u8],
-) -> Result<NativeMetadataImage, NativeTreeMaterializationError> {
+) -> Result<crate::WorkspaceMetadata, NativeTreeMaterializationError> {
     serde_json::from_slice(image).map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+}
+
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+pub(super) fn encode_native_metadata(
+    metadata: &crate::WorkspaceMetadata,
+) -> Result<Vec<u8>, NativeTreeMaterializationError> {
+    serde_json::to_vec(metadata).map_err(|_| NativeTreeMaterializationError::InvalidLayout)
 }

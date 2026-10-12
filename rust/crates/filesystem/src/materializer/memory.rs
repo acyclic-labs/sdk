@@ -1,13 +1,11 @@
 use super::*;
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 
-/// Process-local journal storage.
+/// Process-local journal adapter over the SDK record map.
 #[derive(Default)]
 pub struct MemoryMaterializationJournalStore {
-    journals: Mutex<BTreeMap<OperationId, MaterializationJournal>>,
+    journals: MemoryRecords<OperationId, MaterializationJournal>,
 }
-/// Acknowledgement prepared before a native staging effect.
+/// Acknowledgement prepared before native staging.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryMaterializationActionCompletion<'a> {
     store: &'a MemoryMaterializationJournalStore,
@@ -25,11 +23,15 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'_>, Self::Error> {
-        let journals = self.journals.lock().map_err(|_| Self::Error::Unavailable)?;
+        let journals = self
+            .journals
+            .0
+            .lock()
+            .map_err(|_| Self::Error::Unavailable)?;
         let original = journals
             .get(&journal.plan.operation_id)
             .ok_or(Self::Error::Contended)?;
-        if *original != journal {
+        if original != &journal {
             return Err(Self::Error::Contended);
         }
         match (&original.custody, &journal.custody) {
@@ -49,15 +51,12 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         }
         let mut replacement = duplicate_journal(original)?;
         drop(journals);
-        let revision =
-            journal
-                .revision
-                .checked_add(1)
-                .ok_or(NativeTreeMaterializationError::Work(
-                    crate::WorkError::Overflow,
-                ))?;
-        journal.revision = revision;
-        replacement.revision = revision;
+        journal.revision = journal
+            .revision
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)
+            .map_err(NativeTreeMaterializationError::from)?;
+        replacement.revision = journal.revision;
         Ok(MemoryMaterializationActionCompletion {
             store: self,
             journals: Some((journal, replacement)),
@@ -68,6 +67,7 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         operation: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
         self.journals
+            .0
             .lock()
             .map_err(|_| Self::Error::Unavailable)?
             .get(&operation)
@@ -80,7 +80,11 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         expected: u64,
         replacement: MaterializationJournal,
     ) -> Result<(bool, MaterializationJournal), Self::Error> {
-        let mut journals = self.journals.lock().map_err(|_| Self::Error::Unavailable)?;
+        let mut journals = self
+            .journals
+            .0
+            .lock()
+            .map_err(|_| Self::Error::Unavailable)?;
         let stored = crate::record_store::stored_revision(&journals, &operation) == expected;
         if stored {
             journals.insert(operation, duplicate_journal(&replacement)?);
@@ -109,6 +113,7 @@ impl Future for MemoryMaterializationActionCompletion<'_> {
                 let mut journals = this
                     .store
                     .journals
+                    .0
                     .lock()
                     .map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
                 let current = match journals.get_mut(&journal.plan.operation_id) {
@@ -126,37 +131,42 @@ impl Future for MemoryMaterializationActionCompletion<'_> {
         })())
     }
 }
-/// Journal synchronization or native accounting failure.
+/// Record synchronization or native accounting failure.
 #[derive(Debug, Error)]
 pub enum MemoryMaterializationJournalStoreError {
-    /// The record lock is poisoned.
-    #[error("materialization memory store unavailable")]
+    /// Record lock is poisoned.
+    #[error("materialization store unavailable")]
     Unavailable,
-    /// The original revision changed before acknowledgement.
-    #[error("materialization memory store contended")]
+    /// Original revision changed.
+    #[error("materialization store contended")]
     Contended,
-    /// Accepted staging lost its original revision; retains the caller's journal.
+    /// Accepted staging lost its revision; retains the caller's journal.
     #[cfg(not(target_arch = "wasm32"))]
-    #[error("accepted materialization action conflicts with its durable journal")]
+    #[error("accepted action conflicts with its journal")]
     ActionConflict(MaterializationJournal),
-    /// Native accounting failed.
+    /// Original native accounting failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     NativeWork(#[from] NativeTreeMaterializationError),
 }
-
 pub(crate) fn duplicate_journal(
     journal: &MaterializationJournal,
 ) -> Result<MaterializationJournal, MemoryMaterializationJournalStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(allocation) = journal.custody.as_ref().or_else(|| {
-        journal
-            .preimages
-            .iter()
-            .find_map(|preimage| preimage.custody.as_ref())
-    }) {
-        let work = allocation.work();
-        let mut custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+    let mut custody = journal
+        .custody
+        .as_ref()
+        .or_else(|| {
+            journal
+                .preimages
+                .iter()
+                .find_map(|image| image.custody.as_ref())
+        })
+        .map(|owned| owned.work().claim(0, 0, crate::WorkCounters::UNCHARGED))
+        .transpose()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = if let Some(custody) = &mut custody {
+        let edits = copy_slice(&journal.plan.edits, custody, duplicate_edit)?;
         let intent = match &journal.plan.intent {
             MaterializationIntent::GenerationTransition { from, to } => {
                 MaterializationIntent::GenerationTransition {
@@ -168,83 +178,66 @@ pub(crate) fn duplicate_journal(
                 selection,
                 original,
             } => {
-                let original = copy_image(original, &mut custody)?;
-                let mut selected = Vec::new();
-                for item in selection {
-                    let provider_identity = copy_image(&item.provider_identity, &mut custody)?;
-                    native_vec_push(
-                        &mut selected,
-                        MaterializationPreparationSelection {
-                            provider_identity,
-                            volume: item.volume,
-                            generation: item.generation,
-                        },
-                        &mut custody,
-                    )?;
-                }
+                let original = copy_image(original, custody)?;
+                let selected = copy_slice(selection, custody, |item, custody| {
+                    Ok(MaterializationPreparationSelection {
+                        provider_identity: copy_image(&item.provider_identity, custody)?,
+                        volume: item.volume,
+                        generation: item.generation,
+                    })
+                })?;
                 MaterializationIntent::NativePreparation {
                     selection: selected,
                     original,
                 }
             }
         };
-        let mut edits = Vec::new();
-        for edit in &journal.plan.edits {
-            let edit = duplicate_edit(edit, &mut custody)?;
-            native_vec_push(&mut edits, edit, &mut custody)?;
-        }
-        let mut preimages = Vec::new();
-        for preimage in &journal.preimages {
-            let image = copy_image(&preimage.image, &mut custody)?;
-            native_vec_push(
-                &mut preimages,
-                MaterializationPreimage {
-                    image,
-                    custody: None,
-                },
-                &mut custody,
-            )?;
-        }
-        return Ok(MaterializationJournal {
-            version: journal.version,
-            revision: journal.revision,
-            plan: MaterializationPlan {
+        let preimages = copy_slice(&journal.preimages, custody, |image, custody| {
+            Ok(MaterializationPreimage {
+                image: copy_image(&image.image, custody)?,
+                custody: None,
+            })
+        })?;
+        Some((
+            MaterializationPlan {
                 operation_id: journal.plan.operation_id,
                 intent,
                 edits,
             },
-            root_identity: journal.root_identity,
-            preparation_identity: journal.preparation_identity,
-            preparation_progress: journal.preparation_progress,
-            work: journal.work,
             preimages,
-            phase: journal.phase,
-            applied: journal.applied,
-            restored: journal.restored,
-            custody: Some(custody),
-        });
-    }
+        ))
+    } else {
+        None
+    };
+    #[cfg(target_arch = "wasm32")]
+    let native: Option<(MaterializationPlan, Vec<MaterializationPreimage>)> = None;
+    let (plan, preimages) = native.unwrap_or_else(|| {
+        (
+            journal.plan.clone(),
+            journal
+                .preimages
+                .iter()
+                .map(|image| MaterializationPreimage {
+                    image: image.image.clone(),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    custody: None,
+                })
+                .collect(),
+        )
+    });
     Ok(MaterializationJournal {
         version: journal.version,
         revision: journal.revision,
-        plan: journal.plan.clone(),
+        plan,
         root_identity: journal.root_identity,
         preparation_identity: journal.preparation_identity,
         preparation_progress: journal.preparation_progress,
         work: journal.work,
-        preimages: journal
-            .preimages
-            .iter()
-            .map(|preimage| MaterializationPreimage {
-                image: preimage.image.clone(),
-                #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-            })
-            .collect(),
+        preimages,
         phase: journal.phase,
         applied: journal.applied,
         restored: journal.restored,
         #[cfg(not(target_arch = "wasm32"))]
-        custody: None,
+        custody,
     })
 }

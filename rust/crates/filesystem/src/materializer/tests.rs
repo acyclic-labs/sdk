@@ -7,9 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
-#[derive(Debug, Error)]
-#[error("test backend unavailable")]
-struct BackendError;
+use std::fmt::Error;
 
 fn allow<S: std::error::Error + 'static, B: std::error::Error + 'static>()
 -> std::future::Ready<Result<(), MaterializationError<S, B>>> {
@@ -38,15 +36,16 @@ fn native_backend(
 #[derive(Default)]
 struct Crashing {
     tree: Mutex<BTreeMap<String, u8>>,
+    journals: MemoryMaterializationJournalStore,
     steps: AtomicU64,
     crash_at: AtomicU64,
 }
 
 impl Crashing {
-    fn step(&self) -> Result<(), BackendError> {
+    fn step(&self) -> Result<(), Error> {
         let step = self.steps.fetch_add(1, SeqCst) + 1;
         if step == self.crash_at.load(SeqCst) {
-            return Err(BackendError);
+            return Err(Error);
         }
         Ok(())
     }
@@ -55,17 +54,12 @@ impl Crashing {
         self.tree.lock().expect("tree lock").clone()
     }
 
-    fn current(&self, path: &str) -> Result<Option<u8>, BackendError> {
-        Ok(self
-            .tree
-            .lock()
-            .map_err(|_| BackendError)?
-            .get(path)
-            .copied())
+    fn current(&self, path: &str) -> Result<Option<u8>, Error> {
+        Ok(self.tree.lock().map_err(|_| Error)?.get(path).copied())
     }
 
-    fn set(&self, path: &str, value: Option<u8>) -> Result<(), BackendError> {
-        let mut tree = self.tree.lock().map_err(|_| BackendError)?;
+    fn set(&self, path: &str, value: Option<u8>) -> Result<(), Error> {
+        let mut tree = self.tree.lock().map_err(|_| Error)?;
         match value {
             Some(value) => tree.insert(path.to_owned(), value),
             None => tree.remove(path),
@@ -84,7 +78,7 @@ fn endpoints(edit: &MaterializationEdit) -> (&str, Option<u8>) {
 }
 
 impl MaterializationBackend for &Crashing {
-    type Error = BackendError;
+    type Error = Error;
 
     async fn capture(
         &self,
@@ -95,22 +89,6 @@ impl MaterializationBackend for &Crashing {
             image: value.into_iter().collect(),
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
-        })
-    }
-
-    async fn observe(
-        &self,
-        edit: &MaterializationEdit,
-        preimage: &MaterializationPreimage,
-    ) -> Result<MaterializationObservation, Self::Error> {
-        let (path, postimage) = endpoints(edit);
-        let current = self.current(path)?;
-        Ok(if current == postimage {
-            MaterializationObservation::Postimage
-        } else if current == preimage.image.first().copied() {
-            MaterializationObservation::Preimage
-        } else {
-            MaterializationObservation::Diverged
         })
     }
 
@@ -132,15 +110,12 @@ impl MaterializationBackend for &Crashing {
     }
 }
 
-/// Journal store whose compare-and-swaps are durable steps of `.1`.
-struct CrashingStore<'a>(&'a MemoryMaterializationJournalStore, &'a Crashing);
-
-impl MaterializationJournalStore for CrashingStore<'_> {
-    type Error = BackendError;
+impl MaterializationJournalStore for &Crashing {
+    type Error = Error;
 
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a>
-        = std::future::Ready<Result<MaterializationJournal, BackendError>>
+        = std::future::Ready<Result<MaterializationJournal, Error>>
     where
         Self: 'a;
     #[cfg(not(target_arch = "wasm32"))]
@@ -148,14 +123,14 @@ impl MaterializationJournalStore for CrashingStore<'_> {
         &self,
         _journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'_>, Self::Error> {
-        Err(BackendError)
+        Err(Error)
     }
 
     async fn load(
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        self.0.load(operation_id).await.map_err(|_| BackendError)
+        self.journals.load(operation_id).await.map_err(|_| Error)
     }
 
     async fn compare_and_swap(
@@ -165,11 +140,11 @@ impl MaterializationJournalStore for CrashingStore<'_> {
         replacement: MaterializationJournal,
     ) -> Result<(bool, MaterializationJournal), Self::Error> {
         let swapped = self
-            .0
+            .journals
             .compare_and_swap(operation_id, expected_revision, replacement)
             .await
-            .map_err(|_| BackendError)?;
-        self.1.step()?;
+            .map_err(|_| Error)?;
+        self.step()?;
         Ok(swapped)
     }
 }
@@ -180,17 +155,15 @@ fn crashing_apply(
     plan: &MaterializationPlan,
     original: &BTreeMap<String, u8>,
     crash_at: u64,
-) -> (Crashing, MemoryMaterializationJournalStore, bool) {
+) -> (Crashing, bool) {
     let backend = Crashing::default();
     original.clone_into(&mut backend.tree.lock().expect("tree lock"));
     backend.crash_at.store(crash_at, SeqCst);
-    let journals = MemoryMaterializationJournalStore::default();
     let crashed = futures::executor::block_on(
-        JournaledMaterializer::new(CrashingStore(&journals, &backend), &backend)
-            .apply(plan.clone(), &mut allow),
+        JournaledMaterializer::new(&backend, &backend).apply(plan.clone(), &mut allow),
     )
     .is_err();
-    (backend, journals, crashed)
+    (backend, crashed)
 }
 
 proptest! {
@@ -231,15 +204,15 @@ proptest! {
                 None => planned.remove(path),
             };
         }
-        let (clean, _, crashed) = crashing_apply(&plan, &original, 0);
+        let (clean, crashed) = crashing_apply(&plan, &original, 0);
         prop_assert!(!crashed);
         prop_assert_eq!(clean.tree(), planned.clone());
         let steps = clean.steps.load(SeqCst);
 
-        let (backend, journals, crashed) = crashing_apply(&plan, &original, 1 + crash % steps);
+        let (backend, crashed) = crashing_apply(&plan, &original, 1 + crash % steps);
         prop_assert!(crashed);
         backend.crash_at.store(0, SeqCst);
-        let restarted = JournaledMaterializer::new(CrashingStore(&journals, &backend), &backend);
+        let restarted = JournaledMaterializer::new(&backend, &backend);
         let recovery = if forward {
             MaterializationRecovery::Complete
         } else {
@@ -272,9 +245,9 @@ fn plan(edits: Vec<MaterializationEdit>) -> MaterializationPlan {
 #[tokio::test]
 async fn obsolete_journals_and_forward_rollback_are_rejected() {
     for version in [0, 2, u32::MAX, JOURNAL_VERSION] {
-        let store = MemoryMaterializationJournalStore::default();
         let backend = Crashing::default();
-        let materializer = JournaledMaterializer::new(CrashingStore(&store, &backend), &backend);
+        let store = &backend.journals;
+        let materializer = JournaledMaterializer::new(&backend, &backend);
         let mut journal = materializer
             .prepare(
                 plan(vec![MaterializationEdit::Install {
