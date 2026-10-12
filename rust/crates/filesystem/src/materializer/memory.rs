@@ -111,12 +111,14 @@ impl Future for MemoryMaterializationActionCompletion<'_> {
                     .journals
                     .lock()
                     .map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
-                let current = journals
-                    .get_mut(&journal.plan.operation_id)
-                    .ok_or(MemoryMaterializationJournalStoreError::Contended)?;
-                if current.revision != journal.revision - 1 {
-                    return Err(MemoryMaterializationJournalStoreError::Contended);
-                }
+                let current = match journals.get_mut(&journal.plan.operation_id) {
+                    Some(current) if current.revision == journal.revision - 1 => current,
+                    _ => {
+                        return Err(MemoryMaterializationJournalStoreError::ActionConflict(
+                            journal,
+                        ));
+                    }
+                };
                 std::mem::replace(current, replacement)
             };
             drop(retired);
@@ -133,6 +135,10 @@ pub enum MemoryMaterializationJournalStoreError {
     /// The original revision changed before acknowledgement.
     #[error("materialization memory store contended")]
     Contended,
+    /// Accepted staging lost its original revision; retains the caller's journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error("accepted materialization action conflicts with its durable journal")]
+    ActionConflict(MaterializationJournal),
     /// Native accounting failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
