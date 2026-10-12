@@ -77,12 +77,12 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     let ack = parent.send(child, send, parent_file.clone()).await?;
     assert_eq!(ack, parent_file);
     let item = receiver.inbox(0, 1).await?.remove(0);
-    assert_eq!(receiver.read_received_mail(child_receive, &item).await?.as_ref(), b"parent steering after child admission".as_ref());
+    assert_eq!(receiver.read_received_mail(child_receive, &item, &mut None).await?.as_ref(), b"parent steering after child admission".as_ref());
     consume_checkpoint(&runtime, child, child_fence.clone(), child_receive, &item, 167).await?;
-    assert_eq!(receiver.read_received_mail(child_receive, &item).await?.as_ref(), b"parent steering after child admission".as_ref());
+    assert_eq!(receiver.read_received_mail(child_receive, &item, &mut None).await?.as_ref(), b"parent steering after child admission".as_ref());
     let copy_operation = OperationId::from_bytes([168;16]);
     let copy = receiver.stage_file_once(
-        copy_operation, "mailbox/received-parent.txt", &receiver.read_received_mail(child_receive, &item).await?,
+        copy_operation, "mailbox/received-parent.txt", &receiver.read_received_mail(child_receive, &item, &mut None).await?,
         parent_file.descriptor().media_type(), parent_file.display_name(),
     ).await?;
     assert_eq!(copy.volume(), &created.private);
@@ -97,7 +97,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     let parent_receive = receive_checkpoint(&runtime, fixture.root, parent_fence.clone(), 170).await?;
     receiver.send(fixture.root, OperationId::from_bytes([173;16]), child_file.clone()).await?;
     let reply = parent.inbox(0,1).await?.remove(0);
-    assert_eq!(parent.read_received_mail(parent_receive, &reply).await?.as_ref(), b"child answer from its private namespace".as_ref());
+    assert_eq!(parent.read_received_mail(parent_receive, &reply, &mut None).await?.as_ref(), b"child answer from its private namespace".as_ref());
     consume_checkpoint(&runtime, fixture.root, parent_fence.clone(), parent_receive, &reply, 174).await?;
     let changed = parent.stage_file_once(
         OperationId::from_bytes([175;16]), "mailbox/changed.txt", b"changed", "text/plain", "changed.txt",
@@ -129,7 +129,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     assert_eq!(parent.send(child, send, parent_file.clone()).await?, ack);
     let receiver = reopened.task_context(child, child_fence).await?;
     assert_eq!(receiver.inbox(0, 8).await?.len(), 1);
-    assert_eq!(receiver.read_received_mail(child_receive, &item).await?.as_ref(), b"parent steering after child admission".as_ref());
+    assert_eq!(receiver.read_received_mail(child_receive, &item, &mut None).await?.as_ref(), b"parent steering after child admission".as_ref());
     assert_eq!(receiver.observe_staged_file_once(copy_operation).await?, Some(copy));
     assert!(matches!(receiver.read_file(&parent_file).await, Err(Error::Unauthorized(_))));
     assert!(!receiver.scope().grants().contains(&parent_file.volume().capability(VolumeOperation::Read)?));
