@@ -779,7 +779,7 @@ fn recursive_byte_bound(value: &Value, maximum: u64, io: Option<&super::Preparat
 pub(super) fn decode<T: super::PreparationRecord>(value: &Value, io: Option<&super::PreparationIo>) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
-        return Ok(io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?.into_retained());
+        return Ok(crate::filesystem::retain_decoded(io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?));
     }
     let _ = io;
     serde_json::from_value(value.clone()).map_err(|error| Error::Invalid(error.to_string()))
@@ -790,7 +790,7 @@ fn recursive_decoded<T: super::PreparationRecord, R>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(io) = io {
         let decoded = io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?;
-        return operation(&decoded);
+        return operation(&decoded.0);
     }
     let _ = io;
     operation(&decode::<T>(value, None)?)
@@ -859,7 +859,7 @@ pub(super) fn recursive_decode_with_native_work<T: super::PreparationRecord>(
     value: &Value, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(T, acyclic_fs::NativeAllocation)> {
     let io = super::PreparationIo::from_native_work(work)?;
-    io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?.into_native_parts()
+    crate::filesystem::native_decoded(io.value_decode_preparation::<T>(value, crate::wire::ErrorCode::Invalid)?)
 }
 /// Produces the actual JSON graph directly, retaining its original ledger.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1844,7 +1844,7 @@ async fn retained_payload(
                 reason: "retained recursive payload exceeds its original bound" });
         }
         let bytes = context.read_file_with_native_work(file, work).await?;
-        return Ok(io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained());
+        return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?));
     }
     let _ = io;
     let bytes = context.task().read_file_measured(file, acyclic_fs::performance::work_budget(maximum, maximum), cancellation).await
@@ -1992,7 +1992,7 @@ fn recursive_exact_file_granted(grants: &Capabilities, file: &FileRef, io: Optio
 
 fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<&super::PreparationIo>) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?)); }
     let _ = io;
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }

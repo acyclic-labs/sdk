@@ -927,15 +927,16 @@ where
             &mut work.meter, &cancellation, Some(authored.cancellation()),
         ).await?;
         let changed = if let Some(original) = work.meter.original_native_work() {
-            lazy.stage_exact_into_checkout_with_native_work(
-                &mut candidate.checkout, path, expected_source, MAXIMUM_PROMOTION_BYTES,
-                &original, &cancellation,
+            lazy.stage_into_checkout(
+                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
+                &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?,
             ).await.map_err(native_lazy_error)?
         } else {
+            let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, &cancellation);
             let result = lazy.stage_into_checkout(
-                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
-                work.remaining().map_err(mount_demand_error)?, &cancellation,
+                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES, &accounting,
             ).await;
+            let result = accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure());
             let changed = work.accept(result, lazy_error)?;
             work.with_work(|work| work.retain_checkout_control(
                 &candidate.checkout.private_control_custody(),
@@ -3252,9 +3253,7 @@ where
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             if let (Some(custody), Some(original)) = (custody, native.as_ref())
                 && custody.selected.is_some()
-                && let Some(generation) = self.lazy.selected_import_generation_with_work(
-                    custody.operation, original, cancellation,
-                ).await.map_err(native_lazy_error)?
+                && let Some(generation) = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?
             {
                 return self.finish_acknowledged_mount_custody_with_sync_work(
                     custody.operation, generation, work, original, cancellation,
@@ -3308,9 +3307,7 @@ where
                 if let Some(original) = native.as_ref()
                     && custody.selected.is_some()
                 {
-                    let generation = self.lazy.selected_import_generation_with_work(
-                        custody.operation, original, cancellation,
-                    ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                    let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
                     return self.finish_acknowledged_mount_custody_with_sync_work(
                         custody.operation, generation, work, original, cancellation,
                     ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
@@ -3461,9 +3458,7 @@ where
             work.items(1)?;
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             let Some(custody) = custody else {
-                return self.lazy.selected_import_snapshot_for_generation_with_work(
-                    operation, generation, &original, &cancellation,
-                ).await.map(Some).map_err(native_lazy_error);
+                return self.lazy.selected_import_snapshot_for_generation(operation, generation, &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error);
             };
             if custody.operation != operation { return Ok(None); }
             let Some(proof) = custody.selected else { return Ok(None); };
@@ -3476,10 +3471,7 @@ where
                 }
                 self.mark_mount_published(operation)?;
             }
-            let snapshot = self.lazy.selected_committed_snapshot_with_work(
-                operation, generation, proof.checkpoint, proof.source,
-                proof.source_config, proof.input, &original, &cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let snapshot = self.lazy.selected_committed_snapshot(operation, generation, proof.checkpoint, proof.source, proof.source_config, proof.input, &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?;
             self.finish_mount_custody(operation, work)?;
             Ok(Some(snapshot))
         })
@@ -3794,9 +3786,7 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let Some(generation) = self.lazy.selected_import_generation_with_work(
-            operation, original, cancellation,
-        ).await.map_err(native_lazy_error)? else { return Ok(None); };
+        let Some(generation) = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)? else { return Ok(None); };
         let mut carrier = super::adapter::NativeDemandCarrier::Native(original);
         let _stable = self.source_view.write_stable_with_carrier(
             None, &mut carrier, cancellation, Some(self.authored.cancellation()),
@@ -3848,9 +3838,7 @@ where
         E: From<MountSourceError> + Send + 'static,
     {
         let selected_proof = if let Some(input) = &selected {
-            let generation = self.lazy.selected_import_generation_with_work(
-                input.operation, input.original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?;
             let proof = SelectedImportProof {
                 checkpoint: input.destination, source: input.plan.source,
                 source_config: input.plan.source_config,
@@ -3872,18 +3860,13 @@ where
                         input.operation, generation, work, input.original, cancellation,
                     ).await.map_err(E::from);
                 }
-                return self.lazy.selected_committed_snapshot_with_work(
-                    input.operation, generation, proof.checkpoint, proof.source,
-                    proof.source_config, proof.input, input.original, cancellation,
-                ).await.map(Some).map_err(native_lazy_error).map_err(E::from);
+                return self.lazy.selected_committed_snapshot(input.operation, generation, proof.checkpoint, proof.source, proof.source_config, proof.input, &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error).map_err(E::from);
             }
             if custody.is_some() {
                 self.recover_pending_mount_change_measured(
                     permit, work, cancellation, before_publication,
                 ).await?;
-                let generation = self.lazy.selected_import_generation_with_work(
-                    input.operation, input.original, cancellation,
-                ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
                 return self.finish_acknowledged_mount_custody_with_sync_work(
                     input.operation, generation, work, input.original, cancellation,
                 ).await.map_err(E::from);
@@ -4051,9 +4034,7 @@ where
         }
         self.mark_mount_published(operation_id)?;
         if let Some(input) = &selected {
-            let generation = self.lazy.selected_import_generation_with_work(
-                operation_id, input.original, cancellation,
-            ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation_id.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
             return self.finish_acknowledged_mount_custody_with_sync_work(
                 operation_id, generation, work, input.original, cancellation,
             ).await.map_err(E::from);
@@ -5228,7 +5209,7 @@ where
                     owner, scratch.carrier, cancellation, Some(self.authored.cancellation()),
                 ).await?;
                 observation.ensure_publication_resolved()?;
-                let state = self.lazy.state_with_native_work(&original, cancellation).await
+                let state = self.lazy.state(&LazyTreapWork::native_with_work(&original, cancellation).map_err(native_lazy_error)?).await
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
@@ -5566,7 +5547,7 @@ where
             ).await?;
             observation.ensure_publication_resolved()?;
             if let Some(original) = &original {
-                let state = self.lazy.state_with_native_work(original, &caller).await
+                let state = self.lazy.state(&LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?).await
                     .map_err(directory_lazy_error)?;
                 let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                     .expect("unbounded observer preserves a validated checkout").value;
@@ -5574,6 +5555,7 @@ where
                     state.as_state(), &text, cursor, maximum_entries, original, &caller,
                     Some(&mut checkout), Some((&removed_children, opaque)), None,
                 ).await.map_err(directory_lazy_error)?;
+                let LazyReadonlyNode::Native(state) = state else { unreachable!("native state retains native funding") };
                 let (state, allocation) = state.into_parts();
                 (MountOwnedBuffer { value: page.page, legacy_bytes: 0, allocation: Some(page.allocation) },
                     MountOwnedBuffer { value: state, legacy_bytes: 0, allocation: Some(allocation) })

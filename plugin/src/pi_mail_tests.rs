@@ -30,10 +30,10 @@ impl Fixture {
         let grants = Capabilities::new([
             "operation:declare", "operation:observe", "operation:cancel",
             "task:spawn:pi.mail.test@1", "mail:send", "mail:read",
-        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs")?]));
-        let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(grants.iter().map(str::to_owned).chain([
-            volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-        ])));
+        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs", &mut None)?]));
+        let signed = issuer.issue("owner", &Capabilities::new(grants.iter().map(str::to_owned).chain([
+            volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
+        ])), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(grants, Limits::default())?;
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
@@ -58,7 +58,7 @@ impl Fixture {
         }
     }
     async fn admit(&self, runtime: &Runtime) -> Result<(WorkLease, TaskId)> {
-        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1")?;
+        let definition = self.tasks.get_version::<Value, Value>("pi.mail.test", "1", None)?;
         let operation = OperationId::from_bytes([73;16]);
         assert!(matches!(runtime.harness().admit(operation, &definition, json!({}), None).await?, Admission::Accepted(_)));
         Ok((self.pull(runtime).await?, TaskId::from_bytes(operation.into_bytes())))

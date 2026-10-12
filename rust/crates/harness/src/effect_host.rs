@@ -251,7 +251,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
-        let (effect, retained) = self.aggregate.effect_with_work(
+        let (effect, retained) = self.aggregate.effect(
             effect_id, self.history_limits, work,
         ).await?.ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -736,7 +736,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.aggregate.execute(command, None, command_custody.work()).await
+                aggregate.aggregate.execute(command, command_custody.work()).await
             };
             drop(command_custody);
             match result {
@@ -802,10 +802,7 @@ mod native_metadata_controls {
             id: "native-effect-metadata-control".into(),
         };
         let issuer = AuthorityIssuer::new("original-effect-issuer", [41; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "original-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        let scope = issuer.issue("original-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         let files = Arc::new(crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
@@ -871,10 +868,7 @@ mod native_metadata_controls {
         let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
         let mut host = ordinary_host()?;
         let foreign = AuthorityIssuer::new("foreign-effect-issuer", [43; 32], host.authority.clone());
-        host.scope = foreign.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "foreign-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        host.scope = foreign.issue("foreign-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         assert!(host.clone_with_native_work(&work).is_err());
         assert_eq!(work.remaining().expect("rejected clone dropped").peak_allocation_bytes, baseline);
         cancellation.cancel();

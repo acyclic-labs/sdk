@@ -185,10 +185,9 @@ impl super::native::NativeSession {
             }
             let (ticket, _) = approvals.read(configured.approval).await?
                 .ok_or_else(|| Error::NotFound("native command approval".into()))?;
-            let scope = issuer.root_for_agent(binding.scope.agent()
-                .ok_or_else(|| Error::Invalid("native command caller agent".into()))?,
-                "native-command-responder", acyclic_harness::Capabilities::new([
-                    "interaction:resolve".to_owned(), ticket.responder_grant()]));
+            let scope = issuer.issue("native-command-responder", &acyclic_harness::Capabilities::new([
+                    "interaction:resolve".to_owned(), ticket.responder_grant()]), Some(binding.scope.agent()
+                .ok_or_else(|| Error::Invalid("native command caller agent".into()))?), None, &mut None).expect("scope proof");
             let receipt = approvals.resolve_approval(acyclic_harness::OperationId::new(), scope,
                 configured.approval, 1, approved, None).await?;
             return Ok(format!("command-approval-json={}\n", serde_json::to_string(&receipt)

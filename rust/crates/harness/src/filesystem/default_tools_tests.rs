@@ -39,11 +39,11 @@ async fn fixture() -> Result<Fixture> {
         grants.push(volume.capability(VolumeOperation::Read)?);
         grants.push(volume.capability(VolumeOperation::Write)?);
     }
-    let scope = issuer.root_for_agent(agent, "parent-owner", Capabilities::new(grants));
+    let scope = issuer.issue("parent-owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
-        expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+        expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let project_ref = workspace_ref(project.provider().clone(), &project.storage_name()?)?;
     let base = host.apply(&project_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"base".to_vec().into() }], &IdempotencyKey::new("base-value")?).await?;
     let controller = ParentProjectController::new(host.as_ref(), parent.reducer(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, None)?;
@@ -93,9 +93,9 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
 #[tokio::test]
 async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()> {
     let fixture = fixture().await?;
-    let caller_only = fixture.issuer.root_for_agent(AgentId::from_bytes([1; 16]), "destination-only", Capabilities::new([
+    let caller_only = fixture.issuer.issue("destination-only", &Capabilities::new([
         "project:merge".to_owned(), fixture.project.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &caller_only, &fixture.project, None)?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     let target = fixture.host.resolve(&project).await?.generation;
@@ -291,7 +291,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             id: uuid::Uuid::from_bytes([60; 16]), sequence: 1, kind: MessageKind::User, content: content.clone(),
             attachments, reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
-    }).await?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let child_agent = AgentId::from_bytes([61; 16]);
     let child = VolumeRef::new(fixture.private.provider().clone(), "preflight-child",
         VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
@@ -380,7 +380,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
             id: uuid::Uuid::from_bytes([67; 16]), sequence: 1, kind: MessageKind::User, content: file,
             attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
-    }).await?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let restored: State = decode(&pinned.state, None)?;
     let State::SourcePinned { intent: original, arguments: retained, .. } = restored else {
         return Err(Error::Invalid("source selection was not durably pinned".into()));

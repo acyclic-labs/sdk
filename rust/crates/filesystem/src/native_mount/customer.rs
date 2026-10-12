@@ -8,6 +8,7 @@ use super::{
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::FileKind;
 use crate::kernel::NamespacePath;
+use crate::lazy_workspace::LazyTreapWork;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::native_capture::NativeViewBaseline;
 use crate::workspace::{Workspace, WorkspaceError, customer_path};
@@ -1559,9 +1560,9 @@ where
             hasher.update(&node.version.0);
             let mut key = [0_u8; 16];
             key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            self.promote_exact_with_native_work(
+            self.promote_exact(
                 &root_text.0, expected_source, 0, IdempotencyKey::from_bytes(key),
-                &original, cancellation,
+                &LazyTreapWork::native_with_work(&original, cancellation).map_err(MountLifecycleError::Lazy)?,
             ).await.map_err(MountLifecycleError::Lazy)?;
         }
         drop(selected);
@@ -2132,6 +2133,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lazy_workspace::LazyReadonlyNode;
     use crate::demand::native::NativeDemandSource;
     use crate::model::{FilesystemProfile, VolumeLimits};
     use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
@@ -2526,9 +2528,7 @@ mod tests {
         let child = lazy.fork("selected-import-child", IdempotencyKey::new()).await?;
         child.workspace().write_text("/selected-import.txt", "selected SDK import").await?;
         let child_snapshot = child.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
-        let plan = child.prepare_selected_import_measured(
-            child_snapshot, std::slice::from_ref(&imported_path), crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value;
+        let plan = { let plan_cancellation = &cancellation; let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, plan_cancellation); let result = child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(plan) => plan, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary plan uses ordinary funding") }); accounting.measured(result, crate::OperationFailure::new) }?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
         let imported_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
@@ -2546,9 +2546,7 @@ mod tests {
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
         let selected_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         assert!(plan_custody.work().shares_ledger(&selected_work));
         assert!(plan_custody.bytes() >= plan.logical_owned_bytes());
         let selected_native = selected_work.clone();
@@ -2561,9 +2559,7 @@ mod tests {
         drop(unpolled);
         assert_eq!(selected_work.receipt(), before_unpolled);
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         let foreign_native = foreign_work.clone();
         let before_foreign_import = foreign_work.receipt();
         assert!(matches!(
@@ -2578,9 +2574,7 @@ mod tests {
         ));
         assert_eq!(foreign_work.receipt(), before_foreign_import);
         assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), imported_head);
-        let (plan, plan_custody) = child.prepare_selected_import_with_native_work(
-            child_snapshot, std::slice::from_ref(&imported_path), &selected_work,
-        ).await.map_err(|(error, _)| error)?;
+        let (plan, plan_custody) = async { let accounting = LazyTreapWork::native_with_work(&selected_work, (&selected_work).cancellation())?; child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await }.await.map(|phase| match phase { LazyReadonlyNode::Native(owned) => owned.into_parts(), LazyReadonlyNode::Portable(_) => unreachable!("native plan retains native funding") }).map_err(LazyWorkspaceError::into_native_failure).map_err(|(error, _)| error)?;
         let imported = mount.import_selected_work_guarded(
             actual.value, plan, plan_custody, operation,
             PublicationPermit::Unrestricted, &selected_native, &cancellation,

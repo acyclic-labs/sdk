@@ -687,14 +687,10 @@ mod tests {
                 id: "objects-test".into(),
             },
         );
-        let owner_scope = issuer.root_for_agent(
-            owner,
-            "owner",
-            Capabilities::new([
+        let owner_scope = issuer.issue("owner", &Capabilities::new([
                 volume.capability(VolumeOperation::Read)?,
                 volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(owner), None, &mut None).expect("scope proof");
         let provider = volume.provider().clone();
         let owner_store = ObjectContentStore::new(
             objects.clone(),
@@ -1017,11 +1013,7 @@ mod tests {
                 id: "impostor".into(),
             },
         );
-        let impostor_scope = impostor.root_for_agent(
-            reader,
-            "forged",
-            Capabilities::new([volume.capability(VolumeOperation::Read)?]),
-        );
+        let impostor_scope = impostor.issue("forged", &Capabilities::new([volume.capability(VolumeOperation::Read)?]), Some(reader), None, &mut None).expect("scope proof");
         assert!(
             ObjectContentStore::new(
                 objects.clone(),
@@ -1151,22 +1143,14 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner_b),
         )?;
-        let owner_scope_a = issuer.root_for_agent(
-            owner_a,
-            "owner-a",
-            Capabilities::new([
+        let owner_scope_a = issuer.issue("owner-a", &Capabilities::new([
                 volume_a.capability(VolumeOperation::Read)?,
                 volume_a.capability(VolumeOperation::Write)?,
-            ]),
-        );
-        let owner_scope_b = issuer.root_for_agent(
-            owner_b,
-            "owner-b",
-            Capabilities::new([
+            ]), Some(owner_a), None, &mut None).expect("scope proof");
+        let owner_scope_b = issuer.issue("owner-b", &Capabilities::new([
                 volume_b.capability(VolumeOperation::Read)?,
                 volume_b.capability(VolumeOperation::Write)?,
-            ]),
-        );
+            ]), Some(owner_b), None, &mut None).expect("scope proof");
         let owner_store_a = ObjectContentStore::new(
             objects.clone(),
             bucket_a.clone(),
@@ -1242,7 +1226,7 @@ mod tests {
         assert_eq!(reader_b.read(&file_b).await?.as_ref(), b"bucket b");
 
         let no_grant =
-            issuer.root_for_agent(attached, "no-grant", Capabilities::new([] as [String; 0]));
+            issuer.issue("no-grant", &Capabilities::new([] as [String; 0]), Some(attached), None, &mut None).expect("scope proof");
         let denied_store = ObjectContentStore::new(
             objects,
             bucket_a,

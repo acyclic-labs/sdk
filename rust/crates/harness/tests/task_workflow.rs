@@ -499,11 +499,7 @@ where
             .await,
         Err(Error::Unauthorized(_))
     ));
-    let responder = issuer.root_for_agent(
-        agent,
-        "approver",
-        Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]),
-    );
+    let responder = issuer.issue("approver", &Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]), Some(agent), None, &mut None).expect("scope proof");
     interactions
         .resolve_approval(
             OperationId::from_bytes([92; 16]),
@@ -796,10 +792,7 @@ async fn worker_restart_with_options(
         id: "worker-owner".into(),
     };
     let issuer = AuthorityIssuer::new("worker-restart", [23; 32], authority);
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -814,8 +807,7 @@ async fn worker_restart_with_options(
             "task:spawn:test.child@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let conversation_issuer = AuthorityIssuer::new(
         "worker-approval",
         [54; 32],
@@ -824,16 +816,12 @@ async fn worker_restart_with_options(
             id: "worker-approval".into(),
         },
     );
-    let conversation_scope = conversation_issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
             "conversation:bind".to_owned(),
             "interaction:open".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let grants = if allow_mail_read {
         signed.capabilities().clone()
     } else {
@@ -876,7 +864,7 @@ async fn worker_restart_with_options(
         input_schema,
         json!({"type":"integer"}),
     )?)?;
-    let definition = tasks.get_version::<Value, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<Value, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     if with_child {
@@ -2002,12 +1990,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let private = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let authority = Authority { kind: AggregateKind::Conversation, id: "custom-merge-parent".into() };
     let issuer = AuthorityIssuer::new("custom-merge", [142; 32], authority.clone());
-    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
         "conversation:bind".into(), "fork:publish".into(), "project:merge".into(),
         project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
         private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let mut parent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
@@ -2076,7 +2064,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
-        let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
+        let denied = issuer.issue("no-write", &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
         let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
         let mut changed = candidate.clone();
@@ -2152,10 +2140,7 @@ async fn stock_restart_with_publication_fault(
         id: "task-owner".into(),
     };
     let issuer = AuthorityIssuer::new("task-restart", [7; 32], authority.clone());
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -2163,8 +2148,7 @@ async fn stock_restart_with_publication_fault(
             "model:generate".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
         .with_run_limits(TaskRunLimits {
             max_steps: Some(1),
@@ -2185,7 +2169,7 @@ async fn stock_restart_with_publication_fault(
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<u64, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let operation = OperationId::from_bytes([3; 16]);
@@ -2725,18 +2709,18 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let agent = AgentId::new();
     let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });
-    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
         "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
         "task:spawn:acyclic.stock_turn@1".to_owned(), "model:generate".to_owned(),
         "mail:send".to_owned(), "mail:read".to_owned(),
         volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let machine = Arc::new(StockTurnMachine::new());
     let definition = machine.definition()?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1")?;
+    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let operation = OperationId::new();

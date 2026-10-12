@@ -23,7 +23,7 @@ fn authority() -> Authority {
 /// A reducer and `events` valid lifecycle commands (Pending, then Active/Waiting).
 fn workload(events: u64) -> (Reducer, Vec<Command>) {
     let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
-    let scope = issuer.root("root", Capabilities::new(["lifecycle:manage"]));
+    let scope = issuer.issue("root", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
     let reducer = Reducer::new(authority(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     let commands = (0..events)
         .map(|revision| Command {
