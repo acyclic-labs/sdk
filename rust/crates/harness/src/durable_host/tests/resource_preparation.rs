@@ -18,7 +18,7 @@ async fn preparation_rejects_foreign_child_proof_owner_before_creation() -> Resu
 }
 
 async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let payloads = Arc::new(MemoryPayloads::new()?);
     let authority = Authority {
         kind: AggregateKind::Task,
@@ -251,14 +251,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
                 )?
             }
         }
-        assert!(matches!(changed.validate(), Err(Error::Invalid(_))));
+        assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
     }
     let mut duplicate = request.clone();
     duplicate.resources.push(duplicate.resources[0].clone());
-    assert!(matches!(duplicate.validate(), Err(Error::Invalid(_))));
+    assert!(matches!(duplicate.validate(&mut None), Err(Error::Invalid(_))));
     let mut over_bytes = request.clone();
     over_bytes.maximum_bytes = 1;
-    assert!(matches!(over_bytes.validate(), Err(Error::Invalid(_))));
+    assert!(matches!(over_bytes.validate(&mut None), Err(Error::Invalid(_))));
     for unlimited in [false, true] {
         let mut changed = request.clone();
         if unlimited {
@@ -266,7 +266,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         } else {
             changed.maximum_bytes = u64::MAX;
         }
-        assert!(matches!(changed.validate(), Err(Error::Invalid(_))));
+        assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
         assert!(matches!(
             owner.resource_preparation(changed).await,
             Err(Error::Invalid(_))

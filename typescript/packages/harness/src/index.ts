@@ -43,7 +43,7 @@ export * from "./client-transport.js";
 export type { ClientSnapshot } from "./client-snapshot.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
-export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";
 export * from "./runtime.js";
 export * from "./openai.js";
 export * from "./projection.js";

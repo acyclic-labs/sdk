@@ -197,7 +197,7 @@ impl SandboxCreator {
     ) -> Result<()> {
         preparation.verify_creation().await?;
         let request = preparation.request();
-        request.validate()?;
+        request.validate(&mut None)?;
         let proof = self.proof(preparation.origin().preparation_task)?;
         if request.provider != self.provider
             || request.creation_grant != "resource:create:custom"
@@ -272,7 +272,7 @@ impl ResourceCreationProvider for SandboxCreator {
         proof: &'a ResourceCreationProofRef,
     ) -> BoxProviderFuture<'a, Result<CreatedResourceReceipt>> {
         Box::pin(async move {
-            request.validate()?;
+            request.validate(&mut None)?;
             if request.provider != self.provider || proof != &self.proof(proof.preparation)? {
                 return Err(Error::Unauthorized("sandbox proof identity changed".into()));
             }
@@ -330,7 +330,7 @@ pub(crate) struct CreationFixture {
     pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
     pub(crate) harness: Arc<AgentHarness>,
     pub(crate) filesystem: Arc<MemoryFilesystem>,
-    pub(crate) stream: StreamClient<MemoryStream>,
+    pub(crate) stream: std::sync::Arc<MemoryStream>,
     pub(crate) filesystem_provider: ProviderRef,
     pub(crate) filesystem_creator: Arc<FilesystemResourceCreationProvider<MemoryAuthorityBackend, MemoryObjectBackend>>,
     creator: Arc<SandboxCreator>,
@@ -402,7 +402,7 @@ impl CreationFixture {
         extra: &[&str],
         #[cfg(not(target_arch = "wasm32"))] bootstrap: Option<&acyclic_fs::NativeMaterializationWork>,
     ) -> Result<Self> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let filesystem_provider = ProviderRef::new("created-controls", "filesystem", "2")?;
         let fs = Fs::memory();
         let filesystem = Arc::new(FilesystemHost::new(fs.clone(), filesystem_provider.clone())?);

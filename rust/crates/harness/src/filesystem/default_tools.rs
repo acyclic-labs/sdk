@@ -659,7 +659,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
     match plan {
         Plan::Fork(plan) => {
             recursive_observe(io, |work| {
-                plan.request.validate_with_work(work)?;
+                plan.request.validate(work)?;
                 plan.preparation.validate_with_work(work)?;
                 plan.source_checkpoint.validate(work)
             })?;

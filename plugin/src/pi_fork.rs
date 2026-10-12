@@ -20,7 +20,7 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
     store::{HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -160,7 +160,7 @@ impl PreparedPiFork {
 pub(crate) struct PiForkCoordinator {
     runtime: Arc<Runtime>,
     filesystem: Arc<Filesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     owner: Arc<PiOwnerConfig>,
     work: NativeMaterializationWork,
@@ -169,7 +169,7 @@ pub(crate) struct PiForkCoordinator {
 impl PiForkCoordinator {
 
     pub(crate) fn new(runtime: Arc<Runtime>, filesystem: Arc<Filesystem>,
-        stream: StreamClient<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, owner: Arc<PiOwnerConfig>,
         work: &NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&owner, work)?;
         let resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
@@ -936,7 +936,7 @@ impl PiForkCoordinator {
         let original = original_operation(self.owner.policy().root_task, caller, &plan.commit.sdk_operation, &self.work)?;
         let operations = PiForkOperations::new(original, &self.work)?;
         { let work = &self.work;
-                plan.request.validate_with_native_work(work)?;
+                plan.request.validate(&mut Some(&mut acyclic_harness::store::native_work_io(work)?))?;
                 plan.preparation.validate_with_native_work(work)?;
              }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&plan.request.child.input,

@@ -3203,7 +3203,7 @@ fn validate_model_content_scope(
     }
     let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    content.visit_file_bindings(|file, binding| {
+    for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
             && !preparation_read_granted(scope.grants(), file, io)? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
@@ -3212,8 +3212,8 @@ fn validate_model_content_scope(
             let scope = scope.ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
             binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Finds the canonical base published by this execution's first response step.

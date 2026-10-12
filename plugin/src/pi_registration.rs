@@ -8,7 +8,7 @@ use acyclic_harness::{
     runtime::TaskRunLimits,
     scheduler::SessionLimits,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use pi_root::PiRootIntent;
 use pi_root_inputs::{PiRootRequest, ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY};
@@ -172,7 +172,7 @@ pub(crate) async fn register(
     ).await.map_err(|(source, custody)| acyclic_harness::Error::NativeWorkspace { source, custody })?;
     drop(journal_generation);
     drop(journal_name);
-    let stream = StreamClient::new(Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?));
+    let stream = Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?);
     let runtime = pi_runtime::PiTaskRuntime::open_with_native_work(
         stream, filesystem.clone(), &journal, owner.authority_with_native_work(work)?, work,
     ).await?;

@@ -24,7 +24,7 @@ use crate::{
 use crate::{executor::ExecutionJournal, interaction::Interaction};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
     UnixMillisClock,
 };
 use acyclic_stream::OwnedBytes;
@@ -173,7 +173,7 @@ fn admission_boundary(
 /// Stream-backed admission and observation for one durable owner.
 pub struct CoordinatorTaskHost<P> {
     coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
     owner: Authority,
@@ -321,7 +321,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     pub(crate) const fn admission_operation(&self) -> OperationId {
         self.admission.operation_id
     }
-    pub(crate) fn prepared_stream(&self) -> &StreamClient<P> { &self.host.stream }
+    pub(crate) fn prepared_stream(&self) -> &std::sync::Arc<P> { &self.host.stream }
     pub(crate) fn scratch_proof(
         &self,
     ) -> Option<&crate::resource_preparation::ChildScratchCreationProof> {
@@ -430,7 +430,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         self.require_query_with_native_work(query, work)?;
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        request.validate_with_work(&mut observer)?;
+        request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
         let request_digest = crate::contract::canonical_json_digest_with_work(
             &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
@@ -455,7 +455,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
 #[cfg(feature = "filesystem")]
 pub struct TaskJournalOwner<P> {
     host: Arc<CoordinatorTaskHost<P>>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
     original_admission_digest: [u8; 32],
@@ -1004,7 +1004,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn stream(&self) -> StreamClient<P> {
+    pub(crate) fn stream(&self) -> std::sync::Arc<P> {
         self.stream.clone()
     }
 
@@ -1294,7 +1294,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let input = crate::store::history::canonical_bytes_with_work(
                 &request, self.input_limits.file_bytes, quota.work())?;
             quota.adopt(input.capacity() as u64)?;
-            request.validate_with_work(quota.work())?;
+            request.validate(quota.work())?;
             if let Some(checkpoint) = &request.source_checkpoint {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
@@ -1927,7 +1927,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let owner = self.condition(write, work).await?;
         if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
-        let target = match self.stream.bounds(path.as_str()).await {
+        let target = match self.stream.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await {
             Ok(_) => CommitCondition::Tail {
                 path: path.clone(),
                 expected: expected_tail,
@@ -2589,7 +2589,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("parcel recipient or sequence differs".into()));
         }
         let path = format!("harness/v2/workflows/{}", owner.workflow_admission().operation_id);
-        let workflow = owner.stream().stream(&path)?;
+        let workflow = acyclic_stream::Stream::new(std::sync::Arc::clone(&owner.stream()), &path)?;
         let tail = workflow.bounds().await
             .map_err(|error| Error::Unauthorized(format!("parcel receive checkpoint is absent: {error}")))?.tail;
         let index = tail.checked_sub(1)
@@ -2959,7 +2959,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) fn workflow_stream(&self) -> StreamClient<P> {
+    pub(crate) fn workflow_stream(&self) -> std::sync::Arc<P> {
         self.stream.clone()
     }
 
@@ -3783,7 +3783,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         coordinator: DistributedCoordinator<P>,
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>,
         reader: Arc<dyn ContentResidencyVerifier>,
         owner: Authority,
@@ -3802,7 +3802,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[allow(clippy::too_many_arguments)]
     fn new_observed(
-        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        coordinator: DistributedCoordinator<P>, stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
         owner: Authority, owner_scope: Scope, verifier: AuthorityVerifier,
         root_scope: RuntimeScope, tasks: TaskRegistry, machines: MachineRegistry,
@@ -3876,7 +3876,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_native_work(
-        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        coordinator: DistributedCoordinator<P>, stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
         owner: &Authority, owner_scope: &Scope, verifier: &AuthorityVerifier,
         root_scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
@@ -5012,20 +5012,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v3/mail/by-recipient/{task_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v3/mail/by-recipient/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batches/{batch_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v2/batches/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn batch_cancellation_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batch-cancellations/{batch_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v2/batch-cancellations/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -5306,7 +5303,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.retain_owned(owned)?;
             io.copy_bytes(text.len() as u64)?;
         }
-        let stream = self.stream.stream(text)?;
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), text)?;
         Ok((stream, if work.is_some() { owned } else { 0 }))
     }
 
@@ -6265,7 +6262,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let authority = Authority {
             kind: AggregateKind::Task,
@@ -6528,7 +6525,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn wake_discovery_pages_filter_owners_and_recheck_current_cancellation() -> Result<()> {
         use crate::scheduler::{LeaseFence, Reservation, SchedulerEvent};
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,
@@ -6748,7 +6745,7 @@ pub(crate) mod tests {
 
     #[cfg(feature = "filesystem")]
     async fn effect_task_fixture<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         provider: &str,
         additional: Vec<String>,
     ) -> Result<EffectTaskFixture<P>> {
@@ -6762,7 +6759,7 @@ pub(crate) mod tests {
     #[cfg(feature = "filesystem")]
     #[allow(clippy::type_complexity)]
     async fn effect_task_fixture_with_storage<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         provider: &str,
         additional: Vec<String>,
         payloads: Arc<dyn SchedulerPayloadStore>,
@@ -6870,7 +6867,7 @@ pub(crate) mod tests {
                         }
                         let provider =
                             Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-                        let stream = StreamClient::new(provider.clone());
+                        let stream = provider.clone();
                         let fixture = effect_task_fixture(
                             stream.clone(),
                             "test.routing",
@@ -7042,7 +7039,7 @@ pub(crate) mod tests {
 
         for mode in 0..3 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let stream = StreamClient::new(provider.clone());
+            let stream = provider.clone();
             let fixture = effect_task_fixture(stream.clone(), "test.recovery", Vec::new()).await?;
             let host = fixture.host;
             let (task, _) = fixture.binding.task_binding();
@@ -7090,7 +7087,7 @@ pub(crate) mod tests {
             )?);
             drop(fixture.binding);
             drop(host);
-            let journal = stream.stream("harness/v3/coordinator/events")?;
+            let journal = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v3/coordinator/events")?;
             let tail = journal.tail().await?;
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let recovered = reopened.recover_work(task).await?;
@@ -7206,7 +7203,7 @@ pub(crate) mod tests {
             payloads,
             runtime_scope,
         } = effect_task_fixture(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             "test.receipt",
             Vec::new(),
         )
@@ -7244,7 +7241,7 @@ pub(crate) mod tests {
             AuthorityIssuer::new("effect-conversation", [54; 32], conversation.clone());
         let conversation_scope = conversation_issuer.root("owner", runtime_scope.grants().clone());
         let effects = ConversationEffectHost::new(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             conversation.clone(),
             conversation_issuer.clone(),
             conversation_scope,
@@ -7322,7 +7319,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn model_claims_use_pinned_ceiling_and_current_owner() -> Result<()> {
-        model_claim_host(StreamClient::new(Arc::new(MemoryStream::default())))
+        model_claim_host(Arc::new(MemoryStream::default()))
             .await
             .map(|_| ())
     }
@@ -7334,14 +7331,13 @@ pub(crate) mod tests {
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let payloads = model_claim_host(StreamClient::new(Arc::new(provider))).await?;
+        let payloads = model_claim_host(Arc::new(provider)).await?;
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let stream = StreamClient::new(Arc::new(provider));
+        let stream = Arc::new(provider);
         assert_eq!(
-            stream
-                .stream(format!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!(
                     "harness/v2/workflows/{}",
                     OperationId::from_bytes([77; 16])
                 ))?
@@ -7350,8 +7346,7 @@ pub(crate) mod tests {
             1
         );
         assert_eq!(
-            stream
-                .stream(format!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!(
                     "harness/v2/execution/{}",
                     OperationId::from_bytes([78; 16])
                 ))?
@@ -7383,7 +7378,7 @@ pub(crate) mod tests {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await.map_err(|error| Error::Storage(error.to_string()))?;
-        let stream = StreamClient::new(Arc::new(provider));
+        let stream = Arc::new(provider);
         let filesystem_provider = ProviderRef::new("native-owned-release", "filesystem", "2")?;
         let filesystem = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(), filesystem_provider.clone(),
@@ -7496,7 +7491,7 @@ pub(crate) mod tests {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
             let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("original Suspended source proof".into()))?;
-            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+            let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
             workflow_host.step(
                 OperationId::from_bytes([58; 16]), IdempotencyKey::new("native-next-suspended-step")?,
@@ -7518,7 +7513,7 @@ pub(crate) mod tests {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
             let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("current Suspended source proof".into()))?;
-            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+            let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
@@ -7546,14 +7541,16 @@ pub(crate) mod tests {
 
         let workflow_path = format!("harness/v2/workflows/{operation}");
         let execution_path = format!("harness/v2/execution/{attempt}");
-        let workflow_tail = stream.stream(&workflow_path)?.tail().await?;
-        let execution_tail = stream.stream(&execution_path)?.tail().await?;
+        let workflow_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &workflow_path)?.tail().await?;
+        let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &execution_path)?.tail().await?;
+        assert_eq!(workflow_tail, 2);
+        assert_eq!(execution_tail, 5);
         assert!(journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         assert!(host.coordinator.lock().await.scheduler().operation(operation)
             .ok_or_else(|| Error::NotFound("settled original task".into()))?
             .reservation.is_none());
-        assert_eq!(stream.stream(&workflow_path)?.tail().await?, workflow_tail);
-        assert_eq!(stream.stream(&execution_path)?.tail().await?, execution_tail);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &workflow_path)?.tail().await?, workflow_tail);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &execution_path)?.tail().await?, execution_tail);
         assert!(work.receipt().object_bytes_read > 0);
 
         let worker = crate::distributed::Worker {
@@ -7646,7 +7643,7 @@ pub(crate) mod tests {
     }
 
     async fn model_claim_host<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
     ) -> Result<Arc<MemoryPayloads>> {
         let prepared_request = crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
@@ -8248,7 +8245,7 @@ pub(crate) mod tests {
             journal.open_interaction(id, request.clone()).await?;
             journal.open_interaction(id, request.clone()).await?;
             assert_eq!(journal.interaction_outcome(id).await?, None);
-            assert_eq!(stream.stream(conversation.stream_path()?)?.tail().await?, 2);
+            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path()?)?.tail().await?, 2);
             assert!(matches!(
                 journal
                     .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
@@ -8374,8 +8371,7 @@ pub(crate) mod tests {
                 .await?;
             assert_eq!(journal.interaction_outcome(approval_id).await?, None);
             assert_eq!(
-                stream
-                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
                     .tail()
                     .await?,
                 2
@@ -8400,8 +8396,7 @@ pub(crate) mod tests {
                 "lease replacement after preflight must atomically prevent publication"
             );
             assert_eq!(
-                stream
-                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/workflows/{operation_id}"))?
                     .tail()
                     .await?,
                 1
@@ -8464,7 +8459,7 @@ pub(crate) mod tests {
                     "harness/v2/execution/{pending_operation}"
                 ))?;
                 assert!(matches!(
-                    stream.bounds(path.as_str()).await,
+                    stream.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await,
                     Err(StreamError::NotFound)
                 ));
                 let digest =
@@ -8514,10 +8509,10 @@ pub(crate) mod tests {
             );
             assert!(matches!(
                 stream
-                    .bounds(&format!(
+                    .bounds(acyclic_stream::StreamPath::new(&format!(
                         "harness/v2/execution/{}",
                         OperationId::from_bytes([80; 16])
-                    ))
+                    ))?)
                     .await,
                 Err(StreamError::NotFound)
             ));
@@ -8713,8 +8708,7 @@ pub(crate) mod tests {
                 "cancellation after preflight must atomically prevent publication"
             );
             assert_eq!(
-                stream
-                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/workflows/{operation_id}"))?
                     .tail()
                     .await?,
                 1
@@ -8759,8 +8753,7 @@ pub(crate) mod tests {
                 None
             );
             assert_eq!(
-                stream
-                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
                     .tail()
                     .await?,
                 2
@@ -8777,7 +8770,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<()> {
         for session in [false, true] {
-            let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+            let stream = Arc::new(MemoryStream::default());
             let payloads = Arc::new(MemoryPayloads::new()?);
             let owner = Authority {
                 kind: AggregateKind::Task,
@@ -8999,7 +8992,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn partially_admitted_batch_reopens_and_fills_only_missing_slots() -> Result<()> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,

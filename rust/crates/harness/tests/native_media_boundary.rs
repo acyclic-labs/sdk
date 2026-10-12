@@ -52,7 +52,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream};
 use futures::{stream, StreamExt as _};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -1113,7 +1113,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write)?]),
     );
     let journal = Arc::new(FilesystemExecutionJournal::new(
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         host.clone(),
         volume.clone(),
         journal_issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
@@ -1355,7 +1355,7 @@ where
     let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1")?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
     let issuer = AuthorityIssuer::new(
@@ -1703,7 +1703,7 @@ where
     use acyclic_harness::model::ModelPrefix;
     use acyclic_harness::resources::StreamRef;
     use acyclic_harness::store::StreamAggregate;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let stream_provider = ProviderRef::new("media-fork", "stream", "2")?;
     let parent = Authority {
         kind: AggregateKind::Conversation,

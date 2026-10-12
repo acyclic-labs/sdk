@@ -21,7 +21,7 @@ struct Fixture {
     native: PathBuf,
     resources: ServiceResources,
     filesystem: Arc<Host>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     owner: Arc<PiOwnerConfig>,
     runtime: Runtime,
     request: PiRootRequest,
@@ -81,7 +81,7 @@ impl Fixture {
             session.strip_prefix(&resources.data).unwrap(), &startup).unwrap()
             .into_native_shared(&startup).unwrap();
         let (command, command_custody) = stage_root_command(&owner, &filesystem, &request, &startup).await.unwrap();
-        let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
+        let stream = Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap());
         let authority = owner.authority_with_native_work(&startup).unwrap();
         let runtime = PiTaskRuntime::open_with_native_work(stream.clone(), filesystem.clone(),
             &journal, authority, &startup).await.unwrap();
