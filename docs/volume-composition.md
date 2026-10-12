@@ -47,59 +47,7 @@ publication for an admitted caller workflow. Effectful policy observations and
 recovery belong to that workflow's journal; an in-memory resolution cache is not
 durable evidence.
 
-## Browser recursive preparation
-
-`BrowserTaskRegistry.registerForkPreparation()` registers the ordinary Rust
-machine; it does not start workers. `prepareRecursiveForkSource` opens the
-authenticated conversation on the runtime's own BrowserStream. Supply the
-current caller's real lease fence, owner, signed scope, and pinned volume
-bindings. A root supplies its explicit bindings; a descendant's agent and
-volumes must match its retained admission, never the root's bindings.
-
-Retain the source handle's `snapshot()` and `request()` before admission.
-`preparationRequest` builds the exact ordinary machine input; stage its fork
-payload with the ordinary runtime, then admit the registered preparation task.
-`resumeForkPreparation` and `reconcileForkPreparation` accept only that caller's
-matching original preparation lease and bind its actual Filesystem preparer.
-The existing prepared-admission command separately admits the child under the
-original caller; preparation alone does not publish, merge, or write back.
-
-After restart, restore the retained authenticated snapshot with
-`BrowserTaskAuthority.restore`, then use `restoreRecursiveForkSource`. Restore
-checks its exact head event against canonical browser history and never uses a
-newer conversation tail. An explicit foreign `source` selects only project
-data. Trusted RootService policy may authorize an operation-specific read across
-the actual same-session root, ancestor, sibling or descendant graph without
-changing the original caller's grants. The owning coordinator verifies retained
-creator evidence; a mandatory trusted provider verifies the pinned generation,
-genuine native capture and protected bootstrap allocation when selecting a root.
-The original issuer MAC binds the fixed `harness.project-source.read.v1` purpose,
-complete caller admission, issuing fence, fork operation and exact selection.
-Immutable admitted evidence
-survives owner recovery; current preparation authority remains separately fenced.
-The serialized policy scope attests only an opaque descriptor label, not a
-Filesystem read capability. Only the owning kernel can consume verified original
-owner, graph and snapshot evidence into the private exact-selection read handle.
-Neither this record nor its sealed read handle imports another agent's transcript,
-private data or signed scope. Foreign workspace forks inherit no conversation.
-History capture retains the ordinary bounded HistoryReader and trusted fork witness.
-
-For ordinary model-driven defaults, pass `BrowserTaskOptions.recursive_tools`.
-Its explicit signed caller, child allocation and merge-notice bindings configure
-the same generic `ConfiguredRecursiveToolSource` used by native consumers.
-Opening installs the real file tools and both matching recursive tool registries
-on the existing runtime; it adds neither a browser source registry nor workers.
-Known descendants bind their actual admitted agent and volumes. An unlisted new
-child receives a typed authority denial, never a guessed root identity.
-For browser foreign reads, `project_policy_graph_root` must identify the actual
-coordinator graph root. Opening binds the production `FsRootProjectSourceProvider`
-to that root and the supplied service owner, separately from conversation keys.
-This creator-only policy verifies the selected immutable Filesystem generation;
-it rejects raw native descriptors and unproved bootstrap sources. Native hosts
-install the same provider with an independently authenticated native source.
-Direct source consumers supply `selected_project` and finite
-`source_policy_limits`; these references are verified evidence, never grants.
-Logical scratch/output namespaces remain distinct from protected service journals.
+## Recursive preparation
 
 The ordinary recursive workflow commits its bounded selected-source intent
 before staging a source checkpoint or admitting preparation. Recovery loads that
