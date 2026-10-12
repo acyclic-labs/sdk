@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             Some(self.checkout.publish_pending_with_native_work(self.idempotency_key.operation_id(), context, evidence, fingerprint_permit, permit, original, cancellation, &mut before_publication, None).await?)
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_value(outcome)) { return Ok(value); }
-        let actual = self.workspace.volume.checkout_with_native_work(GenerationSelector::Head, CheckoutMode::read_only_pinned(), original, cancellation).await?;
+        let actual = self.workspace.volume.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), original, cancellation).await?;
         Ok(TransactionCommit::Conflict { actual: Generation { workspace: self.workspace.clone(), id: actual.generation_id(), publication_closure: None } })
     }
 

@@ -8297,8 +8297,8 @@ where
                 ).await?;
                 let _view = observation._view;
                 let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-                let result = observer.list_directory_records_with_native_work(
-                    &namespace, cursor.as_ref(), maximum_entries, &original, &cancellation,
+                let result = observer.list_directory_records(
+                    &namespace, cursor.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &original, &cancellation,
                 ).await;
                 let completed = observer.finish();
                 let (page, allocation) = result.map_err(MountSourceError::Filesystem)?;
