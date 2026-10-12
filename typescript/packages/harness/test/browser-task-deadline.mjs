@@ -81,9 +81,6 @@ async function expiredDispatch(model) {
     fixture.free();
   }
 }
-
-// The same module is the real Web Worker actor. Messages are control/observation
-// only: taskFixture and WasmTaskRuntime own admission, dispatch and scheduling.
 if (typeof document === "undefined") {
   let fixture;
   let runtime;
@@ -105,7 +102,6 @@ if (typeof document === "undefined") {
           executions++;
           assert(executions === 1, "original uncertain tool was redispatched");
           originalInvocation = invocation;
-          // The real receiver fsyncs its exact intent/result and drops the ack.
           let acknowledgmentLost = false;
           try { await remoteCall(session, "execute", invocation); }
           catch { acknowledgmentLost = true; }
@@ -140,8 +136,6 @@ if (typeof document === "undefined") {
       } else if (data.kind === "release") {
         assert(release && originalInvocation, "no original callback to release");
         release(await remoteCall(session, "reconcile", originalInvocation));
-        // Let the original JS promise settle; only the production owner could
-        // publish its result, and its original deadline has already expired.
         await new Promise(resolve => setTimeout(resolve, 0));
         value = { kind: "released" };
       } else if (data.kind === "reconcile") {
@@ -180,9 +174,6 @@ function deadlineActor() {
     terminate: () => { worker.terminate(); rejectAll(new Error("deadline actor terminated")); },
   };
 }
-
-// Observer watchdog only. The production runtime, not this timeout, must return
-// the interrupted original lease; an unsupported or hung runner fails the page.
 async function observeBy(deadline, description, promise) {
   let timer;
   try {
