@@ -676,20 +676,12 @@ fn collect_manifest_grants(
 
 /// Precomputed reader authority for a fork.
 struct ForkVolumeReaders {
-    all: BTreeSet<AgentId>,
     selected_projects: BTreeSet<[u8; 32]>,
     shared: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
 }
 
 impl ForkVolumeReaders {
     fn new(seed: &ForkSeed, owned: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let mut all = BTreeSet::new();
-        for agent in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied()) {
-            if !all.contains(&agent) {
-                owned.slots::<AgentId>(1)?;
-                all.insert(agent);
-            }
-        }
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
@@ -717,7 +709,6 @@ impl ForkVolumeReaders {
             }
         }
         Ok(Self {
-            all,
             selected_projects,
             shared,
         })
@@ -725,10 +716,8 @@ impl ForkVolumeReaders {
 
     fn allows(&self, volume: &VolumeRef, digest: &[u8; 32], reader: &AgentId) -> bool {
         match volume.class() {
-            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader)
-                && self.all.contains(reader),
-            VolumeClass::Project => self.selected_projects.contains(digest)
-                && self.all.contains(reader),
+            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader),
+            VolumeClass::Project => self.selected_projects.contains(digest),
             VolumeClass::SessionShared => self.shared.get(digest)
                 .is_some_and(|readers| readers.contains(reader)),
         }
