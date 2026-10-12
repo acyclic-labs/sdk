@@ -475,14 +475,20 @@ async fn phase(
         .await?;
     let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
-        .run_with_context(
+        .run(
             task,
-            op,
-            definition,
-            json!({}),
-            ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
-        )
-        .await
+            &definition,
+            &acyclic_harness::tool::ToolInvocation {
+                operation_id: op,
+                call_id: op.to_string(),
+                name: definition.name.clone(),
+                arguments: json!({}),
+            },
+            &ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
+            None,
+            false,
+        )?
+        .await.map(|result| result.0)
 }
 
 #[tokio::test]

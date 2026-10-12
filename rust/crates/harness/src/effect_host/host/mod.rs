@@ -43,7 +43,10 @@ fn validate_task_plan<P: StreamProvider>(
         owner.require_effect_grants(
             &plan.provider,
             planning,
-            &mut Some(&mut crate::store::history::native_work_io(native)?),
+            &mut Some(
+                &mut crate::filesystem::PreparationIo::from_native_work(native)
+                    .map(crate::store::history::HistoryWork::new)?,
+            ),
         )?;
         owner.validate_input_file(
             &plan.request,
@@ -70,7 +73,10 @@ async fn verify_owner<P: StreamProvider>(
         return owner
             .verify(
                 settlement,
-                &mut Some(&mut crate::store::history::native_work_io(native)?),
+                &mut Some(
+                    &mut crate::filesystem::PreparationIo::from_native_work(native)
+                        .map(crate::store::history::HistoryWork::new)?,
+                ),
             )
             .await;
     }
@@ -211,25 +217,6 @@ fn effect_key<T: std::fmt::Display>(
     IdempotencyKey::new(text).map(|key| (key, retained))
 }
 
-enum EffectStateRef<'a> {
-    Resident(&'a EffectState),
-    Archived {
-        effect: EffectState,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: Option<acyclic_fs::NativeAllocation>,
-    },
-}
-
-impl std::ops::Deref for EffectStateRef<'_> {
-    type Target = EffectState;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Resident(effect) => effect,
-            Self::Archived { effect, .. } => effect,
-        }
-    }
-}
-
 /// Resolves a pinned provider attempt into its owning conversation history.
 pub struct ConversationEffectHost<P> {
     stream: std::sync::Arc<P>,
@@ -251,28 +238,30 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         aggregate: &'a StreamAggregate<P>,
         effect_id: EffectId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<EffectStateRef<'a>> {
+    ) -> Result<(std::borrow::Cow<'a, EffectState>, crate::NativeCustody)> {
         if let Some(effect) = aggregate.reducer().effect(effect_id) {
-            return Ok(EffectStateRef::Resident(effect));
+            return Ok((std::borrow::Cow::Borrowed(effect), None));
         }
+        let custody;
         let (effect, retained) = aggregate
             .effect(effect_id, self.effect_history_limits, work)
             .await?
             .ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = match work.as_deref_mut() {
-            Some(io) if io.original_native_work().is_some() => {
-                Some(io.take_native_custody(retained)?)
-            }
-            _ => None,
-        };
+        {
+            custody = match work.as_deref_mut() {
+                Some(io) if io.original_native_work().is_some() => {
+                    Some(io.take_native_custody(retained)?)
+                }
+                _ => None,
+            };
+        }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = retained;
-        Ok(EffectStateRef::Archived {
-            effect,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _custody: custody,
-        })
+        {
+            let _ = retained;
+            custody = None;
+        }
+        Ok((std::borrow::Cow::Owned(effect), custody))
     }
 
     /// Binds one conversation, its signed effect-run scope and provider catalog.
@@ -327,11 +316,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     cause,
                     custody: None,
                 })?;
-            let mut io =
-                crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::history::HistoryWork::new)?;
             host.validate_binding(&mut Some(&mut io))?;
             return Ok(host);
         }
@@ -421,11 +407,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         use crate::store::history::HistoryIo as _;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::history::HistoryWork::new)?;
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
@@ -439,7 +422,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             schemas,
             Arc::clone(&self.content),
             providers,
-            Some(io.into_custody()),
+            Some(io.into_custody()?),
             Some(work),
         )?;
         host.effect_history_limits = self.effect_history_limits;
@@ -455,15 +438,12 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<Arc<Self>> {
         use crate::store::history::HistoryIo as _;
         self.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::history::HistoryWork::new)?;
         let bytes = std::mem::size_of::<Self>() as u64;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
-        let mut custody = io.into_custody();
+        let mut custody = io.into_custody()?;
         self.native_metadata
             .as_mut()
             .expect("validated native host")
@@ -481,37 +461,28 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(StreamAggregate<P>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
-            let mut io = crate::store::history::native_work_io(original).map_err(|cause| {
-                Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
-            use crate::store::history::HistoryIo as _;
-            let authority = io.clone_authority(&self.authority)?;
-            let verifier = self.issuer.verifier(&mut Some(&mut io))?;
-            let aggregate = StreamAggregate::open(
-                stream,
-                authority,
-                verifier,
-                self.schemas.clone(),
-                None,
-                default_projection_read_limits(),
-                self.terminal_effect_limit,
-                None,
-                &mut Some(&mut io),
-            )
-            .await?
-            .with_content_verifier(Arc::clone(&self.content))
-            .with_effect_history_read_limits(self.effect_history_limits)?;
-            return Ok((aggregate, Some(io.into_custody())));
-        }
-        let authority = match work.as_deref_mut() {
+        let mut native_io = work
+            .as_deref()
+            .and_then(|io| io.original_native_work())
+            .map(crate::filesystem::PreparationIo::from_native_work)
+            .transpose()?
+            .map(crate::store::history::HistoryWork::new);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut observed = match native_io.as_mut() {
+            Some(io) => Some(io as &mut dyn crate::store::history::HistoryIo),
+            None => work
+                .as_deref_mut()
+                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let mut observed = work
+            .as_deref_mut()
+            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        let authority = match observed.as_deref_mut() {
             Some(io) => io.clone_authority(&self.authority)?,
             None => self.authority.clone(),
         };
-        let verifier = self.issuer.verifier(work)?;
+        let verifier = self.issuer.verifier(&mut observed)?;
         let aggregate = StreamAggregate::open(
             stream,
             authority,
@@ -521,12 +492,16 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             default_projection_read_limits(),
             self.terminal_effect_limit,
             None,
-            work,
+            &mut observed,
         )
         .await?
         .with_content_verifier(Arc::clone(&self.content))
         .with_effect_history_read_limits(self.effect_history_limits)?;
-        Ok((aggregate, None))
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = native_io.map(|io| io.into_custody()).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = None;
+        Ok((aggregate, custody))
     }
 }
 

@@ -24,11 +24,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::history::HistoryWork::new)?;
         let status = self
             .run_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;
@@ -55,13 +52,13 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let aggregate = self.aggregate(&stream, work).await?;
         let effect = self.effect_for_host(&aggregate.0, effect_id, work).await?;
         if !matches!(
-            effect.status,
+            effect.0.status,
             EffectStatus::Planned | EffectStatus::Dispatched | EffectStatus::Indeterminate
         ) {
-            return clone_status(&effect.status, work);
+            return clone_status(&effect.0.status, work);
         }
-        self.providers.resolve(&effect, work)?;
-        let dispatched = if effect.status == EffectStatus::Planned {
+        self.providers.resolve(&effect.0, work)?;
+        let dispatched = if effect.0.status == EffectStatus::Planned {
             matches!(
                 self.task_action(
                     owner,
@@ -81,27 +78,27 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let aggregate = self.aggregate(&stream, work).await?;
         let effect = self.effect_for_host(&aggregate.0, effect_id, work).await?;
         if !matches!(
-            effect.status,
+            effect.0.status,
             EffectStatus::Dispatched | EffectStatus::Indeterminate
         ) {
             verify_owner(owner, true, work).await?;
-            return clone_status(&effect.status, work);
+            return clone_status(&effect.0.status, work);
         }
         let attestation = if dispatched {
             verify_owner(owner, false, work).await?;
             Some(
                 self.providers
-                    .dispatch_state_and_attest(&self.issuer, effect_id, &effect, work)
+                    .dispatch_state_and_attest(&self.issuer, effect_id, &effect.0, work)
                     .await?,
             )
         } else {
             self.providers
-                .reconcile_and_attest(&self.issuer, effect_id, &effect, work)
+                .reconcile_and_attest(&self.issuer, effect_id, &effect.0, work)
                 .await?
         };
         match attestation {
             Some(attestation) => {
-                self.settle(effect_id, &effect, attestation, Some(owner), work)
+                self.settle(effect_id, &effect.0, attestation, Some(owner), work)
                     .await
             }
             None => Ok(EffectStatus::Indeterminate),
@@ -131,11 +128,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::history::HistoryWork::new)?;
         let status = self
             .reconcile_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;
@@ -159,11 +153,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let stream = owner.stream();
         let aggregate = self.aggregate(&stream, work).await?;
         let effect = self.effect_for_host(&aggregate.0, effect_id, work).await?;
-        if effect.provider != plan.provider
-            || effect.guarantee != plan.guarantee
-            || effect.effect_kind != plan.effect_kind
-            || effect.request != plan.request
-            || effect.result_schema != plan.result_schema
+        if effect.0.provider != plan.provider
+            || effect.0.guarantee != plan.guarantee
+            || effect.0.effect_kind != plan.effect_kind
+            || effect.0.request != plan.request
+            || effect.0.result_schema != plan.result_schema
         {
             return Err(effect_error(
                 work,
@@ -172,18 +166,18 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             ));
         }
         if !matches!(
-            effect.status,
+            effect.0.status,
             EffectStatus::Dispatched | EffectStatus::Indeterminate
         ) {
-            return clone_status(&effect.status, work);
+            return clone_status(&effect.0.status, work);
         }
         match self
             .providers
-            .reconcile_and_attest(&self.issuer, effect_id, &effect, work)
+            .reconcile_and_attest(&self.issuer, effect_id, &effect.0, work)
             .await?
         {
             Some(attestation) => {
-                self.settle(effect_id, &effect, attestation, Some(owner), work)
+                self.settle(effect_id, &effect.0, attestation, Some(owner), work)
                     .await
             }
             None => Ok(EffectStatus::Indeterminate),
@@ -305,12 +299,12 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let current = self
                 .effect_for_host(&aggregate.0, effect_id, retained.work())
                 .await?;
-            if current.status == attestation.status {
+            if current.0.status == attestation.status {
                 return clone_status(&attestation.status, retained.work());
             }
-            if current.attempts != effect.attempts
+            if current.0.attempts != effect.attempts
                 || !matches!(
-                    current.status,
+                    current.0.status,
                     EffectStatus::Dispatched | EffectStatus::Indeterminate
                 )
             {
@@ -394,21 +388,21 @@ impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
                 .effect_for_host(&aggregate.0, effect_id, &mut None)
                 .await?;
             if !matches!(
-                effect.status,
+                effect.0.status,
                 EffectStatus::Dispatched | EffectStatus::Indeterminate
             ) {
-                return clone_status(&effect.status, &mut None);
+                return clone_status(&effect.0.status, &mut None);
             }
             let Some(attestation) = self
                 .providers
-                .reconcile_and_attest(&self.issuer, effect_id, &effect, &mut None)
+                .reconcile_and_attest(&self.issuer, effect_id, &effect.0, &mut None)
                 .await?
             else {
                 return Ok(EffectStatus::Indeterminate);
             };
             self.settle(
                 effect_id,
-                &effect,
+                &effect.0,
                 attestation,
                 #[cfg(feature = "filesystem")]
                 None,

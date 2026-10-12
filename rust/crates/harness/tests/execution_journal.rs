@@ -754,14 +754,20 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     for _ in 0..2 {
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition.clone(),
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?
-                )
-                .await?,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(Value::Null)
         ));
     }
@@ -810,14 +816,20 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         let guarded = DurableToolRunner::new(&registry, spy.clone(), None)?.with_limits(limits)?;
         assert!(matches!(
             guarded
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition.clone(),
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0),
             Err(Error::Conflict(_))
         ));
         assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
@@ -842,18 +854,20 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         })?;
     assert!(matches!(
         bounded
-            .run_with_context(
+            .run(
                 first_task,
-                fresh_operation,
-                definition.clone(),
-                json!({"data":"x".repeat(1_024)}),
-                ToolContext::new(
-                    first_context.clone(),
-                    fresh_operation,
-                    fresh_operation.to_string()
-                )?,
-            )
-            .await,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: fresh_operation,
+                    call_id: fresh_operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({"data":"x".repeat(1_024)}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), fresh_operation, &(fresh_operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0),
         Err(Error::Invalid(_))
     ));
     assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
@@ -865,28 +879,40 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
         rebuilt
-            .run_with_context(
+            .run(
                 first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-            )
-            .await?,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0,
         Outcome::Succeeded(Value::Null)
     ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(
         runner
-            .run_with_context(
+            .run(
                 other_task,
-                operation,
-                definition,
-                json!({}),
-                ToolContext::new(other_context, operation, operation.to_string())?
-            )
-            .await
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(other_context), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0)
             .is_err()
     );
     for (index, (definition, operation, reason)) in [
@@ -905,26 +931,38 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     .enumerate()
     {
         let failure = runner
-            .run_with_context(
+            .run(
                 first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-            )
-            .await?;
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
         assert!(matches!(&failure, Outcome::Failed { .. }));
         assert_eq!(
             failure,
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition,
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-                )
-                .await?
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0
         );
         assert_eq!(racing_journal.losses.load(Ordering::SeqCst), 2);
         assert_eq!(executions.load(Ordering::SeqCst), index + 2);
@@ -938,18 +976,20 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     for _ in 0..2 {
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    large_operation,
-                    large_definition.clone(),
-                    json!({}),
-                    ToolContext::new(
-                        projection_context.clone(),
-                        large_operation,
-                        large_operation.to_string()
-                    )?
-                )
-                .await?,
+                    &large_definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: large_operation,
+                        call_id: large_operation.to_string(),
+                        name: large_definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(projection_context.clone()), large_operation, &(large_operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(Value::Null)
         ));
     }

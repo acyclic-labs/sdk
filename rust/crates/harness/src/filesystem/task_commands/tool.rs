@@ -40,10 +40,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let work = io.and_then(crate::filesystem::PreparationIo::original_native_work).expect("native tool has its original work");
-                let context = ToolContext::new_with_native_work(context, operation, &invocation.call_id, work)?;
+                let context = ToolContext::new(context, operation, &invocation.call_id, io)?;
                 self.runtime.bind_native_tool_interactions(context, task, fence, turn, Arc::clone(&journal), work)?
             }
-            WorkerContext::Ordinary(context) => ToolContext::new(context, operation, invocation.call_id.clone())?,
+            WorkerContext::Ordinary(context) => ToolContext::new(Arc::new(context), operation, &invocation.call_id, None)?,
         };
         if !reconciliation_only || io.is_none() {
             let _records;
@@ -75,14 +75,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if let Some(io) = io {
                 let work = io.original_native_work().expect("native tool has its original work");
                 let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, Some(work))?.with_limits(limits)?;
-                let (outcome, custody) = if reconciliation_only {
-                    runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await?
-                } else { runner.run_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await? };
-                io.absorb_native_custody(custody)?;
+                let (outcome, custody) = runner.run(task, definition, &invocation, &context, Some(work), reconciliation_only)?.await?;
+                io.absorb_native_custody(custody.ok_or_else(|| boundary(Some(io), ErrorCode::Storage, "native tool outcome has no custody"))?)?;
                 break 'outcome outcome;
             }
             let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, None)?.with_limits(limits)?;
-            break 'outcome runner.run_with_context(task, operation, definition.clone(), invocation.arguments, context).await?;
+            break 'outcome runner.run(task, definition, &invocation, &context, None, reconciliation_only)?.await?.0;
         };
         match outcome {
             Outcome::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),

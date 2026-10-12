@@ -7,7 +7,8 @@ fn clone_summary_native(
 ) -> Result<(Option<ContextSummary>, acyclic_fs::NativeAllocation)> {
     match summary {
         Some(summary) => {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::history::HistoryWork::new)?;
             let output = summary.output.copy(&mut Some(&mut io))?;
             let custody = crate::store::history::HistoryIo::take_native_custody(
                 &mut io,

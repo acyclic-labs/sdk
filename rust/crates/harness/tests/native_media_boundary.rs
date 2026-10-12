@@ -1460,14 +1460,20 @@ where
         let arguments = serde_json::to_value(&conversion_input)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let outcome = converter
-            .run_with_context(
+            .run(
                 task,
-                conversion_operation,
-                conversion.definition.clone(),
-                arguments,
-                ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
-            )
-            .await?;
+                &conversion.definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: conversion_operation,
+                    call_id: conversion_operation.to_string(),
+                    name: conversion.definition.name.clone(),
+                    arguments: arguments,
+                },
+                &ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
         let Outcome::Succeeded(value) = outcome else {
             return Err(Error::Invalid(format!(
                 "explicit conversion did not succeed: {outcome:?}"
@@ -1492,15 +1498,21 @@ where
         changed.mask = 1;
         assert!(
             converter
-                .run_with_context(
+                .run(
                     task,
-                    conversion_operation,
-                    conversion.definition.clone(),
-                    serde_json::to_value(changed)
+                    &conversion.definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: conversion_operation,
+                        call_id: conversion_operation.to_string(),
+                        name: conversion.definition.name.clone(),
+                        arguments: serde_json::to_value(changed)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
-                    ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
-                )
-                .await
+                    },
+                    &ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0)
                 .is_err()
         );
         let invocation = ToolInvocation {

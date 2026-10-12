@@ -212,20 +212,22 @@ impl ToolRegistry {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
                 // Replaced selection storage is gone before its refund.
-                custody
-                    .as_mut()
-                    .expect("checked registry custody")
-                    .substitute(retained)?;
+                let guard = custody.as_mut().expect("checked registry custody");
+                guard.release(guard.bytes().checked_sub(retained).ok_or_else(|| {
+                    acyclic_fs::NativeTreeMaterializationError::from(
+                        acyclic_fs::WorkError::Overflow,
+                    )
+                })?)?;
             }
             Ok(())
         })();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if result.is_err() && !published && work.is_some() {
             // The closure's input and prepared buffers have dropped before refund.
-            custody
-                .as_mut()
-                .expect("checked registry custody")
-                .substitute(original_quota)?;
+            let guard = custody.as_mut().expect("checked registry custody");
+            guard.release(guard.bytes().checked_sub(original_quota).ok_or_else(|| {
+                acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
+            })?)?;
         }
         let _ = (published, custody, work);
         result
@@ -416,12 +418,15 @@ impl ToolRegistry {
             let slots = std::mem::size_of::<(String, String)>() as u64
                 + std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64
                 + std::mem::size_of::<Arc<dyn ToolProjection>>() as u64;
-            custody.resize_retained(custody.bytes().checked_add(slots).ok_or(
-                Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "native tool registry ownership overflow",
-                },
-            )?)?;
+            custody.resize(
+                custody
+                    .bytes()
+                    .checked_add(slots)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native tool registry ownership overflow",
+                    })?,
+            )?;
             copied.versions.insert(
                 (name, revision),
                 Tool {
@@ -447,7 +452,7 @@ impl ToolRegistry {
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
             };
-            custody.resize_retained(
+            custody.resize(
                 custody
                     .bytes()
                     .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
@@ -463,7 +468,7 @@ impl ToolRegistry {
             let (name, owned) = work.display(name)?;
             hold = owned;
             custody.absorb(&mut hold)?;
-            custody.resize_retained(
+            custody.resize(
                 custody
                     .bytes()
                     .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)

@@ -389,14 +389,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
         assert_eq!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(context.clone(), call, call.to_string())?
-                )
-                .await?,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(context.clone()), call, &(call.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(json!(text))
         );
         assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
@@ -415,7 +421,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 name: tool.definition.name.clone(),
                 arguments: arguments.clone(),
             };
-            let original = ToolContext::new(context.clone(), operation, operation.to_string())?;
+            let original = ToolContext::new(std::sync::Arc::new(context.clone()), operation, &operation.to_string(), None)?;
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
             assert!(matches!(
@@ -436,14 +442,15 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             assert_eq!(journal.reads.load(Ordering::SeqCst), reads);
             assert_eq!(journal.writes.load(Ordering::SeqCst), writes);
             let Outcome::Succeeded(value) = runner
-                .run_with_context(
+                .run(
                     task,
-                    operation,
-                    tool.definition.clone(),
-                    arguments.clone(),
-                    original,
-                )
-                .await?
+                    &tool.definition,
+                    &invocation,
+                    &original,
+                    None,
+                    false,
+                )?
+                .await?.0
             else {
                 panic!("admitted bounded text must complete")
             };
@@ -473,14 +480,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         }
         let write_call = OperationId::from_bytes([86; 16]);
         let write_result = runner
-            .run_with_context(
+            .run(
                 task,
-                write_call,
-                mutations[0].0.definition.clone(),
-                mutations[0].1.clone(),
-                ToolContext::new(writable.clone(), write_call, write_call.to_string())?,
-            )
-            .await?;
+                &mutations[0].0.definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: write_call,
+                    call_id: write_call.to_string(),
+                    name: mutations[0].0.definition.name.clone(),
+                    arguments: mutations[0].1.clone(),
+                },
+                &ToolContext::new(std::sync::Arc::new(writable.clone()), write_call, &(write_call.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
         let Outcome::Succeeded(write_value) = write_result else {
             panic!("write must complete")
         };
@@ -513,14 +526,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             let operation = OperationId::new();
             assert!(matches!(
                 runner
-                    .run_with_context(
+                    .run(
                         task,
-                        operation,
-                        tool.definition.clone(),
-                        arguments.clone(),
-                        ToolContext::new(context.clone(), operation, operation.to_string())?
-                    )
-                    .await,
+                        &tool.definition,
+                        &acyclic_harness::tool::ToolInvocation {
+                            operation_id: operation,
+                            call_id: operation.to_string(),
+                            name: tool.definition.name.clone(),
+                            arguments: arguments.clone(),
+                        },
+                        &ToolContext::new(std::sync::Arc::new(context.clone()), operation, &(operation.to_string()), None)?,
+                        None,
+                        false,
+                    )?
+                    .await.map(|result| result.0),
                 Err(Error::Unauthorized(_))
             ));
         }
@@ -537,14 +556,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             };
             assert!(matches!(
                 runner
-                    .run_with_context(
+                    .run(
                         task,
-                        operation,
-                        tool.definition.clone(),
-                        arguments.clone(),
-                        ToolContext::new(no_write.clone(), operation, operation.to_string())?
-                    )
-                    .await,
+                        &tool.definition,
+                        &acyclic_harness::tool::ToolInvocation {
+                            operation_id: operation,
+                            call_id: operation.to_string(),
+                            name: tool.definition.name.clone(),
+                            arguments: arguments.clone(),
+                        },
+                        &ToolContext::new(std::sync::Arc::new(no_write.clone()), operation, &operation.to_string(), None)?,
+                        None,
+                        false,
+                    )?
+                    .await.map(|result| result.0),
                 Err(Error::Unauthorized(_))
             ));
         }
@@ -560,14 +585,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?;
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(restricted), call, &(call.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0),
             Err(Error::Unauthorized(_))
         ));
         let restricted = context.scoped(
@@ -579,14 +610,20 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         )?;
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     task,
-                    call,
-                    definition.clone(),
-                    arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: call,
+                        call_id: call.to_string(),
+                        name: definition.name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(restricted), call, &(call.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0),
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), before_reads);

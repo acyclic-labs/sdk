@@ -226,14 +226,20 @@ pub(super) async fn run<P: StreamProvider>(
     let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
     for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
-            .run_with_context(
+            .run(
                 task_id,
-                operation,
-                definition.clone(),
-                arguments.clone(),
-                context.clone(),
-            )
-            .await?;
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: arguments.clone(),
+                },
+                &context,
+                None,
+                false,
+            )?
+            .await?.0;
         verify_result(result, &arguments, operation, completed)?;
     }
     verify_journal(journal.as_ref(), operation, completed).await?;
