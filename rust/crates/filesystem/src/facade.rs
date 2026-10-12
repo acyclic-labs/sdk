@@ -8,31 +8,22 @@ use crate::foundation::{
 };
 use crate::heap_future::in_heap;
 use crate::kernel::{
-    apply_attribute_mutations_with_accounting, apply_generation_mutations_retaining_with_accounting,
-    apply_regular_mutation_with_accounting, binary_search_with_accounting, build_blob_with_accounting,
-    build_checkpoint_with_accounting, classify_rebase_with_accounting,
-    contextual_publication_fingerprint_with_accounting, decode_file_metadata_with_accounting,
-    decode_published_generation_with_steps, decode_volume_created_with_steps, diff_file_records_with_accounting,
-    diff_tree_entries_with_accounting, encode_attribute_page_with_accounting, encode_file_metadata_measured,
+    contextual_publication_fingerprint_with_accounting, encode_file_metadata_measured,
     encode_file_metadata_with_accounting, encode_file_table_leaf_records_with_accounting,
-    encode_generation_root_measured, encode_generation_root_with_accounting, encode_retention_created_with_accounting,
-    encode_tree_page_measured, encode_tree_page_with_accounting, encode_volume_created_with_accounting,
-    encode_workspace_deleted_measured, list_attributes_async_with_accounting, list_tree_entries_async_with_accounting,
-    list_tree_entries_at_or_after_async_with_accounting, lookup_attribute_async_with_accounting,
-    lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting,
+    encode_generation_root_measured, encode_generation_root_with_accounting,
+    encode_retention_created_with_accounting, encode_tree_page_with_accounting,
+    encode_volume_created_with_accounting, encode_workspace_deleted_measured,
+    list_attributes_async_with_accounting, lookup_file_record_async_with_accounting,
     lookup_path_async_with_accounting, lookup_paths_async, lookup_paths_async_with_accounting,
-    lookup_paths_selected_async_with_accounting, merge_generation_with_accounting,
     merge_generation_with_borrowed_map_resolutions_with_accounting,
-    merge_generation_with_borrowed_resolutions_with_accounting, observe_path_async_with_accounting,
-    observe_path_edges_async, observe_path_refs_async_with_accounting, observe_paths_async_with_accounting,
-    owned_read_bytes, plan_extent_range_with_accounting, prove_record_closure_async, publish_generation_async_guarded,
-    read_blob_range_with_accounting, read_generation_root_with_accounting, read_object_with_accounting,
-    read_objects_with_accounting, retire_allocation, seek_extent_with_accounting, split_allocation, types,
+    merge_generation_with_borrowed_resolutions_with_accounting, observe_path_edges_async,
+    plan_extent_range_with_accounting, prove_record_closure_async, read_blob_range_with_accounting,
+    read_generation_root_with_accounting, retire_allocation, split_allocation, types,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::{
-    build_checkpoint_with_native_work, prove_generation_closure_with_native_work,
-    prove_record_closure_with_native_work, publish_generation_async_guarded_with_native_work,
+    prove_generation_closure_with_native_work, prove_record_closure_with_native_work,
+    publish_generation_async_guarded_with_native_work,
 };
 
 use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
@@ -45,37 +36,32 @@ use crate::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializati
 use crate::kernel::decode_retention_created;
 use crate::kernel::{
     AsyncBlobSource, AttributeEntry, AttributeListError, AttributeListing, AttributeLookupError,
-    AttributeMutation, AttributeMutationError, AttributeName, AttributePage,
-    AuthenticatedGenerationProbe, AuthenticatedProbeError, BlobBuildError, BlobBuildOptions,
-    BlobReadError, CanonicalDecodeError, CheckoutDependencies, CheckpointError, CheckpointRequest,
-    ClosureError, ClosureLimits, DecodeLimits, Dependency, DependencyError, DependencyRegion,
-    DependencyState, DirectoryPage, DirectoryReadError, ExtentPlan, ExtentRangeRequest,
-    ExtentSeekRequest, ExtentSeekTarget, FileKind, FileMetadata, FileMutation, FilePayload,
-    FileRangeRead, FileRangeReadError, FileRangeRequest, FileRecord, FileRecordReadError,
-    FileTableMutationError, GenerationExportManifest, GenerationMutationError,
-    GenerationRoot, GenerationTransferBatch, GenerationTransferError, InlineFileData,
-    InlineFileDataError, LivePublicationObservation, LiveRetryAction, LiveRetryError,
-    LiveRetryState, LogicalName, MergeConflictResolution,
-    MergeConflictSide, MergeGenerationError, MergeGenerationOutcome, MergeGenerationRequest,
-    MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup, PathLookup,
-    PathLookupError, ProbeLimits, PublicationError, PublicationIntent,
-    PublicationReceipt, PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError,
-    RegularMutation, RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind,
-    TransferCursor, TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError,
-    apply_attribute_mutations_async, apply_regular_mutation_async, authenticate_generation_export_manifest_async, build_blob_async,
-    build_checkpoint_async, build_generation_export_manifest_async, contextual_publication_fingerprint, decode_file_metadata, decode_volume_created, decode_workspace_deleted,
-    export_generation_batch_async,
-    import_generation_batch_async, list_attributes_async, list_tree_entries_async,
-    lookup_attribute_async, lookup_file_record_async,
+    AttributeMutation, AttributeMutationError, AttributeName, AttributePage, AuthenticatedGenerationProbe,
+    AuthenticatedProbeError, BlobBuildError, BlobBuildOptions, BlobReadError, CanonicalDecodeError,
+    CheckoutDependencies, CheckpointError, CheckpointRequest, ClosureError, ClosureLimits, DecodeLimits,
+    Dependency, DependencyError, DependencyRegion, DependencyState, DirectoryPage, DirectoryReadError,
+    ExtentPlan, ExtentRangeRequest, ExtentSeekRequest, ExtentSeekTarget, FileKind, FileMetadata,
+    FileMutation, FilePayload, FileRangeRead, FileRangeReadError, FileRangeRequest, FileRecord,
+    FileRecordReadError, FileTableMutationError, GenerationExportManifest, GenerationMutationError,
+    GenerationRoot, GenerationTransferBatch, GenerationTransferError, InlineFileData, InlineFileDataError,
+    LivePublicationObservation, LiveRetryAction, LiveRetryError, LiveRetryState, LogicalName,
+    MergeConflictResolution, MergeConflictSide, MergeGenerationError, MergeGenerationOutcome,
+    MergeGenerationRequest, MetadataField, Mutation, NameEncoding, NamespacePath, PathBatchLookup,
+    PathLookup, PathLookupError, ProbeLimits, PublicationError, PublicationIntent, PublicationReceipt,
+    PublishGenerationRequest, RebaseConflict, RebaseDecision, RebaseError, RegularMutation,
+    RegularMutationError, RetentionCreated, RetentionCreatedError, RetentionKind, TransferCursor,
+    TreeMutationError, TreePage, VolumeCreated, VolumeCreatedError, apply_regular_mutation_async,
+    authenticate_generation_export_manifest_async, build_blob_async, build_checkpoint_async,
+    build_generation_export_manifest_async, contextual_publication_fingerprint, decode_file_metadata,
+    decode_volume_created, decode_workspace_deleted, export_generation_batch_async,
+    import_generation_batch_async, list_attributes_async, list_tree_entries_async, lookup_file_record_async,
     lookup_file_records_async, merge_generation_async, plan_extent_range_async,
-    prove_generation_closure_async, publish_generation_async,
-    publish_generation_async_with_permit, read_blob_range_async, read_file_range_async, retention_authority_id, volume_authority_id,
+    prove_generation_closure_async, publish_generation_async, publish_generation_async_with_permit,
+    read_blob_range_async, read_file_range_async, retention_authority_id, volume_authority_id,
 };
 #[cfg(test)]
 use crate::kernel::{
-    FileTableMutation, TreeMutation, encode_volume_created, file_table_mutation,
-    merge_directory_record_async as merge_directory_record, merge_file_fields, resolve_three,
-    tree_mutation,
+    merge_directory_record_async as merge_directory_record,
 };
 pub use crate::kernel::{LiveMutationOutcome, MergeConflict};
 #[cfg(all(
@@ -6864,27 +6850,6 @@ impl<A, O> PinnedReader<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn lookup_restore_batch_with_accounting(
-        &self, paths: &[NamespacePath], selected_subtrees: bool, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<(PathBatchLookup, KernelOwnedAllocation), FsError> {
-        accounting.check()?;
-        let original = accounting.native_work().ok_or(
-            FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout),
-        )?;
-        self.validate_native_work(original)?;
-        let records = if selected_subtrees {
-            lookup_paths_selected_async_with_accounting(
-                &self.volume.fs.inner.objects, self.borrowed_root(), paths, self.volume.config, accounting, cancellation, None,
-            ).await?
-        } else {
-            lookup_paths_async_with_accounting(
-                &self.volume.fs.inner.objects, self.borrowed_root(), paths, self.volume.config, accounting, cancellation, None,
-            ).await?
-        };
-        Ok(records.into_parts())
-    }
-
     /// Looks up file records by stable identity, reading each distinct
     pub async fn file_records_by_id(
         &self,
