@@ -2,7 +2,7 @@
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
 use acyclic_harness::runtime::TaskSpawner as _;
 
-use super::native::{AuthorityBinding, Config, ForkSourceConfig};
+use super::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
 use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
@@ -15,7 +15,7 @@ use acyclic_harness::{
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
-        FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider, FilesystemTaskRuntime,
+        FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider,
         ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
         RecursiveSourceSnapshot, StockTurnMachine, StreamHistoryForkVerifier,
         fork_preparation_request, recursive_fork_source, workspace_ref,
@@ -41,8 +41,6 @@ const ISSUER: &str = "graphcoder-explicit-trusted-local-qualification";
 const TEST_KEY: [u8; 32] = [91; 32];
 const PAYLOAD_BYTES: u64 = super::terminal::MAX_FRAME_BYTES as u64;
 
-type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
-type Runtime = FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 struct Caller {
     task: TaskId,
@@ -84,9 +82,6 @@ pub async fn prepare(root: &Path, cancellation: &acyclic_fs::CancellationToken) 
 
 async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<PathBuf>,
     cancellation: &acyclic_fs::CancellationToken) -> Result<PathBuf> {
-    if !root.is_absolute() {
-        return Err(Error::Invalid("scenario root must be an absolute path".into()));
-    }
     tokio::fs::create_dir_all(root).await.map_err(|error| Error::Storage(error.to_string()))?;
     let root = tokio::fs::canonicalize(root).await.map_err(|error| Error::Storage(error.to_string()))?;
     // Never mix qualification identities with a previous or caller-owned store.
@@ -98,8 +93,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
-    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
+    let filesystem_provider = ProviderRef::new(deployment.clone(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(deployment.clone(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;

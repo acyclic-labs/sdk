@@ -48,9 +48,9 @@ impl NativeTaskContext {
         if owner.task_binding() != (task, fence) {
             return Err(denied("native volume callback differs from the original task and full fence"));
         }
-        owner.require_task_context_binding_with_native_work(context, work)?;
+        owner.require_task_context_binding(context, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
         owner.require_mail_scope_with_native_work(context.scope(), work)?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
 
         let bytes = (std::mem::size_of::<NativeVolumeCallbackGuard<P>>()
             + std::mem::size_of::<(Arc<TaskJournalOwner<P>>, RuntimeScope, NativeAllocation)>()
@@ -115,9 +115,9 @@ fn require_volume<P: StreamProvider>(
     {
         return Err(denied("native callback volume policy differs from its original declared scope"));
     }
-    original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+    original.0.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
     if writable {
-        original.0.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
+        original.0.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
     }
     Ok(())
 }
@@ -134,7 +134,7 @@ impl<P: StreamProvider + 'static> VolumeCallback<P> {
             return Err(denied("native callback differs from its original per-volume work view"));
         }
         require_volume(&self.original, &self.volume, self.writable, work)?;
-        self.original.0.verify_with_native_work(false, work).await?;
+        self.original.0.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         require_volume(&self.original, &self.volume, self.writable, work)
     }
 

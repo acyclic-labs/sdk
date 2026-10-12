@@ -133,8 +133,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                     {
                         return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain result differs from its original owner, bound or content type"));
                     }
-                    self.owner.require_volume_grant_with_native_work(reference.volume(),
-                        crate::conversation::VolumeOperation::Read, work)?;
+                    self.owner.require_volume_grant(reference.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
                     let bytes = self.authority.result_content.read(reference, u64::from(request.as_ref().maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
                     let (result, custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
                     if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
@@ -161,7 +160,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
 
     pub(super) async fn authenticate_cleanup_owner(&self, work: &NativeMaterializationWork) -> Result<()> {
         let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
-        if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
+        if outcome.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
         drop(outcome);
         drop(custody);
         Ok(())

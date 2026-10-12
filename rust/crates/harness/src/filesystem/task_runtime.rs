@@ -321,7 +321,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
+            self.host.send_mail(task, fence, recipient, operation, payload, None).await
         })
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
@@ -471,13 +471,12 @@ where
             volume.clone(), verifier.clone(), signed.clone(), scope.clone(),
             tasks.clone(), machines.clone(), tools.clone(),
         );
-        let creation_providers = creation_providers.to_vec();
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
-        .with_resource_creation_providers(&creation_providers, None)?;
+        .with_resource_creation_providers(creation_providers, None)?;
         if let Some(policy) = &policy {
             host = host.with_policy(policy.clone(), None)?;
         }
@@ -834,23 +833,6 @@ where
         Ok(false)
     }
 
-    fn bind_interaction_owner(
-        &self,
-        journal: FilesystemExecutionJournal<P, A, O>,
-        admitted_route: bool,
-    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        if !admitted_route {
-            return Ok(journal);
-        }
-        if let Some(owner) = &self.interaction_owner {
-            journal.with_interaction_owner(
-                &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, None,
-            )
-        } else {
-            Ok(journal)
-        }
-    }
-
     pub(super) fn bind_context_interactions(
         &self,
         context: TaskContext,
@@ -1013,34 +995,30 @@ where
         Ok(Some(Arc::new(preparation)))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn task_mailbox_with_native_work(
-        &self, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<dyn OwnedTaskMailbox>> {
-        if !owner.original_host_binding_matches(&self.host) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native mailbox owner belongs to another original host" });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
-        let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok(Arc::new(TaskJournalMailbox {
-            host: Arc::clone(&self.host), owner,
-            native_custody: Some(custody),
-        }))
-    }
+
     #[cfg(not(target_arch = "wasm32"))]
     async fn task_context_for_original_owner_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, allow_settlement: bool,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-        owner.verify_with_native_work(allow_settlement, work).await?;
+        owner.verify(allow_settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let owner = owner.into_native_shared(work)?;
-        let mailbox = self.task_mailbox_with_native_work(owner, work)?;
+        let mailbox: Arc<dyn OwnedTaskMailbox> = {
+            if !owner.original_host_binding_matches(&self.host) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native mailbox owner belongs to another original host" });
+            }
+            let io = super::PreparationIo::from_native_work(work)?;
+            let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
+            io.retain_owned(bytes)?;
+            io.allocation_attempt(bytes)?;
+            let custody = io.take_native_custody(io.owned_bytes()?)?;
+            Arc::new(TaskJournalMailbox {
+                host: Arc::clone(&self.host), owner,
+                native_custody: Some(custody),
+            })
+        };
         let operation = OperationId::from_bytes(task.into_bytes());
         let purpose = if allow_settlement {
             crate::runtime::NativeContextPurpose::Reconciliation { fence, mailbox }
@@ -1117,22 +1095,24 @@ where
         turn: OperationId,
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        self.bind_interaction_owner(
-            FilesystemExecutionJournal::for_task(
-                self.host.journal_owner(task, fence).await?,
-                execution_operation(task, turn, None)?,
-                turn,
-                self.filesystem.clone(),
-                &self.volume,
-                &self.verifier,
-                &self.signed,
-                self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                None,
-            )?,
-            admission
-                .grants
-                .contains(crate::contract::capability::INTERACTION_ROUTE),
-        )
+        let journal = FilesystemExecutionJournal::for_task(
+            self.host.journal_owner(task, fence).await?,
+            execution_operation(task, turn, None)?,
+            turn,
+            self.filesystem.clone(),
+            &self.volume,
+            &self.verifier,
+            &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            None,
+        )?;
+        if admission.grants.contains(crate::contract::capability::INTERACTION_ROUTE)
+            && let Some(owner) = &self.interaction_owner {
+            return journal.with_interaction_owner(
+                &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, None,
+            );
+        }
+        Ok(journal)
     }
 
     /// Opens the canonical tool-effect workflow under the original caller reservation.
@@ -1142,15 +1122,25 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let task = context.task().durable_task_id()
             .ok_or_else(|| Error::Unauthorized("tool has no admitted caller".into()))?;
-        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?
-            .for_tool_workflow(context, tool, invocation, cancellation).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(super::PreparationIo::original_native_work) {
+            Some(work) => {
+                let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
+                self.host.journal_owner_with_native_work(task, fence, work).await?
+            }
+            None => self.host.journal_owner(task, context.task().owned_task_fence()?).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?;
+        let owner = owner.for_tool_workflow(context, tool, invocation, cancellation, io).await?;
         let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
         FilesystemWorkflowJournal::for_task(
             owner, self.filesystem.clone(), &self.volume,
-            &self.verifier, &self.signed, maximum_payload_bytes, None,
+            &self.verifier, &self.signed, maximum_payload_bytes, io,
         )
     }
 
@@ -1161,8 +1151,9 @@ where
         tool: &crate::durable_tool::ResumableTool,
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
+        io: Option<&super::PreparationIo>,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
-        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
+        let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation, io).await?;
         let journal_owner = workflow.owner.clone()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
         Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner })

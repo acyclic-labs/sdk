@@ -1100,13 +1100,7 @@ impl WasmTaskRuntime {
         let message = OperationId::parse(&message).map_err(js_error)?;
         self.runtime
             .task_host()
-            .send_owned(
-                sender,
-                crate::scheduler::LeaseFence::from(&lease.reservation),
-                recipient,
-                message,
-                from_js(payload)?,
-            )
+            .send_mail(sender, &crate::scheduler::LeaseFence::from(&lease.reservation), recipient, message, from_js(payload)?, None)
             .await
             .map_err(js_error)
     }
