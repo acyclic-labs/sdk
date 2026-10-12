@@ -23,7 +23,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let workspace = fs.create_workspace("original-identity-candidate").await?;
     workspace.write_text("/source", "actual source bytes").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let path = path("source")?;
@@ -94,7 +94,7 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     let fs = Fs::memory();
     let workspace = fs.create_workspace("candidate-adoption-seal").await?;
     let cancellation = CancellationToken::new();
-    let mut live = workspace.checkout_measured(
+    let mut live = workspace.checkout(
         GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let base = live.private_candidate();
@@ -361,7 +361,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         return Err("retention fixture did not commit".into());
     };
     let cloned = generation.clone();
-    let cold = workspace.head().await?;
+    let cold = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: generation.id().digest(),
@@ -4751,7 +4751,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     let workspace = fs.create_workspace("original-authored-transaction").await?;
     workspace.write_text("/source", "transaction source").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let metadata = checkout.lookup_no_follow_with_metadata(
@@ -11064,9 +11064,9 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
     let fs = Fs::memory();
     let workspace = fs.create_workspace("selected-fork-invalid-paths").await?;
     workspace.write_text("/file", "body").await?;
-    let source = workspace.head().await?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
+    let checkout = workspace.checkout(
         GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
@@ -11101,26 +11101,26 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
     use crate::workspace::{ForkOptions, WorkspaceError};
     let fs = Fs::memory();
     let workspace = fs.create_workspace("selected-fork-closure-controls").await?;
-    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
+    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/tree/nested").await?;
     transaction.write_text("/tree/nested/file", "linked body").await?;
     transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
     transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
     transaction.write_text("/omitted", "not inherited").await?;
-    transaction.commit().await?;
-    let source = workspace.head().await?;
+    transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let paths = vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()];
     let child = workspace.fork(
         "selected-fork-closure-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(paths.clone()),
     ).await?;
-    let initial = child.head().await?;
+    let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!((child.read("/tree/nested/alias", 32).await?).as_ref(), b"linked body");
     assert!(child.read("/outside-alias", 32).await.is_err());
     assert!(child.read("/omitted", 32).await.is_err());
-    let file = initial.stat("/tree/nested/file").await?;
-    let alias = initial.stat("/tree/nested/alias").await?;
+    let file = initial.stat("/tree/nested/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = initial.stat("/tree/nested/alias", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     assert!(initial.matches_fork_selection(&source, Some(paths.clone())).await?);
@@ -11165,7 +11165,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
     ).await?;
-    let all = all.head().await?;
+    let all = all.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(all.matches_fork_selection(&source, None).await?);
     assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
     assert!(!initial.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
@@ -11190,13 +11190,13 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
     );
     let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates"))?;
     poll_immediate(workspace.write_text("/file", "body"))?;
-    let source = poll_immediate(workspace.head())?;
+    let source = poll_immediate(async { workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     let child = poll_immediate(workspace.fork(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
     ))?;
-    let initial = poll_immediate(child.head())?;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
@@ -11235,7 +11235,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     workspace.write_text("/source", "authenticated source bytes").await?;
     workspace.write_text("/destination", "old destination").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(
@@ -11321,7 +11321,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     workspace.write_text("/source", "real detached stream").await?;
     workspace.write_text("/destination", "before").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(

@@ -22,9 +22,9 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
     workspace
         .write_text("/original.txt", "original generation")
         .await?;
-    let original = workspace.head().await?.id();
+    let original = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.write_text("/later.txt", "later head").await?;
-    let current = workspace.head().await?.id();
+    let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(original, current);
     let budget = finite_budget()?;
     for select_head in [false, true] {
@@ -32,10 +32,10 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             let workspace = workspace.clone();
             async move {
                 if select_head {
-                    workspace.head_measured(allowance, &token).await
+                    workspace.head(allowance, &token).await
                 } else {
                     workspace
-                        .generation_measured(original, allowance, &token)
+                        .generation(original, allowance, &token)
                         .await
                 }
             }
@@ -201,11 +201,11 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     workspace
         .write_text("/later.txt", "later generation")
         .await?;
-    let head = workspace.head().await?.id();
+    let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, created.value.id());
     let key = IdempotencyKey::from_bytes(operation.into_bytes());
     let recovered = workspace
-        .operation_generation_measured(key, budget, &CancellationToken::new())
+        .operation_generation(key, budget, &CancellationToken::new())
         .await?;
     recovered.work.verify(budget)?;
     assert!(recovered.work.backend_read_operations > 0);
@@ -219,7 +219,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let mut denied = budget;
     denied.backend_read_operations = 0;
     let failure = workspace
-        .operation_generation_measured(key, denied, &CancellationToken::new())
+        .operation_generation(key, denied, &CancellationToken::new())
         .await
         .err()
         .ok_or("recovery admitted zero backend-read budget")?;
@@ -228,14 +228,14 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = workspace
-        .operation_generation_measured(key, budget, &cancelled)
+        .operation_generation(key, budget, &cancelled)
         .await
         .err()
         .ok_or("pre-cancelled recovery succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     let absent = workspace
-        .operation_generation_measured(
+        .operation_generation(
             IdempotencyKey::from_bytes(OperationId::new().into_bytes()),
             budget,
             &CancellationToken::new(),
@@ -407,14 +407,12 @@ mod source_bound_lost_ack {
         failure.work.verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
         let workspace = fs.open_workspace("stream-lost-ack").await?;
-        let initial = workspace.operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("lost acknowledgement did not retain original allocation")?;
+        let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not retain original allocation")?;
         let initial_id = initial.id();
         let workspace_id = initial.workspace_id();
         assert!(store.load_lazy_workspace(workspace_id).await?.is_none());
         workspace.write_text("/later.txt", "head after lost acknowledgement").await?;
-        let head = workspace.head().await?.id();
+        let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial_id);
         drop(initial);
         drop(workspace);
@@ -458,7 +456,7 @@ mod source_bound_lost_ack {
                 if message == "volume creation was rejected by authority state"));
             failure.work.verify(budget)?;
             assert_eq!(lazy.workspace().head().await?.id(), head);
-            let retained = lazy.workspace().operation_generation_measured(
+            let retained = lazy.workspace().operation_generation(
                 IdempotencyKey::from_bytes(operation.into_bytes()), budget, &cancellation,
             ).await?;
             retained.work.verify(budget)?;
