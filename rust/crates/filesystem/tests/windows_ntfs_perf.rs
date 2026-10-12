@@ -155,10 +155,10 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
     };
     let fs = Fs::memory();
     let workspace = fs.create_workspace("ntfs-metadata-view", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .write("/tree/file", OwnedBytes::from_static(b"payload"))
+        .write("/tree/file", OwnedBytes::from_static(b"payload"), WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await?;
     transaction.hard_link("/tree/file", "/tree/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
@@ -181,7 +181,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
                 ..FileMetadata::default()
             }, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let TransactionCommit::Committed(generation) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
+    let TransactionCommit::Committed(generation) = transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("metadata fixture did not commit".into());
     };
     let destination = tempfile::tempdir()?;
@@ -247,7 +247,7 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
             VolumeConfig::native(Lifecycle::Durable),
         acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),)
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),
         FilesystemProfile::Windows,
@@ -355,7 +355,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?.value;
+        .await.map_err(|(error, _)| error)?.value;
     let preparation_us = started.elapsed().as_micros();
 
     let warm_view = tempfile::tempdir()?;
@@ -368,7 +368,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
             &CancellationToken::new(),
             PublicationPermit::Unrestricted,
         )
-        .await?.value;
+        .await.map_err(|(error, _)| error)?.value;
     let warm_preparation_us = started.elapsed().as_micros();
     warm_working_set.validate_for_presentation().await?;
 
