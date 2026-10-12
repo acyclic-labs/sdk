@@ -85,114 +85,55 @@ pub(crate) async fn register(
         + std::mem::size_of::<(String, RootBinding)>()) as u64;
     let mut startup_custody = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut provider_metadata =
-        {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
-            let value = acyclic_harness::resources::ProviderRef::new(
-                acyclic_harness::store::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
-                acyclic_harness::store::HistoryIo::clone_text(&mut io, "filesystem")?,
-                acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
-                &mut Some(&mut io),
-            )?;
-            (value, io.into_custody())
-        };
+        ProviderRef::new_with_native_work("acyclic.pi", "filesystem", "1", work)?;
     startup_custody.absorb(&mut provider_metadata.1)?;
     let provider = &provider_metadata.0;
     let task = TaskId::from_bytes(identity("task", session, work)?);
     let agent = AgentId::from_bytes(identity("agent", session, work)?);
     let root_id = identity("root", session, work)?;
     let context_id = identity("context", session, work)?;
-    let native_error = |cause| acyclic_harness::Error::NativeWork {
-        cause,
-        custody: None,
-    };
-    let root_label = work
-        .display(&format_args!("{:032x}", u128::from_be_bytes(root_id)))
-        .map_err(native_error)?;
-    let owner_label = work.display(&root_label.0).map_err(native_error)?;
-    let journal_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let copied_provider = ProviderRef::new(
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.version())?,
-            &mut Some(&mut io),
-        )?;
-        let id = acyclic_harness::store::HistoryIo::clone_text(&mut io, "journal")?;
-        let owner = VolumeOwner::Agent(agent);
-        let volume = VolumeRef::new(
-            copied_provider,
-            id,
-            VolumeClass::AgentPrivate,
-            owner,
-            &mut Some(&mut io),
-        )?;
-        (volume, io.into_custody())
-    };
+    let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id)))?;
+    let owner_label = work.display(&root_label.0)?;
+    let journal_metadata = VolumeRef::new_with_native_work(
+        &provider,
+        "journal",
+        VolumeClass::AgentPrivate,
+        &VolumeOwner::Agent(agent),
+        work,
+    )?;
     let journal = &journal_metadata.0;
-    let scratch_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let copied_provider = ProviderRef::new(
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.version())?,
-            &mut Some(&mut io),
-        )?;
-        let id = acyclic_harness::store::HistoryIo::clone_text(&mut io, "scratch")?;
-        let owner = VolumeOwner::Agent(agent);
-        let volume = VolumeRef::new(
-            copied_provider,
-            id,
-            VolumeClass::AgentPrivate,
-            owner,
-            &mut Some(&mut io),
-        )?;
-        (volume, io.into_custody())
-    };
+    let scratch_metadata = VolumeRef::new_with_native_work(
+        &provider,
+        "scratch",
+        VolumeClass::AgentPrivate,
+        &VolumeOwner::Agent(agent),
+        work,
+    )?;
     let scratch = &scratch_metadata.0;
-    let project_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let copied_provider = ProviderRef::new(
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,
-            acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.version())?,
-            &mut Some(&mut io),
-        )?;
-        let id = acyclic_harness::store::HistoryIo::clone_text(&mut io, "project")?;
-        let owner = VolumeOwner::Project(acyclic_harness::store::HistoryIo::clone_text(
-            &mut io,
-            &owner_label.0,
-        )?);
-        let volume = VolumeRef::new(
-            copied_provider,
-            id,
-            VolumeClass::Project,
-            owner,
-            &mut Some(&mut io),
-        )?;
-        (volume, io.into_custody())
-    };
+    let project_owner = VolumeOwner::Project(owner_label.0);
+    let project_metadata = VolumeRef::new_with_native_work(
+        &provider,
+        "project",
+        VolumeClass::Project,
+        &project_owner,
+        work,
+    )?;
     let project = &project_metadata.0;
-    let binding_session = work.display(session).map_err(native_error)?;
-    let project_key = work.display(&root_label.0).map_err(native_error)?;
-    let project_copy = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let value = project.copy(&mut Some(&mut io))?;
-        (value, io.into_custody())
-    };
-    let scratch_copy = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let value = scratch.copy(&mut Some(&mut io))?;
-        (value, io.into_custody())
-    };
-    let path_key = work.display(&root_label.0).map_err(native_error)?;
-    let root_path = work.display(path_text).map_err(native_error)?;
+    let binding_session = work.display(session)?;
+    let project_key = work.display(&root_label.0)?;
+    let mut binding_io = acyclic_harness::store::history::native_work_io(work)?;
+    let project_copy = project.copy(&mut Some(&mut binding_io))?;
+    let scratch_copy = scratch.copy(&mut Some(&mut binding_io))?;
+    let _binding_custody = binding_io.into_custody();
+    let path_key = work.display(&root_label.0)?;
+    let root_path = work.display(path_text)?;
     let binding = PiTaskBinding {
         native_session_id: binding_session.0,
         task_id: task,
         agent_id: agent,
-        project_volumes: BTreeMap::from([(project_key.0, project_copy.0)]),
+        project_volumes: BTreeMap::from([(project_key.0, project_copy)]),
         scratch: PiScratchBinding {
-            volume: scratch_copy.0,
+            volume: scratch_copy,
             allocation: PiScratchAllocation::Preparing,
         },
         results: None,
@@ -222,26 +163,20 @@ pub(crate) async fn register(
         "task:spawn:acyclic.fork_preparation@1",
         "tool:call:acyclic.pi.builtin",
     ];
-    let native_error = |cause| acyclic_harness::Error::NativeWork {
-        cause,
-        custody: None,
-    };
     let grants = [
-        work.display(&format_args!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"))
-            .map_err(native_error)?,
+        work.display(&format_args!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"))?,
         work.display(&format_args!(
             "effect:provider:{}",
             super::pi_native::PI_NATIVE_PROVIDER
-        ))
-        .map_err(native_error)?,
+        ))?,
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value =
                 journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
         },
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = journal.directory_read_capability(
                 super::pi_root_provider::OPERATOR_INPUT_DIRECTORY,
                 &mut Some(&mut io),
@@ -249,22 +184,22 @@ pub(crate) async fn register(
             (value, io.into_custody())
         },
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = scratch.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody())
         },
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = scratch.capability(VolumeOperation::Write, &mut Some(&mut io))?;
             (value, io.into_custody())
         },
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = project.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody())
         },
         {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::history::native_work_io(work)?;
             let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
             (value, io.into_custody())
         },
@@ -276,16 +211,13 @@ pub(crate) async fn register(
             .chain(grants.iter().map(|grant| grant.0.as_str())),
         work,
     )?;
-    let policy_journal = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
-        let value = journal.copy(&mut Some(&mut io))?;
-        (value, io.into_custody())
-    };
+    let mut policy_io = acyclic_harness::store::history::native_work_io(work)?;
+    let policy_journal = journal.copy(&mut Some(&mut policy_io))?;
     let policy = (
         PiOwnerPolicy {
             root_task: task,
             agent,
-            journal: policy_journal.0,
+            journal: policy_journal,
             grants: capabilities.0,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
@@ -298,19 +230,16 @@ pub(crate) async fn register(
             concurrency: 16,
             maximum_payload_bytes: 1024 * 1024,
         },
-        policy_journal.1,
+        policy_io.into_custody(),
         capabilities.1,
     );
-    let owner_path = work.path(relative_directory, Some(Path::new("pi-owner.v1")))?;
+    let owner_path = work.join_path(relative_directory, Path::new("pi-owner.v1"))?;
     let owner_exists =
         work.state_path_exists_with_native_work(&resources.private_state_root, &owner_path.0)?;
     drop(owner_path);
     let owner = if owner_exists {
-        let original = PiOwnerConfig::load_with_native_work(
-            &resources.private_state_root,
-            relative_directory,
-            work,
-        )?;
+        let original =
+            PiOwnerConfig::load(&resources.private_state_root, relative_directory, work)?;
         if original.policy() != &policy.0 {
             return Err(acyclic_harness::Error::Unauthorized(
                 "Pi original root policy differs".to_owned(),
@@ -320,7 +249,7 @@ pub(crate) async fn register(
         drop(native_runtime);
         original
     } else {
-        let stream_path = work.path(relative_directory, Some(Path::new("stream")))?;
+        let stream_path = work.join_path(relative_directory, Path::new("stream"))?;
         let stream_exists =
             work.state_path_exists_with_native_work(&resources.private_state_root, &stream_path.0)?;
         drop(stream_path);
@@ -339,7 +268,7 @@ pub(crate) async fn register(
         Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
     )?;
     let journal_name = {
-        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let mut io = acyclic_harness::store::history::native_work_io(work)?;
         let value = journal.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -362,7 +291,7 @@ pub(crate) async fn register(
         stream,
         filesystem.clone(),
         &journal,
-        owner.authority_with_native_work(work)?,
+        owner.authority(work)?,
         work,
     )
     .await?;
@@ -374,14 +303,13 @@ pub(crate) async fn register(
     drop(admission.0);
     drop(admission.1);
     drop(command.1);
-    let state_session = work.display(session).map_err(native_error)?;
-    let state_agent = work.display(session).map_err(native_error)?;
-    let state_key = work.display(&root_label.0).map_err(native_error)?;
+    let state_session = work.display(session)?;
+    let state_agent = work.display(session)?;
+    let state_key = work.display(&root_label.0)?;
     work.charge(acyclic_fs::WorkCounters {
         allocation_operations: 1,
         ..acyclic_fs::WorkCounters::UNCHARGED
-    })
-    .map_err(native_error)?;
+    })?;
     let state = AdapterState {
         version: ADAPTER_STATE_VERSION,
         active: true,
