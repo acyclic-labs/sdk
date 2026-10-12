@@ -327,12 +327,7 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
                 source_bytes_read: size,
                 ..WorkCounters::UNCHARGED
             })?;
-            let allocation = work.claim(size)?;
-            let mut buffer = Vec::new();
-            if let Err(error) = buffer.try_reserve_exact(size as usize) {
-                work.release(allocation)?;
-                return Err(W::allocation_failed(error));
-            }
+            let (mut buffer, allocation) = super::buffer(size as usize, work)?;
             buffer.resize(size as usize, 0u8);
             let result = read_unix_link_into(parent, name, &mut buffer, work);
             let count = match result {
@@ -360,12 +355,7 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
             ..WorkCounters::UNCHARGED
         };
         work.admit(copied)?;
-        let allocation = work.claim(count as u64)?;
-        let mut exact = Vec::new();
-        if let Err(error) = exact.try_reserve_exact(count) {
-            work.release(allocation)?;
-            return Err(io::Error::new(io::ErrorKind::OutOfMemory, error).into());
-        }
+        let (mut exact, allocation) = super::buffer(count, work)?;
         exact.extend_from_slice(&buffer[..count]);
         if let Err(error) = work.record(copied).and_then(|()| work.check()) {
             drop(exact);

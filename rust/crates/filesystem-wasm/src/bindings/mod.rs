@@ -1,3 +1,22 @@
+macro_rules! unbounded_future {
+    ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
+        ($owner).$operation(
+            $($argument,)*
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+    };
+}
+
+macro_rules! sdk_value {
+    ($future:expr) => {
+        ($future)
+            .await
+            .map_err(|failure| js_error(failure.error))
+            .map(|receipt| receipt.value)
+    };
+}
+
 macro_rules! browser_call {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         $owner.engine.$operation(

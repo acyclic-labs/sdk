@@ -95,11 +95,7 @@ async fn open(
 )> {
     let work = work();
     let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)
-            .map_err(|cause| acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)?;
     let owner = PiOwnerConfig::load_with_native_work(&root, Path::new(""), &work)?;
     owner.validate_root(binding, &work)?;
     let (filesystem, stream) = storage(path, owner.policy().journal.provider()).await;
@@ -764,8 +760,8 @@ async fn committed_root_reopens_and_accepts_a_distinct_control() {
     let task = fixture.owner.policy().root_task;
     let work = work();
     let recovery = {
-        let mut io = acyclic_harness::store::history::native_work_io(&work).unwrap();
-        acyclic_harness::store::history::HistoryIo::retain_owned(
+        let mut io = acyclic_harness::store::native_work_io(&work).unwrap();
+        acyclic_harness::store::HistoryIo::retain_owned(
             &mut io,
             std::mem::size_of::<WorkPull>().max(std::mem::size_of::<
                 acyclic_harness::filesystem::TaskWorkerAttempt,

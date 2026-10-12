@@ -5162,19 +5162,51 @@ pub mod native {
                         work.admit(WorkCounters {
                             output_bytes: length as u64,
                             ..WorkCounters::UNCHARGED
+                        })?;
+                        work.allocate(length as u64)?;
+                        let mut bytes = Vec::new();
+                        if let Err(error) = bytes.try_reserve_exact(length) {
+                            drop(bytes);
+                            let _released = work.release(length as u64);
+                            return Err(DemandError::Allocation(error));
+                        }
+                        let mut owned = length as u64;
+                        if let Err(error) = work.with_original_leaf(|work| {
+                            work.reconcile_native_allocation(&mut owned, bytes.capacity() as u64)
                         }) {
                             drop(bytes);
-                            if work.is_native_original() { ownership.retire(owned)?; }
-                            else { work.release(owned)?; }
+                            let _released = work.release(owned);
                             return Err(error);
                         }
-                        bytes.extend_from_slice(&unit.to_le_bytes());
-                    }
-                    drop(target);
-                    drop(target_ownership);
-                    if !work.is_native_original() { work.release(target_bytes)?; }
-                    bytes
-                };
+                        if let Err(error) = ownership.retain(owned, work) {
+                            drop(bytes);
+                            let _released = work.release(owned);
+                            return Err(error);
+                        }
+                        for unit in &target {
+                            if let Err(error) = work.charge(WorkCounters {
+                                bytes_encoded: 2,
+                                bytes_copied: 2,
+                                items_examined: 1,
+                                ..WorkCounters::UNCHARGED
+                            }) {
+                                drop(bytes);
+                                if work.is_native_original() {
+                                    ownership.retire(owned)?;
+                                } else {
+                                    work.release(owned)?;
+                                }
+                                return Err(error);
+                            }
+                            bytes.extend_from_slice(&unit.to_le_bytes());
+                        }
+                        drop(target);
+                        drop(target_ownership);
+                        if !work.is_native_original() {
+                            work.release(target_bytes)?;
+                        }
+                        bytes
+                    };
                 bytes.into()
                 };
                 let after = self.metadata(path, work)?.ok_or(DemandError::Absent)?;

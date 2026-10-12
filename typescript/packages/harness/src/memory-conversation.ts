@@ -8,7 +8,8 @@ import { DEFAULT_LIMITS } from "./conversation.js";
 import { selectModelContext } from "./projection.js";
 import { memoryContentStore } from "./memory-content-store.js";
 import type { ResourceRef } from "./fork.js";
-import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type ContentBindings, type ContentReader, type PrivateDirectoryPage, type RunOutput } from "./runtime.js";
+import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness, type RunOutput } from "./agent-harness.js";
+import type { ContentBindings, ContentReader, PrivateDirectoryPage } from "./content.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
@@ -171,15 +172,8 @@ export class MemoryConversation {
   /** Bind this owner's authenticated content provider to typed task/tool contexts. */
   contentBindings(): ContentBindings {
     return {
-      validate: (file, limits) => {
-        this.#core.validateFileUnderLimits(file, limits);
-      },
-      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
+      ...this.readBindings(this.#scope),
       read: file => this.read(file),
-      fileReadCapability: file => this.#core.fileReadCapability(file),
-      volumeReadCapability: volume => this.#core.volumeCapability(volume, "read"),
-      directoryReadCapability: (volume, prefix) => this.#core.directoryReadCapability(volume, prefix),
-      directory: this.readBindings(this.#scope).directory!,
       writer: {
         volume: this.#volume,
         writeCapability: () => this.#core.volumeCapability(this.#volume, "write"),
@@ -378,7 +372,7 @@ export class MemoryConversation {
     runtime: AgentHarness, operationId: OperationId, content: FileRef,
     attachments: readonly Attachment[],
   ): Promise<RunOutput> {
-    const limits = runtime.limits;
+    const limits = runtime.components.limits;
     const userContent = this.#core.contracts.validate("file_ref", content);
     this.#core.validateFileUnderLimits(userContent, limits);
     await this.read(userContent);
@@ -390,7 +384,7 @@ export class MemoryConversation {
     const committedSelection = this.#core.contextSelectionForOperation(operationId);
     const preparation = this.#core.contracts.prepareConversationTurn(
       state, operationId, userContent, list, limits, committedSelection,
-      completed !== undefined, runtime.canReconcileSelectedTurn(),
+      completed !== undefined, runtime.components.state?.executeSelectedTurn !== undefined,
     );
     const userId = this.#core.contracts.validateConversationMessageId(preparation.user_id);
     if (preparation.append_user) {

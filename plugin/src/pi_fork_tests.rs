@@ -298,7 +298,11 @@ impl Fixture {
                     &startup_work,
                 )
                 .await?;
-            owner.verify_with_native_work(false, &startup_work).await?;
+            (async {
+                let mut io = acyclic_harness::store::native_work_io(&startup_work)?;
+                owner.verify(false, &mut Some(&mut io)).await
+            })
+            .await?;
             Ok::<_, acyclic_harness::Error>((preparation, owner))
         }
         .await
@@ -804,7 +808,7 @@ impl Fixture {
             )
             .unwrap();
         let verifier = {
-            let mut io = acyclic_harness::store::history::native_work_io(work).unwrap();
+            let mut io = acyclic_harness::store::native_work_io(work).unwrap();
             let value = authority.0.1.verifier(&mut Some(&mut io)).unwrap();
             (value, io.into_custody())
         };
@@ -983,13 +987,7 @@ impl Fixture {
             &work,
         )?;
         let verifier = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(&work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(&work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1038,20 +1036,13 @@ impl Fixture {
                     work: 1_000_000,
                     bytes: maximum,
                 },
-                work.remaining().map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
-                })?,
+                work.remaining()?,
                 work.cancellation().clone(),
             )
             .await?;
         Arc::get_mut(plan._input_allocations.as_mut().unwrap())
             .unwrap()
-            .absorb(&mut commit.1)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+            .absorb(&mut commit.1)?;
         Ok(plan)
     }
     async fn current_context_with(

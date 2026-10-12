@@ -180,23 +180,13 @@ pub(crate) fn open_owned_child_directory<W: NativeHostWork>(
     })?;
     #[cfg(windows)]
     let file = {
-        use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
-            FILE_GENERIC_READ, GetFileInformationByHandle,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
         };
         let child = open_windows_leaf_handle(parent, name, FILE_GENERIC_READ, Some(true), work)?;
         let identity = directory_identity(parent, work)?;
         work.attempt_io(READ, || {
-            let mut metadata = BY_HANDLE_FILE_INFORMATION::default();
-            // SAFETY: the held nofollow child and complete output remain live.
-            unsafe {
-                GetFileInformationByHandle(
-                    windows::Win32::Foundation::HANDLE(child.as_raw_handle()),
-                    &raw mut metadata,
-                )
-            }
-            .map_err(io::Error::from)?;
+            let metadata = windows_file_information(&child)?;
             if metadata.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
                 || metadata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0
             {

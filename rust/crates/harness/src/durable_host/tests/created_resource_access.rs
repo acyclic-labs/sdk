@@ -1144,8 +1144,8 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let allocation_io = crate::filesystem::PreparationIo::from_budget(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
     )?;
-    fixture.filesystem.verify_fork_allocation_io(
-        &created.seed,&created.private,Some(&allocation_io),
+    fixture.filesystem.read_fork_allocation(
+        &created.seed,&created.private,crate::filesystem::fork_preparer::seed_digest(&created.seed,16 * 1024 * 1024,Some(&allocation_io))?,4 * 1024 * 1024,Some(&allocation_io),
     ).await?;
     assert!(allocation_io.receipt().backend_read_operations > 0);
     assert_eq!(allocation_io.owned_bytes()?,0);
@@ -1207,8 +1207,8 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let rejected_io = crate::filesystem::PreparationIo::from_budget(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
     )?;
-    assert!(fixture.filesystem.verify_fork_allocation_io(
-        &created.seed,result,Some(&rejected_io),
+    assert!(fixture.filesystem.read_fork_allocation(
+        &created.seed,result,crate::filesystem::fork_preparer::seed_digest(&created.seed,16 * 1024 * 1024,Some(&rejected_io))?,4 * 1024 * 1024,Some(&rejected_io),
     ).await.is_err());
     assert!(rejected_io.receipt().backend_read_operations > 0);
     assert_eq!(rejected_io.owned_bytes()?,0);

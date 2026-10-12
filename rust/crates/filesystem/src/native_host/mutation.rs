@@ -304,11 +304,9 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
+            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
         };
-        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let access = DELETE
             | SYNCHRONIZE
@@ -330,43 +328,17 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
             }
         }
         let units = wide_units(to_name.as_os_str(), work)?;
-        let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-        let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-        let bytes = header
-            .checked_add(name_bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        let words = bytes
-            .max(std::mem::size_of::<FILE_RENAME_INFORMATION>())
-            .div_ceil(8);
-        let mut allocation = work.claim(words as u64 * 8)?;
-        let mut buffer = Vec::new();
-        let reserved = buffer.try_reserve_exact(words);
-        let reconciled = work.reconcile_allocation(&mut allocation, buffer.capacity() as u64 * 8);
+        let encoded = WorkCounters {
+            bytes_encoded: (units as u64)
+                .checked_mul(2)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(encoded)?;
+        let (buffer, allocation, length) =
+            windows_name_packet(to, to_name.as_os_str().encode_wide(), units, false, work)?;
         let result = (|| {
-            reserved.map_err(W::allocation_failed).and(reconciled)?;
-            buffer.resize(words, 0u64);
-            let encoded = WorkCounters {
-                bytes_encoded: name_bytes as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.admit(encoded)?;
             work.record(encoded)?;
-            let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-            // SAFETY: aligned storage covers the fields and entire UTF-16 tail.
-            unsafe {
-                std::ptr::addr_of_mut!((*information).RootDirectory)
-                    .write(HANDLE(to.as_handle().as_raw_handle()));
-                std::ptr::addr_of_mut!((*information).FileNameLength)
-                    .write(u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?);
-                let tail = buffer.as_mut_ptr().cast::<u8>().add(header).cast::<u16>();
-                for (index, unit) in to_name.as_os_str().encode_wide().enumerate() {
-                    if unit == 0 {
-                        return Err(W::invalid_request());
-                    }
-                    tail.add(index).write(unit);
-                }
-            }
-            let length = u32::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
             work.attempt_io(WRITE, || {
                 windows_name_packet_once(
                     &file,

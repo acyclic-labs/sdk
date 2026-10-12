@@ -137,7 +137,10 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     let fork = workspace.fork(
         "accounting-fork",
         crate::ForkOptions::from_generation(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| {
+                std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))
+            },
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let fork_retention = retention_authority_id(
         workspace.id().volume_id(), RetentionKind::ForkBase,
         &hex::encode(fork.id().volume_id().into_bytes()),
@@ -215,10 +218,32 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
         BUDGET, &cancellation,
     ).await?;
     for object in current.objects {
-        let bytes = crate::AsyncObjectStore::read(
-            &objects, object, 16 * 1024 * 1024, BUDGET, &cancellation,
-        ).await?.value.bytes;
-        crate::AsyncObjectStore::put(&absent, object, bytes, BUDGET, &cancellation).await?;
+        let bytes = {
+            let __object_args = (object, 16 * 1024 * 1024, BUDGET, &cancellation,
+        );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = crate::AsyncObjectStore::read(
+                &objects,
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
+        .bytes;
+        {
+            let __object_args = (object, bytes, BUDGET, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = crate::AsyncObjectStore::put(&absent,
+                __object_args.0,
+                __object_args.1,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?;
     }
     let durable = records(&authority, authority_id).await?;
     let cursor = |record: &DurableCommit| -> Result<AccountingCursor, Box<dyn Error>> {
@@ -314,7 +339,9 @@ async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::Aut
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-let value = self.inner.create_authority(authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = self.inner.create_authority(authority, epoch, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -322,7 +349,9 @@ async fn fork_authority<G: crate::AuthorityGuard>(&self, source: crate::Generati
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-let value = self.inner.fork_authority(source, destination, operation, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = self.inner.fork_authority(source, destination, operation, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -331,7 +360,9 @@ async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::Gua
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-self.inner.compare_and_append(request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+self.inner.compare_and_append(request, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
 }
 async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
@@ -367,7 +398,8 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 self.inner.fence(authority, expected, work).await
 
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+    > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 
@@ -452,37 +484,124 @@ struct OriginalArchive {
 
 impl crate::AsyncObjectStore for OriginalArchive {
     async fn put(
-        &self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        crate::AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
+        &self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = crate::AsyncObjectStore::put(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
-        &self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        crate::AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await
+        &self, object_id: ObjectId, maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = crate::AsyncObjectStore::read(&self.inner,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
-        &self, requests: &[crate::storage::ObjectReadRequest], budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        crate::AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
+        &self, requests: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = crate::AsyncObjectStore::read_many(&self.inner,
+                    __object_args.0,
+                    &mut __object_work,
+                )
+                .await
+                .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
-        &self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<bool> {
-        crate::AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
+        &self, object_id: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object_id, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = crate::AsyncObjectStore::contains(&self.inner,
+                    __object_args.0,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn historical_generation_evidence(
         &self, authority_id: AuthorityId, record: &DurableCommit,
-        maximum_bytes: u64, _maximum_objects: u64, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
+        maximum_bytes: u64, _maximum_objects: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<Option<crate::kernel::HistoricalGenerationEvidence>, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
         use crate::storage::{ObjectFailure, ObjectStoreError};
         cancellation.check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
@@ -501,6 +620,9 @@ impl crate::AsyncObjectStore for OriginalArchive {
         work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
         Ok(crate::OperationReceipt { value, work })
     }
+        .await;
+        context.accept(result)
+    }
 }
 
 #[tokio::test]
@@ -513,7 +635,9 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     let original_records = records(&authority, authority_id).await?;
     let initial = &original_records[0];
     let original = &original_records[1];
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| {
+        Ok::<_, crate::kernel::VolumeCreatedError>(())
+    })?;
     let original_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
     // Capture the actual original root and complete proof before advancing head.
     let proof = prove_original(&objects, original_root, created.config).await?;
@@ -566,12 +690,31 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
         evidence,
     };
     let cancellation = CancellationToken::new();
-    assert!(!crate::AsyncObjectStore::contains(
-        &archive.inner, original_root, BUDGET, &cancellation,
-    ).await?.value);
-    assert!(!crate::AsyncObjectStore::contains(
-        &archive.inner, current_root, BUDGET, &cancellation,
-    ).await?.value);
+    assert!(!{
+            let __object_args = (original_root, BUDGET, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = crate::AsyncObjectStore::contains(
+        &archive.inner,
+                __object_args.0,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
+    );
+    assert!(
+        !{
+            let __object_args = (current_root, BUDGET, &cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = crate::AsyncObjectStore::contains(
+        &archive.inner,
+                __object_args.0,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        }?.value);
     let cursor = AccountingCursor {
         sequence: initial.sequence,
         digest: initial.digest,
@@ -604,7 +747,9 @@ async fn original_initial_and_retention_evidence_bind_actual_stream_records_and_
     let workspace = fs.create_workspace("initial-retention-original", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let initial = records(&authority, authority_id).await?.remove(0);
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| {
+        Ok::<_, crate::kernel::VolumeCreatedError>(())
+    })?;
     let initial_proof = prove_original(&objects, created.initial_generation_root, created.config).await?;
     let initial_append = original_append(authority_id, &initial);
     let initial_evidence = crate::kernel::encode_original_generation_evidence(

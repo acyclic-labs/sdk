@@ -1,18 +1,21 @@
 //! Crash-recoverable whole-tree publication for native consumers.
+use acyclic_native_runtime::durable_rename;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use acyclic_native_runtime::durable_rename;
 mod journal;
-pub use journal::{NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase, prepare_native_exchange};
 use journal::*;
+pub use journal::{
+    NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
+    prepare_native_exchange,
+};
 mod publication;
-pub use publication::{publish_native_exchange, recover_native_exchange};
 use publication::*;
+pub use publication::{publish_native_exchange, recover_native_exchange};
 mod entry;
+use entry::*;
 pub use entry::{exchange_native_entries, recover_native_entry_exchange};
 pub(crate) use entry::{exchange_native_entries_held, recover_native_entry_exchange_held};
-use entry::*;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -40,7 +43,9 @@ impl From<crate::materializer::NativeTreeMaterializationError> for NativeExchang
         match error {
             crate::materializer::NativeTreeMaterializationError::Cancelled => Self::Cancelled,
             crate::materializer::NativeTreeMaterializationError::Work(error) => Self::Work(error),
-            crate::materializer::NativeTreeMaterializationError::Io(error) => exchange_io_error(error),
+            crate::materializer::NativeTreeMaterializationError::Io(error) => {
+                exchange_io_error(error)
+            }
             error => Self::Io(std::io::Error::other(error)),
         }
     }
@@ -69,16 +74,20 @@ impl From<NativeExchangeError> for crate::materializer::NativeTreeMaterializatio
 }
 
 pub(super) fn exchange_io_error(error: std::io::Error) -> NativeExchangeError {
-    if error.get_ref().is_some_and(|inner| inner.is::<NativeExchangeError>()) {
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<NativeExchangeError>())
+    {
         match error.into_inner() {
             Some(inner) => match inner.downcast::<NativeExchangeError>() {
                 Ok(error) => *error,
                 Err(inner) => NativeExchangeError::Io(std::io::Error::other(inner)),
             },
-            None => NativeExchangeError::Io(std::io::Error::other("exchange error lost its payload")),
+            None => {
+                NativeExchangeError::Io(std::io::Error::other("exchange error lost its payload"))
+            }
         }
     } else {
         NativeExchangeError::Io(error)
     }
 }
-
