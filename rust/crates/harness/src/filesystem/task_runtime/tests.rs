@@ -148,12 +148,9 @@ impl ResumableMachine for Machine {
         let (state, custody) = crate::tool::clone_value(state, None, work)?;
         io.absorb_native_custody(custody)?;
         let command = {
-            let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
-            encoded_hold = io.guard_owned(encoded.len() as u64)?;
             let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
-            drop(encoded_hold);
             command
         };
         io.retain_owned(std::mem::size_of::<MachineTransition>().saturating_sub(std::mem::size_of::<Value>()) as u64)?;
