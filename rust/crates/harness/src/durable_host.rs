@@ -2558,7 +2558,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ..
             } = &record.event
             {
-                coordinator.scheduler().require_model_claim_with_work(
+                coordinator.scheduler().require_model_claim(
                     task_operation,
                     purpose.attempt_operation(operation),
                     *step,
@@ -3099,7 +3099,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let value = self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)?;
         let envelope: crate::workflow::WorkflowRecord = serde_json::from_value(value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        envelope.validate()?;
+        envelope.validate(None)?;
         if envelope.prior.revision != index || envelope.next.revision != index + 1 {
             return Err(Error::Storage("parcel workflow revision differs".into()));
         }
@@ -3874,7 +3874,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let declaration = &original.0;
-        declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
+        declaration.verify_owner(&self.owner, &self.verifier, &mut observer)?;
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
@@ -4247,13 +4247,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 work.as_deref_mut().expect("original native observer").absorb_native_custody(state.1)?;
                 state.0
             } else {
-                self.machines.resolve(&admission.machine)
+                self.machines.resolve(&admission.machine, work)?
                     .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
                     .initialize(&admission.input)?
             }
             #[cfg(target_arch = "wasm32")]
             {
-                self.machines.resolve(&admission.machine)
+                self.machines.resolve(&admission.machine, work)?
                     .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
                     .initialize(&admission.input)?
             }
@@ -4431,7 +4431,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let root_copy = root_scope.clone_with_native_work(work)?;
         io.absorb_native_custody(root_copy.1)?;
         let tasks = tasks.clone_with_native_work(work)?;
-        let machines = machines.clone_with_native_work(work)?;
+        let machines = machines.copy(work)?;
         io.absorb_native_custody(machines.1)?;
         let mut host = Self::new_observed(
             coordinator, stream, payloads, reader, owner, scope_copy.0, verifier_copy.0,
@@ -5197,7 +5197,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             receipts.push(receipt);
         }
         visited.pop();
-        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume_with_work(
+        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume(
             admission, &mut receipts, current_default.map(|(_, origin)| origin), custody.work(),
         )?;
         Ok(Some(access))
@@ -5389,7 +5389,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, spec: &OperationSpec,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(TaskAdmissionRecord, u64)> {
-        spec.verify_owner_with_work(&self.owner, &self.verifier, work)?;
+        spec.verify_owner(&self.owner, &self.verifier, work)?;
         let operation_id = spec.operation_id;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;

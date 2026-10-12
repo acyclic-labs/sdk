@@ -704,11 +704,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             })?);
         }
         let view = crate::conversation::ConversationState::selected_view_with_work(messages, &mut None).map(|(state, _)| state)?;
-        crate::projection::validate_model_context_selection_at_revision(
-            &view,
-            selection,
-            selection.conversation_revision,
-        )?;
+        crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
         Ok(view)
     }
 

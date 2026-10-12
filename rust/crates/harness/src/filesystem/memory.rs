@@ -1603,7 +1603,7 @@ mod tests {
             .messages
             .iter()
             .map(|message| {
-                let bytes = message.content.file_refs().iter().try_fold(
+                let bytes = message.content.file_refs().try_fold(
                     crate::contract::canonical_json_bytes(message)?.len() as u64,
                     |total, file| {
                         total
