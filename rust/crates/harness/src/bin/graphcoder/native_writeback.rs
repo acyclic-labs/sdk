@@ -377,10 +377,7 @@ impl NativeSession {
         let issuer = AuthorityIssuer::new(&binding.owner.issuer, binding.owner.key, binding.owner.authority.clone());
         let capabilities = Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]);
         let label = format!("native-publication-responder:{}", ticket.id);
-        let scope = match binding.owner.scope.agent() {
-            Some(agent) => issuer.issue(&label, &capabilities, Some(agent), None, &mut None).expect("scope proof"),
-            None => issuer.issue(&label, &capabilities, None, None, &mut None).expect("scope proof"),
-        };
+        let scope = issuer.issue(&label, &capabilities, binding.owner.scope.agent(), None, &mut None).expect("scope proof");
         let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
         let operation = decision_operation(binding.operation_id, approved);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
