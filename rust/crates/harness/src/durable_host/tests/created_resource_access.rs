@@ -1265,8 +1265,8 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         .ok_or_else(|| Error::NotFound("created child reservation".into()))?;
     let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
     assert_eq!(owner.authenticated_binding_agent()?,Some(created.seed.child_agent));
-    owner.authenticate_fork_parent(&created.seed.child)?;
-    assert!(owner.authenticate_fork_parent(&fixture.host.authority).is_err());
+    owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
+    assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     let proof = owner.child_scratch_creation_proof()?;
     assert_eq!(proof.original_task(),task);
     assert_eq!(proof.agent(),created.seed.child_agent);
@@ -1371,7 +1371,7 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     assert!(matches!(owner.pin_root_binding_choice(
         OperationId::from_bytes([116;16]),intent,audience),Err(Error::Conflict(_))));
     assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
-    assert!(owner.authenticate_fork_parent(&fixture.host.authority).is_err());
+    assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();

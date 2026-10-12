@@ -40,6 +40,8 @@ use std::{
 use tokio::sync::Mutex;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::store::history::HistoryIo as _;
+#[cfg(feature = "filesystem")]
+use crate::scheduler::LeaseFence;
 
 mod headless;
 pub use headless::TaskVolumeSnapshot;
@@ -543,6 +545,7 @@ pub struct TaskJournalOwner<P> {
     extensions: Option<crate::core::ExtensionAdmission>,
     extension_schemas: Option<crate::core::SchemaRegistry>,
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
+    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     readonly_original: Option<(OperationSpec, LeaseFence)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1313,7 +1316,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &self.readonly_original {
             if original.0.operation_id != self.operation_id()
-                || (&original.1) != &self.fence {
+                || &original.1 != &self.fence {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "READ owner differs from its protected original reservation",
@@ -1820,11 +1823,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.authenticated_binding_agent_with_work(&mut Some(&mut io))
     }
 
-    pub(crate) fn authenticated_fork_agent(&self) -> Result<crate::AgentId> {
-        if !self.input_grants.contains(capability::FORK_PUBLISH) {
-            return Err(Error::Unauthorized("task scope lacks fork:publish".into()));
+    pub(crate) fn authenticated_fork_agent(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<crate::AgentId> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        self.input_agent.ok_or_else(|| Error::Unauthorized("task has no authenticated current agent".into()))
+        if !self.input_grants.contains(capability::FORK_PUBLISH) {
+            return Err(Self::grant_denied(work, "task scope lacks fork:publish"));
+        }
+        self.input_agent.ok_or_else(|| Self::grant_denied(work, "task has no authenticated current agent"))
     }
 
     pub(crate) fn binding_origin(&self) -> (TaskId, [u8;32], &crate::scheduler::LeaseFence) {
@@ -2085,15 +2094,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
     }
 
-    pub(crate) fn authenticate_fork_parent(&self, parent: &Authority) -> Result<()> {
-        self.authenticated_fork_agent()?;
+    pub(crate) fn authenticate_fork_parent(
+        &self, parent: &Authority, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.authenticated_fork_agent(work)?;
         let audience = match &self.input_created {
-            Some(access) => access.current_content(&mut None)?.and_then(|binding| binding.authority.as_ref()),
+            Some(access) => access.current_content(work)?.and_then(|binding| binding.authority.as_ref()),
             None if self.input_is_root => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
             None => None,
-        }.ok_or_else(|| Error::Unauthorized("current caller has no authenticated publication audience".into()))?;
+        }.ok_or_else(|| Self::grant_denied(work, "current caller has no authenticated publication audience"))?;
+        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
         if audience != parent {
-            return Err(Error::Unauthorized("fork parent differs from the current caller audience".into()));
+            return Err(Self::grant_denied(work, "fork parent differs from the current caller audience"));
         }
         Ok(())
     }
@@ -3865,12 +3877,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        let declaration = (&original.0);
+        let declaration = &original.0;
         declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
-            || binding.fence() != (&original.1)
+            || binding.fence() != &original.1
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
@@ -4181,7 +4193,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
-            if original.0.operation_id != operation || (&original.1) != fence.as_ref() {
+            if original.0.operation_id != operation || &original.1 != fence.as_ref() {
                 return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "original READ reservation differs from its protected native preparation"));
             }

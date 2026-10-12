@@ -545,8 +545,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork report belongs to another parent"));
         }
-        owner.authenticate_fork_parent_with_work(self.reducer.authority(), work)?;
-        if scope.agent() != Some(owner.authenticated_fork_agent_with_work(work)?) {
+        owner.authenticate_fork_parent(self.reducer.authority(), work)?;
+        if scope.agent() != Some(owner.authenticated_fork_agent(work)?) {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork publication scope differs from its admitted caller"));
         }
@@ -736,8 +736,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<()> {
         let mut custody = crate::fork::ForkValidationWork::new(work)?;
         seed.validate_with_work(custody.work())?;
-        let parent_agent = owner.authenticated_fork_agent_with_work(custody.work())?;
-        owner.authenticate_fork_parent_with_work(&seed.parent, custody.work())?;
+        let parent_agent = owner.authenticated_fork_agent(custody.work())?;
+        owner.authenticate_fork_parent(&seed.parent, custody.work())?;
         if parent.reducer.authority() != &seed.parent
             || parent.reducer.fork(&seed.child) != Some(seed)
             || self.reducer.authority() != &seed.child {
