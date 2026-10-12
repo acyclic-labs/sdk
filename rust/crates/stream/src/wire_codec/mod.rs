@@ -3,16 +3,16 @@
 use bytes::Bytes;
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-use crate::memory::MemoryOutput;
+use crate::memory::NativeStreamOutput;
 
 use crate::{
     AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
@@ -21,12 +21,12 @@ use crate::{
     StreamPath, wire,
 };
 
-mod funding;
-mod encoding;
 mod conversion;
+mod encoding;
 mod frames;
-pub(crate) use encoding::CanonicalWire;
+mod funding;
 pub use conversion::*;
-pub use frames::{read_response_wire, read_response_batch, read_response_records};
+pub(crate) use encoding::CanonicalWire;
 #[cfg(test)]
 pub(crate) use frames::zstd_read_response;
+pub use frames::{read_response_batch, read_response_records, read_response_wire};

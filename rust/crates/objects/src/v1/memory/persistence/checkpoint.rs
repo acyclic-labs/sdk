@@ -24,23 +24,39 @@ impl Journal {
                 publication.check()?;
                 self.check()?;
                 let snapshot = difference(&State::default(), state, 0, &mut publication)?;
-                let temporary = crate::physical::local_path(&self.root.path, TEMPORARY, publication.native.as_ref().map(|(meter, _)| meter))?;
-                let destination =
-                    crate::physical::local_path(&self.root.path, "mutations.log", publication.native.as_ref().map(|(meter, _)| meter))?;
+                let temporary = crate::physical::local_path(
+                    &self.root.path,
+                    TEMPORARY,
+                    publication.native.as_ref().map(|(meter, _)| meter),
+                )?;
+                let destination = crate::physical::local_path(
+                    &self.root.path,
+                    "mutations.log",
+                    publication.native.as_ref().map(|(meter, _)| meter),
+                )?;
                 let mut file = crate::physical::open_publication(&temporary.value, &publication)?;
                 let header = publication.encode(&self.header)?;
-                let header_length = u32::try_from(header.len())
-                    .map_err(|_| Error::from(QuotaExceeded))?;
+                let header_length =
+                    u32::try_from(header.len()).map_err(|_| Error::from(QuotaExceeded))?;
                 let digest = publication.codec(0, 0, header.len(), || blake3::hash(&header))?;
                 crate::physical::write_publication(&mut file, 0, MAGIC, &mut publication)?;
                 crate::physical::write_publication(
-                    &mut file, MAGIC.len() as u64, &header_length.to_le_bytes(), &mut publication,
+                    &mut file,
+                    MAGIC.len() as u64,
+                    &header_length.to_le_bytes(),
+                    &mut publication,
                 )?;
                 crate::physical::write_publication(
-                    &mut file, (MAGIC.len() + 4) as u64, digest.as_bytes(), &mut publication,
+                    &mut file,
+                    (MAGIC.len() + 4) as u64,
+                    digest.as_bytes(),
+                    &mut publication,
                 )?;
                 crate::physical::write_publication(
-                    &mut file, (MAGIC.len() + 36) as u64, &header, &mut publication,
+                    &mut file,
+                    (MAGIC.len() + 36) as u64,
+                    &header,
+                    &mut publication,
                 )?;
                 let mut output = Checkpoint {
                     file,
@@ -54,35 +70,45 @@ impl Journal {
                 };
                 output.snapshot(snapshot, &mut publication)?;
                 #[cfg(test)]
-                self.checkpoint_fault(1).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(1)
+                    .map_err(|_| Error::from(Unavailable))?;
                 crate::physical::sync_publication(
-                    &output.file, self.limits.durability, &publication,
+                    &output.file,
+                    self.limits.durability,
+                    &publication,
                 )?;
                 #[cfg(test)]
-                self.checkpoint_fault(2).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(2)
+                    .map_err(|_| Error::from(Unavailable))?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
                 let reclaimed = tail.bytes.saturating_sub(output.bytes);
                 // Close the old journal before Windows replacement.
                 drop(std::mem::replace(&mut tail.file, output.file));
                 #[cfg(test)]
-                self.checkpoint_fault(3).map_err(|_| Error::from(Unavailable))?;
-                if let Err(error) = self.root.replace_journal(|| {
-                    match &publication.native {
-                        Some((meter, _)) => acyclic_native_runtime::durable_rename(
-                            &temporary.value, &destination.value,
-                            acyclic_native_runtime::RenameMode::Replace, Some(meter),
-                        ),
-                        None => acyclic_native_runtime::durable_rename(
-                            &temporary.value, &destination.value,
-                            acyclic_native_runtime::RenameMode::Replace, None,
-                        ),
-                    }
+                self.checkpoint_fault(3)
+                    .map_err(|_| Error::from(Unavailable))?;
+                if let Err(error) = self.root.replace_journal(|| match &publication.native {
+                    Some((meter, _)) => acyclic_native_runtime::durable_rename(
+                        &temporary.value,
+                        &destination.value,
+                        acyclic_native_runtime::RenameMode::Replace,
+                        Some(meter),
+                    ),
+                    None => acyclic_native_runtime::durable_rename(
+                        &temporary.value,
+                        &destination.value,
+                        acyclic_native_runtime::RenameMode::Replace,
+                        None,
+                    ),
                 }) {
                     self.poisoned.store(true, Ordering::Release);
-                    return Err(NativeObjectsError::from(NativeObjectsCause::Admission(error)));
+                    return Err(NativeObjectsError::from(NativeObjectsCause::Admission(
+                        error,
+                    )));
                 }
                 #[cfg(test)]
-                self.checkpoint_fault(4).map_err(|_| Error::from(Unavailable))?;
+                self.checkpoint_fault(4)
+                    .map_err(|_| Error::from(Unavailable))?;
                 tail.bytes = output.bytes;
                 tail.operations = output.operations;
                 tail.inline_bytes = 0;
@@ -155,10 +181,14 @@ impl Checkpoint {
     }
     fn flush(&mut self, publication: &mut Publication) -> Result<(), NativeObjectsError> {
         // Multipart frames must fit the authenticated record limit.
-        self.pending.ordinal = self.operations.checked_add(1)
+        self.pending.ordinal = self
+            .operations
+            .checked_add(1)
             .ok_or(Error::from(QuotaExceeded))?;
         let length = self.pending.encoded_len();
-        let end = self.bytes.checked_add(36 + length as u64)
+        let end = self
+            .bytes
+            .checked_add(36 + length as u64)
             .ok_or(Error::from(QuotaExceeded))?;
         if length > RECORD_LIMIT
             || end > self.limits.maximum_journal_bytes
@@ -167,19 +197,28 @@ impl Checkpoint {
             return Err(Error::from(QuotaExceeded).into());
         }
         // Each encoded frame owns temporary custody.
-        let mut frame = Publication::new(publication.native.as_ref().map(|(meter, _)| Arc::clone(meter)));
+        let mut frame = Publication::new(
+            publication
+                .native
+                .as_ref()
+                .map(|(meter, _)| Arc::clone(meter)),
+        );
         let encoded = frame.encode(&self.pending)?;
         let length = u32::try_from(encoded.len()).map_err(|_| Error::from(QuotaExceeded))?;
         let digest = frame.codec(0, 0, encoded.len(), || blake3::hash(&encoded))?;
         crate::physical::write_publication(
-            &mut self.file, self.bytes, &length.to_le_bytes(), &mut frame,
+            &mut self.file,
+            self.bytes,
+            &length.to_le_bytes(),
+            &mut frame,
         )?;
         crate::physical::write_publication(
-            &mut self.file, self.bytes + 4, digest.as_bytes(), &mut frame,
+            &mut self.file,
+            self.bytes + 4,
+            digest.as_bytes(),
+            &mut frame,
         )?;
-        crate::physical::write_publication(
-            &mut self.file, self.bytes + 36, &encoded, &mut frame,
-        )?;
+        crate::physical::write_publication(&mut self.file, self.bytes + 36, &encoded, &mut frame)?;
         self.bytes = end;
         self.operations = self.pending.ordinal;
         // Reuse pending-array capacities without changing packing inputs.

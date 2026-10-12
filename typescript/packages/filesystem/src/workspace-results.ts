@@ -1,8 +1,5 @@
-import type {
-  JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,
-  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
-  WasmRawMergeConflict,
-} from "./contracts.js";
+import type { JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters, WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus } from "./contracts.js";
+import type { WasmRawMergeConflict } from "./binding-types.js";
 import { copyFixedBytes, copyName } from "./binding-values.js";
 
 export function decodeMergeConflict(raw: unknown): MergeConflict {

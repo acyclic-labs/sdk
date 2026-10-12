@@ -834,7 +834,7 @@ mod tests {
             .map_err(|(cause, _)| cause)?;
         let producer = checkout.private_candidate(&original, &cancellation)?;
         let custody = producer.private_control_custody();
-        let meter = original.native_read_meter();
+        let meter = (&original.state);
         let baseline = original.live_allocation_bytes();
         let physical = custody.physical_retained_bytes();
         let events = custody.native_control_events();
@@ -862,7 +862,7 @@ mod tests {
         assert!(paid.same_original_scope(meter));
         let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        assert!(!paid.same_original_scope(foreign.native_read_meter()));
+        assert!(!paid.same_original_scope((&foreign.state)));
         let held_control = {
             let mut holds = collection.holds.lock().unwrap_or_else(PoisonError::into_inner);
             let held = holds.slots.get_mut(paid.hold.as_ref().expect("paid registration").id)

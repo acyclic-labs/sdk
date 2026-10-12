@@ -73,6 +73,10 @@ fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std:
 /// A listing's pages are empty only where it ends, so a driver never
 #[test]
 fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
+    let work =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("empty"))?;
     std::fs::write(source.path().join("a"), b"a")?;
@@ -81,7 +85,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
     assert!(empty.entries.is_empty());
     assert!(empty.next_cursor.is_none(), "an empty page continues");
-    view.create_file(&mounted(&["b"]), FileMetadata::default())?;
+    view.create_file(&mounted(&["b"]), FileMetadata::default(), None, &work)?;
     let mut cursor = None;
     let mut listed = 0;
     loop {
@@ -129,50 +133,24 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
 /// Dropping a watched view releases everything it holds before the drop
 #[test]
 fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::model::{CheckoutMode, GenerationSelector};
-    use crate::native_mount::{MountPublication, SharedCheckout};
-    use crate::{Fs, LocalCoreStateStore};
+    use crate::LocalCoreStateStore;
 
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"a")?;
     let state = tempfile::tempdir()?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let fs = Fs::memory();
     // A store released late fails the very next open; the rounds only
     // vary where the source change lands against the drop.
     for round in 0..24 {
         let store = LocalCoreStateStore::open_owned(state.path().join("core"))
             .map_err(|error| format!("round {round}: {error}"))?;
         let view = runtime.block_on(async {
-            let lazy = Arc::new(
-                LazyWorkspace::attach(
-                    &fs,
-                    &format!("released-{round}"),
-                    Arc::new(native_source(source.path()).await?),
-                    store,
-                )
-                .await?,
-            );
-            let checkout = lazy
-                .workspace()
-                .engine_checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::tracking_transaction(),
-                )
-                .await?;
-            let config = checkout.volume_config();
-            let authored = Arc::new(CheckoutMountSource::new(
-                Arc::new(SharedCheckout::with_publication(
-                    checkout,
-                    MountPublication::Manual,
-                )),
-                config,
-            )?);
-            Ok::<_, Box<dyn std::error::Error>>(LazyMountSource::new(
-                lazy,
-                authored,
-                "/".to_owned(),
-            )?)
+            mounted_view_of(
+                Arc::new(native_source(source.path()).await?),
+                &format!("released-{round}"),
+                store,
+            )
+            .await
         })?;
         assert!(view.view_stamp().is_some(), "a local source is watched");
         assert!(view.lookup(&mounted(&["a"]))?.is_some());
@@ -227,7 +205,11 @@ fn an_unwatched_source_is_read_afresh_and_never_cached() -> Result<(), Box<dyn s
     std::fs::write(source.path().join("a"), b"short")?;
     let runtime = tokio::runtime::Runtime::new()?;
     let demand = Arc::new(runtime.block_on(native_source(source.path()))?.unwatched());
-    let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "unwatched"))?;
+    let view = runtime.block_on(mounted_view_of(
+        Arc::clone(&demand),
+        "unwatched",
+        crate::MemoryLazyWorkspaceStore::default(),
+    ))?;
     assert_eq!(view.view_stamp(), None, "an unwatched view is never cached");
     let (a, absent) = (mounted(&["a"]), mounted(&["absent"]));
     let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {

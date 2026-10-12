@@ -10,6 +10,7 @@ where
     pub(super) fn source_observed(&self) -> bool {
         self.source_watch
             .as_ref()
+            .and_then(|owner| owner.watch.as_ref())
             .is_some_and(|watch| watch.is_exact())
     }
 
@@ -25,63 +26,29 @@ where
         path: &MountPath,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(String, Option<crate::NativeAllocation>), MountSourceError> {
-        if let Some(original) = original {
-            let (namespace, _allocation) = self
-                .authored
-                .namespace_path(path, &mut adapter::NativeDemandCarrier::Native(original))?;
-            let mut accounting = crate::kernel::allocation::KernelAccounting::native(
-                original,
-                original.cancellation(),
-            );
-            let (text, allocation) = namespace
-                .unicode_text_with_accounting(&mut accounting, original.cancellation())
-                .map_err(mount_engine_error)?;
-            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
-                allocation
-            else {
-                return Err(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ));
-            };
-            return Ok((text, Some(allocation)));
-        }
-        let mut value = String::new();
-        for component in path.components() {
-            value.push('/');
-            let text = if cfg!(target_os = "windows") {
-                let units = crate::kernel::types::utf16le_units(component)
-                    .ok_or_else(|| {
-                        MountSourceError::Invalid(
-                            "native UTF-16 name has an odd byte length".to_owned(),
-                        )
-                    })?
-                    .collect::<Vec<_>>();
-                String::from_utf16(&units).map_err(|_| {
-                    MountSourceError::Unsupported(
-                        "lazy portable mount cannot represent an unpaired UTF-16 name".to_owned(),
-                    )
-                })?
-            } else {
-                std::str::from_utf8(component)
-                    .map_err(|_| {
-                        MountSourceError::Unsupported(
-                            "lazy portable mount cannot represent a non-UTF-8 name".to_owned(),
-                        )
-                    })?
-                    .to_owned()
-            };
-            value.push_str(&text);
-        }
-        if value.is_empty() {
-            value.push('/');
-        }
-        if self.root == "/" {
-            Ok((value, None))
-        } else if value == "/" {
-            Ok((self.root.clone(), None))
-        } else {
-            Ok((format!("{}{value}", self.root), None))
-        }
+        let cancellation = self.authored.cancellation();
+        let mut demand = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
+        let mut carrier = match original {
+            Some(work) => adapter::NativeDemandCarrier::Native(work),
+            None => adapter::NativeDemandCarrier::Borrowed(&mut demand),
+        };
+        let (namespace, _allocation) = self.authored.namespace_path(path, &mut carrier)?;
+        let mut accounting = match original {
+            Some(work) => crate::kernel::KernelAccounting::native(work, work.cancellation()),
+            None => {
+                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation)
+            }
+        };
+        let (text, allocation) = namespace
+            .unicode_text_with_accounting(&mut accounting, cancellation)
+            .map_err(mount_engine_error)?;
+        let allocation = match allocation {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+                Some(allocation)
+            }
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
+        };
+        Ok((text, allocation))
     }
 
     pub(super) fn removal_snapshot(
@@ -108,7 +75,10 @@ where
         Ok((children, opaque, removals.epoch))
     }
 
-    pub(super) fn removed_by(paths: &BTreeMap<String, FileId>, path: &str) -> bool {
+    pub(super) fn removed_by(
+        paths: &BTreeMap<String, (FileId, crate::NativeAllocation)>,
+        path: &str,
+    ) -> bool {
         let mut current = path;
         loop {
             if paths.contains_key(current) {
@@ -139,7 +109,7 @@ where
         Ok(removals
             .paths
             .get(path)
-            .is_some_and(|removed| *removed == file_id))
+            .is_some_and(|(removed, _)| *removed == file_id))
     }
 
     pub(super) fn record_removed(
@@ -148,9 +118,16 @@ where
         file_id: FileId,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let (text, _allocation) = self.path(path, Some(work))?;
+        let (text, allocation) = self.path(path, Some(work))?;
+        let allocation = allocation.ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::InvalidLayout,
+        ))?;
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        if removals.paths.insert(text, file_id) != Some(file_id) {
+        if removals
+            .paths
+            .insert(text, (file_id, allocation))
+            .is_none_or(|(id, _)| id != file_id)
+        {
             removals.epoch = removals.epoch.wrapping_add(1);
             self.cursors.clear();
         }
@@ -270,17 +247,13 @@ where
         let Some(lookup) = lookup else {
             return Ok(Resolution::Absent);
         };
-        let source = match &lookup {
-            LazyLookup::Source { source, .. } => Some(*source),
-            _ => None,
-        };
         let allocation = match allocation {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
                 Some(allocation)
             }
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
         };
-        Ok(Resolution::Unauthored(lookup, source, allocation))
+        Ok(Resolution::Unauthored(lookup, allocation))
     }
 
     pub(super) async fn project_authored(
@@ -303,14 +276,13 @@ where
         &self,
         path: &str,
         lookup: LazyLookup,
-        source: Option<SourceReference>,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
-        let pin = match (&lookup, source) {
-            (LazyLookup::Source { node, .. }, Some(source))
+        let pin = match &lookup {
+            LazyLookup::Source { node, source }
                 if node.kind == SourceNodeKind::RegularFile =>
             {
-                Some(source_content_pin(source, node))
+                Some(source_content_pin(*source, node))
             }
             _ => None,
         };
@@ -339,7 +311,7 @@ where
     ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError> {
         for _ in 0..2 {
             let resolution = self.resolve(path, text, owner, original).await?;
-            let Resolution::Unauthored(LazyLookup::Source { node, source }, _, _) = resolution
+            let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = resolution
             else {
                 return Ok((resolution, None));
             };

@@ -180,7 +180,7 @@ pub(in crate::bindings) fn native_extent_span(
 }
 
 pub(in crate::bindings) fn native_extent_plan(
-    receipt: acyclic_fs::FsReceipt<Option<acyclic_fs::kernel::ExtentPlan>>,
+    receipt: acyclic_fs::OperationReceipt<Option<acyclic_fs::kernel::ExtentPlan>>,
 ) -> Result<NativeExtentPlan> {
     let work_json = work_json(&receipt.work)?;
     match receipt.value {

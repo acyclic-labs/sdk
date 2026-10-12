@@ -1,30 +1,53 @@
 use super::*;
 use crate::durable_host::tests::created_resource_access::CreationFixture;
 
-const BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
+const BUDGET: acyclic_fs::WorkBudget =
+    acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
 
 fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
-    NativeMaterializationWork::new(BUDGET, cancellation)
-        .map_err(|failure| Error::NativeWork { cause: failure.0, custody: None })
+    NativeMaterializationWork::new(BUDGET, cancellation).map_err(|failure| Error::NativeWork {
+        cause: failure.0,
+        custody: None,
+    })
 }
 
 #[tokio::test]
 async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
-    use crate::durable_host::tests::created_resource_access::{NativeCustomerFixture, NativeCustomerRuntime};
-    let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+    use crate::durable_host::tests::created_resource_access::{
+        NativeCustomerFixture, NativeCustomerRuntime,
+    };
+    let fixture =
+        NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
     let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
-    let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
-    let shared = fixture.runtime.task_context_with_native_work(fixture.creation.root, &fence, &original).await?;
-    let tool = ToolContext::new_with_native_work(
-        shared, crate::OperationId::from_bytes([122; 16]), "protected-admission", &original,
+    let fence =
+        NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+    let shared = fixture
+        .runtime
+        .task_context_with_native_work(fixture.creation.root, &fence, &original)
+        .await?;
+    let tool = ToolContext::new(
+        shared,
+        crate::OperationId::from_bytes([122; 16]),
+        "protected-admission",
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
     )?;
-    assert!(matches!(tool.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        tool.original_admission_with_native_work(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     tool.record_native_tool_acceptance(&original)?;
     let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
-    assert_eq!(admission.operation_id, fixture.creation.root_lease.operation.operation_id);
+    assert_eq!(
+        admission.operation_id,
+        fixture.creation.root_lease.operation.operation_id
+    );
     Ok(())
 }
 
@@ -33,22 +56,39 @@ async fn ordinary_context_cannot_be_qualified_by_an_opaque_allocation() -> Resul
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let context = fixture.harness.durable_context(
-        fixture.root, fixture.root_lease.operation.operation_id,
-    ).await?;
+    let context = fixture
+        .harness
+        .durable_context(fixture.root, fixture.root_lease.operation.operation_id)
+        .await?;
     let before = original.receipt();
-    assert!(matches!(context.require_original_native_work(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        context.require_original_native_work(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
-    let custody = original.claim(65_536, 1, acyclic_fs::WorkCounters::default())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let custody = original
+        .claim(65_536, 1, acyclic_fs::WorkCounters::default())
+        .map_err(|cause| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
     let before = original.receipt();
     let rejected = context.into_native_shared(custody, &original);
-    assert!(matches!(rejected, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
-    assert_eq!(original.live_allocation_bytes(), NativeMaterializationWork::accounting_state_bytes());
+    assert_eq!(
+        original.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
+    );
     Ok(())
 }
 
@@ -57,47 +97,91 @@ async fn native_metadata_receipt_rejects_clone_foreign_and_short_custody() -> Re
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
     assert!(custody.bytes() > 0);
     let clone = context.clone();
-    let opaque = { let claim_bytes = custody.bytes(); original.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::default()) }
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let opaque = {
+        let claim_bytes = custody.bytes();
+        original.claim(
+            claim_bytes,
+            u64::from(claim_bytes != 0),
+            acyclic_fs::WorkCounters::default(),
+        )
+    }
+    .map_err(|cause| Error::NativeWork {
+        cause,
+        custody: None,
+    })?;
     let before = original.receipt();
     let cloned = clone.into_native_shared(opaque, &original);
-    assert!(matches!(cloned, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    assert!(matches!(
+        cloned,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     drop(context);
     drop(custody);
 
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
     let foreign = work(&cancellation)?;
     let before = original.receipt();
     let rejected = context.into_native_shared(custody, &foreign);
-    assert!(matches!(rejected, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
 
-    let (context, mut custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
-    let source_bytes = context.native_metadata_source.as_ref()
-        .expect("genuine native metadata source").bytes;
+    let (context, mut custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
+    let source_bytes = context
+        .native_metadata_source
+        .as_ref()
+        .expect("genuine native metadata source")
+        .bytes;
     assert!(source_bytes > 0);
     let removed = custody.bytes() - (source_bytes - 1);
-    let released = custody.split_off(removed)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let released = custody
+        .split_off(removed)
+        .map_err(|cause| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
     let before = original.receipt();
     let rejected = context.into_native_shared(custody, &original);
-    assert!(matches!(rejected, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     drop(released);
     Ok(())
@@ -108,9 +192,14 @@ async fn cancelled_shared_context_preserves_original_cause_and_metadata_custody(
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
     let bytes = custody.bytes();
     cancellation.cancel();
     let before = original.receipt();
@@ -135,55 +224,118 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
     let task = crate::TaskId::from_bytes([84; 16]);
-    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?,
-        crate::Admission::Accepted(admitted) if admitted == task));
+    assert!(
+        matches!(fixture.admit_child(created.request.child.clone()).await?,
+        crate::Admission::Accepted(admitted) if admitted == task)
+    );
     let observation = fixture.host.observe_task(task).await?;
-    let reservation = observation.reservation
+    let reservation = observation
+        .reservation
         .ok_or_else(|| Error::NotFound("created native context lease".into()))?;
     let fence = crate::scheduler::LeaseFence::from(&reservation);
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        task, created.request.child.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(task, created.request.child.operation_id, &original)
+        .await?;
     let shared = context.into_native_shared(custody, &original)?;
-    let mcp_tool = ToolContext::new_with_native_work(
-        Arc::clone(&shared), crate::OperationId::from_bytes([120; 16]),
-        "native-mcp-control", &original,
+    let mcp_tool = ToolContext::new(
+        Arc::clone(&shared),
+        crate::OperationId::from_bytes([120; 16]),
+        "native-mcp-control",
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
     )?;
     let before = original.receipt();
-    assert!(matches!(mcp_tool.validate_native_mcp_context(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(mcp_tool.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        mcp_tool.validate_native_mcp_context(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mcp_tool.validate_native_mcp_reconciliation_context(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mcp_tool.original_admission_with_native_work(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     let foreign = work(&cancellation)?;
     let foreign_before = foreign.receipt();
-    assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&foreign),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(mcp_tool.original_admission_with_native_work(&foreign),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        mcp_tool.validate_native_mcp_reconciliation_context(&foreign),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mcp_tool.original_admission_with_native_work(&foreign),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(foreign.receipt(), foreign_before);
     let unqualified = mcp_tool.clone();
-    assert!(matches!(unqualified.validate_native_mcp_context(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(unqualified.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(unqualified.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        unqualified.validate_native_mcp_context(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        unqualified.validate_native_mcp_reconciliation_context(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
+    assert!(matches!(
+        unqualified.original_admission_with_native_work(&original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     drop(unqualified);
-    let owner = fixture.host.journal_owner_with_native_work(task, &fence, &original).await?
+    let owner = fixture
+        .host
+        .journal_owner_with_native_work(task, &fence, &original)
+        .await?
         .into_native_shared(&original)?;
-    let reader = crate::runtime::content_residency_verifier(Arc::clone(&shared), Arc::clone(&owner),
-        Some(&crate::executor::PreparationIo::from_native_work(&original)?))?;
+    let reader = crate::runtime::content_residency_verifier(
+        Arc::clone(&shared),
+        Arc::clone(&owner),
+        Some(&crate::executor::PreparationIo::from_native_work(
+            &original,
+        )?),
+    )?;
     let content_io = crate::executor::PreparationIo::from_native_work(&original)?;
-    let staged = shared.context().stage_file_once_with_native_work(
-        crate::OperationId::from_bytes([118; 16]), "native/shared.txt",
-        b"same issued context", "text/plain", "shared.txt", &original,
-    ).await?;
+    let staged = shared
+        .as_ref()
+        .stage_file_once_with_native_work(
+            crate::OperationId::from_bytes([118; 16]),
+            "native/shared.txt",
+            b"same issued context",
+            "text/plain",
+            "shared.txt",
+            &original,
+        )
+        .await?;
     let before = original.live_allocation_bytes();
     let reads = original.receipt().backend_read_operations;
     let bytes = reader.read(&staged.0, 65_536, Some(&content_io))?.await?;
@@ -204,99 +356,195 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     reader.verify(&staged.0, 65_536, Some(&content_io))?.await?;
 
     let root_fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
-    let root_owner = fixture.host.journal_owner_with_native_work(
-        fixture.root, &root_fence, &original,
-    ).await?.into_native_shared(&original)?;
+    let root_owner = fixture
+        .host
+        .journal_owner_with_native_work(fixture.root, &root_fence, &original)
+        .await?
+        .into_native_shared(&original)?;
     let before = original.receipt();
-    let wrong_owner = crate::runtime::content_residency_verifier(Arc::clone(&shared), Arc::clone(&root_owner),
-        Some(&crate::executor::PreparationIo::from_native_work(&original)?));
-    assert!(matches!(wrong_owner, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    let wrong_owner = crate::runtime::content_residency_verifier(
+        Arc::clone(&shared),
+        Arc::clone(&root_owner),
+        Some(&crate::executor::PreparationIo::from_native_work(
+            &original,
+        )?),
+    );
+    assert!(matches!(
+        wrong_owner,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
 
     let unmeasured = Arc::new(fixture.host.journal_owner(task, fence.clone()).await?);
     let before = original.receipt();
-    let rejected = crate::runtime::content_residency_verifier(Arc::clone(&shared), unmeasured, Some(&crate::executor::PreparationIo::from_native_work(&original)?));
-    assert!(matches!(rejected, Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized, ..
-    })));
+    let rejected = crate::runtime::content_residency_verifier(
+        Arc::clone(&shared),
+        unmeasured,
+        Some(&crate::executor::PreparationIo::from_native_work(
+            &original,
+        )?),
+    );
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
 
-    let (root, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
+    let (root, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
     let root = root.into_native_shared(custody, &original)?;
-    let root_reader = crate::runtime::content_residency_verifier(Arc::clone(&root), root_owner, Some(&crate::executor::PreparationIo::from_native_work(&original)?))?;
+    let root_reader = crate::runtime::content_residency_verifier(
+        Arc::clone(&root),
+        root_owner,
+        Some(&crate::executor::PreparationIo::from_native_work(
+            &original,
+        )?),
+    )?;
     let reads = original.receipt().backend_read_operations;
-    assert!(matches!(root_reader.read(&staged.0, 65_536, Some(&content_io))?.await,
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        root_reader
+            .read(&staged.0, 65_536, Some(&content_io))?
+            .await,
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt().backend_read_operations, reads);
 
     let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-    let quota = original.claim(available, u64::from((available) != 0), acyclic_fs::WorkCounters::default())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let quota = original
+        .claim(
+            available,
+            u64::from((available) != 0),
+            acyclic_fs::WorkCounters::default(),
+        )
+        .map_err(|cause| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
     let mut buffer = Vec::<u8>::new();
-    buffer.try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
+    buffer
+        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
         .expect("finite fixture allocation");
     let blocker = (buffer, quota);
     let reads = original.receipt().backend_read_operations;
     let denied = reader.read(&staged.0, 65_536, Some(&content_io));
-    assert!(matches!(denied, Err(Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Work(
-            acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }),
-        ..
-    })));
+    assert!(matches!(
+        denied,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }
+            ),
+            ..
+        })
+    ));
     assert_eq!(original.receipt().backend_read_operations, reads);
     drop(blocker);
     cancellation.cancel();
     let before = original.receipt();
-    assert!(matches!(mcp_tool.validate_native_mcp_context(&original),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert!(matches!(mcp_tool.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert!(matches!(mcp_tool.original_admission_with_native_work(&original),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-    assert!(matches!(reader.read(&staged.0, 65_536, Some(&content_io)),
-        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    assert!(matches!(
+        mcp_tool.validate_native_mcp_context(&original),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mcp_tool.validate_native_mcp_reconciliation_context(&original),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert!(matches!(
+        mcp_tool.original_admission_with_native_work(&original),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
+    assert!(matches!(
+        reader.read(&staged.0, 65_536, Some(&content_io)),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     Ok(())
 }
 
 #[tokio::test]
-async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_funding() -> Result<()> {
+async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_funding() -> Result<()>
+{
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        fixture.root, fixture.root_lease.operation.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(
+            fixture.root,
+            fixture.root_lease.operation.operation_id,
+            &original,
+        )
+        .await?;
     let shared = context.into_native_shared(custody, &original)?;
-    assert!(shared.native_work().shares_allocation_context(&original));
-    shared.context().require_original_native_work(&original)?;
+    assert!(shared.native_work()?.shares_allocation_context(&original));
+    shared.as_ref().require_original_native_work(&original)?;
     let operation = crate::OperationId::from_bytes([119; 16]);
     let call_id = operation.to_string();
     let baseline = original.live_allocation_bytes();
     let before = original.receipt();
-    let tool = ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, &call_id, &original,
+    let tool = ToolContext::new(
+        Arc::clone(&shared),
+        operation,
+        &call_id,
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
     )?;
-    assert!(std::ptr::eq(tool.task(), shared.context()));
-    assert!(Arc::ptr_eq(tool.native_task().expect("original native task"), &shared));
-    assert!(std::ptr::eq(&*tool, shared.context()));
+    assert!(std::ptr::eq(tool.task(), shared.as_ref()));
+    assert!(Arc::ptr_eq(
+        tool.native_task().expect("original native task"),
+        &shared
+    ));
+    assert!(std::ptr::eq(&*tool, shared.as_ref()));
     assert_eq!(tool.operation_id(), operation);
     assert_eq!(tool.call_id(), call_id);
     assert!(tool.native_metadata_matches(&original));
     assert!(tool.stock_native_interactions().is_none());
     assert!(original.receipt().bytes_copied >= before.bytes_copied + call_id.len() as u64);
-    let held = tool.native_custody.as_ref().expect("genuine SDK tool metadata").bytes();
+    let held = tool
+        .native_custody
+        .as_ref()
+        .expect("genuine SDK tool metadata")
+        .bytes();
     assert!(held >= std::mem::size_of::<ToolContext>() as u64 + tool.call_id.capacity() as u64);
     assert_eq!(original.live_allocation_bytes(), baseline + held);
 
     let before = original.receipt();
     let clone = tool.clone();
-    assert!(std::ptr::eq(clone.task(), shared.context()));
-    assert!(Arc::ptr_eq(clone.native_task().expect("same shared task"), &shared));
+    assert!(std::ptr::eq(clone.task(), shared.as_ref()));
+    assert!(Arc::ptr_eq(
+        clone.native_task().expect("same shared task"),
+        &shared
+    ));
     assert!(!clone.native_metadata_matches(&original));
     assert_eq!(clone.call_id(), tool.call_id());
     assert_eq!(original.receipt(), before);
@@ -306,142 +554,282 @@ async fn native_tool_context_borrows_the_issued_context_and_invalidates_clone_fu
 
     let foreign = work(&cancellation)?;
     let before = foreign.receipt();
-    assert!(matches!(ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, &call_id, &foreign,
-    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        ToolContext::new(
+            Arc::clone(&shared),
+            operation,
+            &call_id,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &foreign
+            )?)
+        ),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(foreign.receipt(), before);
     let before = original.receipt().allocation_operations;
-    assert!(matches!(ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, "bad/call", &original,
-    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+    assert!(matches!(
+        ToolContext::new(
+            Arc::clone(&shared),
+            operation,
+            "bad/call",
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original
+            )?)
+        ),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        })
+    ));
     assert_eq!(original.receipt().allocation_operations, before);
 
     let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-    let quota = original.claim(available, u64::from((available) != 0), acyclic_fs::WorkCounters::default())
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    let quota = original
+        .claim(
+            available,
+            u64::from((available) != 0),
+            acyclic_fs::WorkCounters::default(),
+        )
+        .map_err(|cause| Error::NativeWork {
+            cause,
+            custody: None,
+        })?;
     let mut buffer = Vec::<u8>::new();
-    buffer.try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
+    buffer
+        .try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
         .expect("finite fixture allocation");
     let blocker = (buffer, quota);
     let allocations = original.receipt().allocation_operations;
-    assert!(matches!(ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, &call_id, &original,
-    ), Err(Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Work(
-            acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }), ..
-    })));
+    assert!(matches!(
+        ToolContext::new(
+            Arc::clone(&shared),
+            operation,
+            &call_id,
+            Some(&crate::filesystem::PreparationIo::from_native_work(
+                &original
+            )?)
+        ),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }
+            ),
+            ..
+        })
+    ));
     assert_eq!(original.receipt().allocation_operations, allocations);
     drop(blocker);
+    let original_io = crate::filesystem::PreparationIo::from_native_work(&original)?;
     cancellation.cancel();
     let before = original.receipt();
-    assert!(matches!(ToolContext::new_with_native_work(
-        shared, operation, &call_id, &original,
-    ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+    assert!(matches!(
+        ToolContext::new(shared, operation, &call_id, Some(&original_io)),
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     Ok(())
 }
 
 #[tokio::test]
-async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lineage() -> Result<()> {
+async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lineage() -> Result<()>
+{
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
     let task = crate::TaskId::from_bytes([84; 16]);
-    assert!(matches!(fixture.admit_child(created.request.child.clone()).await?,
-        crate::Admission::Accepted(admitted) if admitted == task));
+    assert!(
+        matches!(fixture.admit_child(created.request.child.clone()).await?,
+        crate::Admission::Accepted(admitted) if admitted == task)
+    );
     let cancellation = acyclic_fs::CancellationToken::new();
     let original = work(&cancellation)?;
-    let (context, custody) = fixture.harness.durable_context_with_native_work(
-        task, created.request.child.operation_id, &original,
-    ).await?;
+    let (context, custody) = fixture
+        .harness
+        .durable_context_with_native_work(task, created.request.child.operation_id, &original)
+        .await?;
     let shared = context.into_native_shared(custody, &original)?;
-    let read = created.private.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
-    let write = created.private.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
-    assert!(shared.context().scope().grants().contains(&write));
-    let limits = shared.context().scope().limits();
+    let read = created
+        .private
+        .capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let write = created
+        .private
+        .capability(crate::conversation::VolumeOperation::Write, &mut None)?;
+    assert!(shared.as_ref().scope().grants().contains(&write));
+    let limits = shared.as_ref().scope().limits();
     let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?
-        .with_run_limits(shared.context().scope().run_limits(), &mut None)?;
+        .with_run_limits(shared.as_ref().scope().run_limits(), &mut None)?;
     let operation = crate::OperationId::from_bytes([121; 16]);
-    let tool = ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, "scoped-control", &original,
-    )?.with_native_scope(&requested, requested.limits(), &original)?;
-    assert!(Arc::ptr_eq(tool.native_task().expect("same issued task"), &shared));
-    assert!(std::ptr::eq(tool.task(), shared.context()));
+    let tool = ToolContext::new(
+        Arc::clone(&shared),
+        operation,
+        "scoped-control",
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
+    )?
+    .with_native_scope(&requested, requested.limits(), &original)?;
+    assert!(Arc::ptr_eq(
+        tool.native_task().expect("same issued task"),
+        &shared
+    ));
+    assert!(std::ptr::eq(tool.task(), shared.as_ref()));
     assert!(tool.effective_scope().grants().contains(&read));
     assert!(!tool.effective_scope().grants().contains(&write));
-    assert!(shared.context().scope().grants().contains(&write));
-    assert_eq!(tool.effective_scope().run_limits(), shared.context().scope().run_limits());
-    assert_eq!(tool.effective_scope().resource_proofs, shared.context().scope().resource_proofs);
-    let original_access = shared.context().scope().created_access.as_ref()
+    assert!(shared.as_ref().scope().grants().contains(&write));
+    assert_eq!(
+        tool.effective_scope().run_limits(),
+        shared.as_ref().scope().run_limits()
+    );
+    assert_eq!(
+        tool.effective_scope().resource_proofs,
+        shared.as_ref().scope().resource_proofs
+    );
+    let original_access = shared
+        .as_ref()
+        .scope()
+        .created_access
+        .as_ref()
         .expect("genuine created-resource provenance");
-    assert!(Arc::ptr_eq(tool.effective_scope().created_access.as_ref()
-        .expect("derived original provenance"), original_access));
+    assert!(Arc::ptr_eq(
+        tool.effective_scope()
+            .created_access
+            .as_ref()
+            .expect("derived original provenance"),
+        original_access
+    ));
     assert!(requested.created_access.is_none());
     assert!(tool.native_metadata_matches(&original));
     let (_, guard) = tool.effective_scope.as_ref().expect("one effective scope");
-    assert!(guard.as_ref().expect("scope copy guard").work().shares_ledger(&original));
+    assert!(
+        guard
+            .as_ref()
+            .expect("scope copy guard")
+            .work()
+            .shares_ledger(&original)
+    );
     let before = original.receipt();
     tool.validate_stock_scope_with_native_work(&requested, limits, &original)?;
-    assert!(matches!(tool.validate_stock_scope_with_native_work(
-        shared.context().scope(), limits, &original,
-    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        tool.validate_stock_scope_with_native_work(shared.as_ref().scope(), limits, &original,),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     let mut execution_limits = limits;
     execution_limits.file_bytes = 1;
     assert!(limits.file_bytes > execution_limits.file_bytes);
-    let stock = ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, "stock-execution-limits", &original,
-    )?.with_native_scope(&requested, execution_limits, &original)?;
-    assert!(Arc::ptr_eq(stock.native_task().expect("same issued task"), &shared));
+    let stock = ToolContext::new(
+        Arc::clone(&shared),
+        operation,
+        "stock-execution-limits",
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
+    )?
+    .with_native_scope(&requested, execution_limits, &original)?;
+    assert!(Arc::ptr_eq(
+        stock.native_task().expect("same issued task"),
+        &shared
+    ));
     assert_eq!(stock.effective_scope().limits(), execution_limits);
     assert_eq!(requested.limits(), limits);
     assert_eq!(stock.effective_scope().grants(), requested.grants());
     assert_eq!(stock.effective_scope().run_limits(), requested.run_limits());
     assert!(stock.native_metadata_matches(&original));
     let before = original.receipt();
-    assert!(matches!(stock.validate_stock_scope_with_native_work(&requested, limits, &original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        stock.validate_stock_scope_with_native_work(&requested, limits, &original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
     drop(stock);
 
     let clone = tool.clone();
-    assert_eq!(clone.effective_scope().grants(), tool.effective_scope().grants());
-    assert_eq!(clone.effective_scope().limits(), tool.effective_scope().limits());
+    assert_eq!(
+        clone.effective_scope().grants(),
+        tool.effective_scope().grants()
+    );
+    assert_eq!(
+        clone.effective_scope().limits(),
+        tool.effective_scope().limits()
+    );
     assert!(!clone.native_metadata_matches(&original));
     let before = original.receipt();
-    assert!(matches!(clone.validate_stock_scope_with_native_work(&requested, limits, &original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        clone.validate_stock_scope_with_native_work(&requested, limits, &original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt(), before);
-    assert!(Arc::ptr_eq(clone.native_task().expect("same issued task"), &shared));
+    assert!(Arc::ptr_eq(
+        clone.native_task().expect("same issued task"),
+        &shared
+    ));
     drop(clone);
 
     let widening = RuntimeScope::new(
-        crate::Capabilities::new([read.as_str(), write.as_str()]), limits,
-    )?.with_run_limits(shared.context().scope().run_limits(), &mut None)?;
-    let candidate = ToolContext::new_with_native_work(
-        Arc::clone(&shared), operation, "scope-widen", &original,
-    )?.with_native_scope(&requested, requested.limits(), &original)?;
+        crate::Capabilities::new([read.as_str(), write.as_str()]),
+        limits,
+    )?
+    .with_run_limits(shared.as_ref().scope().run_limits(), &mut None)?;
+    let candidate = ToolContext::new(
+        Arc::clone(&shared),
+        operation,
+        "scope-widen",
+        Some(&crate::filesystem::PreparationIo::from_native_work(
+            &original,
+        )?),
+    )?
+    .with_native_scope(&requested, requested.limits(), &original)?;
     let allocations = original.receipt().allocation_operations;
-    assert!(matches!(candidate.with_native_scope(&widening, widening.limits(), &original),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        candidate.with_native_scope(&widening, widening.limits(), &original),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt().allocation_operations, allocations);
 
     let mut invalid = limits;
     invalid.file_bytes += 1;
     let allocations = original.receipt().allocation_operations;
-    assert!(matches!(shared.context().validate_stock_scope_with_native_work(
-        &requested, invalid, &original,
-    ), Err(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unauthorized | crate::wire::ErrorCode::Invalid, ..
-    })));
+    assert!(matches!(
+        shared
+            .as_ref()
+            .validate_stock_scope_with_native_work(&requested, invalid, &original,),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized | crate::wire::ErrorCode::Invalid,
+            ..
+        })
+    ));
     assert_eq!(original.receipt().allocation_operations, allocations);
-    let run_widening = RuntimeScope::new(
-        crate::Capabilities::new([read.as_str()]), limits,
-    )?;
-    assert!(shared.context().scope().run_limits().concurrency.is_some());
+    let run_widening = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?;
+    assert!(shared.as_ref().scope().run_limits().concurrency.is_some());
     let allocations = original.receipt().allocation_operations;
-    assert!(matches!(shared.context().validate_stock_scope_with_native_work(
-        &run_widening, limits, &original,
-    ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+    assert!(matches!(
+        shared
+            .as_ref()
+            .validate_stock_scope_with_native_work(&run_widening, limits, &original,),
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ..
+        })
+    ));
     assert_eq!(original.receipt().allocation_operations, allocations);
     Ok(())
 }

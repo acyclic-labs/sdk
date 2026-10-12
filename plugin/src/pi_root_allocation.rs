@@ -27,25 +27,28 @@ impl PiRootAllocation {
             });
         }
         for creation in self.roots.values() {
-            creation.validate().map_err(acyclic_harness::Error::Invalid)?;
+            creation
+                .validate()
+                .map_err(acyclic_harness::Error::Invalid)?;
         }
         self.scratch.validate(&binding.scratch.volume)
     }
-
 
     /// Builds the identical closed schema directly through the original SDK observed encoder; no intermediate JSON tree or cloned root map exists.
     pub(crate) fn schema(
         binding: &PiTaskBinding,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| {
-            acyclic_harness::Error::NativeWork { cause, custody: None }
-        })?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         binding.validate(
-            None, binding.project_volumes.keys().map(String::as_str), true,
+            None,
+            binding.project_volumes.keys().map(String::as_str),
+            true,
         )?;
         super::pi_root_provider::guarded_pi_value(
-            &RootAllocationSchema(binding), super::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work,
+            &RootAllocationSchema(binding),
+            super::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+            work,
         )
     }
 }
@@ -61,7 +64,12 @@ struct ObjectSchema<R, P> {
 }
 
 fn object_schema<R, P>(required: R, properties: P) -> ObjectSchema<R, P> {
-    ObjectSchema { kind: "object", additional_properties: false, required, properties }
+    ObjectSchema {
+        kind: "object",
+        additional_properties: false,
+        required,
+        properties,
+    }
 }
 
 #[derive(Serialize)]
@@ -78,9 +86,6 @@ struct ConstantSchema<T = &'static str> {
 
 /// Borrowed first-party result schema, shared by ordinary and native encoders.
 struct RootAllocationSchema<'a>(&'a PiTaskBinding);
-
-
-
 
 #[derive(Clone, Copy, Serialize)]
 struct IntegerSchema {
@@ -104,8 +109,14 @@ struct ByteArraySchema {
 
 fn bytes_schema(length: usize, nonzero: bool) -> ByteArraySchema {
     ByteArraySchema {
-        kind: "array", min_items: length, max_items: length,
-        items: IntegerSchema { kind: "integer", minimum: 0, maximum: 255 },
+        kind: "array",
+        min_items: length,
+        max_items: length,
+        items: IntegerSchema {
+            kind: "integer",
+            minimum: 0,
+            maximum: 255,
+        },
         not: nonzero.then_some(ConstantSchema { value: [0; 16] }),
     }
 }
@@ -120,16 +131,24 @@ struct RootProperties {
 
 fn root_schema() -> ObjectSchema<[&'static str; 4], RootProperties> {
     object_schema(
-        ["repository_workspace_id", "source_identity", "source_epoch", "native_root_identity"],
+        [
+            "repository_workspace_id",
+            "source_identity",
+            "source_epoch",
+            "native_root_identity",
+        ],
         RootProperties {
             repository_workspace_id: bytes_schema(16, true),
             source_identity: bytes_schema(16, true),
-            source_epoch: IntegerSchema { kind: "integer", minimum: 0, maximum: u64::MAX },
+            source_epoch: IntegerSchema {
+                kind: "integer",
+                minimum: 0,
+                maximum: u64::MAX,
+            },
             native_root_identity: bytes_schema(16, true),
         },
     )
 }
-
 
 #[derive(Serialize)]
 struct GenerationProperties<'a> {
@@ -179,17 +198,31 @@ struct AllocationProperties<'a> {
 
 impl Serialize for RootAllocationSchema<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        object_schema(["roots", "scratch"], AllocationProperties {
-            roots: object_schema(SelectedRootKeys(self.0), SelectedRootSchemas(self.0)),
-            scratch: object_schema(["workspace_id", "generation"], ScratchProperties {
-                workspace_id: bytes_schema(16, true),
-                generation: object_schema(["kind", "provider", "key", "version"], GenerationProperties {
-                    kind: ConstantSchema { value: "generation" },
-                    provider: ConstantSchema { value: self.0.scratch.volume.provider() },
-                    key: bytes_schema(32, false),
-                    version: TypeSchema { kind: "null" },
-                }),
-            }),
-        }).serialize(serializer)
+        object_schema(
+            ["roots", "scratch"],
+            AllocationProperties {
+                roots: object_schema(SelectedRootKeys(self.0), SelectedRootSchemas(self.0)),
+                scratch: object_schema(
+                    ["workspace_id", "generation"],
+                    ScratchProperties {
+                        workspace_id: bytes_schema(16, true),
+                        generation: object_schema(
+                            ["kind", "provider", "key", "version"],
+                            GenerationProperties {
+                                kind: ConstantSchema {
+                                    value: "generation",
+                                },
+                                provider: ConstantSchema {
+                                    value: self.0.scratch.volume.provider(),
+                                },
+                                key: bytes_schema(32, false),
+                                version: TypeSchema { kind: "null" },
+                            },
+                        ),
+                    },
+                ),
+            },
+        )
+        .serialize(serializer)
     }
 }

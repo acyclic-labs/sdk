@@ -14,7 +14,7 @@ impl BrowserGitCompatRepository {
         Ok(Self {
             inner: GitCompatRepository::new(
                 WorkspaceId::from_bytes(fixed_16(workspace_id)?),
-                MemoryGitCompatStore::new(),
+                MemoryGitCompatStore::default(),
             ),
         })
     }
@@ -34,7 +34,12 @@ impl BrowserGitCompatRepository {
         )?));
         let output = self
             .inner
-            .execute_argv(&argv, generation, &default_author, now_seconds)
+            .execute_argv(
+                &argv,
+                acyclic_fs::GitTreeRef::exact(self.inner.workspace_id(), generation),
+                &default_author,
+                now_seconds,
+            )
             .await
             .map_err(js_error)?;
         serde_json::to_string(&output).map_err(js_error)
@@ -54,7 +59,10 @@ impl BrowserGitCompatRepository {
         )?));
         let output = self
             .inner
-            .execute(command, generation)
+            .execute(
+                command,
+                acyclic_fs::GitTreeRef::exact(self.inner.workspace_id(), generation),
+            )
             .await
             .map_err(js_error)?;
         serde_json::to_string(&output).map_err(js_error)
@@ -74,7 +82,10 @@ impl BrowserGitCompatRepository {
         )?));
         let output = self
             .inner
-            .execute(command, generation)
+            .execute(
+                command,
+                acyclic_fs::GitTreeRef::exact(self.inner.workspace_id(), generation),
+            )
             .await
             .map_err(js_error)?;
         serde_json::to_string(&output).map_err(js_error)

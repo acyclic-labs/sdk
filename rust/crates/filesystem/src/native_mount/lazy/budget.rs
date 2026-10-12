@@ -1,7 +1,6 @@
 use super::*;
 
 pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSourceError {
-    use crate::native_mount::NativeSourceTextKind::Engine;
     match error {
         DemandError::Work(error) => MountSourceError::Work(error),
         DemandError::Cancelled => MountSourceError::Cancelled,
@@ -26,15 +25,9 @@ pub(in crate::native_mount) fn mount_demand_error(error: DemandError) -> MountSo
             crate::watch::NativeWatchError::Work(error) => MountSourceError::Work(error),
             crate::watch::NativeWatchError::Cancelled(_) => MountSourceError::Cancelled,
             crate::watch::NativeWatchError::Io(error) => MountSourceError::Io(error, None),
-            other => MountSourceError::NativeText {
-                kind: Engine,
-                text: other.into(),
-            },
+            other => MountSourceError::Engine(other.to_string().into()),
         },
-        _ => MountSourceError::NativeText {
-            kind: Engine,
-            text: "source demand failed",
-        },
+        _ => MountSourceError::Engine("source demand failed".into()),
     }
 }
 
@@ -55,10 +48,7 @@ pub(in crate::native_mount) fn mount_wait_error(
             MountSourceError::NativeWork(error)
         }
         crate::cancellation::CancellationWaitError::AllocationFailed => {
-            MountSourceError::NativeText {
-                kind: crate::native_mount::NativeSourceTextKind::Engine,
-                text: "cancellation waiter allocation failed",
-            }
+            MountSourceError::Engine("cancellation waiter allocation failed".into())
         }
     }
 }
@@ -141,11 +131,11 @@ pub(in crate::native_mount) fn mount_clone_namespace(
                     bytes,
                     limits.maximum_component_bytes,
                 )
-                .map_err(|error| MountSourceError::Invalid(error.to_string()))?,
+                .map_err(|error| MountSourceError::Invalid(error.to_string().into()))?,
             );
         }
         crate::kernel::NamespacePath::new(owned, limits)
-            .map_err(|error| MountSourceError::Invalid(error.to_string()))
+            .map_err(|error| MountSourceError::Invalid(error.to_string().into()))
     })();
     if result.is_ok() {
         scratch.retain();

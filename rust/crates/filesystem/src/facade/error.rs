@@ -13,10 +13,6 @@ pub enum FsError {
     /// The caller's original frozen source identity or epoch diverged before sealing.
     #[error("frozen source snapshot is stale")]
     SourceSnapshotStale,
-    /// The original native owner callback rejected the operation before publication.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error("native owner guard rejected the operation")]
-    NativeOwnerGuardRejected,
     /// An open handle's bounded proof, parent vector or collection-root registration could not allocate.
     #[error("filesystem handle allocation failed")]
     HandleAllocationFailed,
@@ -257,9 +253,6 @@ pub enum FsError {
     /// Bounded diff result allocation failed.
     #[error("generation diff allocation failed")]
     DiffAllocationFailed,
-    /// Bounded local live-set allocation failed before physical collection.
-    #[error("local garbage-collection live-set allocation failed")]
-    GarbageCollectionAllocationFailed,
     /// A three-way merge exceeded its admitted change frontier.
     #[error("three-way merge exceeds its change bound")]
     MergeChangeLimit,
@@ -275,13 +268,6 @@ pub enum FsError {
     /// Exact work overflowed or exceeded the admitted budget.
     #[error(transparent)]
     Work(#[from] WorkError),
-    /// A completed standalone root read cannot be combined into one exact
-    #[error("completed generation-root read work cannot be combined: {error}")]
-    RootReadWorkMerge {
-        prior: WorkCounters, backend: WorkCounters,
-        #[source]
-        error: WorkError,
-    },
 }
 
 impl From<AuthorityStoreError> for FsError {
@@ -309,11 +295,14 @@ pub(super) fn validate_checkout(
     mode: CheckoutMode,
     config: VolumeConfig,
 ) -> Result<(), OperationFailure<FsError>> {
-    mode.validate().map_err(|error| OperationFailure::before_work(error.into()))?;
+    mode.validate()
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
     if mode.mutations == MutationMode::DirectLive
         && config.concurrency != ConcurrencyMode::SerializedAuthority
     {
-        return Err(OperationFailure::before_work(FsError::LiveRequiresSerializedAuthority));
+        return Err(OperationFailure::before_work(
+            FsError::LiveRequiresSerializedAuthority,
+        ));
     }
     Ok(())
 }
@@ -358,4 +347,3 @@ pub(super) fn map_transfer_error(error: GenerationTransferError) -> FsError {
         | GenerationTransferError::AllocationFailed) => FsError::Transfer(error),
     }
 }
-

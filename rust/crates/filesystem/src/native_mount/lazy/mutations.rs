@@ -146,7 +146,7 @@ macro_rules! mutation_callbacks {
             {
                 return Err(MountSourceError::Unsupported(
                     "range cloning a detached identity requires identity-level clone support"
-                        .to_owned(),
+                        .into(),
                 ));
             }
             self.promote_locked(source, None)?;
@@ -179,7 +179,7 @@ macro_rules! mutation_callbacks {
                 length,
             );
             Err(MountSourceError::Unsupported(
-                "clone-by-identity requires path-backed promotion in a lazy mount".to_owned(),
+                "clone-by-identity requires path-backed promotion in a lazy mount".into(),
             ))
         }
 
@@ -214,7 +214,7 @@ macro_rules! mutation_callbacks {
                 if self.is_removed(&text)? {
                     return Err(MountSourceError::NotFound);
                 }
-                let file_id = self.wait(|| async {
+                let file_id = self.runtime.wait(|| async {
                     let (lookup, _allocation) = self
                         .lazy
                         .lookup(
@@ -262,7 +262,7 @@ macro_rules! mutation_callbacks {
                 if self.authored.lookup(source)?.is_some() {
                     return Ok(());
                 }
-                return self.wait(|| async {
+                return self.runtime.wait(|| async {
                     self.lazy
                         .lookup(
                             &source_text,
@@ -274,7 +274,7 @@ macro_rules! mutation_callbacks {
                 });
             }
             if self.authored.lookup(source)?.is_none() {
-                let (source_lookup, _allocation) = self.wait(|| async {
+                let (source_lookup, _allocation) = self.runtime.wait(|| async {
                     self.lazy
                         .lookup(
                             &source_text,
@@ -310,9 +310,12 @@ macro_rules! mutation_callbacks {
             if self.authored.lookup(destination)?.is_none()
                 && !self.is_removed(&destination_text)?
             {
-                let source_destination = self.wait(|| async {
+                let source_destination = self.runtime.wait(|| async {
                     self.lazy
-                        .lookup(&destination_text)
+                        .lookup(
+                            &destination_text,
+                            &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                        )
                         .await
                         .map_err(lazy_error)
                 });
@@ -367,12 +370,15 @@ macro_rules! mutation_callbacks {
             // The authored checkout's policy decides, as at its own native
             // boundary: a manual mount publishes only through sync and unmount.
             let authored = self.authored.shared_checkout();
-            if !self.wait(|| async { Ok(authored.publishes_at_native_boundary().await) })? {
+            if !self
+                .runtime
+                .wait(|| async { Ok(authored.publishes_at_native_boundary().await) })?
+            {
                 return Ok(());
             }
             let _mutation = self.mutation_lease(None, Some(work))?;
 
-            self.wait(|| async {
+            self.runtime.wait(|| async {
                 self.sync_staged_with_permit(crate::PublicationPermit::Unrestricted, work)
                     .await
             })

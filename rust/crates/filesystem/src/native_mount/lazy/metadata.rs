@@ -193,12 +193,8 @@ pub(super) fn field<T>(value: Option<T>) -> MetadataField<T> {
 )]
 pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     let error = match error {
-        LazyWorkspaceError::SpentWork(failure) => return lazy_error(failure.error),
         LazyWorkspaceError::OriginalSnapshotUnavailable => {
             return MountSourceError::OriginalSnapshotUnavailable;
-        }
-        LazyWorkspaceError::SelectedPublication(outcome) => {
-            return MountSourceError::SelectedPublication(outcome);
         }
         LazyWorkspaceError::Demand(DemandError::Mount(error)) => return error,
         LazyWorkspaceError::Demand(DemandError::Io(error)) => {
@@ -221,10 +217,7 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             return MountSourceError::Indeterminate;
         }
         LazyWorkspaceError::NativeRecordIntegrity => {
-            return MountSourceError::NativeText {
-                kind: crate::native_mount::NativeSourceTextKind::Engine,
-                text: "native record integrity verification failed",
-            };
+            return MountSourceError::Engine("native record integrity verification failed".into());
         }
         LazyWorkspaceError::NativeRecordContextTransaction(message, allocation) => {
             return MountSourceError::NativeRecordContextTransaction(message, allocation);
@@ -237,7 +230,6 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
                 crate::materializer::NativeTreeMaterializationError::InvalidLayout,
             );
         }
-        LazyWorkspaceError::NativeUnsupported => return MountSourceError::NativeUnsupported,
         LazyWorkspaceError::NativeConstruction { cause, .. } => {
             return MountSourceError::NativeWork(cause);
         }
@@ -254,15 +246,10 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::WorkspaceCause(error) => {
             return MountSourceError::WorkspaceCause(error);
         }
-        LazyWorkspaceError::WorkspacePrefixFailure { source, accounting } => {
-            return MountSourceError::WorkspacePrefixFailure { source, accounting };
+        LazyWorkspaceError::NativeWorkspace(cause, allocation) => {
+            return MountSourceError::NativeWorkspaceCause(cause, allocation);
         }
-        LazyWorkspaceError::NativeWorkspaceCause(cause) => {
-            return MountSourceError::NativeWorkspaceCause(cause);
-        }
-        LazyWorkspaceError::Workspace(message)
-        | LazyWorkspaceError::Store(message)
-        | LazyWorkspaceError::Work(message) => return MountSourceError::Engine(message),
+        LazyWorkspaceError::Store(message) => return MountSourceError::Engine(message.into()),
         error => error,
     };
     match error.semantic_error() {
@@ -272,15 +259,17 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         }
         LazyWorkspaceError::Demand(DemandError::Work(error)) => MountSourceError::Work(*error),
         LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {
-            MountSourceError::Invalid(error.to_string())
+            MountSourceError::Invalid(error.to_string().into())
         }
-        LazyWorkspaceError::UnsupportedNode => MountSourceError::Unsupported(error.to_string()),
+        LazyWorkspaceError::UnsupportedNode => {
+            MountSourceError::Unsupported(error.to_string().into())
+        }
         // A held source file that changed since it opened is a stale handle.
         LazyWorkspaceError::StaleSource
         | LazyWorkspaceError::StaleCursor
         | LazyWorkspaceError::StaleIdentity
         | LazyWorkspaceError::Concurrent
         | LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
-        _ => MountSourceError::Engine(error.to_string()),
+        _ => MountSourceError::Engine(error.to_string().into()),
     }
 }

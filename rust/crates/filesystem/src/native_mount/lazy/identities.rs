@@ -49,19 +49,6 @@ where
             .map(|entry| Arc::clone(&entry.file)))
     }
 
-    /// A detached identity's live state under the link count of the name
-    pub(super) async fn detached_identity(
-        &self,
-        named: MountLookup,
-    ) -> Result<Option<MountLookup>, MountSourceError> {
-        let Some(file) = self.detached_by_id(named.node.file_id)? else {
-            return Ok(None);
-        };
-        let mut current = file.lookup_async().await?;
-        current.node.link_count = named.node.link_count;
-        Ok(Some(current))
-    }
-
     pub(super) fn has_open_source_handle(&self, file_id: FileId) -> Result<bool, MountSourceError> {
         let mut open = self
             .open_sources
@@ -97,7 +84,7 @@ where
         if self.is_removed(&text)? {
             return Err(MountSourceError::NotFound);
         }
-        let file_id = self.wait(|| async {
+        let file_id = self.runtime.wait(|| async {
             let mut accounting = crate::kernel::KernelAccounting::standalone(
                 WorkBudget::UNBOUNDED,
                 self.authored.cancellation(),

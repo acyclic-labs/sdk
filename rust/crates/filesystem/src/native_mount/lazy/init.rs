@@ -14,15 +14,15 @@ where
         root: String,
         mut carrier: crate::native_mount::adapter::NativeDemandCarrier<'_>,
         allocations: Option<(crate::NativeAllocation, &mut crate::NativeAllocation)>,
-    ) -> Result<Self, crate::native_mount::NativeMountError> {
+    ) -> Result<Self, NativeMountError> {
         let original = carrier.original_native_work();
         if let Some(original) = &original {
             original
                 .admit(crate::WorkCounters::UNCHARGED)
                 .map_err(|error| {
-                    crate::native_mount::NativeMountError::Demand(DemandError::Mount(
-                        MountSourceError::NativeWork(error),
-                    ))
+                    NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(
+                        error,
+                    )))
                 })?;
         }
         let valid = match (&original, &allocations) {
@@ -37,20 +37,18 @@ where
             _ => false,
         };
         if !valid {
-            return Err(crate::native_mount::NativeMountError::Demand(
-                DemandError::Mount(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                )),
-            ));
+            return Err(NativeMountError::Demand(DemandError::Mount(
+                MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout),
+            )));
         }
         let (root_allocation, source_allocation) =
             allocations.map_or((None, None), |(root, source)| (Some(root), Some(source)));
         carrier
             .with_work(|work| work.check())
-            .map_err(crate::native_mount::NativeMountError::Demand)?;
+            .map_err(NativeMountError::Demand)?;
         // Exact source names cannot share a case-folding authored namespace.
         if authored.folds_names() {
-            return Err(crate::native_mount::NativeMountError::ProfileUnavailable {
+            return Err(NativeMountError::ProfileUnavailable {
                 profile: "case-folding",
                 platform: "a lazy source projection",
             });
@@ -66,7 +64,7 @@ where
                         original
                             .claim(0, 1, crate::WorkCounters::UNCHARGED)
                             .map_err(|error| {
-                                crate::native_mount::NativeMountError::Demand(DemandError::Mount(
+                                NativeMountError::Demand(DemandError::Mount(
                                     MountSourceError::NativeWork(error),
                                 ))
                             })?;
@@ -74,7 +72,7 @@ where
                         let bytes = std::mem::size_of_val(&value) as u64;
                         carrier
                             .with_work(|work| work.allocate(bytes))
-                            .map_err(crate::native_mount::NativeMountError::Demand)?;
+                            .map_err(NativeMountError::Demand)?;
                         retained += bytes;
                     }
                     Arc::new(value)
@@ -129,33 +127,32 @@ where
                         );
                         if let Err(cause) = checked {
                             if owner.watch.is_some() {
-                                return Err(crate::native_mount::NativeMountError::SourceWatchStartupFailed { cause, owner });
+                                return Err(NativeMountError::SourceWatchStartupFailed {
+                                    cause,
+                                    owner,
+                                });
                             }
-                            return Err(crate::native_mount::NativeMountError::Demand(cause));
+                            return Err(NativeMountError::Demand(cause));
                         }
                     }
                     Err(LazyWorkspaceError::Demand(DemandError::SourceWatchStartup(failure))) => {
                         owner.startup_failure = Some(Arc::clone(&failure));
-                        return Err(
-                            crate::native_mount::NativeMountError::SourceWatchStartupFailed {
-                                cause: DemandError::SourceWatchStartup(failure),
-                                owner,
-                            },
-                        );
+                        return Err(NativeMountError::SourceWatchStartupFailed {
+                            cause: DemandError::SourceWatchStartup(failure),
+                            owner,
+                        });
                     }
                     Err(LazyWorkspaceError::Demand(error)) => {
-                        return Err(crate::native_mount::NativeMountError::Demand(error));
+                        return Err(NativeMountError::Demand(error));
                     }
                     Err(error) => {
-                        return Err(crate::native_mount::NativeMountError::Source(lazy_error(
-                            error,
-                        )));
+                        return Err(NativeMountError::Source(lazy_error(error)));
                     }
                 }
             } else {
                 let prepared = carrier
                     .with_work(|work| work.prepare_watch_custody())
-                    .map_err(crate::native_mount::NativeMountError::Demand)?;
+                    .map_err(NativeMountError::Demand)?;
                 let remaining = carrier.with_work(|work| {
                     work.remaining()
                         .map(|budget| (budget, work.live_allocation_bytes()))
@@ -164,7 +161,7 @@ where
                     Ok(remaining) => remaining,
                     Err(error) => {
                         carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
-                        return Err(crate::native_mount::NativeMountError::Demand(error));
+                        return Err(NativeMountError::Demand(error));
                     }
                 };
                 let mut accounting =
@@ -214,11 +211,14 @@ where
                                 .and(backing)
                                 .and(carrier.with_work(|work| work.check()));
                             if let Err(cause) = completed {
-                                return Err(crate::native_mount::NativeMountError::SourceWatchStartupFailed { cause, owner });
+                                return Err(NativeMountError::SourceWatchStartupFailed {
+                                    cause,
+                                    owner,
+                                });
                             }
                         } else {
                             carrier.with_work(|work| work.abandon_prepared_watch_custody(prepared));
-                            merged.map_err(crate::native_mount::NativeMountError::Demand)?;
+                            merged.map_err(NativeMountError::Demand)?;
                         }
                     }
                     Err(failure) => {
@@ -231,13 +231,12 @@ where
                                 failure,
                             )) => {
                                 owner.startup_failure = Some(Arc::clone(&failure));
-                                Err(crate::native_mount::NativeMountError::SourceWatchStartupFailed {
-                                    cause: DemandError::SourceWatchStartup(failure), owner,
+                                Err(NativeMountError::SourceWatchStartupFailed {
+                                    cause: DemandError::SourceWatchStartup(failure),
+                                    owner,
                                 })
                             }
-                            error => Err(crate::native_mount::NativeMountError::Source(
-                                lazy_error(error),
-                            )),
+                            error => Err(NativeMountError::Source(lazy_error(error))),
                         };
                     }
                 }
@@ -375,16 +374,6 @@ where
             self.source_view.finish_transition();
         }
         result
-    }
-
-    pub(super) fn wait<T: Send, F>(
-        &self,
-        create: impl FnOnce() -> F + Send,
-    ) -> Result<T, MountSourceError>
-    where
-        F: std::future::Future<Output = Result<T, MountSourceError>>,
-    {
-        self.runtime.wait(create)
     }
 }
 

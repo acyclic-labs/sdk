@@ -29,7 +29,12 @@ async fn recorded_view(
 > {
     std::fs::write(source_root.join("source-only"), b"source")?;
     let demand = Arc::new(native_source(source_root).await?);
-    let view = mounted_view_of(Arc::clone(&demand), "recorded").await?;
+    let view = mounted_view_of(
+        Arc::clone(&demand),
+        "recorded",
+        crate::MemoryLazyWorkspaceStore::default(),
+    )
+    .await?;
     let recorded = Arc::new(Recorded::default());
     let observer: Weak<Recorded> = Arc::downgrade(&recorded);
     view.observe_view(observer);
@@ -49,7 +54,12 @@ async fn mounted_view(
     >,
     Box<dyn std::error::Error>,
 > {
-    mounted_view_of(Arc::new(native_source(source).await?), name).await
+    mounted_view_of(
+        Arc::new(native_source(source).await?),
+        name,
+        crate::MemoryLazyWorkspaceStore::default(),
+    )
+    .await
 }
 
 pub(super) async fn native_source(
@@ -70,28 +80,29 @@ pub(super) async fn native_source(
 }
 
 /// A lazy mount view over `demand`, publishing only on sync.
-async fn mounted_view_of<D: DemandSource + 'static>(
+async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceStore>(
     demand: Arc<D>,
     name: &str,
+    store: S,
 ) -> Result<
     LazyMountSource<
         crate::facade::MemoryAuthorityBackend,
         crate::facade::MemoryObjectBackend,
         D,
-        crate::MemoryLazyWorkspaceStore,
+        S,
     >,
     Box<dyn std::error::Error>,
 > {
+    use crate::Fs;
     use crate::model::{CheckoutMode, GenerationSelector};
     use crate::native_mount::{MountPublication, SharedCheckout};
-    use crate::{Fs, MemoryLazyWorkspaceStore};
 
     let lazy = Arc::new(
         LazyWorkspace::attach(
             &Fs::memory(),
             name,
             demand,
-            MemoryLazyWorkspaceStore::default(),
+            store,
             crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
             crate::OperationId::new(),
             &mut crate::kernel::KernelAccounting::standalone(
@@ -192,11 +203,16 @@ pub(super) async fn open_native_source(
         crate::model::FilesystemProfile::Posix
     };
     Ok(crate::demand::native::NativeDemandSource::open(
-        source,
+        std::borrow::Cow::Borrowed(source),
         profile,
         crate::model::VolumeLimits::default(),
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
-    .await?)
+    .await?
+    .value)
 }
 
 pub(super) async fn live_lazy_mount_of(
@@ -216,14 +232,20 @@ pub(super) async fn live_lazy_mount_of(
     use crate::native_mount::{MountOptions, MountPublication};
     use crate::{Fs, MemoryLazyWorkspaceStore};
 
-    let lazy = LazyWorkspace::attach_with_config(
+    let lazy = LazyWorkspace::attach(
         &Fs::memory(),
         name,
         Arc::new(demand),
         MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ),
     )
-    .await?;
+    .await?
+    .0;
     std::fs::create_dir_all(destination)?;
     Ok(lazy
         .mount(

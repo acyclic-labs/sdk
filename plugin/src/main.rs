@@ -15,18 +15,22 @@ mod control_transport;
 mod git;
 mod guidance;
 mod install;
-mod obs;
 mod native_root_source;
+mod obs;
 mod pi;
 mod pi_binding;
 mod pi_builtin;
 mod pi_caller;
 mod pi_conversation;
-mod pi_inspection;
 mod pi_fork;
 mod pi_fork_host;
+mod pi_inspection;
 mod pi_lazy_capture;
 mod pi_mail;
+mod pi_native;
+mod pi_native_host;
+mod pi_operator;
+mod pi_operator_host;
 mod pi_owner;
 mod pi_recovery;
 mod pi_registration;
@@ -35,13 +39,9 @@ mod pi_root_allocation;
 mod pi_root_inputs;
 mod pi_root_provider;
 mod pi_runtime;
+mod pi_selected_host;
 mod pi_task;
 mod pi_workflow;
-mod pi_native;
-mod pi_native_host;
-mod pi_selected_host;
-mod pi_operator;
-mod pi_operator_host;
 mod roots;
 mod service;
 mod service_log;
@@ -60,30 +60,28 @@ use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs::native_host::HostRoot;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
-    ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, CheckoutCommitOutcome,
-    DefaultTextMergeDriver, Generation, GitCommand, GitCommandOutput,
-    GitCompatRepository, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
-    GitFilesystemResult, GitGenerationRef, GitIgnorePolicy, GitPublicationRecord, GitTreeRef,
-    IdempotencyKey, JoinOutcome, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
+    ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, LivePublicationObservation,
+    DefaultTextMergeDriver, Generation, GitCommand, GitCommandOutput, GitCompatRepository,
+    GitDirtyState, GitFilesystemAction, GitFilesystemExecutor, GitFilesystemResult,
+    GitGenerationRef, GitIgnorePolicy, GitPublicationRecord, GitTreeRef, IdempotencyKey,
+    JoinOutcome, LazyMount, LazyWorkspace, LineageMultiRootPublicationAuthorizer,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
     MaterializeOptions, MaterializingWorkspaceMultiRootPublisher,
     MaterializingWorkspaceMultiRootPublisherError, MemoryMergeResolutionCache, MergeConflict,
     MergeDriverRegistry, MountOptions, MultiRootMaterializer, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublication, MultiRootPublicationCoordinator,
     MultiRootPublicationError, MultiRootPublicationPhase, NativeWatch, NativeWatchOptions,
-    WorkspaceGraph, WorkspaceContextRegistry, OperationWindowCoordinator,
-    OperationId, OperationReconcileLimits, OperationWindowLease, Publication, PublicationPermit,
-    TransactionCommit, WatchBatch, WatchChange, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRoot, WorkspaceContextState, WorkspaceDelete,
-    WorkspaceError, WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
-    WorkspaceRestore, WorkspaceRootId, apply_git_patch_with_permit, blame_git_generations,
-    capture_baseline, capture_git_compatible_generation,
-    capture_git_compatible_generation_at, capture_git_compatible_generation_incremental,
-    capture_watch_batch, git_compatible_diff_counts, grep_git_generation,
-    resolve_merge_plan, walk_git_tree,
+    OperationId, OperationReconcileLimits, OperationWindowCoordinator, OperationWindowLease,
+    Publication, PublicationPermit, TransactionCommit, WatchBatch, WatchChange, WorkBudget,
+    Workspace, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot,
+    WorkspaceContextState, WorkspaceDelete, WorkspaceError, WorkspaceGraph,
+    WorkspaceMultiRootPublisherError, WorkspaceOperationFinish, WorkspacePathApply,
+    WorkspaceRestore, WorkspaceRootId, apply_git_patch, blame_git_generations, capture_baseline,
+    capture_git_compatible_generation, capture_git_compatible_generation_at,
+    capture_git_compatible_generation_incremental, capture_watch_batch, git_compatible_diff_counts,
+    grep_git_generation, resolve_merge_plan, walk_git_tree,
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -147,27 +145,39 @@ impl std::fmt::Display for CliFailure {
 }
 
 impl From<acyclic_harness::Error> for CliFailure {
-    fn from(error: acyclic_harness::Error) -> Self { Self::Native(error) }
+    fn from(error: acyclic_harness::Error) -> Self {
+        Self::Native(error)
+    }
 }
 
 impl From<ControlRequestError> for CliFailure {
-    fn from(error: ControlRequestError) -> Self { Self::NativeControl(error) }
+    fn from(error: ControlRequestError) -> Self {
+        Self::NativeControl(error)
+    }
 }
 
 impl From<Box<dyn std::error::Error + Send + Sync>> for CliFailure {
-    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self { Self::Ordinary(error) }
+    fn from(error: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        Self::Ordinary(error)
+    }
 }
 
 impl From<io::Error> for CliFailure {
-    fn from(error: io::Error) -> Self { Self::Ordinary(error.into()) }
+    fn from(error: io::Error) -> Self {
+        Self::Ordinary(error.into())
+    }
 }
 
 impl From<serde_json::Error> for CliFailure {
-    fn from(error: serde_json::Error) -> Self { Self::Ordinary(error.into()) }
+    fn from(error: serde_json::Error) -> Self {
+        Self::Ordinary(error.into())
+    }
 }
 
 impl From<String> for CliFailure {
-    fn from(error: String) -> Self { Self::Ordinary(error.into()) }
+    fn from(error: String) -> Self {
+        Self::Ordinary(error.into())
+    }
 }
 
 /// Unified Acyclic CLI, local service, host hook bridges, and installer.
@@ -187,7 +197,9 @@ fn main() -> std::process::ExitCode {
 fn main_result() -> Result<(), CliFailure> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
-        Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()).map_err(CliFailure::Ordinary),
+        Some("__hook") => {
+            return run_native_hook(&arguments.collect::<Vec<_>>()).map_err(CliFailure::Ordinary);
+        }
         Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
         Some("__pi") => return run_pi_control(&arguments.collect::<Vec<_>>()),
         _ => {}
@@ -232,14 +244,17 @@ fn run_native_hook(arguments: &[String]) -> Result<(), Box<dyn std::error::Error
                     .build()
                     .map_err(display)
                     .and_then(|runtime| {
-                        runtime.block_on(forward_native_hook(
-                            host,
-                            event,
-                            cwd,
-                            input,
-                            ServiceStart::Allowed,
-                            None,
-                        )).map(|(value, _)| value).map_err(display)
+                        runtime
+                            .block_on(forward_native_hook(
+                                host,
+                                event,
+                                cwd,
+                                input,
+                                ServiceStart::Allowed,
+                                None,
+                            ))
+                            .map(|(value, _)| value)
+                            .map_err(display)
                     })
                     .unwrap_or_else(|error| failure.answer(&error)),
                 Err(error) => failure.answer(&error),
@@ -258,43 +273,66 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         return Err(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "acyclic __pi requires one operation",
-        }.into());
+        }
+        .into());
     };
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        pi_root_provider::allocation_budget(), &cancellation,
-    ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
+        pi_root_provider::allocation_budget(),
+        &cancellation,
+    )
+    .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let mut input = service_process::read_native_control_input(io::stdin().lock(), &work)?;
     if !input.0.is_object() {
         return Err(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "Pi control must be an object",
-        }.into());
+        }
+        .into());
     }
-    if let Some(environment) = work.environment_variable(
-        std::ffi::OsStr::new(pi_caller::CALLER_ENVIRONMENT), MAXIMUM_CONTROL_MESSAGE_BYTES,
-    ).map_err(native_cli_work_error)? {
-        let text = environment.0.to_str().ok_or(acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Invalid,
-            reason: "Pi caller scope is not UTF-8",
-        })?;
+    if let Some(environment) = work
+        .environment_variable(
+            std::ffi::OsStr::new(pi_caller::CALLER_ENVIRONMENT),
+            MAXIMUM_CONTROL_MESSAGE_BYTES,
+        )
+        .map_err(native_cli_work_error)?
+    {
+        let text = environment
+            .0
+            .to_str()
+            .ok_or(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi caller scope is not UTF-8",
+            })?;
         let mut caller = service_process::decode_native_control_input(text.as_bytes(), &work)?;
         drop(environment);
         // Transfer the real same-ledger custody before moving its value into
         // the request. No caller-supplied scope overrides this protected input.
-        input.1.absorb(&mut caller.1).map_err(native_cli_work_error)?;
+        input
+            .1
+            .absorb(&mut caller.1)
+            .map_err(native_cli_work_error)?;
         let mut key = guarded_cli_text(&["caller"], &work)?;
         input.1.absorb(&mut key.1).map_err(native_cli_work_error)?;
-        input.0.as_object_mut().expect("object checked above")
+        input
+            .0
+            .as_object_mut()
+            .expect("object checked above")
             .insert(std::mem::take(&mut key.0), std::mem::take(&mut caller.0));
     }
     let mut cwd = work.current_directory().map_err(native_cli_work_error)?;
     input.1.absorb(&mut cwd.1).map_err(native_cli_work_error)?;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .map_err(CliFailure::NativeIo)?;
     let response = runtime.block_on(forward_native_hook(
-        "pi", event, std::mem::take(&mut cwd.0), std::mem::take(&mut input.0),
-        ServiceStart::Allowed, Some(&work),
+        "pi",
+        event,
+        std::mem::take(&mut cwd.0),
+        std::mem::take(&mut input.0),
+        ServiceStart::Allowed,
+        Some(&work),
     ))?;
     drop(cwd);
     drop(input);
@@ -302,10 +340,12 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
         return Err(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Storage,
             reason: "native Pi control response lost its allocation custody",
-        }.into());
+        }
+        .into());
     }
     let encoded = service_process::encode_native_control_value(&response.0, &work)?;
-    work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(native_cli_work_error)?;
+    work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+        .map_err(native_cli_work_error)?;
     let mut stdout = io::stdout().lock();
     stdout.write_all(&encoded.0).map_err(CliFailure::NativeIo)?;
     stdout.flush().map_err(CliFailure::NativeIo)?;
@@ -314,8 +354,13 @@ fn run_pi_control(arguments: &[String]) -> Result<(), CliFailure> {
     Ok(())
 }
 
-fn native_cli_work_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
-    acyclic_harness::Error::NativeWork { cause, custody: None }
+fn native_cli_work_error(
+    cause: acyclic_fs::NativeTreeMaterializationError,
+) -> acyclic_harness::Error {
+    acyclic_harness::Error::NativeWork {
+        cause,
+        custody: None,
+    }
 }
 
 /// The working directory and input of the native hook on standard input.
@@ -380,8 +425,8 @@ async fn forward_native_hook(
     let data = default_data_directory();
     let envelope = match original_work {
         Some(work) => {
-            let mut name = guarded_hook_name(host, event, work)
-                .map_err(ControlRequestError::NativeWork)?;
+            let mut name =
+                guarded_hook_name(host, event, work).map_err(ControlRequestError::NativeWork)?;
             let request = ControlRequest {
                 version: 1,
                 command: ControlCommand::Hook,
@@ -394,16 +439,22 @@ async fn forward_native_hook(
                 .map_err(ControlRequestError::NativeWork)?;
             envelope.1.absorb(&mut name.1).map_err(|cause| {
                 ControlRequestError::NativeWork(acyclic_harness::Error::NativeWork {
-                    cause, custody: None,
+                    cause,
+                    custody: None,
                 })
             })?;
             (envelope.0, Some(envelope.1))
         }
-        None => (ControlEnvelope::new(native_hook_request(host, event, cwd, input)), None),
+        None => (
+            ControlEnvelope::new(native_hook_request(host, event, cwd, input)),
+            None,
+        ),
     };
     if service_start == ServiceStart::Allowed && matches!(event, "SessionStart" | "sessionStart") {
         // Session boundaries may advance an idle service, never a live mount.
-        ensure_service(&data).await.map_err(ControlRequestError::Unavailable)?;
+        ensure_service(&data)
+            .await
+            .map_err(ControlRequestError::Unavailable)?;
         return send_hook_envelope(&data, &envelope.0, original_work, false).await;
     }
     match send_hook_envelope(&data, &envelope.0, original_work, true).await {
@@ -411,7 +462,9 @@ async fn forward_native_hook(
         // Only unavailability proves the service did not receive the envelope.
         // Uncertain receipts are never automatically resent.
         Err(ControlRequestError::Unavailable(_)) if service_start == ServiceStart::Allowed => {
-            ensure_service(&data).await.map_err(ControlRequestError::Unavailable)?;
+            ensure_service(&data)
+                .await
+                .map_err(ControlRequestError::Unavailable)?;
             send_hook_envelope(&data, &envelope.0, original_work, false).await
         }
         Err(error) => Err(error),
@@ -427,14 +480,20 @@ async fn send_hook_envelope(
     match (work, once) {
         (Some(work), true) => {
             service_process::send_control_envelope_once_with_native_work(data, envelope, work)
-                .await.map(|(value, custody)| (value, Some(custody)))
+                .await
+                .map(|(value, custody)| (value, Some(custody)))
         }
         (Some(work), false) => {
             service_process::send_control_envelope_with_native_work(data, envelope, work)
-                .await.map(|(value, custody)| (value, Some(custody)))
+                .await
+                .map(|(value, custody)| (value, Some(custody)))
         }
-        (None, true) => send_control_envelope_once(data, envelope).await.map(|value| (value, None)),
-        (None, false) => send_control_envelope(data, envelope).await.map(|value| (value, None)),
+        (None, true) => send_control_envelope_once(data, envelope)
+            .await
+            .map(|value| (value, None)),
+        (None, false) => send_control_envelope(data, envelope)
+            .await
+            .map(|value| (value, None)),
     }
 }
 
@@ -450,22 +509,26 @@ fn guarded_cli_text(
     parts: &[&str],
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness::Result<(String, acyclic_fs::NativeAllocation)> {
-    let bytes = parts.iter().try_fold(0_usize, |size, part| size.checked_add(part.len()))
+    let bytes = parts
+        .iter()
+        .try_fold(0_usize, |size, part| size.checked_add(part.len()))
         .filter(|size| *size <= MAXIMUM_CONTROL_MESSAGE_BYTES)
         .ok_or(acyclic_harness::Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid,
             reason: "native CLI metadata exceeds its byte bound",
         })?;
-    let allocation = work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
-        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    let allocation = work.claim(
+        bytes as u64,
+        u64::from((bytes as u64) != 0),
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     let mut name = String::new();
     name.try_reserve_exact(bytes)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
-        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)?;
     work.charge(acyclic_fs::WorkCounters {
         bytes_copied: bytes as u64,
         ..acyclic_fs::WorkCounters::UNCHARGED
-    }).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    })?;
     for part in parts {
         name.push_str(part);
     }
@@ -676,7 +739,7 @@ async fn run() -> Result<(), CliFailure> {
             "no-replace" => RenameMode::NoReplace,
             _ => return Err(io::Error::other("invalid installer rename mode").into()),
         };
-        durable_rename(Path::new(from), Path::new(to), mode)?;
+        durable_rename(Path::new(from), Path::new(to), mode, None)?;
         return Ok(());
     }
     if arguments
@@ -705,14 +768,18 @@ async fn run() -> Result<(), CliFailure> {
         let response_custody;
         let response;
         (response, response_custody) = pi_operator::run_cli(
-            &default_data_directory(), cwd, arguments.get(1..).unwrap_or_default(),
-        ).await?;
+            &default_data_directory(),
+            cwd,
+            arguments.get(1..).unwrap_or_default(),
+        )
+        .await?;
         let encoded_custody;
         let encoded;
-        (encoded, encoded_custody) = service_process::encode_native_control_value(
-            &response, response_custody.work(),
-        )?;
-        encoded_custody.work().admit(acyclic_fs::WorkCounters::UNCHARGED)
+        (encoded, encoded_custody) =
+            service_process::encode_native_control_value(&response, response_custody.work())?;
+        encoded_custody
+            .work()
+            .admit(acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(native_cli_work_error)?;
         {
             let mut stdout = io::stdout().lock();

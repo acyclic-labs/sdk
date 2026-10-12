@@ -116,7 +116,7 @@ impl PiSession {
                 .control_command_with_native_work(command).await?
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("selected caller has no current native owner".to_owned()))?;
-            let fence = live.context.context().owned_task_fence()?;
+            let fence = live.context.as_ref().owned_task_fence()?;
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &payload, owner.policy().maximum_payload_bytes, &work)?;
             let progress = selected.run(live.context, fence, command, input, false, &work).await?;

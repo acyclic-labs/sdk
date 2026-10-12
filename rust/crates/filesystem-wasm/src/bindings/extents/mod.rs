@@ -58,18 +58,10 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .plan_file_extents(
-                &path,
-                ByteRange { offset, length },
-                maximum_spans,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            plan_file_extents(&path, ByteRange { offset, length }, maximum_spans,)
+        )?;
         let result = match receipt.value {
             None => BrowserExtentPlanResult::Inline {
                 work: browser_work(receipt.work),
@@ -99,18 +91,10 @@ impl BrowserCheckout {
         let maximum_spans = wasm_u32(&maximum_spans)?;
 
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .plan_file_extents_by_id(
-                file_id,
-                ByteRange { offset, length },
-                maximum_spans,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            plan_file_extents_by_id(file_id, ByteRange { offset, length }, maximum_spans,)
+        )?;
         let result = match receipt.value {
             None => BrowserExtentPlanResult::Inline {
                 work: browser_work(receipt.work),
@@ -142,18 +126,7 @@ impl BrowserCheckout {
             self.engine.volume_config().limits,
         )?;
         let target = extent_seek_target(&target)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .seek_file_extent(
-                &path,
-                offset,
-                target,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, seek_file_extent(&path, offset, target,))?;
         ts(BrowserExtentSeekResult {
             offset: receipt.value,
             work: browser_work(receipt.work),
@@ -170,18 +143,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserExtentSeekResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let target = extent_seek_target(&target)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .seek_file_extent_by_id(
-                file_id,
-                offset,
-                target,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, seek_file_extent_by_id(file_id, offset, target,))?;
         ts(BrowserExtentSeekResult {
             offset: receipt.value,
             work: browser_work(receipt.work),

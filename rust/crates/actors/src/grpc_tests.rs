@@ -4,7 +4,7 @@
     reason = "bounded generated-client counterexamples"
 )]
 use crate::{grpc::*, wire};
-use acyclic_grpc_observability::test_support::Capture;
+use acyclic_grpc_observability::tests::Capture;
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -50,9 +50,8 @@ impl Service<http::Request<Body>> for Transport {
 async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
     for case in 0..5 {
         let log = Capture::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(log.clone()),
-        );
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
         let body = if case == 0 {
             Body::empty()
         } else {
@@ -93,12 +92,7 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
         }
         let seen = log.0.lock().unwrap();
         for name in ["acyclic.actors.grpc.call", "acyclic.actors.grpc.transport"] {
-            assert_eq!(
-                seen.closes.iter()
-                    .filter(|n| *n == name)
-                    .count(),
-                1
-            );
+            assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
         }
         for (name, field, value) in [
             (
@@ -129,14 +123,22 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             ),
         ] {
             assert!(
-                seen.spans.iter().any(|span| span.name == name
-                    && span.fields.get(field).is_some_and(|v| v == value)),
-                "{name} {field} {value}: {:?}", seen.spans
+                seen.spans
+                    .iter()
+                    .any(|span| span.name == name
+                        && span.fields.get(field).is_some_and(|v| v == value)),
+                "{name} {field} {value}: {:?}",
+                seen.spans
             );
         }
-        assert!(!seen.records.iter().any(|(n, k, v)| n == "acyclic.actors.grpc.call"
-            && k == "outcome"
-            && v.trim_matches('"') == if case < 2 { "ok" } else { "err" }));
+        assert!(
+            !seen
+                .records
+                .iter()
+                .any(|(n, k, v)| n == "acyclic.actors.grpc.call"
+                    && k == "outcome"
+                    && v.trim_matches('"') == if case < 2 { "ok" } else { "err" })
+        );
     }
 }
 
@@ -171,37 +173,56 @@ impl Service<http::Request<Body>> for TlsService {
     }
 }
 #[tokio::test]
-async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
--> Result<(), Box<dyn std::error::Error>> {
-    let log = Capture::default();
-    let _guard =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
-    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])?;
-    let pem = certificate.cert.pem();
-    let identity =
-        tonic::transport::Identity::from_pem(&pem, certificate.signing_key.serialize_pem());
+async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some((pem, key, unrelated, mode)) =
+        acyclic_grpc_observability::tests::tls_fixture(module_path!())?
+    else {
+        return Ok(());
+    };
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
-    let address = incoming.local_addr()?;
+    let endpoint = format!("https://localhost:{}", incoming.local_addr()?.port());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
         tonic::transport::Server::builder()
-            .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
+            .tls_config(
+                tonic::transport::ServerTlsConfig::new()
+                    .identity(tonic::transport::Identity::from_pem(&pem, key)),
+            )?
             .add_service(TlsService)
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = stopped.await;
             }),
     );
+    let log = Capture::default();
     let result = async {
-        let mut client = connect(
-            &format!("https://{address}"),
-            "private-token",
-            Some(pem.as_bytes()),
-        )
-        .await?;
+        let platform = connect(&endpoint, "private-token", None).await;
+        if mode == "file" || mode == "dir" {
+            platform?
+                .inspect_actor(wire::InspectActorRequest::default())
+                .await?;
+        } else {
+            let error = platform
+                .err()
+                .ok_or("private endpoint unexpectedly trusted")?;
+            assert!(std::error::Error::source(&error).is_some());
+            let error = crate::client::connect(&endpoint, "private-token", None)
+                .await
+                .err()
+                .ok_or("typed client unexpectedly trusted")?;
+            assert_eq!(error.code_name(), "unavailable");
+        }
+        let denied = connect(&endpoint, "private-token", Some(&unrelated)).await;
+        let error = denied
+            .err()
+            .ok_or("unrelated supplied CA unexpectedly trusted")?;
+        assert!(std::error::Error::source(&error).is_some());
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+        let mut client = connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
         client
             .inspect_actor(wire::InspectActorRequest::default())
             .await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
     let _ = shutdown.send(());
@@ -213,19 +234,18 @@ async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
             seen.spans.iter().any(|span| span.name == name
                 && span.fields.get("rpc").is_some_and(|v| v == "InspectActor"))
         );
-        assert_eq!(
-            seen.closes.iter()
-                .filter(|n| *n == name)
-                .count(),
-            1
+        assert_eq!(seen.closes.iter().filter(|n| *n == name).count(), 1);
+        assert!(
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("outcome").is_some_and(|v| v == "ok"))
         );
         assert!(
-            seen.spans.iter().any(|span| span.name == name
-                && span.fields.get("outcome").is_some_and(|v| v == "ok"))
-        );
-        assert!(
-            seen.spans.iter().any(|span| span.name == name
-                && span.fields.get("rpc.code").is_some_and(|v| v == "0"))
+            seen.spans
+                .iter()
+                .any(|span| span.name == name
+                    && span.fields.get("rpc.code").is_some_and(|v| v == "0"))
         );
     }
     assert!(!format!("{:?}{:?}", seen.spans, seen.records).contains("private-token"));

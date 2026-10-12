@@ -12,13 +12,11 @@ use super::{
     MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget,
     MountSourceError, ViewObserver, capture_root_identity,
 };
-use super::{LazyMount, NativeMountError, adapter};
-use crate::LazySeekTarget;
+use super::{NativeMountError, adapter};
 use crate::demand::{
     DemandError, DemandFile, DemandSource, SourceChange, SourceChangeSink, SourceNode,
     SourceNodeKind, SourceReference, SourceWatch,
 };
-use crate::heap_future::in_heap;
 use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
@@ -29,7 +27,7 @@ use crate::{
 use crate::{CancellationToken, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
@@ -58,26 +56,31 @@ struct CursorTable<T> {
 enum Resolution {
     Authored(MountLookup),
     Absent,
-    Unauthored(
-        LazyLookup,
-        Option<SourceReference>,
-        Option<crate::NativeAllocation>,
-    ),
+    Unauthored(LazyLookup, Option<crate::NativeAllocation>),
 }
 
 #[derive(Default)]
 struct MountedRemovals {
-    paths: BTreeMap<String, FileId>,
+    paths: BTreeMap<String, (FileId, crate::NativeAllocation)>,
     records: BTreeMap<FileId, (FileRecord, FileMetadata)>,
     epoch: u64,
+    publication: Option<(
+        crate::OperationId,
+        Option<(
+            crate::LazySnapshotRef,
+            crate::LazySnapshotRef,
+            crate::VolumeConfig,
+            crate::Digest,
+        )>,
+    )>,
 }
 
 impl MountedRemovals {
     fn rebound(&mut self, path: &str) -> bool {
-        let Some(file_id) = self.paths.remove(path) else {
+        let Some((file_id, _allocation)) = self.paths.remove(path) else {
             return false;
         };
-        if !self.paths.values().any(|pending| *pending == file_id) {
+        if !self.paths.values().any(|(pending, _)| *pending == file_id) {
             self.records.remove(&file_id);
         }
         self.epoch = self.epoch.wrapping_add(1);
@@ -176,6 +179,7 @@ pub(super) use callback_wait::{
 };
 mod init;
 mod promotion;
+mod publication;
 mod queries;
 mod snapshots;
 mod sync;

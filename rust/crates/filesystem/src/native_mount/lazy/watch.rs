@@ -160,7 +160,6 @@ where
                 SourceChange::Unconfirmed => unconfirmed = true,
             }
         }
-        let mut admission = crate::native_mount::view_ledger::ViewLedgerAdmission::default();
         for change in [
             (!effect.is_empty()).then_some(ViewChange::Effect(&effect)),
             unconfirmed.then_some(ViewChange::Unconfirmed),
@@ -168,21 +167,15 @@ where
         .into_iter()
         .flatten()
         {
-            authored.record_projection_change_with_native_work(
-                &change,
-                &work,
-                &mut admission,
-                || {
-                    crate::native_host::NativeHostWork::check(&source)
-                        .map_err(mount_demand_error)?;
-                    work.admit(crate::WorkCounters::UNCHARGED)
-                        .map_err(MountSourceError::NativeWork)?;
-                    authored
-                        .cancellation()
-                        .check()
-                        .map_err(|_| MountSourceError::Cancelled)
-                },
-            )?;
+            authored.record_projection_change_with_native_work(&change, &work, || {
+                crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)?;
+                work.admit(crate::WorkCounters::UNCHARGED)
+                    .map_err(MountSourceError::NativeWork)?;
+                authored
+                    .cancellation()
+                    .check()
+                    .map_err(|_| MountSourceError::Cancelled)
+            })?;
         }
         crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)
     }

@@ -290,8 +290,8 @@ where
                         None,
                     ))),
                     Resolution::Absent => Ok(None),
-                    Resolution::Unauthored(lookup, source, _allocation) => self
-                        .project_unauthored(&text, lookup, source, Some(work))
+                    Resolution::Unauthored(lookup, _allocation) => self
+                        .project_unauthored(&text, lookup, Some(work))
                         .await
                         .map(Some),
                 }
@@ -374,7 +374,7 @@ where
                 match self.resolve(path, &text, owner, Some(work)).await? {
                     Resolution::Absent => Err(MountSourceError::NotFound),
                     Resolution::Authored(_) => self.authored.read_link(path, work),
-                    Resolution::Unauthored(lookup, source, _allocation) => {
+                    Resolution::Unauthored(lookup, _allocation) => {
                         let mut accounting =
                             crate::kernel::KernelAccounting::native(work, work.cancellation());
                         self.lazy
@@ -614,7 +614,7 @@ where
             return Ok(());
         }
         let expected_root_identity = capture_root_identity(source_root)
-            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+            .map_err(|error| MountSourceError::Engine(error.to_string().into()))?;
         self.capture_host_paths_with_identity(source_root, paths, expected_root_identity)
     }
 
@@ -624,7 +624,7 @@ where
         path: &MountPath,
     ) -> Result<(), MountSourceError> {
         let identity = capture_root_identity(source_root)
-            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+            .map_err(|error| MountSourceError::Engine(error.to_string().into()))?;
         adapter::boundary(self.authored.cancellation(), |work| {
             self.capture_host_subtree_with_meter(source_root, path, identity, work)
         })

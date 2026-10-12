@@ -50,7 +50,7 @@ where
             let mut scratch = adapter::NativeCaptureScratchAllocation::new(&original)?;
             let detached = {
                 let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-                if !removals.paths.is_empty() {
+                if !removals.paths.is_empty() || removals.publication.is_some() {
                     return Err(MountSourceError::Stale);
                 }
                 let identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
@@ -159,23 +159,58 @@ where
             .selected_snapshot(operation, generation, &mut accounting)
             .await
             .map_err(lazy_error)?;
-        if self
-            .lazy
-            .mount_removal_publication(&mut accounting)
-            .await
-            .map_err(lazy_error)?
-            == Some(true)
+        let remembered = self
+            .removals
+            .lock()
+            .map_err(|_| MountSourceError::Stale)?
+            .publication;
+        if let Some((id, Some((destination, source, config, input)))) = remembered
+            && id == operation
         {
-            if !self
-                .lazy
-                .finish_mount_removals(&mut accounting)
-                .await
-                .map_err(lazy_error)?
+            let retained = {
+                let mut checkout = self
+                    .authored
+                    .shared_checkout()
+                    .lock_with_carrier(
+                        &mut carrier,
+                        cancellation,
+                        Some(self.authored.cancellation()),
+                    )
+                    .await?;
+                checkout
+                    .has_retained_operation()
+                    .then(|| checkout.retained_operation_id())
+            };
+            if retained == Some(operation)
+                && !self
+                    .authored
+                    .shared_checkout()
+                    .resolve_acknowledged_original_with_native_work(
+                        operation,
+                        generation,
+                        original,
+                        cancellation,
+                        Some(self.authored.cancellation()),
+                        self.authored.publication_guard(),
+                    )
+                    .await?
             {
-                return Err(MountSourceError::Stale);
+                return Err(MountSourceError::Indeterminate);
             }
-            self.clear_mount_removals()?;
+            self.lazy
+                .finish_selected_import(
+                    operation,
+                    generation,
+                    destination,
+                    source,
+                    config,
+                    input,
+                    &mut accounting,
+                )
+                .await
+                .map_err(lazy_error)?;
             self.finish_detached_publication()?;
+            self.clear_mount_removals()?;
         }
         Ok(Some(snapshot))
     }

@@ -109,11 +109,7 @@ where
                         let Some(lookup) = lookup else {
                             continue;
                         };
-                        let source = match &lookup {
-                            LazyLookup::Source { source, .. } => Some(*source),
-                            _ => None,
-                        };
-                        self.project_unauthored(&child_text, lookup, source, Some(work))
+                        self.project_unauthored(&child_text, lookup, Some(work))
                             .await?
                     } else {
                         match self.resolve(&child, &child_text, owner, Some(work)).await? {
@@ -121,8 +117,8 @@ where
                             Resolution::Authored(lookup) => {
                                 (self.project_authored(lookup, Some(work)).await?, None)
                             }
-                            Resolution::Unauthored(lookup, source, _allocation) => {
-                                self.project_unauthored(&child_text, lookup, source, Some(work))
+                            Resolution::Unauthored(lookup, _allocation) => {
+                                self.project_unauthored(&child_text, lookup, Some(work))
                                     .await?
                             }
                         }

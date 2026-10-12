@@ -110,7 +110,7 @@ where
                 })
             })?;
         let generation = lease.generation;
-        let (lookup, source, _lookup_allocation) = match resolution {
+        let (lookup, _lookup_allocation) = match resolution {
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Authored(lookup) => {
                 let file = match self.detached_by_id(lookup.node.file_id)? {
@@ -121,7 +121,7 @@ where
                     .bind_open_file(file, Some(lookup.node.file_id), generation, work)
                     .map(|file| (file, None));
             }
-            Resolution::Unauthored(lookup, source, allocation) => (lookup, source, allocation),
+            Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
         let id = self
             .runtime
@@ -133,10 +133,9 @@ where
         }
         if let LazyLookup::Source { node, source } = lookup {
             if node.kind != SourceNodeKind::RegularFile {
-                return Err(MountSourceError::NativeText {
-                    kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                    text: "open requires a regular file",
-                });
+                return Err(MountSourceError::Invalid(
+                    "open requires a regular file".into(),
+                ));
             }
             let source_file = source_file.ok_or(MountSourceError::Stale)?;
             let mut owned = work
@@ -232,7 +231,7 @@ where
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<SourceMutationLease, MountSourceError> {
         let Some(work) = original else {
-            return self.wait(|| async {
+            return self.runtime.wait(|| async {
                 self.source_view
                     .write_stable(expected)
                     .await
@@ -263,6 +262,7 @@ where
         let owner = SourceViewGate::callback_owner();
         let Some(work) = original else {
             return self
+                .runtime
                 .wait(|| async { self.source_view.read_for_callback(owner, expected).await });
         };
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -288,18 +288,17 @@ where
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<bool, MountSourceError> {
         let (text, _allocation) = self.path(path, original)?;
-        self.wait(|| async {
+        self.runtime.wait(|| async {
             match self
                 .resolve(path, &text, SourceViewGate::callback_owner(), original)
                 .await?
             {
                 Resolution::Absent => Err(MountSourceError::NotFound),
                 Resolution::Authored(_) => Ok(false),
-                Resolution::Unauthored(LazyLookup::Source { .. }, _, _) => Ok(true),
-                Resolution::Unauthored(..) => Err(MountSourceError::NativeText {
-                    kind: crate::native_mount::NativeSourceTextKind::Unsupported,
-                    text: "named attributes of an unpromoted shadow are not projected",
-                }),
+                Resolution::Unauthored(LazyLookup::Source { .. }, _) => Ok(true),
+                Resolution::Unauthored(..) => Err(MountSourceError::Unsupported(
+                    "named attributes of an unpromoted shadow are not projected".into(),
+                )),
             }
         })
     }
@@ -309,7 +308,7 @@ where
         path: &MountPath,
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(), MountSourceError> {
-        self.wait(|| self.promote(path, original))
+        self.runtime.wait(|| self.promote(path, original))
     }
 
     pub(super) fn read_content(
@@ -324,10 +323,7 @@ where
     ) -> Result<(), MountSourceError> {
         let end = offset
             .checked_add(length)
-            .ok_or(MountSourceError::NativeText {
-                kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                text: "content range overflows",
-            })?;
+            .ok_or(MountSourceError::Invalid("content range overflows".into()))?;
         let (text, _allocation) = self.path(path, Some(work))?;
         let owner = SourceViewGate::callback_owner();
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -349,7 +345,7 @@ where
                     Ok((lease, resolution, source_file))
                 })
             })?;
-        let (lookup, source, allocation) = match resolution {
+        let (lookup, allocation) = match resolution {
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Authored(lookup) => {
                 let detached = self.detached_by_id(lookup.node.file_id)?;
@@ -360,7 +356,7 @@ where
                         .read_range_with_meter(path, offset, length, work),
                 });
             }
-            Resolution::Unauthored(lookup, source, allocation) => (lookup, source, allocation),
+            Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
         let _allocation = allocation;
         let id = self
@@ -371,8 +367,8 @@ where
                 detached.read_range_with_meter(offset, length, work)
             });
         }
-        if let (LazyLookup::Source { node, .. }, Some(source)) = (&lookup, source)
-            && pin.is_some_and(|pin| pin != source_content_pin(source, node))
+        if let LazyLookup::Source { node, source } = &lookup
+            && pin.is_some_and(|pin| pin != source_content_pin(*source, node))
         {
             return Err(MountSourceError::Stale);
         }
@@ -422,10 +418,9 @@ pub(super) fn stream_pieces(
         let packet = read(next, wanted)?;
         let length = packet.bytes.len() as u64;
         if length > u64::from(wanted) {
-            return Err(MountSourceError::NativeText {
-                kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                text: "source returned more than was asked",
-            });
+            return Err(MountSourceError::Invalid(
+                "source returned more than was asked".into(),
+            ));
         }
         if length == 0 {
             break;
@@ -433,10 +428,7 @@ pub(super) fn stream_pieces(
         sink(next, packet)?;
         next = next
             .checked_add(length)
-            .ok_or(MountSourceError::NativeText {
-                kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                text: "content piece overflows",
-            })?;
+            .ok_or(MountSourceError::Invalid("content piece overflows".into()))?;
     }
     Ok(())
 }

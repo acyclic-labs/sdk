@@ -9,12 +9,17 @@ fn duplicate_reducer_registration_never_replaces_the_original() -> Result<()> {
         result_schema: serde_json::json!({"type": "number"}),
     };
     let mut registry = ReducerRegistry::default();
-    registry.register(entrypoint.clone(), |_| Ok(crate::Outcome::Succeeded(Value::from(1))))?;
+    registry.register(entrypoint.clone(), |_| {
+        Ok(crate::Outcome::Succeeded(Value::from(1)))
+    })?;
     assert!(matches!(
-        registry.register(entrypoint.clone(), |_| Ok(crate::Outcome::Succeeded(Value::from(2)))),
+        registry.register(entrypoint.clone(), |_| Ok(crate::Outcome::Succeeded(
+            Value::from(2)
+        ))),
         Err(Error::Conflict(_))
     ));
-    let retained = registry.get(&entrypoint)
+    let retained = registry
+        .get(&entrypoint)
         .ok_or_else(|| Error::NotFound("reducer".into()))?;
     assert_eq!(retained(&[])?, crate::Outcome::Succeeded(Value::from(1)));
     Ok(())

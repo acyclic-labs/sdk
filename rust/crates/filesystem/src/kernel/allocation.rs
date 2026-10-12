@@ -247,8 +247,11 @@ impl AllocationLedger {
     }
 }
 
-pub(crate) enum KernelOwnedAllocation {
+/// Retains the allocation backing a value returned by a kernel operation.
+pub enum KernelOwnedAllocation {
+    /// Backing tracked by the standalone accounting context.
     Standalone,
+    /// Backing retained on the original native invocation ledger.
     #[cfg(not(target_arch = "wasm32"))]
     NativeOriginal(crate::NativeAllocation),
 }

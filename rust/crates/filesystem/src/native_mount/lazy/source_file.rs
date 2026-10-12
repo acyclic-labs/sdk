@@ -177,7 +177,7 @@ where
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        self.observe(work, true, |file, node, carrier| {
+        self.observe(work, true, |file, node, _| {
             if let Some(file) = file {
                 return file.lookup_with_meter(work);
             }
@@ -216,10 +216,7 @@ where
             let length = match node.logical_bytes {
                 Some(length) => length.saturating_sub(offset).min(u64::from(maximum_bytes)),
                 None => {
-                    return Err(MountSourceError::NativeText {
-                        kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                        text: "source is not regular",
-                    });
+                    return Err(MountSourceError::Invalid("source is not regular".into()));
                 }
             };
             if length == 0 {
@@ -243,10 +240,9 @@ where
             let length = match node.logical_bytes {
                 Some(length) => length,
                 None => {
-                    return Err(MountSourceError::NativeText {
-                        kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                        text: "seek requires a regular file",
-                    });
+                    return Err(MountSourceError::Invalid(
+                        "seek requires a regular file".into(),
+                    ));
                 }
             };
             Ok((offset < length).then_some(match target {
@@ -369,21 +365,18 @@ where
             if let Some(file) = file {
                 return file.read_sparse_range(offset, length, work);
             }
-            let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
-                return Err(MountSourceError::NativeText {
-                    kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                    text: "sparse range overflows the file address space",
-                });
+                return Err(MountSourceError::Invalid(
+                    "sparse range overflows the file address space".into(),
+                ));
             }
             let source_length = match node.logical_bytes {
                 Some(length) => length,
                 None => {
-                    return Err(MountSourceError::NativeText {
-                        kind: crate::native_mount::NativeSourceTextKind::Invalid,
-                        text: "seek requires a regular file",
-                    });
+                    return Err(MountSourceError::Invalid(
+                        "seek requires a regular file".into(),
+                    ));
                 }
             };
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
@@ -393,7 +386,7 @@ where
                         logical_bytes,
                         spans: Vec::new(),
                     },
-                    original
+                    work
                         .claim(0, 0, crate::WorkCounters::UNCHARGED)
                         .map_err(MountSourceError::NativeWork)?,
                 ));
@@ -405,7 +398,7 @@ where
             if !output.is_intrinsic() {
                 return Err(MountSourceError::NativeUnsupported);
             }
-            original
+            work
                 .charge(crate::WorkCounters {
                     items_examined: 1,
                     ..crate::WorkCounters::UNCHARGED
@@ -415,42 +408,26 @@ where
                 items_returned: 1,
                 ..crate::WorkCounters::UNCHARGED
             };
-            original
+            work
                 .admit(counters)
                 .map_err(MountSourceError::NativeWork)?;
-            let span_bytes = std::mem::size_of::<crate::native_mount::MountSparseSpan>() as u64;
-            let mut packet = (
-                Vec::<crate::native_mount::MountSparseSpan>::new(),
-                original
-                    .claim(span_bytes, 1, crate::WorkCounters::UNCHARGED)
-                    .map_err(MountSourceError::NativeWork)?,
-            );
-            packet
-                .0
-                .try_reserve_exact(1)
-                .map_err(MountSourceError::Allocation)?;
-            packet
-                .1
-                .reconcile_capacity(
-                    (packet.0.capacity()
-                        * std::mem::size_of::<crate::native_mount::MountSparseSpan>())
-                        as u64,
-                )
-                .map_err(MountSourceError::NativeWork)?;
+            use adapter::CaptureInputScratch;
+            let mut scratch = adapter::NativeCaptureScratchAllocation::new(work)?;
+            let mut spans = scratch.vec(1)?;
             let (bytes, _, _) = output.into_owned_parts();
-            packet.0.push(crate::native_mount::MountSparseSpan {
+            spans.push(crate::native_mount::MountSparseSpan {
                 relative_offset: 0,
                 bytes,
             });
-            original
+            work
                 .record_admitted(counters)
                 .map_err(MountSourceError::NativeWork)?;
             Ok((
                 crate::native_mount::MountSparseRange {
                     logical_bytes,
-                    spans: packet.0,
+                    spans,
                 },
-                packet.1,
+                scratch.retain(),
             ))
         })
     }

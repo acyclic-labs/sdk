@@ -116,7 +116,7 @@ where
         let (lookup, _allocation) = match resolution {
             Resolution::Authored(_) => return Ok(()),
             Resolution::Absent => return Err(MountSourceError::NotFound),
-            Resolution::Unauthored(lookup, _, allocation) => (lookup, allocation),
+            Resolution::Unauthored(lookup, allocation) => (lookup, allocation),
         };
         let expected_source = file_id(&self.lazy, &path, &lookup, original).await?;
         let mut work =
@@ -159,7 +159,7 @@ where
                     None,
                 ),
             };
-            self.wait(|| self.promote(&parent, original))?;
+            self.runtime.wait(|| self.promote(&parent, original))?;
         }
         Ok(())
     }
