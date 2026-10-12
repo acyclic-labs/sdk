@@ -1390,15 +1390,18 @@ struct Projector {
     _allocation: crate::NativeAllocation,
 }
 
-pub(super) struct ProjectionWorkScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     runtime: Arc<NativeOwned<Runtime>>,
     meter: crate::NativeMaterializationWork,
     projector_generation: u64,
     runtime_generation: u64,
 }
 
-impl ProjectionWorkScope {
-    pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+impl NativeMountWorkScope {
+    /// Retains the original callback meter for accepted native I/O.
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         let (projector_generation, runtime_generation) =
             enter_projection_work(&self.runtime.projector, &self.runtime, &self.meter)?;
         Ok(Self {
@@ -1468,7 +1471,7 @@ impl Drop for ProjectionWorkLease<'_> {
     }
 }
 
-impl Drop for ProjectionWorkScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         leave_projection_work(&self.runtime.projector, &self.runtime, &self.meter,
             self.projector_generation, self.runtime_generation);
@@ -4107,11 +4110,11 @@ impl ProjFsSession {
 
     pub(super) fn begin_original_work(
         &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<ProjectionWorkScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         let (runtime, _) = self.live()?;
         let (projector_generation, runtime_generation) =
             enter_projection_work(&runtime.projector, &runtime, work)?;
-        Ok(ProjectionWorkScope {
+        Ok(NativeMountWorkScope {
             runtime: runtime.clone(), meter: work.clone(),
             projector_generation, runtime_generation,
         })
@@ -4374,12 +4377,6 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::AlreadyExists => HR_ALREADY_EXISTS,
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => HR_INVALID_DATA,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => HR_NOT_SUPPORTED,
-        MountSourceError::NativeText { kind, .. } =>
-            match kind {
-                super::NativeSourceTextKind::Engine => HR_IO_DEVICE,
-                super::NativeSourceTextKind::Invalid => HR_INVALID_DATA,
-                super::NativeSourceTextKind::Unsupported => HR_NOT_SUPPORTED,
-            },
         MountSourceError::Stale | MountSourceError::Cancelled => HR_FILE_INVALID,
         MountSourceError::NativeWork(error) => materialization_hresult(error),
         MountSourceError::WorkspaceCause(error) => workspace_hresult(error),
@@ -5796,7 +5793,9 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
             MountSourceError::NativeCallbackDenied { .. } => true,
             MountSourceError::NativeWorkspaceCause(cause) => !workspace_failure_is_fatal(&cause.source),
             MountSourceError::Filesystem(cause) => !filesystem_failure_is_fatal(cause),
-            MountSourceError::NativeText { .. } => true,
+            MountSourceError::Engine(std::borrow::Cow::Borrowed(_))
+            | MountSourceError::Invalid(std::borrow::Cow::Borrowed(_))
+            | MountSourceError::Unsupported(std::borrow::Cow::Borrowed(_)) => true,
             #[cfg(feature = "native-watch")]
             MountSourceError::NativeWatchOriginalIo(_) | MountSourceError::NativeWatchOriginalBackend(_) => true,
             _ => false,
@@ -7060,13 +7059,13 @@ mod tests {
             assert!(editor.try_wait(None)?.is_none(), "editor exited early");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         std::fs::write(&go, b"")?;
         assert!(
             editor.wait(std::time::Duration::from_secs(30))?.success(),
             "metadata edit failed"
         );
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let captured = source
             .lookup(&windows_path("late.txt"))?
             .ok_or("late.txt was not captured")?;
@@ -7102,7 +7101,7 @@ mod tests {
             8 * 1024 * 1024,
         )?;
         assert!(output.status.success(), "external edit failed: {output:?}");
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&seed)?.is_none());
         let moved = windows_path("moved.txt");
         assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
@@ -7122,28 +7121,28 @@ mod tests {
             let path = windows_path(name);
             let length = source.lookup(&path)?.ok_or(MountSourceError::NotFound)?;
             let length = u32::try_from(length.node.logical_bytes)
-                .map_err(|_| MountSourceError::Invalid("test file too large".to_owned()))?;
+                .map_err(|_| MountSourceError::Invalid(std::borrow::Cow::Owned("test file too large".to_owned())))?;
             Ok(source.read_range(&path, 0, length)?.to_vec())
         };
 
         external("echo first> created.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("created.txt")?, b"first\r\n");
         external("echo second> created.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("created.txt")?, b"second\r\n");
         external("ren created.txt renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         external("echo third> renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(content("renamed.txt")?, b"third\r\n");
         external("mklink /H linked.txt renamed.txt > nul && del renamed.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&windows_path("created.txt"))?.is_none());
         assert!(source.lookup(&windows_path("renamed.txt"))?.is_none());
         assert_eq!(content("linked.txt")?, b"third\r\n");
         external("del linked.txt")?;
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
         session.stop()?;
         Ok(())
@@ -7159,12 +7158,12 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("b.txt"), FileMetadata::default(), None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
         external_edit(&destination, "echo c> c.txt && del b.txt")?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
         assert!(source.lookup(&windows_path("b.txt"))?.is_none());
         assert!(source.lookup(&windows_path("c.txt"))?.is_some());
@@ -7187,14 +7186,14 @@ mod tests {
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
         boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(target("second.txt").into(), 0), FileMetadata::default(), work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["link"]);
         assert_eq!(
             std::fs::read_link(destination.join("link"))?,
             std::path::Path::new("second.txt")
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(sorted_names(&destination)?.is_empty());
         session.stop()?;
         Ok(())
@@ -7262,8 +7261,8 @@ mod tests {
         ))?;
         succeeded(editor)?;
         succeeded(reader)?;
-        session.flush_callbacks()?;
-        session.revalidate()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         let wanted = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         let mut lost = Vec::new();
         for index in 0..FILES {
@@ -7299,9 +7298,9 @@ mod tests {
             projected.display()
         ))?)?;
         assert_eq!(super::reparse_tag(&projected)?.0, None, "a placeholder");
-        session.flush_callbacks()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(std::fs::read(&projected)?, b"after!");
         session.stop()?;
         Ok(())
@@ -7320,8 +7319,8 @@ mod tests {
             "[IO.File]::AppendAllText('{}', ' and user')",
             projected.display()
         ))?)?;
-        session.flush_callbacks()?;
-        session.revalidate()?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(std::fs::read(&projected)?, b"source and user");
         assert_eq!(
             source.read_range(&kept, 0, 15)?.as_ref(),
@@ -7386,7 +7385,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 drop(held);
             });
-            session.revalidate()?;
+            session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
             closer.join().map_err(|_| "closer panicked")?;
             if directory {
                 assert!(std::fs::symlink_metadata(&projected)?.is_dir());
@@ -7414,7 +7413,7 @@ mod tests {
         std::fs::remove_file(&projected)?;
         std::fs::create_dir(&projected)?;
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert!(std::fs::symlink_metadata(&projected)?.is_dir());
         session.stop()?;
         Ok(())
@@ -7439,7 +7438,7 @@ mod tests {
             0,
             Bytes::from_static(b"listed"),
         )?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
         assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
 
@@ -7449,7 +7448,7 @@ mod tests {
         );
         crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("invalidated.txt"), FileMetadata::default(), None, work))?;
         session.invalidate(b"/invalidated.txt")?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
         assert_eq!(
             std::fs::metadata(destination.join("invalidated.txt"))?.len(),
             0
@@ -7699,9 +7698,9 @@ mod tests {
         let statuses = [
             MountSourceError::NotFound,
             MountSourceError::AlreadyExists,
-            MountSourceError::Invalid(String::new()),
-            MountSourceError::Unsupported(String::new()),
-            MountSourceError::Engine(String::new()),
+            MountSourceError::Invalid(std::borrow::Cow::Owned(String::new())),
+            MountSourceError::Unsupported(std::borrow::Cow::Owned(String::new())),
+            MountSourceError::Engine(std::borrow::Cow::Owned(String::new())),
             MountSourceError::Stale,
         ]
         .iter()

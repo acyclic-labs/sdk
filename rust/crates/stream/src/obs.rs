@@ -6,9 +6,14 @@ pub(crate) use acyclic_native_runtime::obs::{OperationSpan, Scoped};
 
 /// Records `outcome` and, on failure, `error.kind` on the owned operation span.
 #[cfg(any(feature = "http", feature = "local"))]
-pub(crate) fn finish<T>(span: &Span, result: Result<T, crate::StreamError>) -> Result<T, crate::StreamError> {
+pub(crate) fn finish<T>(
+    span: &Span,
+    result: Result<T, crate::StreamError>,
+) -> Result<T, crate::StreamError> {
     match &result {
-        Ok(_) => { span.record("outcome", "ok"); }
+        Ok(_) => {
+            span.record("outcome", "ok");
+        }
         Err(error) => failed(span, error.code()),
     }
     result
@@ -25,6 +30,8 @@ pub(crate) struct Cancellation(pub(crate) Option<OperationSpan>);
 #[cfg(any(feature = "http", feature = "local"))]
 impl Drop for Cancellation {
     fn drop(&mut self) {
-        if let Some(span) = &self.0 { failed(span, "cancelled"); }
+        if let Some(span) = &self.0 {
+            failed(span, "cancelled");
+        }
     }
 }

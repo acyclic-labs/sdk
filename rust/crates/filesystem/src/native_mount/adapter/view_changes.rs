@@ -1,5 +1,3 @@
-use super::*;
-
 pub(super) fn record_view_change(
     ledger: &Arc<ViewLedger>,
     change: &ViewChange<'_>,

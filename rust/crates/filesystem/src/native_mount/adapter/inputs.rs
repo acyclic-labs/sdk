@@ -1,5 +1,3 @@
-use super::*;
-
 pub(super) struct InputBuffers<'a, 'w> {
     carrier: &'a mut NativeDemandCarrier<'w>,
     pub(super) bytes: u64,
@@ -98,6 +96,60 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         Ok(vector)
     }
 
+    fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
+        let delta = crate::WorkCounters {
+            bytes_copied: bytes.len() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        self.admit(delta)?;
+        let mut owned = self.vec(bytes.len())?;
+        owned.extend_from_slice(bytes);
+        self.record(delta)?;
+        Ok(owned)
+    }
+
+    fn attribute_page(
+        &mut self,
+        listing: &crate::kernel::AttributeListing,
+    ) -> Result<MountAttributePage, MountSourceError> {
+        let mut names = self.vec(listing.entries.len())?;
+        for entry in &listing.entries {
+            self.items(1)?;
+            if entry.name.class() != AttributeClass::PosixXattr {
+                return Err(MountSourceError::Unsupported(
+                    "POSIX mount encountered a non-POSIX named attribute".into(),
+                ));
+            }
+            names.push(self.copy_bytes(entry.name.as_bytes())?);
+        }
+        let next_cursor = if listing.has_more {
+            names.last().map(|name| self.copy_bytes(name)).transpose()?
+        } else {
+            None
+        };
+        Ok(MountAttributePage { names, next_cursor })
+    }
+
+    fn attribute_name(
+        &mut self,
+        bytes: &[u8],
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<AttributeName, MountSourceError> {
+        if profile != FilesystemProfile::Posix {
+            return Err(MountSourceError::Unsupported(
+                "native POSIX attributes require a POSIX volume profile".into(),
+            ));
+        }
+        let owned = self.copy_bytes(bytes)?;
+        AttributeName::new(
+            AttributeClass::PosixXattr,
+            owned,
+            limits.maximum_component_bytes,
+        )
+        .map_err(engine_error)
+    }
+
     pub(super) fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), MountSourceError> {
         if let Some(work) = self.carrier.original_native_work() {
             self.pending = Some(
@@ -185,6 +237,30 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     pub(super) fn retain(mut self) -> Option<crate::NativeAllocation> {
         self.bytes = 0;
         self.allocation.take()
+    }
+
+    fn observer<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &mut self,
+        checkout: &Checkout<A, O>,
+        cancellation: &CancellationToken,
+    ) -> Result<Checkout<A, O>, MountSourceError> {
+        let observer = if let Some(work) = self.carrier.original_native_work() {
+            checkout.observer(&work, cancellation).map_err(fs_error)?
+        } else {
+            let (budget, live) = self.carrier.with_work(|work| {
+                Ok::<_, MountSourceError>((
+                    work.remaining().map_err(super::lazy::mount_demand_error)?,
+                    work.live_allocation_bytes(),
+                ))
+            })?;
+            self.carrier.accept_with_prior_live(
+                checkout.observer(budget, cancellation),
+                live,
+                fs_error,
+            )?
+        };
+        self.adopt_checkout(&observer)?;
+        Ok(observer)
     }
 
     fn adopt_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(

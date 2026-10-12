@@ -1,4 +1,40 @@
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
+    async fn install_change(
+        &self,
+        candidate: CheckoutCandidate<A, O>,
+        epoch: u64,
+        stamp: ViewStamp,
+        change: ViewChange<'_>,
+        work: &crate::NativeMaterializationWork,
+        lifetime: &CancellationToken,
+    ) -> Result<MountPublication, MountSourceError> {
+        let cancellation = work.cancellation();
+        self.install_candidate(
+            candidate,
+            epoch,
+            stamp,
+            &mut NativeDemandCarrier::Native(work),
+            cancellation,
+            Some(lifetime),
+            |carrier| record_view_change(&self.ledger, &change, carrier),
+            |checkout, candidate, prepared| {
+                cancellation
+                    .commit_if_both_live(lifetime, || {
+                        checkout.adopt_prepared_candidate(
+                            &candidate.base,
+                            candidate.checkout,
+                            prepared,
+                        )
+                    })
+                    .map_err(|_| MountSourceError::Cancelled)
+            },
+            None,
+            |publication, _| publication,
+        )
+        .await?
+        .ok_or(MountSourceError::Stale)
+    }
+
     pub(super) async fn install_candidate<T>(
         &self,
         candidate: CheckoutCandidate<A, O>,

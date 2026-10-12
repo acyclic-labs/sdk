@@ -5,14 +5,12 @@ struct DetachedMountState<A, O> {
 }
 
 impl<A, O> DetachedMountState<A, O> {
-    /// Applies one content change with its time stamp, as every native
-    /// write does, as one detached record transition, then records it: the
-    /// change and its record happen together or not at all.
+    /// Changes content, timestamps and its view together.
     async fn change_content(
         &mut self,
         change: ContentChange<std::convert::Infallible>,
-        ledger: &ViewLedger,
-        cancellation: &CancellationToken,
+        ledger: &Arc<ViewLedger>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
@@ -23,16 +21,20 @@ impl<A, O> DetachedMountState<A, O> {
             .stamp_content_change(content_change_time()?)
             .then_some(metadata);
         self.file
-            .change_content(change, stamped, boundary_budget(), cancellation)
+            .change_content(change, stamped, work, work.cancellation())
             .await
-            .map_err(engine_error)?;
+            .map_err(fs_error)?;
         self.metadata = metadata;
-        self.record_change(ledger)
+        self.record_change(ledger, &mut NativeDemandCarrier::Native(work))
     }
 
     /// Advances the identity's own publication epoch and invalidates every
     /// cached lookup of the identity, under the lock its lookups take.
-    fn record_change(&mut self, ledger: &ViewLedger) -> Result<(), MountSourceError>
+    fn record_change(
+        &mut self,
+        ledger: &Arc<ViewLedger>,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
@@ -41,12 +43,12 @@ impl<A, O> DetachedMountState<A, O> {
             .mutation_epoch
             .checked_add(1)
             .ok_or(MountSourceError::Stale)?;
-        ledger.record(&ViewChange::Node(self.file.file_id()));
-        Ok(())
+        record_view_change(ledger, &ViewChange::Node(self.file.file_id()), carrier)
     }
 }
 
 pub(super) struct CheckoutDetachedFile<A, O> {
+    _native_allocation: Option<crate::NativeAllocation>,
     state: tokio::sync::Mutex<DetachedMountState<A, O>>,
     ledger: Arc<ViewLedger>,
     runtime: CallbackRuntime,
@@ -56,48 +58,113 @@ pub(super) struct CheckoutDetachedFile<A, O> {
 }
 
 impl<A, O> CheckoutDetachedFile<A, O> {
-    fn attribute_name(&self, bytes: &[u8]) -> Result<AttributeName, MountSourceError> {
-        if self.profile != FilesystemProfile::Posix {
-            return Err(MountSourceError::Unsupported(
-                "native POSIX attributes require a POSIX volume profile".to_owned(),
-            ));
-        }
-        AttributeName::new(
-            AttributeClass::PosixXattr,
-            bytes.to_vec(),
-            self.limits.maximum_component_bytes,
-        )
-        .map_err(engine_error)
+    pub(super) fn mutation_epoch(&self) -> Option<u64> {
+        self.state.try_lock().ok().map(|state| state.mutation_epoch)
     }
 
-    pub(super) fn snapshot(&self) -> Result<(FileRecord, FileMetadata, u64), MountSourceError>
-    where
-        A: AsyncAuthorityStore + Send + Sync,
-        O: AsyncObjectStore + Send + Sync,
-    {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            Ok((state.file.record(), state.metadata, state.mutation_epoch))
-        })
-    }
-
-    /// Reports the detached identity's live state within a caller's callback.
-    pub(super) async fn lookup_async(&self) -> Result<MountLookup, MountSourceError>
+    pub(super) async fn read_bytes(
+        &self,
+        offset: u64,
+        length: u32,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let state = self.state.lock().await;
-        Ok(MountLookup {
-            node: MountNode {
-                file_id: state.file.file_id(),
-                kind: MountNodeKind::Regular,
-                logical_bytes: state.file.logical_bytes(),
-                link_count: 0,
-                device: None,
-            },
-            metadata: state.metadata,
-        })
+        let cancellation = carrier.cancellation();
+        let state = await_lock(
+            self.state.lock(),
+            carrier,
+            &cancellation,
+            Some(&self.cancellation),
+        )
+        .await?;
+        let range = ByteRange {
+            offset,
+            length: u64::from(length),
+        };
+        let read = if let Some(original) = carrier.original_native_work() {
+            state
+                .file
+                .read_range(range, &original, &cancellation)
+                .await
+                .map_err(fs_error)?
+        } else {
+            let (budget, live) = carrier.with_work(|work| {
+                Ok::<_, MountSourceError>((
+                    work.remaining().map_err(super::lazy::mount_demand_error)?,
+                    work.live_allocation_bytes(),
+                ))
+            })?;
+            let result = state.file.read_range(range, budget, &cancellation).await;
+            carrier.accept_with_prior_live(result, live, fs_error)?
+        };
+        let capacity = read.logical_owned_bytes();
+        let chunk = if carrier.original_native_work().is_some() {
+            crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity)
+        } else {
+            crate::kernel::OwnedSourceChunk::claimed(read.bytes, capacity)
+        };
+        carrier.finish_read(chunk, &cancellation, Some(&self.cancellation))
+    }
+
+    async fn change_attribute(
+        &self,
+        name: &[u8],
+        value: Option<(&[u8], NamedAttributeWriteMode)>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let cancellation = work.cancellation();
+        let mut carrier = NativeDemandCarrier::Native(work);
+        let mut inputs = InputBuffers::new(&mut carrier)?;
+        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let mut state = await_lock(
+            self.state.lock(),
+            inputs.carrier,
+            cancellation,
+            Some(&self.cancellation),
+        )
+        .await?;
+        state.metadata = state
+            .file
+            .change_named_attribute(&name, value, work, cancellation)
+            .await
+            .map_err(fs_error)?;
+        state.record_change(&self.ledger, inputs.carrier)
+    }
+
+    pub(super) async fn snapshot(
+        &self,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(FileRecord, FileMetadata, u64), MountSourceError>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let state = await_lock(
+            self.state.lock(),
+            carrier,
+            cancellation,
+            Some(&self.cancellation),
+        )
+        .await?;
+        let metadata = if let Some(original) = carrier.original_native_work() {
+            state
+                .file
+                .read_metadata(&original, cancellation)
+                .await
+                .map_err(fs_error)?
+        } else {
+            state.metadata
+        };
+        carrier.check(cancellation, Some(&self.cancellation))?;
+        Ok((state.file.record(), metadata, state.mutation_epoch))
     }
 }
 
@@ -111,12 +178,17 @@ where
     fn change_content(
         &self,
         change: ContentChange<std::convert::Infallible>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            state
-                .change_content(change, &self.ledger, &self.cancellation)
-                .await
+        invoke(&self.runtime, work, || async {
+            let mut state = await_lock(
+                self.state.lock(),
+                &mut NativeDemandCarrier::Native(work),
+                work.cancellation(),
+                Some(&self.cancellation),
+            )
+            .await?;
+            state.change_content(change, &self.ledger, work).await
         })
     }
 }
@@ -126,57 +198,79 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
-        self.runtime.wait(|| self.lookup_async())
-    }
-
-    fn read_range(&self, offset: u64, length: u32) -> Result<Bytes, MountSourceError> {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            state
-                .file
-                .read_range(
-                    ByteRange {
-                        offset,
-                        length: u64::from(length),
-                    },
-                    boundary_budget(),
-                    &self.cancellation,
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(engine_error)
+    fn lookup_with_meter(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let (record, metadata, _) = self
+                .snapshot(&mut NativeDemandCarrier::Native(work), work.cancellation())
+                .await?;
+            let mut node = mount_node(record);
+            node.link_count = 0;
+            Ok(MountLookup { node, metadata })
         })
     }
 
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<Bytes, MountSourceError> {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
+    fn read_up_to_with_meter(
+        &self,
+        offset: u64,
+        maximum_bytes: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
+        if u64::from(maximum_bytes) > self.limits.maximum_read_bytes {
+            return Err(fs_error(FsError::FileRead(
+                crate::kernel::FileRangeReadError::InvalidRange,
+            )));
+        }
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let cancellation = work.cancellation();
+            let state = await_lock(
+                self.state.lock(),
+                &mut carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
             let length = state
                 .file
                 .logical_bytes()
                 .saturating_sub(offset)
                 .min(u64::from(maximum_bytes));
             if length == 0 {
-                return Ok(Bytes::new());
+                return carrier.empty_source_chunk();
             }
-            state
+            let read = state
                 .file
-                .read_range(
-                    ByteRange { offset, length },
-                    boundary_budget(),
-                    &self.cancellation,
-                )
+                .read_range(ByteRange { offset, length }, work, cancellation)
                 .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(engine_error)
+                .map_err(fs_error)?;
+            let capacity = read.logical_owned_bytes();
+            carrier.finish_read(
+                crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, capacity),
+                cancellation,
+                Some(&self.cancellation),
+            )
         })
     }
 
-    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            state
+    fn seek_with_meter(
+        &self,
+        offset: u64,
+        target: MountSeekTarget,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<u64>, MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let state = await_lock(
+                self.state.lock(),
+                &mut carrier,
+                work.cancellation(),
+                Some(&self.cancellation),
+            )
+            .await?;
+            let position = state
                 .file
                 .seek(
                     offset,
@@ -184,21 +278,162 @@ where
                         MountSeekTarget::Data => ExtentSeekTarget::Data,
                         MountSeekTarget::Hole => ExtentSeekTarget::Hole,
                     },
-                    boundary_budget(),
-                    &self.cancellation,
+                    work,
+                    work.cancellation(),
                 )
                 .await
-                .map(|receipt| receipt.value)
-                .map_err(engine_error)
+                .map_err(fs_error)?;
+            carrier.check(work.cancellation(), Some(&self.cancellation))?;
+            Ok(position)
+        })
+    }
+
+    fn write_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content(
+            ContentChange::Write {
+                offset,
+                bytes: bytes.bytes,
+            },
+            work,
+        )
+    }
+
+    fn resize_with_meter(
+        &self,
+        logical_bytes: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content(ContentChange::Resize { logical_bytes }, work)
+    }
+
+    fn allocate_range_with_meter(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: MountRangeAllocation,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content(
+            range_allocation(ByteRange { offset, length }, operation),
+            work,
+        )
+    }
+
+    fn settle(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            drop(
+                await_lock(
+                    self.state.lock(),
+                    &mut carrier,
+                    work.cancellation(),
+                    Some(&self.cancellation),
+                )
+                .await?,
+            );
+            Ok(())
+        })
+    }
+
+    fn read_sparse_range(
+        &self,
+        offset: u64,
+        length: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let state = await_lock(
+                self.state.lock(),
+                &mut NativeDemandCarrier::Native(work),
+                work.cancellation(),
+                Some(&self.cancellation),
+            )
+            .await?;
+            sparse::read_sparse(&state.file, offset, length, work, &self.cancellation).await
+        })
+    }
+
+    fn write_sparse_range(
+        &self,
+        offset: u64,
+        range: (MountSparseRange, crate::NativeAllocation),
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        sparse::validate_sparse_allocation(&range.1, work)?;
+        invoke(&self.runtime, work, || async {
+            let mut state = await_lock(
+                self.state.lock(),
+                &mut NativeDemandCarrier::Native(work),
+                work.cancellation(),
+                Some(&self.cancellation),
+            )
+            .await?;
+            let changes =
+                sparse::sparse_changes(offset, &range.0, state.file.logical_bytes(), work)?;
+            for change in changes {
+                state.change_content(change, &self.ledger, work).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn read_range_with_meter(
+        &self,
+        offset: u64,
+        length: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
+        let mut carrier = NativeDemandCarrier::Native(work);
+        invoke(&self.runtime, work, || {
+            self.read_bytes(offset, length, &mut carrier)
+        })
+    }
+
+    fn lookup(&self) -> Result<MountLookup, MountSourceError> {
+        boundary(&self.cancellation, |work| self.lookup_with_meter(work))
+    }
+
+    fn read_range(&self, offset: u64, length: u32) -> Result<OwnedBytes, MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.read_range_with_meter(offset, length, work)
+        })
+        .map(|chunk| chunk.bytes)
+    }
+
+    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<OwnedBytes, MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.read_up_to_with_meter(offset, maximum_bytes, work)
+        })
+        .map(|chunk| chunk.bytes)
+    }
+
+    fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.seek_with_meter(offset, target, work)
         })
     }
 
     fn write_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
-        self.change_content(ContentChange::Write { offset, bytes })
+        boundary(&self.cancellation, |work| {
+            self.change_content(
+                ContentChange::Write {
+                    offset,
+                    bytes: bytes.into(),
+                },
+                work,
+            )
+        })
     }
 
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
-        self.change_content(ContentChange::Resize { logical_bytes })
+        boundary(&self.cancellation, |work| {
+            self.resize_with_meter(logical_bytes, work)
+        })
     }
 
     fn allocate_range(
@@ -207,41 +442,63 @@ where
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError> {
-        self.change_content(range_allocation(ByteRange { offset, length }, operation))
+        boundary(&self.cancellation, |work| {
+            self.allocate_range_with_meter(offset, length, operation, work)
+        })
     }
 
     fn set_attributes(
         &self,
         metadata: FileMetadata,
         logical_bytes: Option<u64>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
+        invoke(&self.runtime, work, || async {
+            let cancellation = work.cancellation();
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut state = await_lock(
+                self.state.lock(),
+                &mut carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
             state
                 .file
-                .set_attributes(
-                    metadata,
-                    logical_bytes,
-                    boundary_budget(),
-                    &self.cancellation,
-                )
+                .set_attributes(metadata, logical_bytes, work, cancellation)
                 .await
-                .map_err(engine_error)?;
+                .map_err(fs_error)?;
             state.metadata = metadata;
-            state.record_change(&self.ledger)
+            state.record_change(&self.ledger, &mut carrier)
         })
     }
 
-    fn read_attribute(&self, name: &[u8]) -> Result<Option<Bytes>, MountSourceError> {
-        let name = self.attribute_name(name)?;
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            state
+    fn read_attribute(
+        &self,
+        name: &[u8],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let cancellation = work.cancellation();
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let name = inputs.attribute_name(name, self.profile, self.limits)?;
+            let state = await_lock(
+                self.state.lock(),
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
+            let value = state
                 .file
-                .read_named_attribute(&name, boundary_budget(), &self.cancellation)
+                .read_named_attribute(&name, work, cancellation)
                 .await
-                .map(|receipt| receipt.value)
-                .map_err(engine_error)
+                .map_err(fs_error)?;
+            inputs
+                .carrier
+                .check(cancellation, Some(&self.cancellation))?;
+            Ok(value)
         })
     }
 
@@ -250,73 +507,83 @@ where
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError> {
-        let cursor = cursor.map(|name| self.attribute_name(name)).transpose()?;
-        self.runtime.wait(|| async {
-            let state = self.state.lock().await;
-            let receipt = state
+        boundary(&self.cancellation, |work| {
+            self.list_attributes_with_meter(cursor, maximum_entries, work)
+        })
+        .map(|(page, _)| page)
+    }
+
+    fn list_attributes_with_meter(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError> {
+        invoke(&self.runtime, work, || async {
+            let cancellation = work.cancellation();
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let cursor = cursor
+                .map(|bytes| inputs.attribute_name(bytes, self.profile, self.limits))
+                .transpose()?;
+            let state = await_lock(
+                self.state.lock(),
+                inputs.carrier,
+                cancellation,
+                Some(&self.cancellation),
+            )
+            .await?;
+            let mut accounting =
+                crate::kernel::allocation::KernelAccounting::native(work, cancellation);
+            let listing = state
                 .file
-                .list_named_attributes(
+                .list_named_attributes_with_accounting(
                     cursor.as_ref(),
                     maximum_entries,
-                    boundary_budget(),
-                    &self.cancellation,
+                    &mut accounting,
+                    cancellation,
                 )
                 .await
-                .map_err(engine_error)?;
-            let has_more = receipt.value.has_more;
-            let names = receipt
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    if entry.name.class() != AttributeClass::PosixXattr {
-                        return Err(MountSourceError::Unsupported(
-                            "POSIX mount encountered a non-POSIX named attribute".to_owned(),
-                        ));
-                    }
-                    Ok(entry.name.as_bytes().to_vec())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let next_cursor = has_more.then(|| names.last().cloned()).flatten();
-            Ok(MountAttributePage { names, next_cursor })
+                .map_err(fs_error)?;
+            let page = inputs.attribute_page(&listing.0)?;
+            drop(listing);
+            drop(state);
+            let bytes = cursor
+                .as_ref()
+                .map_or(0, |name| name.retained_bytes() as u64);
+            drop(cursor);
+            inputs.release(bytes)?;
+            inputs
+                .carrier
+                .check(cancellation, Some(&self.cancellation))?;
+            Ok((page, inputs.retain().expect("native attribute page")))
         })
     }
 
     fn write_attribute(
         &self,
         name: &[u8],
-        value: Bytes,
+        value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let name = self.attribute_name(name)?;
         let mode = match mode {
             MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
             MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
             MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
         };
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            let receipt = state
-                .file
-                .write_named_attribute(name, value, mode, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(facade_error)?;
-            state.metadata = receipt.value;
-            state.record_change(&self.ledger)
+        invoke(&self.runtime, work, || {
+            self.change_attribute(name, Some((value.bytes.as_ref(), mode)), work)
         })
     }
 
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError> {
-        let name = self.attribute_name(name)?;
-        self.runtime.wait(|| async {
-            let mut state = self.state.lock().await;
-            let receipt = state
-                .file
-                .remove_named_attribute(name, boundary_budget(), &self.cancellation)
-                .await
-                .map_err(facade_error)?;
-            state.metadata = receipt.value;
-            state.record_change(&self.ledger)
+    fn remove_attribute(
+        &self,
+        name: &[u8],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        invoke(&self.runtime, work, || {
+            self.change_attribute(name, None, work)
         })
     }
 }

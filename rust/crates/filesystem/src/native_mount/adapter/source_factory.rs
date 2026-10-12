@@ -1,24 +1,10 @@
 use super::*;
 
-pub(in crate::native_mount) fn validate_native_source_io_binding(
-    payer: &crate::NativeMaterializationWork,
-    binding: Option<&crate::NativeMaterializationWork>,
-) -> Result<(), MountSourceError> {
-    if binding.is_some_and(|binding| {
-        !payer.shares_ledger(binding) || !payer.shares_resource_allowance(binding)
-    }) {
-        return Err(MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::InvalidLayout,
-        ));
-    }
-    Ok(())
-}
-
 impl<A, O> CheckoutMountSource<A, O> {
     /// Binds callback authentication to this source.
     pub fn with_native_callback_guard(
         mut self,
-        guard: Arc<dyn crate::native_mount::NativeMountCallbackGuard>,
+        guard: Arc<dyn super::super::NativeMountCallbackGuard>,
     ) -> Self {
         self.native_callback_guard = Some(guard);
         self
@@ -28,17 +14,14 @@ impl<A, O> CheckoutMountSource<A, O> {
         checkout: Arc<SharedCheckout<A, O>>,
         config: VolumeConfig,
         root: NamespacePath,
-        root_allocation: crate::NativeAllocation,
+        mut root_allocation: crate::NativeAllocation,
         original: &crate::NativeMaterializationWork,
         native_original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, NativeMountError> {
-        let allocation = root_allocation;
-        let root = root;
         let work = original.allocation_work();
-        validate_native_source_io_binding(&work, native_original)?;
-        if !allocation.work().shares_ledger(&work)
-            || !allocation.work().shares_resource_allowance(&work)
-            || allocation.bytes() != root.retained_bytes()
+        if !root_allocation.work().shares_allocation_context(&work)
+            || root_allocation.bytes() != root.retained_bytes()
+            || native_original.is_some_and(|binding| !work.shares_allocation_context(binding))
         {
             return Err(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
@@ -56,27 +39,17 @@ impl<A, O> CheckoutMountSource<A, O> {
         let runtime = CallbackRuntime::existing()?;
         let cancellation =
             CancellationToken::new_with_native_work(&work).map_err(MountSourceError::NativeWork)?;
-        let gate_allocation = work
-            .claim(
-                std::mem::size_of::<StdMutex<CaptureSourceGate>>() as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(MountSourceError::NativeWork)?;
-        let quiesced_allocation = work
-            .claim(
-                std::mem::size_of::<std::sync::Condvar>() as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(MountSourceError::NativeWork)?;
-        let mut allocation = allocation;
-        allocation
-            .absorb(&mut { gate_allocation })
-            .map_err(MountSourceError::NativeWork)?;
-        allocation
-            .absorb(&mut { quiesced_allocation })
-            .map_err(MountSourceError::NativeWork)?;
+        for bytes in [
+            std::mem::size_of::<StdMutex<CaptureSourceGate>>(),
+            std::mem::size_of::<std::sync::Condvar>(),
+        ] {
+            let mut allocation = work
+                .claim(bytes as u64, 1, crate::WorkCounters::UNCHARGED)
+                .map_err(MountSourceError::NativeWork)?;
+            root_allocation
+                .absorb(&mut allocation)
+                .map_err(MountSourceError::NativeWork)?;
+        }
         let mut cleanup_credit = work
             .reserve_work(crate::WorkCounters {
                 items_examined: 2,
@@ -103,12 +76,12 @@ impl<A, O> CheckoutMountSource<A, O> {
             capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
             capture_quiesced: Arc::new(std::sync::Condvar::new()),
             runtime,
-            native_io_original: native_original.cloned(),
             native_original: Some(work),
+            native_io_original: native_original.cloned(),
             native_callback_guard: None,
             cleanup_credit: StdMutex::new(Some(cleanup_credit)),
             cleanup_final_credit: StdMutex::new(Some(final_credit)),
-            _namespace_allocation: Some(allocation),
+            _namespace_allocation: Some(root_allocation),
             _source_allocation: None,
         })
     }
@@ -120,13 +93,9 @@ impl<A, O> CheckoutMountSource<A, O> {
     where
         Self: Send + Sync + 'static,
     {
-        let stored = self
-            .native_original
-            .as_ref()
-            .ok_or(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            ))?;
-        if !stored.shares_ledger(original) || !stored.shares_resource_allowance(original) {
+        if !self.native_original.as_ref().is_some_and(|stored| {
+            stored.shares_ledger(original) && stored.shares_resource_allowance(original)
+        }) {
             return Err(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             )

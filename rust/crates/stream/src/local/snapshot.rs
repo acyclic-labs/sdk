@@ -10,11 +10,15 @@ pub(super) fn encode_snapshot(
     epoch: u64,
     state: &[u8],
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
-    let capacity = SNAPSHOT_HEADER_BYTES.checked_add(state.len())
-        .and_then(|length| length.checked_add(32)).ok_or(LocalStreamError::InvalidLimits)?;
+) -> Result<NativeStreamOutput<Vec<u8>>, LocalStreamError> {
+    let capacity = SNAPSHOT_HEADER_BYTES
+        .checked_add(state.len())
+        .and_then(|length| length.checked_add(32))
+        .ok_or(LocalStreamError::InvalidLimits)?;
     let mut encoded = crate::memory::vec(meter, capacity)?;
-    if let Some(meter) = meter { meter.admit_codec(capacity as u64, capacity as u64, 0)?; }
+    if let Some(meter) = meter {
+        meter.admit_codec(capacity as u64, capacity as u64, 0)?;
+    }
     encoded.value.extend_from_slice(SNAPSHOT_MAGIC);
     encoded.value.extend_from_slice(&encode_limits(limits)?);
     encoded.value.extend_from_slice(&epoch.to_le_bytes());

@@ -221,3 +221,17 @@ impl CallbackRuntime {
             .map_err(|_| MountSourceError::Stale)?
     }
 }
+
+pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
+    runtime: &CallbackRuntime,
+    work: &crate::NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<T, MountSourceError> {
+    runtime
+        .block_on(
+            || tokio::time::timeout(CALLBACK_TIMEOUT, create()),
+            Some(work.runtime_meter().as_ref()),
+        )
+        .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
+        .map_err(|_| MountSourceError::Stale)?
+}

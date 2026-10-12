@@ -1,4 +1,3 @@
-use super::*;
 use acyclic_stream::OwnedBytes;
 
 pub(super) enum NativeDemandCarrier<'a> {
@@ -90,6 +89,35 @@ impl NativeDemandCarrier<'_> {
         self.with_work(|work| work.merge_with_prior_live(completed, prior_live))
             .map_err(super::lazy::mount_demand_error)?;
         result
+    }
+
+    fn finish_read(
+        &mut self,
+        chunk: crate::kernel::OwnedSourceChunk,
+        cancellation: &CancellationToken,
+        lifetime: Option<&CancellationToken>,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
+        let bytes = if self.original_native_work().is_some() {
+            0
+        } else {
+            chunk.logical_owned_bytes()
+        };
+        let result = if bytes == 0 {
+            Ok(())
+        } else {
+            self.with_work(|work| work.record_adoption(bytes, &None))
+                .map_err(super::lazy::mount_demand_error)
+        }
+        .and_then(|()| self.check(cancellation, lifetime));
+        if let Err(error) = result {
+            drop(chunk);
+            if bytes != 0 {
+                self.with_work(|work| work.release(bytes))
+                    .map_err(super::lazy::mount_demand_error)?;
+            }
+            return Err(error);
+        }
+        Ok(chunk)
     }
 }
 

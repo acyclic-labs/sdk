@@ -113,10 +113,10 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
                 }
             }
             crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(
-                "direct-live mounts do not support operation lease permits".to_owned(),
+                "direct-live mounts do not support operation lease permits".into(),
             )),
             crate::model::MutationMode::None => Err(MountSourceError::Unsupported(
-                "checkout does not admit native writes".to_owned(),
+                "checkout does not admit native writes".into(),
             )),
         }
     }
@@ -159,7 +159,7 @@ pub async fn seal_checkout_with_permit_force_measured<
             .map_err(|_| MountSourceError::Cancelled)?;
         if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
             return Err(MountSourceError::Unsupported(
-                "forced publication requires a private-overlay checkout".to_owned(),
+                "forced publication requires a private-overlay checkout".into(),
             ));
         }
         // The same safe-rebase bound governs the original native carrier below.
@@ -235,7 +235,7 @@ pub async fn seal_checkout_with_permit_force_measured<
             }
         }
         Err(MountSourceError::Engine(
-            "publication raced with repeated head advances; retry retained operation".to_owned(),
+            "publication raced with repeated head advances; retry retained operation".into(),
         ))
     }
     .await;
@@ -407,7 +407,7 @@ where
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
 }
 
 fn publication_failure(

@@ -2,7 +2,6 @@ use super::*;
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -38,20 +37,29 @@ impl InvokeActorRequest {
         }
     }
     /// Returns the Actor identity.
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the invocation method.
-    pub fn method(&self) -> &str { &self.method }
+    pub fn method(&self) -> &str {
+        &self.method
+    }
     /// Returns the invocation URL.
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
     /// Returns the invocation body bytes.
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }
 
 /// Typed invocation response with byte-preserving body and headers.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
@@ -67,9 +75,15 @@ pub struct InvokeActorResponse {
 
 impl InvokeActorResponse {
     /// Returns the HTTP-like status code.
-    pub fn status(&self) -> u32 { self.status }
+    pub fn status(&self) -> u32 {
+        self.status
+    }
     /// Returns the response body bytes.
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }

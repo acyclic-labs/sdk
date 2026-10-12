@@ -115,20 +115,19 @@ fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Er
     source.observe_view(weak);
     let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
     let target = native_test_path("applied");
-    source.create_file(&target, metadata())?;
+    let work =
+        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+    source.create_file(&target, metadata(), None, &work)?;
     assert!(source.lookup(&target)?.is_some());
     {
         let _requester = requester.enter();
+        let queued = native_test_path("queued");
         source.runtime.wait(|| {
-            source.checkout.apply_grouped(
-                GroupedChange::CreateFile {
-                    path: source.path(&native_test_path("queued"))?,
-                    metadata: Box::new(metadata()),
-                    file_id: FileId::new(),
-                    bytes: acyclic_stream::OwnedBytes::new(),
-                },
-                &source.cancellation,
-            )
+            source.create(&queued, &work, |path| AuthoredMutation::CreateFile {
+                path,
+                metadata: metadata(),
+                bytes: acyclic_stream::OwnedBytes::new(),
+            })
         })?;
     }
     {
@@ -295,9 +294,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
                 }
-                checkout
-                    .publish_after_mutation(ViewChange::Everything, &source.cancellation)
-                    .await
+                Ok::<_, MountSourceError>(())
             })
         })?;
     }

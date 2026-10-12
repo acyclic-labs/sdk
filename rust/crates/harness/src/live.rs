@@ -425,12 +425,12 @@ mod tests {
         };
         let denied = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..budget }, &cancellation,
-        ).map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
+        ).map_err(|failure| crate::Error::NativeWork { cause: failure.0, custody: None })?;
         let root = TaskGroup::new(2, None).unwrap();
         assert!(root.child(1, Some(&denied)).is_err());
         assert_eq!(denied.receipt().allocation_operations, 0);
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|failure| crate::Error::NativeWork { cause: failure.error, custody: None })?;
+            .map_err(|failure| crate::Error::NativeWork { cause: failure.0, custody: None })?;
         let parent = root.child(2, Some(&work))?;
         let grandchild = parent.child(1, Some(&work))?;
         drop(parent);

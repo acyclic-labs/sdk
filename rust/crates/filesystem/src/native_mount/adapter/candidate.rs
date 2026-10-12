@@ -3,12 +3,6 @@ pub(super) struct CheckoutCandidate<A, O> {
     pub(super) checkout: Checkout<A, O>,
 }
 
-impl<A, O> CheckoutCandidate<A, O> {
-    pub(super) fn base(&self) -> &Checkout<A, O> {
-        &self.base
-    }
-}
-
 /// Paths whose bindings a candidate was prepared to change.
 #[derive(Clone, Copy)]
 pub(super) enum InstallScope<'a> {

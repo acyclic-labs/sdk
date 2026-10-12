@@ -557,14 +557,14 @@ mod tests {
                     content: FileRef::new(
                         VolumeRef::new(
                             ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                            "extension",
+                            "extension".into(),
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
                          &mut None)?,
-                        "extension/event.json",
-                        "generation-1",
+                        "extension/event.json".into(),
+                        "generation-1".into(),
                         FileDescriptor::from_bytes(b"null", "application/json", &mut None)?,
-                        "event.json",
+                        "event.json".into(),
                      &mut None)?,
                 },
             },
@@ -652,14 +652,14 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "scratch",
+                "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
              &mut None)?,
-            "messages/input.txt",
-            "pinned-generation",
+            "messages/input.txt".into(),
+            "pinned-generation".into(),
             FileDescriptor::from_bytes(b"fixture text", "text/plain", &mut None)?,
-            "input.txt",
+            "input.txt".into(),
          &mut None)?;
         let command = Command {
             operation_id: OperationId::from_bytes([2; 16]),

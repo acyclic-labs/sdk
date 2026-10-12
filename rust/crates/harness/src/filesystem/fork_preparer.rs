@@ -406,25 +406,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             task.verify_creation_with_native_work(work)?.await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
-            let (grants, custody) = controller.inherited_reference_grants_with_native_work(
-                &self.parent, request.child_agent, &request.attached_agents,
-                request.preparation.inherited_through_sequence, maximum_messages,
-                request.preparation.maximum_inherited_bytes,
-                request.preparation.maximum_inherited_references as usize,
-                self.resolver.as_ref(), self.history.as_ref(), work,
-            ).await?;
-            io.expect("native projection IO").absorb_native_custody(custody)?;
-            return Ok(grants);
-        }
-        controller.inherited_reference_grants(
+        let (grants, custody) = controller.inherited_reference_grants(
             &self.parent, request.child_agent, &request.attached_agents,
             request.preparation.inherited_through_sequence, maximum_messages,
             request.preparation.maximum_inherited_bytes,
             request.preparation.maximum_inherited_references as usize,
             self.resolver.as_ref(), self.history.as_ref(),
-        ).await
+        ).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(custody) = custody { io.expect("native projection IO").absorb_native_custody(custody)?; }
+        #[cfg(target_arch = "wasm32")]
+        let _ = custody;
+        Ok(grants)
     }
 
     /// Builds the exact created identities and their allocation journal proofs.
@@ -1937,10 +1930,10 @@ mod task_origin_tests {
         };
         let volume = VolumeRef::new(
             provider,
-            "child",
+            "child".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([71; 16])),
-        )?;
+         &mut None)?;
         let origin = ResourceCreationOrigin {
             owner: parent.clone(),
             parent_task: TaskId::from_bytes([72; 16]),

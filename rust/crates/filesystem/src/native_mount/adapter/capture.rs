@@ -29,18 +29,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         }
         let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)
             .map_err(|failure| failure.error)?;
-        self.runtime
-            .block_on(
-                || {
-                    tokio::time::timeout(
-                        CALLBACK_TIMEOUT,
-                        self.capture_host(source_root, paths, identity, scope, None, &work),
-                    )
-                },
-                Some(work.runtime_meter().as_ref()),
-            )
-            .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
-            .map_err(|_| MountSourceError::Stale)?
+        invoke(&self.runtime, &work, || {
+            self.capture_host(source_root, paths, identity, scope, None, &work)
+        })
     }
 
     /// Captures host changes using the caller's work and baseline.
@@ -50,7 +41,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         paths: &[MountPath],
         identity: NativeRootIdentity,
         scope: HostCaptureScope,
-        baseline: Option<Arc<NativeViewBaseline>>,
+        baseline: Option<NativeViewBaseline>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         work.native_read_meter()
@@ -64,18 +55,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
             return Ok(());
         }
         let inputs = self.capture_inputs(source_root, paths, identity, scope, work)?;
-        self.capture_candidate(&inputs.0, &inputs.1, scope, baseline.as_deref(), work)
-            .await
-    }
-
-    async fn capture_candidate(
-        &self,
-        paths: &[NamespacePath],
-        options: &CaptureOptions,
-        scope: HostCaptureScope,
-        baseline: Option<&NativeViewBaseline>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+        let paths = &inputs.0;
+        let options = &inputs.1;
+        let baseline = baseline.as_ref();
         let cancellation = work.cancellation();
         cancellation
             .check()
@@ -224,17 +206,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
             return Ok(false);
         };
         if publication != MountPublication::Manual {
+            let work = carrier
+                .original_native_work()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
             self.checkout
-                .seal_original_with_carrier_guarded(
+                .publish(
                     crate::PublicationPermit::Unrestricted,
-                    false,
-                    carrier,
+                    &work,
                     cancellation,
                     Some(&self.cancellation),
-                    &mut source_publication_guard(
-                        self.native_callback_guard.clone(),
-                        Some(self.cancellation.clone()),
-                    ),
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
         }

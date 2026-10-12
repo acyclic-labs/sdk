@@ -79,7 +79,13 @@ impl<'a> PiWorkflowHost<'a> {
         let recovered_custody;
         let recovered;
         (recovered, recovered_custody) =
-            host.recover_work_with_native_work(binding.task_id, work).await?;
+            (async {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+                let value = host.recover_work(binding.task_id, &mut Some(&mut io)).await?;
+                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+            }).await?;
         match recovered {
             WorkPull::Claimed(lease) | WorkPull::Unresolved { lease, .. } => {
                 let result = self.runtime.runtime
@@ -98,9 +104,14 @@ impl<'a> PiWorkflowHost<'a> {
                 worker = Worker {
                     id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
                 };
-                let result = self.runtime.runtime.run_operation_with_native_work(
-                    &worker, binding.task_id, self, 8, work,
-                ).await;
+                let result = (async {
+                    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                    let value = self.runtime.runtime.run_operation(&worker, binding.task_id, self, 8, Some(&io)).await?;
+                    let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                        return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+                    };
+                    Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+                }).await;
                 drop(worker);
                 drop(worker_custody);
                 result
@@ -122,8 +133,9 @@ impl<'a> PiWorkflowHost<'a> {
         let Some(provider) = self.root_provider.lock().await.clone() else { return Ok(None); };
         let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.resources.private_state_root, self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
-        let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task, work)?, work,
+        let effect = acyclic_harness::effect_host::task_effect_id(
+            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task, work)?, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?),
         )?;
         provider.observe_allocation_with_native_work(
             acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), work,
@@ -202,8 +214,11 @@ impl<'a> PiWorkflowHost<'a> {
         }
         let suspension_custody;
         let suspension;
-        (suspension, suspension_custody) = host
-            .workflow_suspension_with_native_work(task, &self.work).await?;
+        (suspension, suspension_custody) = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = host.workflow_suspension(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         let Some(suspension) = suspension else {
             return Err(acyclic_harness::Error::Indeterminate(operation));
         };
@@ -246,10 +261,10 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_control_context(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: &LeaseFence,
         protected: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
+    ) -> acyclic_harness::Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
         if context.context().durable_task_id() != Some(protected.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -271,7 +286,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_effects(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: &LeaseFence,
         command: &WorkflowCommand, payload: &Value,
         owner: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -322,7 +337,7 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn dispatch_native(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &acyclic_fs::NativeMaterializationWork, reconcile: bool,
     ) -> acyclic_harness::Result<TaskCommandProgress> {
@@ -386,7 +401,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn execute_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
@@ -396,7 +411,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn reconcile_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::runtime::NativeTaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {

@@ -5454,7 +5454,7 @@ pub async fn load_native_materialization_journal(
     let work = NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| (NativeWorkspacePublicationError::Native(error), work))?;
     let result = async {
-        let journal = MaterializationJournalStore::load(&state.materialization_with_work(work.clone()), operation_id).await?;
+        let journal = MaterializationJournalStore::load(&state.materialization(work.clone()), operation_id).await?;
         if let Some(journal) = &journal {
             if !valid_journal(journal, operation_id) || !native_check_plan(&journal.plan, &work)? {
                 return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -5492,7 +5492,7 @@ where
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
+pub async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
@@ -5509,7 +5509,7 @@ where
     if work.budget() != publication.budget {
         return Err(NativeTreeMaterializationError::InvalidLayout.into());
     }
-    let store = state.materialization_with_work(work.clone());
+    let store = state.materialization(work.clone());
     let NativeWorkspacePublication {
         root,
         source_root_identity,
@@ -5596,11 +5596,11 @@ where
     } else {
 
         let (changes, changes_custody) = from_generation
-            .diff_to_with_native_work(to_generation, u32::MAX, &work, cancellation)
-            .await?;
+            .diff_to(to_generation, u32::MAX, &work, cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|error| (error, None))?;
         let (changed, mut changed_custody) = changes
-            .changed_paths_with_native_work(u32::MAX, &work, cancellation)
-            .await?;
+            .changed_paths(u32::MAX, &work, cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|error| (error, None))?;
         drop(changes);
         drop(changes_custody);
         let held_root = crate::native_host::HostRoot::open(&root, &mut &work)?;
@@ -5951,8 +5951,8 @@ where
     let mut after_custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
         let (mut page, mut page_custody) = generation
-            .list_after_with_native_work(&directory, after.as_ref(), 1_024, work, cancellation)
-            .await?;
+            .list_directory(&directory, after.as_ref(), 1_024, work, cancellation)
+            .await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|error| (error, None))?;
         for entry in &page.entries {
             let mut index = 0;
             let mut found = false;
@@ -6828,17 +6828,17 @@ mod tests {
     }
 
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    struct FaultingLocalJournal<'a> {
-        store: crate::core_state::MeasuredMaterializationStore<'a>,
+    struct FaultingLocalJournal {
+        store: crate::LocalCoreStateStore,
         fail_revision: u64,
         lose_ack: bool,
     }
 
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    impl<'store> MaterializationJournalStore for FaultingLocalJournal<'store> {
+    impl MaterializationJournalStore for FaultingLocalJournal {
         type Error = crate::LocalCoreStateStoreError;
 
-        type ActionCompletion<'a> = <crate::core_state::MeasuredMaterializationStore<'store> as MaterializationJournalStore>::ActionCompletion<'a>
+        type ActionCompletion<'a> = <crate::LocalCoreStateStore as MaterializationJournalStore>::ActionCompletion<'a>
         where Self: 'a;
 
         async fn prepare_action<'a>(&'a self, journal: MaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
@@ -7055,9 +7055,9 @@ mod tests {
                 };
                 let custody = work.claim(journal_owned_bytes(&journal).expect("actual fixture capacity"), 0, crate::WorkCounters::UNCHARGED).expect("original fixture admission");
                 journal.custody = Some(custody);
-                let initial = compare_next_journal::<_, NativeTreeMaterializationError>(&state.materialization_with_work(work.clone()), journal).await.expect("first original intent").1;
+                let initial = compare_next_journal::<_, NativeTreeMaterializationError>(&state.materialization(work.clone()), journal).await.expect("first original intent").1;
                 assert!(!operation.exists());
-                let fault = FaultingLocalJournal { store: state.materialization_with_work(work.clone()), fail_revision, lose_ack };
+                let fault = FaultingLocalJournal { store: state.materialization(work.clone()), fail_revision, lose_ack };
                 let error = NativeTreeMaterializationBackend::prepare_allocations(&fault, initial, &root, &operation, &work, &mut || std::future::ready(Ok::<(), MaterializationError<_, NativeTreeMaterializationError>>(()))).await.expect_err("original allocation checkpoint failure");
                 assert!(matches!(error, MaterializationError::Store(_)));
                 work.receipt().verify(budget).expect("all native and failed journal work retained");
@@ -7066,7 +7066,7 @@ mod tests {
                 drop(state);
                 let restarted = crate::LocalCoreStateStore::new(&state_path);
                 let resumed_work = NativeMaterializationWork::new(budget, &cancellation).expect("restart meter");
-                let current = restarted.materialization_with_work(resumed_work.clone()).load(operation_id).await.expect("root independent original progress query").expect("retained original intent");
+                let current = restarted.materialization(resumed_work.clone()).load(operation_id).await.expect("root independent original progress query").expect("retained original intent");
                 assert_eq!(current.root_identity, Some(source.to_bytes()));
                 assert_eq!(current.phase, MaterializationPhase::Preparing);
                 assert!(current.preimages.is_empty());
@@ -7075,14 +7075,14 @@ mod tests {
                 if unknown {
                     let progress = current.preparation_progress.expect("indeterminate allocation prefix");
                     let before = std::fs::read_dir(temporary.path()).expect("fixture names").count();
-                    let error = NativeTreeMaterializationBackend::prepare_allocations(&restarted.materialization_with_work(resumed_work.clone()), current, &root, &operation, &resumed_work, &mut || std::future::ready(Ok::<(), MaterializationError<_, NativeTreeMaterializationError>>(()))).await.expect_err("unknown mkdir cannot be adopted from a current path");
+                    let error = NativeTreeMaterializationBackend::prepare_allocations(&restarted.materialization(resumed_work.clone()), current, &root, &operation, &resumed_work, &mut || std::future::ready(Ok::<(), MaterializationError<_, NativeTreeMaterializationError>>(()))).await.expect_err("unknown mkdir cannot be adopted from a current path");
                     assert!(matches!(error, MaterializationError::Backend(NativeTreeMaterializationError::IndeterminatePreparation)));
                     assert_eq!(std::fs::read_dir(temporary.path()).expect("no repair or adoption").count(), before);
                     let retained = load_native_materialization_journal(&restarted, operation_id, budget, &cancellation).await.expect("still original pending decision").value.expect("retained");
                     assert_eq!(retained.preparation_progress, Some(progress));
                     assert!(retained.preparation_identity.is_none());
                 } else if current.preparation_progress.is_some() {
-                    let completed = NativeTreeMaterializationBackend::prepare_allocations(&restarted.materialization_with_work(resumed_work.clone()), current, &root, &operation, &resumed_work, &mut || std::future::ready(Ok::<(), MaterializationError<_, NativeTreeMaterializationError>>(()))).await.expect("continue only recorded known original allocations");
+                    let completed = NativeTreeMaterializationBackend::prepare_allocations(&restarted.materialization(resumed_work.clone()), current, &root, &operation, &resumed_work, &mut || std::future::ready(Ok::<(), MaterializationError<_, NativeTreeMaterializationError>>(()))).await.expect("continue only recorded known original allocations");
                     assert!(completed.preparation_progress.is_none());
                     let ready = completed.preparation_identity.expect("all three actual IDs");
                     assert_eq!(resumed_work.root_identity(&operation).expect("actual operation").to_bytes(), ready.operation);
@@ -7156,7 +7156,7 @@ mod tests {
         let source = backend.allocation_identity();
         let preparation = backend.preparation_identity();
         let state = crate::LocalCoreStateStore::new(&state_path);
-        let engine = JournaledMaterializer::new(state.materialization_with_work(work.clone()), NativeCaptureBarrier {
+        let engine = JournaledMaterializer::new(state.materialization(work.clone()), NativeCaptureBarrier {
             inner: backend, file: root.join("file"), armed: std::sync::atomic::AtomicBool::new(true),
             effects: std::sync::atomic::AtomicUsize::new(0),
         });

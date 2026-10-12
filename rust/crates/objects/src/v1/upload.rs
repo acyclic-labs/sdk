@@ -3,9 +3,9 @@ use super::{Error, UploadBody, request, wire};
 use acyclic_stream::OwnedBytes;
 use futures::{
     StreamExt,
-    task::AtomicWaker,
     future::{Either, select},
     stream,
+    task::AtomicWaker,
 };
 use std::{
     future::Future,
@@ -23,12 +23,19 @@ pub(super) struct State {
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
-        self.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unwrap_or_else(|| Err(wire::ErrorCode::Unavailable.into()))
     }
     fn fail(&self, error: Error) {
-        let mut result = self.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if result.is_none() { *result = Some(Err(error)); }
+        let mut result = self
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if result.is_none() {
+            *result = Some(Err(error));
+        }
         drop(result);
         self.waker.wake();
     }
@@ -49,8 +56,10 @@ pub(super) fn chunks(
         Some(controls) => {
             controls.check()?;
             let allocation = acyclic_native_runtime::ReadAllocation::new(
-                &controls.meter, std::mem::size_of::<State>(),
-            ).map_err(|error| controls.fail(error))?;
+                &controls.meter,
+                std::mem::size_of::<State>(),
+            )
+            .map_err(|error| controls.fail(error))?;
             Some(allocation)
         }
         None => None,
@@ -62,7 +71,13 @@ pub(super) fn chunks(
         _allocation: allocation,
     });
     let chunks = stream::try_unfold(
-        (body, OwnedBytes::new(), 0_u64, SourceState(state.clone()), controls.clone()),
+        (
+            body,
+            OwnedBytes::new(),
+            0_u64,
+            SourceState(state.clone()),
+            controls.clone(),
+        ),
         |(mut body, mut pending, mut length, state, controls)| async move {
             if let Some(controls) = &controls {
                 if let Err(failure) = controls.check() {
@@ -79,7 +94,8 @@ pub(super) fn chunks(
                 }
                 match body.next().await {
                     Some(Ok(bytes)) => {
-                        let size = length.checked_add(bytes.len() as u64)
+                        let size = length
+                            .checked_add(bytes.len() as u64)
                             .ok_or(Error::from(wire::ErrorCode::QuotaExceeded));
                         match size.and_then(|size| {
                             request::upload_length(size)?;
@@ -100,7 +116,11 @@ pub(super) fn chunks(
                         return Err(failure);
                     }
                     None => {
-                        *state.0.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(length));
+                        *state
+                            .0
+                            .result
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(length));
                         return Ok(None);
                     }
                 }
@@ -112,7 +132,9 @@ pub(super) fn chunks(
         },
     );
     let chunks = match &controls {
-        Some(controls) => box_native(chunks, &controls.meter).map_err(|error| controls.fail(error))?,
+        Some(controls) => {
+            box_native(chunks, &controls.meter).map_err(|error| controls.fail(error))?
+        }
         None => chunks.boxed().into(),
     };
     Ok((chunks, state))
@@ -125,10 +147,11 @@ fn box_native<S>(
 where
     S: futures::Stream<Item = Result<OwnedBytes, Error>> + Send + 'static,
 {
-    let allocation = acyclic_native_runtime::ReadAllocation::new(
-        meter, std::mem::size_of::<S>(),
-    )?;
-    Ok(UploadBody { value: stream.boxed(), _allocation: Some(allocation) })
+    let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<S>())?;
+    Ok(UploadBody {
+        value: stream.boxed(),
+        _allocation: Some(allocation),
+    })
 }
 
 pub(super) fn chunks_native(
@@ -154,12 +177,17 @@ pub(super) async fn run<T: Send>(
 ) -> Result<T, Error> {
     let failure = futures::future::poll_fn(|cx| {
         state.waker.register(cx.waker());
-        let mut result = state.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut result = state
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(Err(error)) = *result {
             *result = None;
             return std::task::Poll::Ready(Some(error));
         }
-        if state.closed.load(Ordering::Acquire) { return std::task::Poll::Ready(None); }
+        if state.closed.load(Ordering::Acquire) {
+            return std::task::Poll::Ready(None);
+        }
         std::task::Poll::Pending
     });
     futures::pin_mut!(request, failure);

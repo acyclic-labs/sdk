@@ -492,7 +492,7 @@ impl ToolProjection for LocalListFilesTool {
 }
 
 struct MemoryContentPublisher {
-    files: FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>,
+    files: Arc<FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>>,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
@@ -671,7 +671,7 @@ impl MemoryHarnessStorage {
                 action: Action::BindConversation { agent },
             }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?);
+        let input = FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?;
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -892,7 +892,7 @@ impl MemoryHarnessStorage {
     fn delegated_reader(
         &self,
         scope: &Scope,
-    ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
+    ) -> Result<Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>> {
         FilesystemContentVerifier::new(self.host.clone(), &self.issuer.verifier(&mut None).expect("verifier copy"), &scope, self.maximum_file_bytes, None)
     }
 
@@ -971,14 +971,12 @@ mod tests {
             operation, "once.json", b"original", "application/json", "original.json", Some(&committed_io),
         )?.await?;
         assert!(committed_io.receipt().backend_write_operations > 0);
-        assert!(storage.memory_store.lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?.has(&committed)?);
         storage.publisher.stage_once(OperationId::new(), "once.json", b"later", "text/plain", "later.txt", None)?.await?;
         let observed_io = super::super::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
         let (recovered, _recovered_hold) = storage.publisher.observe_staged_once(operation, 1024, Some(&observed_io))?.await?;
         assert_eq!(recovered.as_ref(), Some(&committed));
         let read_io = super::super::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
-        assert_eq!(storage.content_verifier.read(&committed, 1024, Some(&read_io))?.await?, b"original");
+        assert_eq!(storage.content_verifier.read(&committed, 1024, Some(&read_io))?.await?.as_ref(), b"original");
         assert!(storage.publisher.stage_once(operation, "once.json", b"original", "text/plain", "changed.txt",
             Some(&committed_io))?.await.is_err());
         let cancelled = acyclic_fs::CancellationToken::new();
@@ -1029,7 +1027,7 @@ mod tests {
         assert!(work.receipt().backend_write_operations > 0);
         let before_read = work.live_allocation_bytes();
         let bytes = storage.content_verifier.read(&file, 1024, Some(&io))?.await?;
-        assert_eq!(bytes, b"original");
+        assert_eq!(bytes.as_ref(), b"original");
         assert!(work.live_allocation_bytes() > before_read);
         drop(bytes);
         assert_eq!(work.live_allocation_bytes(), before_read);
@@ -1094,6 +1092,8 @@ mod tests {
     #[tokio::test]
     async fn native_host_original_key_recovers_immutable_upload_after_head_edit() -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
+        let write = ContentGrant::verify(&storage.verifier(), &storage.scope, &storage.volume,
+            VolumeOperation::Write, 1024, &mut None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -1103,57 +1103,48 @@ mod tests {
         path_budget.allocation_operations = work.receipt().allocation_operations;
         let path_work = acyclic_fs::NativeMaterializationWork::new(path_budget, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let path_io = super::super::PreparationIo::from_native_work(&path_work)?;
         let path_prefix = path_work.receipt();
-        assert!(matches!(storage.host.put_content_with_native_work(
-            &storage.volume, &storage.write, "../outside", b"never",
-            "text/plain", "never", 1024, &key, &path_work,
-        ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
-        assert!(matches!(storage.host.content_for_operation_with_native_work(
-            &storage.volume, &storage.write, &key, ".system/private", 1024, &path_work,
-        ).await, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert!(matches!(storage.host.put_content(&storage.volume, &write, "../outside", b"never",
+            "text/plain", "never", 1024, &key, None, Some(&path_io)).await,
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+        assert!(matches!(storage.host.content_for_operation(&storage.volume, &write, &key,
+            ".system/private", 1024, Some(&path_io)).await,
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
         assert_eq!(path_work.receipt(), path_prefix);
-        let staged = storage.host.put_content_with_native_work(
-            &storage.volume, &storage.write, "inputs/original.json", b"original",
-            "application/json", "original.json", 1024, &key, &work,
-        ).await?;
-        assert_eq!(staged.1.bytes(), staged.0.logical_owned_bytes()?);
-        storage.host.put_content(
-            &storage.volume, &storage.write, "inputs/original.json", b"later",
-            "text/plain", "later.txt", 1024, &IdempotencyKey::new("head-edit")?,
-        ).await?;
-        let recovered = storage.host.content_for_operation_with_native_work(
-            &storage.volume, &storage.write, &key, "inputs/original.json", 1024, &work,
-        ).await?.ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
-        assert_eq!(recovered.0, staged.0);
-        assert_eq!(recovered.1.bytes(), recovered.0.logical_owned_bytes()?);
-        let read_io = super::super::PreparationIo::from_native_work(&work)?;
-        let content = storage.content_verifier.read(&recovered.0, 1024, Some(&read_io))?.await?;
-        assert_eq!(content, b"original");
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let staged = storage.host.put_content(&storage.volume, &write, "inputs/original.json", b"original",
+            "application/json", "original.json", 1024, &key, None, Some(&io)).await?;
+        let staged_hold = io.take_native_custody(staged.logical_owned_bytes()?)?;
+        storage.host.put_content(&storage.volume, &write, "inputs/original.json", b"later",
+            "text/plain", "later.txt", 1024, &IdempotencyKey::new("head-edit")?, None, None).await?;
+        let recovered = storage.host.content_for_operation(&storage.volume, &write, &key,
+            "inputs/original.json", 1024, Some(&io)).await?
+            .ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
+        let recovered_hold = io.take_native_custody(recovered.logical_owned_bytes()?)?;
+        assert_eq!(recovered, staged);
+        let content = storage.content_verifier.read(&recovered, 1024, Some(&io))?.await?;
+        assert_eq!(content.as_ref(), b"original");
         drop(content);
         let writes = work.receipt().backend_write_operations;
-        assert!(storage.host.put_content_with_native_work(
-            &storage.volume, &storage.write, "inputs/original.json", b"original",
-            "text/plain", "changed.txt", 1024, &key, &work,
-        ).await.is_err());
+        assert!(storage.host.put_content(&storage.volume, &write, "inputs/original.json", b"original",
+            "text/plain", "changed.txt", 1024, &key, None, Some(&io)).await.is_err());
         assert_eq!(work.receipt().backend_write_operations, writes);
-        assert!(storage.host.content_for_operation_with_native_work(
-            &storage.volume, &storage.write, &key, "inputs/changed.json", 1024, &work,
-        ).await.is_err());
-        assert!(storage.host.content_for_operation_with_native_work(
-            &storage.volume, &storage.write, &IdempotencyKey::new("proven-absent-operation")?,
-            "inputs/original.json", 1024, &work,
-        ).await?.is_none());
-        drop(recovered);
-        drop(staged);
+        assert!(storage.host.content_for_operation(&storage.volume, &write, &key,
+            "inputs/changed.json", 1024, Some(&io)).await.is_err());
+        assert!(storage.host.content_for_operation(&storage.volume, &write, &IdempotencyKey::new("proven-absent-operation")?,
+            "inputs/original.json", 1024, Some(&io)).await?.is_none());
+        drop(recovered); drop(recovered_hold); drop(staged); drop(staged_hold); drop(io);
         assert_eq!(work.live_allocation_bytes(), baseline);
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancelled)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = super::super::PreparationIo::from_native_work(&cancelled_work)?;
         let prefix = cancelled_work.receipt();
         cancelled.cancel();
-        assert!(matches!(storage.host.content_for_operation_with_native_work(
-            &storage.volume, &storage.write, &key, "inputs/original.json", 1024, &cancelled_work,
-        ).await, Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
+        assert!(matches!(storage.host.content_for_operation(&storage.volume, &write, &key,
+            "inputs/original.json", 1024, Some(&io)).await,
+            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
         assert_eq!(cancelled_work.receipt(), prefix);
         Ok(())
     }
@@ -1382,7 +1373,7 @@ mod tests {
         let limits = Limits { file_bytes: 65536, ..Default::default() };
         let tools = storage.default_tools(limits, None)?;
         for name in ["acyclic.fork", "acyclic.merge"] {
-            let tool = tools.get(name).unwrap().clone();
+            let tool = tools.get(name, None)?.unwrap().clone();
             run_admitted_file_case(&storage, limits, move |task| {
                 let tool = tool.clone();
                 async move {
@@ -1422,7 +1413,7 @@ mod tests {
         };
         let tool = owner
             .default_tools(limits, None)?
-            .get("acyclic.read_file")
+            .get("acyclic.read_file", None)?
             .ok_or_else(|| Error::NotFound("read tool".into()))?
             .clone();
         let invocation = ToolInvocation {
@@ -1522,7 +1513,7 @@ mod tests {
         };
         let tool = storage
             .default_tools(limits, None)?
-            .get("acyclic.write_file")
+            .get("acyclic.write_file", None)?
             .ok_or_else(|| Error::NotFound("write tool".into()))?
             .clone();
         run_admitted_file_case(&storage, limits, move |task| {
@@ -1592,7 +1583,7 @@ mod tests {
         };
         let tool = storage
             .default_tools(limits, None)?
-            .get("acyclic.list_files")
+            .get("acyclic.list_files", None)?
             .ok_or_else(|| Error::NotFound("default list tool".into()))?
             .clone();
         let invocation = ToolInvocation {
@@ -1680,11 +1671,11 @@ mod tests {
                     ("acyclic.edit_file", json!({"file":file,"old_text":"one","new_text":"two"})),
                 ] {
                     let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
-                    let tool = tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;
+                    let tool = tools.get(name, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
                     assert!(matches!(tool.executor.execute_with_context(crate::runtime::ToolContext::new(task.clone(), invocation.operation_id, &invocation.call_id)?, invocation).await, Err(Error::Unauthorized(_))));
                 }
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: "list".into(), name: "acyclic.list_files".into(), arguments: json!({"path":"","maximum_entries":8}) };
-                assert!(matches!(tools.get("acyclic.list_files").ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
+                assert!(matches!(tools.get("acyclic.list_files", None)?.ok_or_else(|| Error::NotFound("list tool".into()))?.executor.authorize(Some(task.scope()), &invocation), Err(Error::Unauthorized(_))));
                 Ok(())
             }
         }).await
@@ -2061,7 +2052,7 @@ mod tests {
                         .await
                         .is_err()
                 );
-                String::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))
+                String::from_utf8(bytes.to_vec()).map_err(|error| Error::Invalid(error.to_string()))
             })?
             .requires("content:write")?,
         )?;

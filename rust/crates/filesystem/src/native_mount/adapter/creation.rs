@@ -14,28 +14,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
             .await?;
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let mut changes = inputs.vec(1)?;
         let owned = inputs.clone_namespace(path.components(), self.limits)?;
-        inputs.charge(crate::WorkCounters {
-            items_examined: 1,
-            bytes_copied: std::mem::size_of::<AuthoredMutation>() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        changes.push(build(owned));
-        let allocation = inputs.retain().expect("native creation input");
-        let result = candidate
-            .checkout
-            .apply_borrowed_authored_transaction_with_native_work(
-                &changes,
-                &allocation,
-                work,
-                cancellation,
-            )
-            .await
-            .map_err(fs_error)?;
-        drop(result);
-        drop(changes);
-        drop(allocation);
+        let change = build(owned);
+        apply_authored(&mut candidate.checkout, &change, work).await?;
+        drop(change);
+        drop(inputs);
         let mut inspector = candidate
             .checkout
             .inspector(work, cancellation)
@@ -89,16 +72,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::Stale)?;
         if publication == MountPublication::PerMutation {
             self.checkout
-                .seal_original_with_carrier_guarded(
+                .publish(
                     crate::PublicationPermit::Unrestricted,
-                    false,
-                    &mut carrier,
+                    work,
                     cancellation,
                     Some(&self.cancellation),
-                    &mut source_publication_guard(
-                        self.native_callback_guard.clone(),
-                        Some(self.cancellation.clone()),
-                    ),
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
         }

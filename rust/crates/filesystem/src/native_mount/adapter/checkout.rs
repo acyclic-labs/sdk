@@ -4,6 +4,9 @@ pub struct SharedCheckout<A, O> {
     revision: Arc<AtomicU64>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
+    publishing: AtomicBool,
+    returned: StdMutex<Option<SharedCheckoutState<A, O>>>,
+    publication_changed: tokio::sync::Notify,
     _native_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -14,17 +17,12 @@ pub struct SharedCheckoutGuard<'a, A, O> {
 }
 
 /// One callback's shared admission to the checkout's current view.
-///
-/// Observations overlap freely. Each excludes every mutation until it drops,
-/// because a mutation first needs the view gate's exclusive lease; reads go
-/// through [`Checkout::observer`], which cannot outlive this admission.
 pub(super) struct SharedCheckoutObservation<'a, A, O> {
     _view: ViewReadLease,
     state: tokio::sync::RwLockReadGuard<'a, SharedCheckoutState<A, O>>,
 }
 
 /// Locked checkout state. Dereferencing reaches the canonical checkout while
-/// publication helpers retain an indeterminate operation in the same lock.
 pub struct SharedCheckoutState<A, O> {
     checkout: Checkout<A, O>,
     publication_operation: Option<OperationId>,
@@ -59,6 +57,9 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
+            publishing: AtomicBool::new(false),
+            returned: StdMutex::new(None),
+            publication_changed: tokio::sync::Notify::new(),
             _native_allocation: None,
         }
     }
@@ -100,49 +101,35 @@ impl<A, O> SharedCheckout<A, O> {
             revision,
             ledger,
             view_gate,
+            publishing: AtomicBool::new(false),
+            returned: StdMutex::new(None),
+            publication_changed: tokio::sync::Notify::new(),
             _native_allocation: Some(allocation),
         }))
     }
 
-    /// Applies one atomic SDK group after obtaining the checkout.
-    pub(super) async fn apply_grouped(
-        &self,
-        change: GroupedChange,
-        cancellation: &CancellationToken,
-    ) -> Result<GroupedOutcome, MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        let mut checkout = self.lock().await;
-        checkout.ensure_publication_resolved()?;
-        let effect = match &change {
-            GroupedChange::CreateFile { path, .. } => GroupedView::Bound(path.clone()),
-            GroupedChange::Content { file_id, .. } => GroupedView::Node(*file_id),
-        };
-        let outcome = checkout
-            .checkout
-            .apply_group(vec![change], boundary_budget(), cancellation)
-            .await
-            .map_err(facade_error)?
-            .value
-            .into_iter()
-            .next()
-            .ok_or(MountSourceError::Stale)?
-            .map_err(fs_error)?;
-        match effect {
-            GroupedView::Bound(path) => checkout.record(&ViewChange::Bound(&path)),
-            GroupedView::Node(file_id) => checkout.record(&ViewChange::Node(file_id)),
-        }
-        checkout.publish_mutation(cancellation).await?;
-        Ok(outcome)
-    }
-
     /// Serializes checkout access and excludes native callbacks.
     pub async fn lock(&self) -> SharedCheckoutGuard<'_, A, O> {
-        let view = self.view_gate.write().await;
-        let state = self.state.write().await;
-        SharedCheckoutGuard { _view: view, state }
+        loop {
+            let changed = self.publication_changed.notified();
+            let view = self.view_gate.write().await;
+            let mut state = self.state.write().await;
+            if self.publishing.load(Ordering::Acquire) {
+                drop(state);
+                drop(view);
+                changed.await;
+                continue;
+            }
+            if let Some(original) = self
+                .returned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+            {
+                *state = original;
+            }
+            return SharedCheckoutGuard { _view: view, state };
+        }
     }
 
     /// Admits one callback alongside other readers of the current view.
@@ -153,23 +140,32 @@ impl<A, O> SharedCheckout<A, O> {
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutObservation<'_, A, O>, MountSourceError> {
-        let view = self
-            .view_gate
-            .read_for_callback_with_carrier(owner, None, carrier, cancellation, lifetime)
-            .await?;
-        let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
-        Ok(SharedCheckoutObservation { _view: view, state })
+        loop {
+            let view = self
+                .view_gate
+                .read_for_callback_with_carrier(owner, None, carrier, cancellation, lifetime)
+                .await?;
+            let state = await_lock(self.state.read(), carrier, cancellation, lifetime).await?;
+            if self
+                .returned
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_none()
+            {
+                return Ok(SharedCheckoutObservation { _view: view, state });
+            }
+            drop(state);
+            drop(view);
+            drop(await_lock(self.lock(), carrier, cancellation, lifetime).await?);
+        }
     }
 
     /// Whether a native durability request (`fsync`, or a close that
-    /// publishes) publishes; [`MountPublication::Manual`] leaves every
-    /// publication to an explicit sync or unmount.
     pub(super) async fn publishes_at_native_boundary(&self) -> bool {
         self.state.read().await.publishes_at_native_boundary()
     }
 
     /// Begins an optimistic transaction on a copy of the current candidate.
-    /// No reader is excluded: the copy records nothing into this checkout.
     pub(super) async fn candidate(
         &self,
         operation: Option<OperationId>,
@@ -195,7 +191,6 @@ impl<A, O> SharedCheckout<A, O> {
     pub(super) fn revision(&self) -> u64 {
         self.revision.load(Ordering::Acquire)
     }
-
 }
 
 impl<A, O> Deref for SharedCheckoutGuard<'_, A, O> {

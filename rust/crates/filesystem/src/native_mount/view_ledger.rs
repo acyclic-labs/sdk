@@ -300,7 +300,7 @@ impl ViewLedger {
             let mut vector = Vec::new();
             if vector.try_reserve_exact(capacity).is_err() {
                 allocations.release(bytes).map_err(observer_allocation_error)?;
-                return Err(super::MountSourceError::Engine("observer registry allocation failed".into()));
+                return Err(super::MountSourceError::Engine(std::borrow::Cow::Owned("observer registry allocation failed".into())));
             }
             vector.append(observers);
             *observers = vector;
@@ -353,7 +353,7 @@ fn grow_registry<T>(
     let mut replacement = Vec::new();
     if replacement.try_reserve_exact(capacity).is_err() {
         allocations.release(bytes).map_err(observer_allocation_error)?;
-        return Err(super::MountSourceError::Engine(allocation_error.into()));
+        return Err(super::MountSourceError::Engine(std::borrow::Cow::Owned(allocation_error.into())));
     }
     let old_bytes = (entries.capacity() * width) as u64;
     replacement.append(entries);
@@ -1898,9 +1898,10 @@ mod tests {
         let mut registration = crate::demand::DemandWork::new(
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         );
-        super::super::adapter::BorrowedNativeDemandMeter::new(&mut registration)?.run(|meter| {
-            ledger.observe(Arc::downgrade(&late), &mut super::super::adapter::NativeDemandCarrier::Shared(meter))
-        })?;
+        ledger.observe(
+            Arc::downgrade(&late),
+            &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut registration),
+        )?;
         let registration_prefix = registration.work;
         let sync_prefix = sync.lock().work.items_examined;
         ledger.record_everything_prepared(prepared);

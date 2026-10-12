@@ -207,32 +207,25 @@ fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error:
     let source = source(FilesystemProfile::Portable)?;
     let abandoned = native_test_path("abandoned.bin");
     let kept = native_test_path("kept.bin");
-    let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
-        Ok(GroupedChange::CreateFile {
-            path: source.path(path)?,
-            metadata: Box::new(metadata()),
-            file_id: FileId::new(),
-            bytes: acyclic_stream::OwnedBytes::new(),
-        })
+    let work =
+        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+    let create = |path| AuthoredMutation::CreateFile {
+        path,
+        metadata: metadata(),
+        bytes: acyclic_stream::OwnedBytes::new(),
     };
-    let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
-    source.runtime.block_on(|| async {
+    source.runtime.wait(|| async {
         // While another holder keeps the checkout, one caller queues its
         // change and gives up waiting, as a callback deadline does.
         let held = source.checkout.lock().await;
         let gave_up = tokio::time::timeout(
             Duration::from_millis(20),
-            source
-                .checkout
-                .apply_grouped(abandoned_change, &source.cancellation),
+            source.create(&abandoned, &work, create),
         )
         .await;
         assert!(gave_up.is_err(), "the checkout was held");
         drop(held);
-        source
-            .checkout
-            .apply_grouped(kept_change, &source.cancellation)
-            .await
+        source.create(&kept, &work, create).await
     })?;
     assert!(source.lookup(&kept)?.is_some());
     assert!(
@@ -245,31 +238,29 @@ fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error:
 #[test]
 fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn std::error::Error>>
 {
-    let source = source(FilesystemProfile::Portable)?;
+    let source = Arc::new(source(FilesystemProfile::Portable)?);
     let abandoned = native_test_path("drainer.bin");
     let kept = native_test_path("waiter.bin");
-    let create = |path: &MountPath| -> Result<GroupedChange, MountSourceError> {
-        Ok(GroupedChange::CreateFile {
-            path: source.path(path)?,
-            metadata: Box::new(metadata()),
-            file_id: FileId::new(),
-            bytes: acyclic_stream::OwnedBytes::new(),
-        })
+    let work =
+        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+    let create = |path| AuthoredMutation::CreateFile {
+        path,
+        metadata: metadata(),
+        bytes: acyclic_stream::OwnedBytes::new(),
     };
-    let (abandoned_change, kept_change) = (create(&abandoned)?, create(&kept)?);
-    source.runtime.block_on(|| async {
+    source.runtime.wait(|| async {
         let held = source.checkout.lock().await;
         // Both callers wait for the same held checkout.
-        let mut drainer = Box::pin(
-            source
-                .checkout
-                .apply_grouped(abandoned_change, &source.cancellation),
-        );
+        let mut drainer = Box::pin(source.create(&abandoned, &work, create));
         assert!(futures::poll!(drainer.as_mut()).is_pending());
-        let checkout = Arc::clone(&source.checkout);
-        let cancellation = source.cancellation.clone();
-        let waiter =
-            tokio::spawn(async move { checkout.apply_grouped(kept_change, &cancellation).await });
+        let waiter_source = Arc::clone(&source);
+        let waiter_work = work.clone();
+        let waiter_path = kept.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_source
+                .create(&waiter_path, &waiter_work, create)
+                .await
+        });
         tokio::time::sleep(Duration::from_millis(20)).await;
         // Abandoning the first caller must not stop the second.
         drop(drainer);
@@ -300,22 +291,31 @@ fn callback_runtime_is_safe_inside_multi_and_current_thread_runtimes()
     for runtime in [&multi, &current] {
         let source = source(profile)?;
         runtime.block_on(async {
-            let value = callback.block_on(|| async {
-                // This future is deliberately non-Send across a real reactor wait.
-                let local = std::rc::Rc::new(42_u8);
-                tokio::time::sleep(Duration::from_millis(1)).await;
-                *local
-            });
+            let value = callback
+                .block_on(
+                    || async {
+                        // This future is deliberately non-Send across a real reactor wait.
+                        let local = std::rc::Rc::new(42_u8);
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        *local
+                    },
+                    None,
+                )
+                .map_err(capture_io_error)?;
             assert_eq!(value, 42);
             let path = native_test_path("runtime.bin");
             source.volume_id()?;
-            let created = source.create_file(&path, metadata())?;
+            let created = boundary(source.cancellation(), |work| {
+                source.create_file(&path, metadata(), None, work)
+            })?;
             source.write_range(&path, 0, Bytes::from_static(b"base"))?;
             let attached = source.open_file(&path)?;
             attached.write_range(4, Bytes::from_static(b"-open"))?;
             assert_eq!(attached.read_range(0, 9)?.as_ref(), b"base-open");
             let detached = source.detach_file(&path)?;
-            source.remove(&path, Some(created.node.file_id))?;
+            boundary(source.cancellation(), |work| {
+                source.remove(&path, Some(created.node.file_id), work)
+            })?;
             detached.write_range(0, Bytes::from_static(b"live"))?;
             assert_eq!(detached.read_range(0, 9)?.as_ref(), b"live-open");
             source.sync()?;

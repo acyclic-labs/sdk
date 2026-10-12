@@ -5,73 +5,83 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    pub(super) fn read_directory(
+    pub(super) fn directory_page(
         &self,
         path: &MountPath,
         cursor: Option<&[u8]>,
         maximum_entries: u32,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let path = self.path(path)?;
-        let cursor = cursor.map(|bytes| self.logical_name(bytes)).transpose()?;
-        let owner = ViewGate::callback_owner();
-        self.runtime.wait(|| async {
+        invoke(&self.runtime, work, || async {
+            let cancellation = work.cancellation();
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let path = self.namespace_inputs(path, &mut inputs)?;
+            let cursor = cursor
+                .map(|bytes| native_name(bytes, self.profile, self.limits, &mut inputs))
+                .transpose()?;
             let observation = self
                 .checkout
                 .observe(
-                    owner,
-                    &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
-                        boundary_budget(),
-                        &self.cancellation,
-                    )),
-                    &self.cancellation,
-                    None,
+                    ViewGate::callback_owner(),
+                    inputs.carrier,
+                    cancellation,
+                    Some(&self.cancellation),
                 )
                 .await?;
-            let mut checkout = observation
-                .observer(boundary_budget(), &self.cancellation)
-                .map_err(facade_error)?
-                .value;
-            let receipt = checkout
-                .list_directory_records(
+            let mut checkout = inputs.observer(&observation, cancellation)?;
+            let (page, source_allocation) = checkout
+                .list_directory_records_with_native_work(
                     &path,
                     cursor.as_ref(),
                     maximum_entries,
-                    boundary_budget(),
-                    &self.cancellation,
+                    work,
+                    cancellation,
                 )
-                .await
-                .map_err(engine_error)?;
-            let has_more = receipt.value.has_more;
-            let entries = receipt
-                .value
-                .entries
-                .into_iter()
-                .map(|entry| {
-                    Ok(MountDirectoryEntry {
-                        name: native_mount_name(
-                            &entry.name,
-                            &mut NativeDemandCarrier::Borrowed(
-                                &mut crate::demand::DemandWork::new(
-                                    boundary_budget(),
-                                    &self.cancellation,
-                                ),
-                            ),
-                        )?
-                        .0,
-                        node: mount_node(entry.record),
-                        metadata: entry.metadata,
-                        // A checkout lookup issues no content pin.
-                        pin: None,
-                    })
-                })
-                .collect::<Result<Vec<_>, MountSourceError>>()?;
-            let next_cursor = has_more
-                .then(|| entries.last().map(|entry| entry.name.clone()))
-                .flatten();
-            Ok(MountDirectoryPage {
+                .await?;
+            let mut entries = inputs.vec(page.entries.len())?;
+            for entry in &page.entries {
+                inputs.items(1)?;
+                let (name, mut allocation) = native_mount_name(&entry.name, inputs.carrier)?;
+                inputs
+                    .allocation
+                    .as_mut()
+                    .expect("native directory output")
+                    .absorb(allocation.as_mut().expect("native name"))
+                    .map_err(MountSourceError::NativeWork)?;
+                entries.push(MountDirectoryEntry {
+                    name,
+                    node: mount_node(entry.record),
+                    metadata: entry.metadata,
+                    pin: None,
+                });
+            }
+            let next_cursor = if page.has_more {
+                entries
+                    .last()
+                    .map(|entry| inputs.copy_bytes(&entry.name))
+                    .transpose()?
+            } else {
+                None
+            };
+            drop(page);
+            drop(source_allocation);
+            drop(checkout);
+            let bytes = path.retained_bytes()
+                + cursor
+                    .as_ref()
+                    .map_or(0, |name| name.retained_bytes() as u64);
+            drop(path);
+            drop(cursor);
+            inputs.release(bytes)?;
+            inputs
+                .carrier
+                .check(cancellation, Some(&self.cancellation))?;
+            Ok(MountDirectoryPage::new(
                 entries,
                 next_cursor,
-            })
+                inputs.retain(),
+            ))
         })
     }
 }

@@ -1,5 +1,6 @@
 //! Immutable, private host credentials for reopening one Pi root runtime.
 
+use acyclic_harness::conversation::ContentResidencyVerifier;
 use super::pi_runtime::PiRuntimeAuthority;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
@@ -35,7 +36,7 @@ const OWNER_DIAGNOSTIC_LABEL_BYTES: u64 = super::pi_root_provider::pi_serde_diag
     "executable_prefix", "extension", "provider_extension", "environment", "VolumeRefWire",
     "provider", "id", "class", "owner", "kind", "project", "agent_private", "session_shared",
     "session", "ProviderRefWire", "namespace", "family",
-]) + acyclic_harness::contract::preparation_serde_diagnostic_label_bytes();
+]) + acyclic_harness::preparation_serde_diagnostic_label_bytes();
 const OWNER_MAGIC: &[u8; 8] = b"ACYPIOW1";
 const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";
@@ -59,7 +60,11 @@ impl PiOwnerPolicy {
     /// The original journal and grant producers fund their own field copies.
     fn clone_with_native_work(&self, work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        let journal = self.journal.clone_with_native_work(work)?;
+        let journal = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = self.journal.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((Self {
             root_task: self.root_task, agent: self.agent, journal: journal.0, grants: grants.0,
@@ -158,8 +163,8 @@ impl PiOwnerConfig {
             return Err(invalid("invalid Pi owner configuration"));
         }
         let journal_grants = [
-            self.policy.journal.capability(VolumeOperation::Read)?,
-            self.policy.journal.capability(VolumeOperation::Write)?,
+            self.policy.journal.capability(VolumeOperation::Read, &mut None)?,
+            self.policy.journal.capability(VolumeOperation::Write, &mut None)?,
         ];
         let issuer = AuthorityIssuer::new(
             ISSUER,
@@ -177,7 +182,7 @@ impl PiOwnerConfig {
                 .chain(journal_grants),
         );
         let authority = PiRuntimeAuthority {
-            verifier: issuer.verifier(),
+            verifier: issuer.verifier(&mut None)?,
             signed: issuer.issue(&self.policy.root_task.to_string(), &storage_grants, Some(self.policy.agent), None, &mut None).expect("scope proof"),
             scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
                 .with_run_limits(self.policy.run_limits, &mut None)?,
@@ -198,19 +203,34 @@ impl PiOwnerConfig {
         if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
-        RuntimeScope::validate_session_limits_with_native_work(&self.policy.session_limits, work)?;
+        self.policy.session_limits.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let journal_grants = [
-            self.policy.journal.capability_with_native_work(VolumeOperation::Read, work)?,
-            self.policy.journal.capability_with_native_work(VolumeOperation::Write, work)?,
+            {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.policy.journal.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            },
+            {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.policy.journal.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            },
         ];
         let storage = Capabilities::new_with_native_work(
             self.policy.grants.iter().chain(journal_grants.iter().map(|grant| grant.0.as_str())), work,
         )?;
         let issuer = self.issuer_with_native_work(AggregateKind::Task, self.policy.root_task, work)?;
-        let verifier = issuer.0.verifier_with_native_work(work)?;
-        let signed = issuer.0.root_for_agent_with_native_work(
-            self.policy.agent, &verifier.0.audience().id, &storage.0, work,
-        )?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.0.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
+        let signed = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue(&verifier.0.audience().id, &storage.0, Some(self.policy.agent), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         drop(storage.0);
         drop(storage.1);
         drop(journal_grants);
@@ -269,7 +289,11 @@ impl PiOwnerConfig {
         let issuer = self.issuer_with_native_work(
             AggregateKind::Conversation, self.policy.root_task, work,
         )?;
-        let verifier = issuer.0.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.0.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         drop(issuer.0);
         drop(issuer.1);
         Ok(verifier)
@@ -306,7 +330,12 @@ impl PiOwnerConfig {
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
         let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
         let scope_id = work.display(&scope_id).map_err(native_work_error)?;
-        let scope = issuer.0.root_for_agent_with_native_work(agent, &scope_id.0, grants, work)?;
+        let scope = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         drop(scope_id.0);
         drop(scope_id.1);
         combine_native_metadata(((audience.0, issuer.0, scope.0), audience.1, [issuer.1, scope.1]))
@@ -502,7 +531,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         });
     }
     let mut providers = EffectRegistry::new(Some(work))?
-        .with_result_resolver_with_native_work(content.clone(), work)?;
+        .with_result_resolver(content.clone());
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;
     ConversationEffectHost::new(

@@ -6,10 +6,8 @@ use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
     MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountSparseRange, NativeMountError, ViewObserver, ViewOrigin, capture_root_identity,
-    capture_subtree, seal_checkout,
+    MountSparseRange, NativeMountError, ViewObserver, capture_root_identity,
 };
-use crate::heap_future::in_heap;
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
     FileRecord, GenerationMutationError, LogicalName, NameEncoding, NamespacePath, RebaseDecision,
@@ -21,9 +19,8 @@ use crate::native_capture::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
-    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, GroupedChange,
-    GroupedOutcome, NamedAttributeWriteMode, NativeRootIdentity, ObjectId, OperationFailure,
-    OperationId, VolumeId, WorkBudget, WorkError,
+    Checkout, ContentChange, ContentTimes, DetachedFile, FileId, FsError, NamedAttributeWriteMode,
+    NativeRootIdentity, ObjectId, OperationFailure, OperationId, VolumeId, WorkBudget, WorkError,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -35,7 +32,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
@@ -81,18 +78,13 @@ pub struct CheckoutMountSource<A, O> {
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
-enum GroupedView {
-    Bound(NamespacePath),
-    Node(FileId),
-}
-
 /// The current instant as a content-change time, in signed Unix-epoch nanoseconds.
 fn content_change_time() -> Result<i64, MountSourceError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|since| i64::try_from(since.as_nanos()).ok())
-        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".to_owned()))
+        .ok_or_else(|| MountSourceError::Engine("the clock is outside file time".into()))
 }
 
 /// The content change one native range allocation requests.
@@ -115,7 +107,7 @@ fn range_allocation<F>(range: ByteRange, operation: MountRangeAllocation) -> Con
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(error.to_string().into())
 }
 
 pub(super) fn capture_io_error(error: std::io::Error) -> MountSourceError {
@@ -146,12 +138,19 @@ fn fs_error(error: FsError) -> MountSourceError {
     }
 }
 
+impl From<FsError> for MountSourceError {
+    fn from(error: FsError) -> Self {
+        fs_error(error)
+    }
+}
+
 fn boundary_budget() -> WorkBudget {
     crate::performance::BOUNDARY_BUDGET
 }
 
 mod runtime;
 pub use runtime::initialize_native_mount_services;
+use runtime::invoke;
 pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 mod source_io;
 use source_io::CaptureProducer;
@@ -162,14 +161,18 @@ include!("detached.rs");
 include!("attached.rs");
 include!("checkout.rs");
 include!("publication.rs");
+include!("publishing.rs");
 include!("publication_guard.rs");
 include!("candidate.rs");
 include!("installation.rs");
 include!("creation.rs");
+include!("mutations.rs");
+include!("attributes.rs");
+include!("bindings.rs");
 include!("namespace.rs");
+include!("history.rs");
 include!("source.rs");
 mod source_factory;
-pub(super) use source_factory::validate_native_source_io_binding;
 include!("work.rs");
 include!("locks.rs");
 include!("view_changes.rs");
@@ -180,6 +183,7 @@ mod directory;
 mod file_handles;
 include!("operations.rs");
 mod records;
+mod sparse;
 use records::mount_node;
 #[cfg(test)]
 mod tests;

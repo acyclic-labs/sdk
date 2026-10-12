@@ -1,4 +1,32 @@
-use super::*;
+impl<A, O> CheckoutMountSource<A, O> {
+    fn binding_lease(
+        &self,
+        expected_epoch: Option<u64>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Box<dyn Send>, MountSourceError> {
+        let mut carrier = NativeDemandCarrier::Native(work);
+        let mut lease = invoke(&self.runtime, work, || {
+            self.checkout.view_gate.read_for_callback_with_carrier(
+                ViewGate::callback_owner(),
+                expected_epoch,
+                &mut carrier,
+                work.cancellation(),
+                Some(&self.cancellation),
+            )
+        })?;
+        let bytes = std::mem::size_of::<ViewReadLease>() as u64;
+        carrier
+            .with_work(|leaf| leaf.allocate(bytes))
+            .map_err(super::lazy::mount_demand_error)?;
+        if let Err(error) = lease.attach_owned_payload(bytes) {
+            carrier
+                .with_work(|leaf| leaf.release(bytes))
+                .map_err(super::lazy::mount_demand_error)?;
+            return Err(error);
+        }
+        Ok(Box::new(lease))
+    }
+}
 
 impl NativeDemandCarrier<'_> {
     fn check(
