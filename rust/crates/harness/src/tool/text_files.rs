@@ -604,14 +604,14 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
              &mut None)?,
-            "text.txt",
-            "generation-1",
+            "text.txt".into(),
+            "generation-1".into(),
             FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
-            "text.txt",
+            "text.txt".into(),
          &mut None)
     }
 

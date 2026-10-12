@@ -1402,7 +1402,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
 mod tests {
     use super::*;
     use crate::conversation::{VolumeClass, VolumeOwner};
-    use crate::core::AggregateKind;
+    use crate::{AgentId, core::AggregateKind};
 
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
@@ -1418,18 +1418,11 @@ mod tests {
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
         metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
-        let mut custody;
         let audience = metadata.clone_authority(&configured_audience)?;
-        custody = metadata.into_custody();
-        let (issuer, mut issuer_custody) = configured_issuer.clone_with_native_work(work)?;
-        custody.absorb(&mut issuer_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(issuer_custody),
-        })?;
-        let (scope, mut scope_custody) = issuer.root_for_agent_with_native_work(agent,
-            "genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]), work)?;
-        custody.absorb(&mut scope_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(scope_custody),
-        })?;
+        let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
+        let scope = issuer.issue("genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]),
+            Some(agent), None, &mut Some(&mut metadata))?;
+        let custody = metadata.into_custody();
         Ok(((audience, issuer, scope), custody))
     }
 
@@ -1493,8 +1486,9 @@ mod tests {
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;
-        let (file, bytes, metadata) = reader.read_private_path_with_native_work(
-            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, &work,
+        let content_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let (file, bytes, metadata) = reader.read_private_path(
+            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, Some(&content_io),
         )?.await?;
         assert_eq!(bytes.as_ref(), b"original project import");
         assert_eq!(file.volume(), &project.request.volume);
@@ -1502,12 +1496,12 @@ mod tests {
         drop(metadata);
         let private = scope.created_content(Some(&scratch.request.volume)).unwrap();
         let staged_custody;
-        let (staged, custody) = private.writer.as_ref().unwrap().stage_once_with_native_work(
+        let (staged, custody) = private.writer.as_ref().unwrap().stage_once(
             OperationId::from_bytes([185; 16]), "root-output.txt", b"actual original root output",
-            "text/plain", "root-output.txt", &work,
+            "text/plain", "root-output.txt", Some(&content_io),
         )?.await?;
         staged_custody = custody;
-        let output = private.reader.read_with_native_work(&staged, 1024, &work)?.await?;
+        let output = private.reader.read(&staged, 1024, Some(&content_io))?.await?;
         assert_eq!(output.as_ref(), b"actual original root output");
         assert_eq!(staged.volume(), &scratch.request.volume);
         assert_ne!(staged.volume(), &project.request.volume);
@@ -1552,8 +1546,8 @@ mod tests {
         assert!(creator.protect_root_bootstrap_with_native_work(&owner, &birth.volume, RootBootstrapContentRole::Project,
             birth.operation, birth.config, acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(wrong_initial)),
             birth.selected_generation, None, &work)?.await.is_err());
-        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private",
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])))?;
+        let foreign_scratch = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-original-root-private".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([184; 16])), &mut None)?;
         let denied = creator.protect_root_bootstrap_with_native_work(&owner, &foreign_scratch, RootBootstrapContentRole::Scratch,
             birth.operation, birth.config, birth.initial_generation, birth.selected_generation, None, &work);
         assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
@@ -1578,12 +1572,14 @@ mod tests {
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),
                 2 => request.generation = GenerationRef::new(fixture.filesystem_provider.clone(),
                     birth.initial_generation.digest().into_bytes().to_vec(), None)?,
-                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project",
-                    VolumeClass::Project, VolumeOwner::Project("created-project".into()))?,
+                3 => request.volume = VolumeRef::new(fixture.filesystem_provider.clone(), "foreign-root-project".into(),
+                    VolumeClass::Project, VolumeOwner::Project("created-project".into()), &mut None)?,
                 _ => request.role = RootBootstrapContentRole::Scratch,
             }
-            let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
-            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            {
+                let denied = creator.verify_root_bootstrap_with_native_work(context, &request, &work);
+                assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+            }
 
             drop(request);
             drop(request_custody);
@@ -1638,7 +1634,7 @@ mod tests {
         let generation = fixture.filesystem.resolve(&journal).await?.generation;
         fixture.filesystem.apply(&journal, Some(&generation), &[
             super::super::super::WorkspaceMutation::PutFile {
-                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec(),
+                path: "/root-bootstrap.json".into(), bytes: b"superseded protected bootstrap".to_vec().into(),
             },
         ], &IdempotencyKey::new("supersede-genuine-original-root-bootstrap")?).await?;
         assert!(policy.verify_with_native_work(context(), &selection, &work)?.await.is_err());

@@ -580,7 +580,7 @@ mod tests {
         let provider = ProviderRef::new("local".into(), "memory".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(
             provider,
-            "test-volume",
+            "test-volume".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
          &mut None)?;
@@ -618,10 +618,10 @@ mod tests {
         let first = store.stage("notes/current.txt", b"one", "text/plain", "one.txt", true)?;
         let changed_display = FileRef::new(
             store.volume.clone(),
-            first.path(),
-            first.version(),
+            first.path().into(),
+            first.version().into(),
             first.descriptor().clone(),
-            "renamed.txt",
+            "renamed.txt".into(),
          &mut None)?;
         assert!(
             store
