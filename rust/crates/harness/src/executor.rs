@@ -870,25 +870,16 @@ fn stock_context_prefix(
 ) -> Result<crate::context::Context> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| {
+        io.original_native_work().ok_or_else(|| {
             stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "stock summary prefix requires original native work")
         })?;
-        let (prefix, custody) = crate::context::clone_context_prefix_native(context, through, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(prefix);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     if io.is_some() {
         return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "native stock summary prefix is unavailable"));
     }
-    Ok(crate::context::Context {
-        messages: context.messages.get(..through)
-            .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "summary prefix exceeds source projection"))?
-            .to_vec(),
-        metadata: context.metadata.clone(),
-        current_input_index: context.current_input_index
-            .filter(|index| (*index as usize) < through),
-    })
+    with_history_io(io, |work|
+        crate::context::clone_context_prefix(context, through, work).map(|(prefix, _)| prefix))
 }
 
 fn stock_json_bound<T: Serialize>(

@@ -2913,7 +2913,7 @@ pub fn validate_context_selection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let selection: crate::context::ContextSelection = from_js(selection)?;
-    selection.validate(from_js(limits)?).map_err(js_error)
+    selection.validate(from_js(limits)?, &mut None).map_err(js_error)
 }
 
 /// Applies a host renderer's output using the same native placement and bounds.
