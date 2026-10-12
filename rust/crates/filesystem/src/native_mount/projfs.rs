@@ -209,7 +209,6 @@ struct Runtime {
     metadata_probes: Arc<RetainedArcValue<Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>>>,
     /// The admitted retry snapshot doubles as borrowed metadata suppression; no second path clone or guessed hash-table allocation is needed.
     capture_probes: std::sync::RwLock<Vec<(MountPath, u64, bool)>>,
-    flush_gate: Mutex<()>,
     /// Present only while a real lifecycle operation owns SDK callbacks.
     stop_meter: Mutex<super::NativeMountMeterActivation>,
     staging_custody: Mutex<Option<StagingDirectoryCustody>>,
@@ -1665,13 +1664,6 @@ impl Projector {
         operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
     ) -> Result<T, NativeMountError> {
         let _gate = lock_with_meter(&self.scope_gate, meter, HELD_RETRY)?;
-        self.with_control_meter_locked(runtime, meter, operation)
-    }
-
-    fn with_control_meter_locked<T>(
-        &self, runtime: &Runtime, meter: &crate::NativeMaterializationWork,
-        operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
         let _scope = ProjectionWorkLease::enter(self, runtime, meter)?;
         operation(meter)
     }
@@ -2139,16 +2131,15 @@ impl Projector {
                     })
                     .and_then(|work| {
                         verify_callback_work(runtime, &work, false)?;
-                        self.with_control_meter_locked(runtime, &work, |meter| {
-                            self.active_rounds.fetch_add(1, Ordering::AcqRel);
-                            let _round = ProjectorRound(self);
-                            let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
-                            self.run_round(Projection {
-                                source: runtime.source.as_ref(), work: meter, custody: &custody,
-                                context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
-                                staging_custody: &runtime.staging_custody,
-                                captures: &runtime.post_operation_failure, starting: false,
-                            })
+                        let _scope = ProjectionWorkLease::enter(self, runtime, &work)?;
+                        self.active_rounds.fetch_add(1, Ordering::AcqRel);
+                        let _round = ProjectorRound(self);
+                        let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work)).map_err(super::NativeMountStartupAdmissionError::from)?;
+                        self.run_round(Projection {
+                            source: runtime.source.as_ref(), work: &work, custody: &custody,
+                            context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
+                            staging_custody: &runtime.staging_custody,
+                            captures: &runtime.post_operation_failure, starting: false,
                         })
                     })
             };
@@ -2792,7 +2783,7 @@ fn write_ordinary(
             name[21 + index] = u16::from(b"0123456789abcdef"[((sequence >> ((15 - index) * 4)) & 15) as usize]);
         }
         host_work.record(encoded).map_err(detach_work_error)?;
-        let mut writer = ProjectedNativeWriter::create_by(projection.work,
+        let mut writer = ProjectedNativeWriter::create(projection.work,
             |owner| record(&Owned::ProvisionalFile(owner.clone())),
             || with_staging_directory(projection.root, projection.work, projection.root_identity, projection.staging_custody,
                 |staging| crate::native_host::create_windows_provisional_overlapped_file_with_work(
@@ -2900,17 +2891,6 @@ struct ProjectedNativeWriter<'a> {
 
 impl<'a> ProjectedNativeWriter<'a> {
     fn create(
-        parent: &cap_std::fs::Dir, leaf: &[u16],
-        work: &'a crate::NativeMaterializationWork,
-        record: impl FnOnce(&Arc<RetainedArcValue<PhysicalEntry>>) -> Result<(), NativeMountError>,
-    ) -> Result<Self, NativeMountError> {
-        Self::create_by(work, record, ||
-            crate::native_host::create_windows_provisional_overlapped_file_with_work(
-                parent, leaf, &mut { work },
-            ).map_err(detach_work_error))
-    }
-
-    fn create_by(
         work: &'a crate::NativeMaterializationWork,
         record: impl FnOnce(&Arc<RetainedArcValue<PhysicalEntry>>) -> Result<(), NativeMountError>,
         create: impl FnOnce() -> Result<std::fs::File, NativeMountError>,
@@ -3141,8 +3121,11 @@ fn write_directly(
     leaf: &[u16], entry: &ProjectedEntry, placed: &mut Option<Owned>,
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
-    let mut writer = match ProjectedNativeWriter::create(parent, leaf, projection.work,
-        |owner| record(&Owned::ProvisionalFile(owner.clone()))) {
+    let mut writer = match ProjectedNativeWriter::create(projection.work,
+        |owner| record(&Owned::ProvisionalFile(owner.clone())),
+        || crate::native_host::create_windows_provisional_overlapped_file_with_work(
+            parent, leaf, &mut { projection.work },
+        ).map_err(detach_work_error)) {
         Ok(writer) => writer,
         Err(NativeMountError::Io(error)) if matches!(error.kind(),
             std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
@@ -3858,7 +3841,6 @@ impl ProjFsSession {
             projector: retained_arc(projector, meter)?,
             metadata_probes: retained_arc(Mutex::new(MemoMap::default()), meter)?,
             capture_probes: std::sync::RwLock::new(Vec::new()),
-            flush_gate: Mutex::new(()),
             stop_meter: Mutex::new(super::NativeMountMeterActivation::default()),
             staging_custody: Mutex::new(None),
             metadata_edits: retained_arc(Mutex::new(MemoMap::default()), meter)?,
@@ -4312,7 +4294,6 @@ impl ProjFsSession {
     fn flush_callbacks_on_meter(
         &self, runtime: &Runtime, meter: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let _flush = lock_with_meter(&runtime.flush_gate, meter, HELD_RETRY)?;
         flush_callback_gate_measured(
             &runtime.callbacks, runtime.post_operation_failure.as_ref(),
             Some(&runtime.capture_probes), meter,
@@ -4498,7 +4479,7 @@ impl ProjFsSession {
 
     #[cfg(test)]
     fn test_original_stop_work(&self) -> Option<crate::NativeMaterializationWork> {
-        self.original_stop_work.or_else(|| self.ingress.as_ref().and_then(|ingress|
+        self.original_stop_work.clone().or_else(|| self.ingress.as_ref().and_then(|ingress|
             lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.original_stop_work.clone())))
     }
 
@@ -6465,14 +6446,7 @@ mod tests {
         budget: WorkBudget, cancellation: &CancellationToken,
     ) -> crate::NativeMaterializationWork {
         crate::NativeMaterializationWork::new(budget, cancellation)
-            .expect("the actual invocation admits its one original state").clone()
-    }
-
-    fn native_write_test_parent(
-        root: &std::path::Path,
-    ) -> Result<cap_std::fs::Dir, Box<dyn std::error::Error>> {
-        acyclic_native_runtime::initialize_native_io_services()?;
-        Ok(cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?)
+            .expect("the actual invocation admits its one original state")
     }
 
     #[test]
@@ -6480,10 +6454,14 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
+        acyclic_native_runtime::initialize_native_io_services()?;
+        let parent = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let cancellation = CancellationToken::new();
         let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, |_| Ok(()))?;
+        let mut writer = super::ProjectedNativeWriter::create(&meter, |_| Ok(()), ||
+            crate::native_host::create_windows_provisional_overlapped_file_with_work(
+                &parent, &[102], &mut &meter,
+            ).map_err(super::detach_work_error))?;
         let native_meter = meter.runtime_meter_owner();
         super::wait_native_unit_measured(writer.file().write_async(0, Bytes::from_static(b"physical"), Arc::clone(&native_meter), ()).map_err(super::projection_io_error)?, &meter)?;
         cancellation.cancel();
@@ -6674,11 +6652,7 @@ mod tests {
         Ok(())
     }
 
-    async fn windows_checkout_source() -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-        windows_checkout_source_with_work(None).await
-    }
-
-    async fn windows_checkout_source_with_work(
+    async fn windows_checkout_source(
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
@@ -6728,7 +6702,7 @@ mod tests {
             WorkBudget::UNBOUNDED, &CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
         let meter = original.clone();
-        let source = windows_checkout_source_with_work(Some(&meter)).await?;
+        let source = windows_checkout_source(Some(&meter)).await?;
         let root = tempfile::tempdir()?;
         let destination = root.path().join("view");
         std::fs::create_dir(&destination)?;
@@ -6793,7 +6767,7 @@ mod tests {
         };
         let meter = work.clone();
         let result = (|| {
-            let custody = crate::native_mount::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
+            let custody = crate::native_mount::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
             let captures = Mutex::new(PostOperationFailures::default());
             let staging_custody = Mutex::new(None);
             operation(super::Projection {
@@ -6828,7 +6802,7 @@ mod tests {
     async fn source_listing_pages_preserve_native_order_and_name_ownership()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let count = super::DIRECTORY_PAGE_SIZE + 2;
         for index in 0..count {
             source.create_file(&windows_path(&format!("entry{index:04}")), FileMetadata::default())?;
@@ -6868,7 +6842,7 @@ mod tests {
     async fn callback_raw_path_preserves_opaque_spelling()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let raw = [0xd800, 65, 92, 98, 46, 84, 88, 84, 0];
         let cancellation = CancellationToken::new();
         let parse = |projection: super::Projection<'_>| {
@@ -6892,7 +6866,7 @@ mod tests {
     {
         use std::os::windows::fs::OpenOptionsExt as _;
         acyclic_native_runtime::initialize_native_io_services()?;
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let path = windows_path("packet.bin");
         let component = windows_name("packet.bin");
         source.create_file(&path, FileMetadata::default())?;
@@ -6981,7 +6955,7 @@ mod tests {
     async fn read_only_read_full_sdk_link_retires_physical_owners_and_preserves_actual_refusal_data()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let target = windows_path("target.txt");
         source.create_file(&target, FileMetadata::default())?;
         source.write_range(&target, 0, Bytes::from_static(b"linked-data"))?;
@@ -7027,9 +7001,9 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn cleanup_wait_refusal_preserves_a_renamed_original_stage_and_foreign_replacement()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_driver_source(&source, true)?;
-        let original_meter = session.test_original_stop_work().expect("constructor work").clone();
+        let original_meter = session.test_original_stop_work().expect("constructor work");
         let original = original_meter.allocation_work();
         let runtime = session.test_runtime().expect("real SDK runtime");
         super::with_staging_directory(
@@ -7066,7 +7040,7 @@ mod tests {
     async fn nonempty_original_stage_preserves_namespace_data_and_retires_its_real_handle()
         -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let runtime = session.test_runtime().expect("actual original callback payload");
         let original = session.test_original_stop_work().expect("actual original producer work");
@@ -7099,7 +7073,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn physical_sdk_retirement_preserves_original_user_root_and_foreign_contents()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let identity = session.native_root_identity().expect("actual held user root");
         let original = session.test_original_stop_work().expect("actual original work");
@@ -7125,7 +7099,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn original_capture_cancellation_preserves_dirty_data_and_retires_physical_owners()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let path = windows_path("authored.txt");
         std::fs::write(destination.join("authored.txt"), b"only-host-copy")?;
@@ -7171,7 +7145,7 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt as _;
         use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
         source.create_file(&seed, FileMetadata::default())?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
@@ -7208,7 +7182,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_captured()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (root, destination, mut session) = mount_source(&source)?;
         let file = destination.join("late.txt");
         std::fs::write(root.path().join("seed"), b"late")?;
@@ -7267,7 +7241,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
         source.create_file(&seed, FileMetadata::default())?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
@@ -7298,7 +7272,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn created_and_renamed_files_stay_observed_after_capture()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_source(&source)?;
         // ProjFS notifies the provider only of other processes' I/O.
         let external = |command: &str| external_edit(&destination, command);
@@ -7336,7 +7310,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         source.create_file(&windows_path("a.txt"), FileMetadata::default())?;
         let (_root, destination, mut session) = mount_source(&source)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
@@ -7360,7 +7334,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>>
     {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let target = |name: &str| Bytes::from(windows_name(name));
         let link = windows_path("link");
         source.create_symbolic_link(&link, target("first.txt"), FileMetadata::default())?;
@@ -7414,7 +7388,7 @@ mod tests {
     {
         const FILES: usize = 120;
         const TICKS: i64 = crate::native_host::UNIX_EPOCH_FILETIME + 1_700_000_000 * 10_000_000;
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         for index in 0..FILES {
             let path = windows_path(&format!("f{index}.txt"));
             source.create_file(&path, FileMetadata::default())?;
@@ -7472,7 +7446,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let tracked = windows_path("tracked.txt");
         source.create_file(&tracked, FileMetadata::default())?;
         source.write_range(&tracked, 0, Bytes::from_static(b"before"))?;
@@ -7494,7 +7468,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let kept = windows_path("kept.txt");
         source.create_file(&kept, FileMetadata::default())?;
         source.write_range(&kept, 0, Bytes::from_static(b"source"))?;
@@ -7521,7 +7495,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::windows::fs::FileTypeExt as _;
 
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let folder = windows_path("folder");
         source.create_directory(&folder, FileMetadata::default())?;
         let inner = folder.child(windows_name("inner.txt"));
@@ -7552,7 +7526,7 @@ mod tests {
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         };
         for directory in [false, true] {
-            let source = windows_checkout_source().await?;
+            let source = windows_checkout_source(None).await?;
             let name = windows_path("name");
             source.create_symbolic_link(
                 &name, Bytes::from(windows_name("target.txt")), FileMetadata::default(),
@@ -7592,7 +7566,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let link = windows_path("link");
         source.create_symbolic_link(
             &link,
@@ -7618,7 +7592,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn paths_the_source_gains_appear_once_revalidated()
     -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
+        let source = windows_checkout_source(None).await?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let absent = |name: &str| {
             std::fs::metadata(destination.join(name))
