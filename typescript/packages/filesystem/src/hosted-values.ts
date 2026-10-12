@@ -1,4 +1,4 @@
-import { type WorkspaceRef as WireWorkspaceRef, type SourceResponse as WireSourceResponse, SourceInvalidationReason as WireSourceInvalidationReason, type FileRecordSnapshot as WireFileRecordSnapshot, type TreeEntrySnapshot as WireTreeEntrySnapshot, type Conflict as WireConflict, type MutationStatus, type GenerationRef as WireGenerationRef, type RebaseStatus, type JoinStatus as WireJoinStatus, type Metadata as WireMetadata, type LogicalName as WireLogicalName, NameEncoding, type FileKind, type ExtentKind, type WorkCounters as WireWorkCounters, type FilesystemProfile, type JoinHistory, type ConflictUse } from "../generated/proto/filesystem/v2/filesystem_pb.js";
+import { type WorkspaceRef as WireWorkspaceRef, type SourceResponse as WireSourceResponse, SourceInvalidationReason as WireSourceInvalidationReason, type FileRecordSnapshot as WireFileRecordSnapshot, type TreeEntrySnapshot as WireTreeEntrySnapshot, type Conflict as WireConflict, type MutationStatus, type GenerationRef as WireGenerationRef, type RebaseStatus, type JoinStatus as WireJoinStatus, type Metadata as WireMetadata, type LogicalName as WireLogicalName, NameEncoding, type FileKind, type ExtentKind, type WorkCounters as WireWorkCounters, type FilesystemProfile, type JoinHistory } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { type SourceResult, type FileRecordSnapshot, type TreeEntrySnapshot, type TransactionConflict, type WorkspaceName, type MergeConflict, type WorkspaceCommit, type WorkspaceRebaseResult, type JoinResult, type WorkspaceMetadata, type WorkspaceFileKind, type WorkCounters, type WorkspaceDeleteStatus, type FsProfile, type JoinOptions } from "./contracts.js";
 import { SOURCE_STATE_TO_STATUS, SOURCE_INVALIDATION_REASON_TO_REASON, isFilePayloadKind, SPARSE_TARGET_TO_TARGET, MUTATION_STATUS_TO_COMMIT, REBASE_STATUS_TO_STATUS, JOIN_STATUS_TO_STATUS, NAME_ENCODING_TO_PUBLIC, FILE_KIND_TO_KIND, EXTENT_KIND_TO_KIND, WORK_COUNTER_KEYS, MUTATION_STATUS_TO_DELETE, FILESYSTEM_PROFILE_TO_PROFILE, JOIN_HISTORY_FROM_PUBLIC, CONFLICT_USE_TO_USAGE } from "../generated/hosted-contract.js";
 import { HostedFsError, required, requireBytes, equalBytes, exactBytes } from "./hosted-rpc.js";
@@ -34,7 +34,8 @@ export function sourceResult(
 }
 
 export function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
-  const payloadKind = filePayloadKind(value.payloadKind);
+  const payloadKind = value.payloadKind;
+  if (!isFilePayloadKind(payloadKind)) throw new HostedFsError("invalid_response", "invalid file payload kind");
   return {
     fileId: exactBytes(value.fileId, 16, "file identity"),
     fileKind: fileKind(value.fileKind),
@@ -47,11 +48,6 @@ export function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot 
     deviceMajor: (value.deviceMajor?.value.case === "present" ? value.deviceMajor.value.value : undefined),
     deviceMinor: (value.deviceMinor?.value.case === "present" ? value.deviceMinor.value.value : undefined),
   };
-}
-
-function filePayloadKind(value: string): FileRecordSnapshot["payloadKind"] {
-  if (!isFilePayloadKind(value)) throw new HostedFsError("invalid_response", "invalid file payload kind");
-  return value;
 }
 
 export function treeEntry(value: WireTreeEntrySnapshot): TreeEntrySnapshot {
@@ -103,9 +99,11 @@ export function transactionConflict(value: WireConflict): TransactionConflict {
       break;
     default: throw new HostedFsError("invalid_response", "conflict region is absent");
   }
+  const usage = CONFLICT_USE_TO_USAGE[value.use];
+  if (usage === undefined) throw new HostedFsError("invalid_response", "invalid conflict use");
   return {
     region, fileId, directoryId, offset, length, sparseTarget, name, maximumEntries,
-    usage: conflictUse(value.use),
+    usage,
     expected: value.expectedDigest.length === 0 ? undefined : Uint8Array.from(value.expectedDigest),
     actual: value.actualDigest.length === 0 ? undefined : Uint8Array.from(value.actualDigest),
   };
@@ -229,10 +227,4 @@ export function profileFromWire(value: FilesystemProfile): FsProfile {
 export function joinHistory(value: JoinOptions["history"]): JoinHistory {
   if (!Object.hasOwn(JOIN_HISTORY_FROM_PUBLIC, value)) throw new TypeError("join history is invalid");
   return JOIN_HISTORY_FROM_PUBLIC[value];
-}
-
-function conflictUse(value: ConflictUse): TransactionConflict["usage"] {
-  const translated = CONFLICT_USE_TO_USAGE[value];
-  if (translated === undefined) throw new HostedFsError("invalid_response", "invalid conflict use");
-  return translated;
 }
