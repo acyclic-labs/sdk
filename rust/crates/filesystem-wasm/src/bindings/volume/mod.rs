@@ -57,7 +57,8 @@ impl BrowserVolume {
 
     /// Opens the volume head with explicit access and consistency semantics.
     pub async fn checkout(&self, options: JsValue) -> Result<BrowserCheckout, JsValue> {
-        let options: CheckoutOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
+        let options: BrowserCheckoutOptions =
+            serde_wasm_bindgen::from_value(options).map_err(js_error)?;
         let mode = checkout_mode(&options);
         let cancellation = CancellationToken::default();
         let (engine, acquisition_work) = {

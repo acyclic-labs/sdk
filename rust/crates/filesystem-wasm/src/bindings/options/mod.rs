@@ -20,8 +20,6 @@ pub struct BrowserVolumeOptions {
     pub(in crate::bindings) limits: BrowserVolumeLimits,
 }
 
-pub(in crate::bindings) type VolumeOptions = BrowserVolumeOptions;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(in crate::bindings) enum Profile {
@@ -64,9 +62,9 @@ pub(in crate::bindings) enum Unicode {
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 #[allow(
-        clippy::struct_field_names,
-        reason = "field names match the TypeScript volume-limit keys"
-    )]
+    clippy::struct_field_names,
+    reason = "field names match the TypeScript volume-limit keys"
+)]
 pub struct BrowserVolumeLimits {
     pub(in crate::bindings) maximum_path_bytes: u32,
     pub(in crate::bindings) maximum_component_bytes: u32,
@@ -94,8 +92,6 @@ pub struct BrowserCheckoutOptions {
     pub(in crate::bindings) mutation_mode: CheckoutMutationMode,
 }
 
-pub(in crate::bindings) type CheckoutOptions = BrowserCheckoutOptions;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(in crate::bindings) enum CheckoutAccess {
@@ -121,7 +117,7 @@ pub(in crate::bindings) enum CheckoutMutationMode {
 }
 
 pub(in crate::bindings) fn browser_volume_config(
-    options: VolumeOptions,
+    options: BrowserVolumeOptions,
 ) -> Result<VolumeConfig, VolumeConfigError> {
     let limits = options.limits;
     VolumeConfig {
@@ -170,7 +166,7 @@ pub(in crate::bindings) fn browser_volume_config(
     .validate()
 }
 
-pub(in crate::bindings) fn checkout_mode(options: &CheckoutOptions) -> CheckoutMode {
+pub(in crate::bindings) fn checkout_mode(options: &BrowserCheckoutOptions) -> CheckoutMode {
     CheckoutMode {
         access: match options.access {
             CheckoutAccess::ReadOnly => AccessMode::ReadOnly,

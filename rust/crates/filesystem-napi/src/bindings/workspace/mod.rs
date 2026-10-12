@@ -11,13 +11,10 @@ pub struct NativeWorkspaceOperationFinish {
     pub rebase: Option<NativeWorkspaceRebaseResult>,
 }
 
-pub(in crate::bindings) type NativeLocalWorkspace =
-    Workspace<LocalAuthorityBackend, LocalObjectBackend>;
-
 /// One named customer workspace backed by the embedded local engine.
 #[napi]
 pub struct NativeWorkspace {
-    pub(in crate::bindings) inner: NativeLocalWorkspace,
+    pub(in crate::bindings) inner: Workspace<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
 /// Terminal result of advancing a fork onto its source workspace.
@@ -654,11 +651,13 @@ pub(in crate::bindings) fn native_workspace_rebase_result(
     outcome: WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceRebaseResult {
     let generation =
-        |status: &str, generation: NativeLocalGeneration| NativeWorkspaceRebaseResult {
-            status: status.to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-            conflicts: Vec::new(),
-            truncated: false,
+        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
+            NativeWorkspaceRebaseResult {
+                status: status.to_owned(),
+                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
+                conflicts: Vec::new(),
+                truncated: false,
+            }
         };
     match outcome {
         WorkspaceRebase::Rebased(value) => generation("rebased", value),

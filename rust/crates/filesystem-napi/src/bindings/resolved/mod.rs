@@ -35,13 +35,10 @@ impl NativeResolvedFiles {
     }
 }
 
-pub(in crate::bindings) type NativeLocalResolvedFile =
-    ResolvedFile<LocalAuthorityBackend, LocalObjectBackend>;
-
 /// One immutable file resolved against a pinned checkout generation.
 #[napi]
 pub struct NativeResolvedFile {
-    pub(in crate::bindings) inner: NativeLocalResolvedFile,
+    pub(in crate::bindings) inner: ResolvedFile<LocalAuthorityBackend, LocalObjectBackend>,
     pub(in crate::bindings) cancellation: CancellationToken,
 }
 

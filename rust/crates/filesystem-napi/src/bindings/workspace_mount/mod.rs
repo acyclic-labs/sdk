@@ -1,8 +1,5 @@
 use super::*;
 
-pub(in crate::bindings) type NativeLocalWorkspaceMount =
-    WorkspaceMount<LocalAuthorityBackend, LocalObjectBackend>;
-
 /// Explicit native workspace mount policy.
 #[napi(object)]
 pub struct NativeWorkspaceMountOptions {
@@ -17,18 +14,21 @@ pub struct NativeWorkspaceMountOptions {
 /// Retryable owner of one process-local native workspace mount.
 #[napi]
 pub struct NativeWorkspaceMount {
-    pub(in crate::bindings) inner: Arc<std::sync::Mutex<Option<NativeLocalWorkspaceMount>>>,
+    pub(in crate::bindings) inner:
+        Arc<std::sync::Mutex<Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>>>,
     pub(in crate::bindings) path: String,
 }
 
 /// Worker-thread publication of one native workspace mount.
 pub struct NativeWorkspaceMountSyncTask {
-    pub(in crate::bindings) inner: Arc<std::sync::Mutex<Option<NativeLocalWorkspaceMount>>>,
+    pub(in crate::bindings) inner:
+        Arc<std::sync::Mutex<Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>>>,
 }
 
 /// Worker-thread publication and detach of one native workspace mount.
 pub struct NativeWorkspaceUnmountTask {
-    pub(in crate::bindings) inner: Arc<std::sync::Mutex<Option<NativeLocalWorkspaceMount>>>,
+    pub(in crate::bindings) inner:
+        Arc<std::sync::Mutex<Option<acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>>>>,
 }
 
 #[napi]

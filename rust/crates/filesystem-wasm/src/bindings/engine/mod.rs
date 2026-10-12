@@ -10,9 +10,9 @@ pub struct BrowserFs {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(
-        clippy::struct_excessive_bools,
-        reason = "each flag is one independent capability in the serialized report"
-    )]
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent capability in the serialized report"
+)]
 pub(in crate::bindings) struct Capabilities {
     pub(in crate::bindings) version: &'static str,
     pub(in crate::bindings) platform: &'static str,
@@ -187,7 +187,8 @@ impl BrowserFs {
         volume_id: Option<VolumeId>,
         options: JsValue,
     ) -> Result<BrowserVolume, JsValue> {
-        let options: VolumeOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
+        let options: BrowserVolumeOptions =
+            serde_wasm_bindgen::from_value(options).map_err(js_error)?;
         let config = browser_volume_config(options).map_err(js_error)?;
         let cancellation = CancellationToken::default();
         let (engine, acquisition_work) = {

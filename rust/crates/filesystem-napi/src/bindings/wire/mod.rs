@@ -21,12 +21,7 @@ pub(in crate::bindings) fn validate_napi_u32(number: f64) -> Result<u32> {
     reason = "N-API trait hooks require a narrow unsafe boundary"
 )]
 mod napi_u32_codec {
-    //! The only unsafe code in this binding is the two N-API trait hooks below.
-    //!
-    //! N-API supplies live environment and value handles to these callbacks, and
-    //! the maintained `f64`/`u32` implementations own the handle conversion.
-    //! This module keeps those required ABI hooks narrow while the public binding
-    //! remains subject to the workspace `unsafe_code = "deny"` lint.
+    //! N-API supplies live handles; the maintained codecs perform conversion.
 
     use super::{NapiU32, Result, validate_napi_u32};
     use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
@@ -160,12 +155,6 @@ pub(in crate::bindings) struct PendingReconcile {
     pub(in crate::bindings) baseline: CaptureReceipt,
     pub(in crate::bindings) work: acyclic_fs::WorkCounters,
 }
-
-pub(in crate::bindings) type NativeLocalTransaction =
-    Transaction<LocalAuthorityBackend, LocalObjectBackend>;
-
-pub(in crate::bindings) type NativeLocalGeneration =
-    Generation<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Explicit immutable inheritance and stable retry identity.
 #[napi(object)]

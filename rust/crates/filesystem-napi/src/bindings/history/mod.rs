@@ -1,27 +1,21 @@
 use super::*;
 
-pub(in crate::bindings) type NativeLocalChangeSet =
-    ChangeSet<LocalAuthorityBackend, LocalObjectBackend>;
-
-pub(in crate::bindings) type NativeLocalJoinPlan =
-    JoinPlan<LocalAuthorityBackend, LocalObjectBackend>;
-
 /// One exact immutable customer workspace generation.
 #[napi]
 pub struct NativeGeneration {
-    pub(in crate::bindings) inner: NativeLocalGeneration,
+    pub(in crate::bindings) inner: Generation<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
 /// One immutable semantic delta between exact generations.
 #[napi]
 pub struct NativeChangeSet {
-    pub(in crate::bindings) inner: NativeLocalChangeSet,
+    pub(in crate::bindings) inner: ChangeSet<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
 /// One immutable, side-effect-free workspace join plan.
 #[napi]
 pub struct NativeJoinPlan {
-    pub(in crate::bindings) inner: NativeLocalJoinPlan,
+    pub(in crate::bindings) inner: JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
 }
 
 /// Exact bounded join planning options.
@@ -353,12 +347,15 @@ pub(in crate::bindings) fn native_join_history(value: &str) -> Result<JoinHistor
 pub(in crate::bindings) fn native_join_result(
     outcome: JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeJoinResult {
-    let generation = |status: &str, generation: NativeLocalGeneration| NativeJoinResult {
-        status: status.to_owned(),
-        generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
+    let generation =
+        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
+            NativeJoinResult {
+                status: status.to_owned(),
+                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
+                conflicts: Vec::new(),
+                truncated: false,
+            }
+        };
     match outcome {
         JoinOutcome::Applied(value) => generation("applied", value.generation),
         JoinOutcome::AlreadyApplied(value) => generation("already-applied", value.generation),

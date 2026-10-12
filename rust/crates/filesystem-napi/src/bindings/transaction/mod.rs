@@ -3,7 +3,8 @@ use super::*;
 /// One sparse atomic workspace transaction.
 #[napi]
 pub struct NativeWorkspaceTransaction {
-    pub(in crate::bindings) inner: tokio::sync::Mutex<NativeLocalTransaction>,
+    pub(in crate::bindings) inner:
+        tokio::sync::Mutex<Transaction<LocalAuthorityBackend, LocalObjectBackend>>,
 }
 
 #[napi]
