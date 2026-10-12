@@ -16693,24 +16693,24 @@ mod tests {
             SourceReference { identity: [0x73; 16], epoch: snapshot.source.epoch },
             snapshot.overlay, snapshot.shadows,
         );
-        let identity_failure = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(replaced_identity, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
+        let identity_failure = root.validate_snapshot(replaced_identity, &LazyTreapWork::new(budget, &token))
             .await.expect_err("original physical source identity differs");
         assert!(matches!(identity_failure.semantic_error(), LazyWorkspaceError::StaleSource));
         source.invalidate();
-        let validated = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(snapshot, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
+        root.validate_snapshot(snapshot, &LazyTreapWork::new(budget, &token))
             .await.expect("original immutable metadata survives live epoch advancement");
         let missing_root = LazySnapshotRef::new(
             snapshot.workspace_id, snapshot.authored_generation, snapshot.source,
             LazyOverlayId::from_bytes([0x72; 32]), snapshot.shadows,
         );
-        let invalid = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(missing_root, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
+        let invalid = root.validate_snapshot(missing_root, &LazyTreapWork::new(budget, &token))
             .await.expect_err("digest alone cannot authenticate absent overlay root");
         assert!(matches!(invalid.semantic_error(), LazyWorkspaceError::Store(_)));
         let missing_shadow = LazySnapshotRef::new(
             snapshot.workspace_id, snapshot.authored_generation, snapshot.source,
             snapshot.overlay, LazyShadowId([0x74; 32]),
         );
-        let invalid = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.validate_snapshot(missing_shadow, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) })
+        let invalid = root.validate_snapshot(missing_shadow, &LazyTreapWork::new(budget, &token))
             .await.expect_err("digest alone cannot authenticate absent shadow root");
         assert!(matches!(invalid.semantic_error(), LazyWorkspaceError::Store(_)));
         let failure = root.read_at_snapshot_measured(snapshot, "/file.txt", 64, budget, &token)
