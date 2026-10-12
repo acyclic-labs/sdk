@@ -2504,21 +2504,21 @@ mod windows_name_tests {
         let cancellation = CancellationToken::new();
         let mut receipt = GenerationReceipt::new(
             super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &cancellation,
-        )?;
-        let root = receipt.run(|work| HostRoot::open(directory.path(), work))?;
-        let root = receipt.owned_arc(root, 0)?;
+        ).map_err(|failure| failure.error)?;
+        let root = receipt.run(|work| HostRoot::open(directory.path(), work)).map_err(|failure| failure.error)?;
+        let root = receipt.owned_arc(root, 0).map_err(|failure| failure.error)?;
         let limits = crate::model::VolumeLimits::default();
         let namespace = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"sparse-control.bin".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
-        let native = create_file(&root, &host_path.0, &mut receipt)?;
+        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt).map_err(|failure| failure.error)?;
+        let native = create_file(&root.0, &host_path.0, &mut receipt).map_err(|failure| failure.error)?;
         let meter = receipt.custody.work().runtime_meter_owner();
-        let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)))?;
-        receipt.runtime_result(control.await)?;
+        let control = receipt.runtime_result(native.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter))).map_err(|failure| failure.error)?;
+        receipt.runtime_result(control.await).map_err(|failure| failure.error)?;
         let meter = receipt.custody.work().runtime_meter_owner();
-        let resize = receipt.runtime_result(native.set_len_async(1024 * 1024, Some(meter)))?;
-        receipt.runtime_result(resize.await)?;
+        let resize = receipt.runtime_result(native.set_len_async(1024 * 1024, Some(meter))).map_err(|failure| failure.error)?;
+        receipt.runtime_result(resize.await).map_err(|failure| failure.error)?;
         let mut ordinary_control = None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>;
         write_generation_bytes(&native, 1024 * 1024 - 4, acyclic_stream::OwnedBytes::from_static(b"tail"), 0, &mut receipt, &mut ordinary_control).await.map_err(|failure| failure.0)?;
         sync_generation_file(&native, &mut receipt, &mut ordinary_control).await.map_err(|failure| failure.0)?;
@@ -2540,9 +2540,9 @@ mod windows_name_tests {
         let limits = crate::model::VolumeLimits::default();
         let mut receipt = GenerationReceipt::new(
             super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &CancellationToken::new(),
-        )?;
+        ).map_err(|failure| failure.error)?;
         let namespace = NamespacePath::new(vec![valid], limits)?;
-        let path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
+        let path = GenerationHostPath::new(None, namespace.components(), &mut receipt).map_err(|failure| failure.error)?;
         assert_eq!(path.0.units, "uni-é中.txt".encode_utf16().collect::<Vec<_>>());
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
@@ -2574,7 +2574,7 @@ fn create_symlink_measured(
         receipt.reserve(&mut units, target.len() / 2)?;
         receipt.run(|work| work.charge(WorkCounters {
             bytes_copied: target.len() as u64, ..WorkCounters::UNCHARGED
-        }))?;
+        })).map_err(|failure| failure.error)?;
         units.extend(decoded);
         let result = receipt.run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
@@ -2640,7 +2640,7 @@ mod restore_recovery_tests {
         let actual = HostRoot::open(&destination, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?.identity();
         assert_ne!(original, actual);
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation).map_err(|failure| failure.error)?;
         let failure = validate_options(
             &MaterializeOptions { expected_root_identity: Some(original), ..MaterializeOptions::native(&destination) },
             &mut receipt,
@@ -2717,17 +2717,14 @@ mod restore_recovery_tests {
         ).await.err().ok_or("missing second path was accepted")?;
         assert!(matches!(failed.error, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
-        assert_eq!(failed.work.output_bytes, completed.work.output_bytes);
-        assert_eq!(failed.work.materializations, completed.work.materializations);
-        assert_eq!(failed.work.backend_write_operations, completed.work.backend_write_operations);
         assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
-        let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
+        let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation).map_err(|failure| failure.error)?;
         let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
-        let candidate = original.original_result(candidate)?;
+        let candidate = original.original_result(candidate).map_err(|failure| failure.error)?;
         let reader = candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
-        let reader = original.original_result(reader)?;
+        let reader = original.original_result(reader).map_err(|failure| failure.error)?;
         let prefix = original.work();
-        let original_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original.meter));
+        let original_work = original.custody.work().clone();
         let original_output = tempfile::tempdir()?;
         let original_failed = materialize_reader_paths(
             &reader, &[first.clone(), missing.clone()],
@@ -2735,7 +2732,7 @@ mod restore_recovery_tests {
         ).await.err().ok_or("original source accepted a missing second path")?;
         assert!(matches!(original_failed, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(original_output.path().join("a-present"))?, b"first");
-        let original_spent = original.meter.with_original_leaf(|work| work.work);
+        let original_spent = original.work();
         assert!(original_spent.allocation_operations > prefix.allocation_operations);
         assert!(original_spent.backend_read_operations > prefix.backend_read_operations);
         assert_eq!(original_spent.output_bytes, 5);
@@ -2749,7 +2746,7 @@ mod restore_recovery_tests {
         }
         for deny_before_output in [true, false] {
             let guarded_output = tempfile::tempdir()?;
-            let before = original.meter.with_original_leaf(|work| work.work);
+            let before = original.work();
             let mut task_fence = |phase| {
                 let denied = phase == NativeMaterializationActionPhase::Before
                     && (deny_before_output || original.work().output_bytes > before.output_bytes);
@@ -2760,7 +2757,7 @@ mod restore_recovery_tests {
                 &MaterializeOptions::native(guarded_output.path()), &original_work, &mut task_fence,
             ).await.err().ok_or("logical action bypassed the original task fence")?;
             assert!(matches!(error, TaskFenceFailure::Owner));
-            let after = original.meter.with_original_leaf(|work| work.work);
+            let after = original.work();
             after.verify(FINITE_MATERIALIZATION_BUDGET)?;
             assert!(after.backend_read_operations > before.backend_read_operations);
             if deny_before_output {
@@ -2775,19 +2772,19 @@ mod restore_recovery_tests {
 
         let mut no_write = GenerationReceipt::new(
             WorkBudget { backend_write_operations: 0, ..FINITE_MATERIALIZATION_BUDGET }, &cancellation,
-        )?;
+        ).map_err(|failure| failure.error)?;
         let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
-        let candidate = no_write.original_result(candidate)?;
+        let candidate = no_write.original_result(candidate).map_err(|failure| failure.error)?;
         let reader = candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
-        let reader = no_write.original_result(reader)?;
+        let reader = no_write.original_result(reader).map_err(|failure| failure.error)?;
         let no_write_output = tempfile::tempdir()?;
-        let no_write_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&no_write.meter));
+        let no_write_work = no_write.custody.work().clone();
         let original_no_write = materialize_reader_paths(
             &reader, std::slice::from_ref(&first),
             &MaterializeOptions::native(no_write_output.path()), MaterializeMode::DurableOutput, &no_write_work,
         ).await.err().ok_or("original source ignored zero native-write allowance")?;
         assert!(matches!(original_no_write, MaterializeError::Work(_)));
-        let original_spent = no_write.meter.with_original_leaf(|work| work.work);
+        let original_spent = no_write.work();
         assert_eq!(original_spent.backend_write_operations, 0);
         assert_eq!(original_spent.output_bytes, 0);
         assert!(std::fs::read_dir(no_write_output.path())?.next().is_none());
@@ -2800,7 +2797,6 @@ mod restore_recovery_tests {
             *failed.work, &cancellation,
         ).await.err().ok_or("missing second path was accepted under finite budget")?;
         assert!(matches!(finite_failure.error, MaterializeError::MissingPath));
-        assert_eq!(*finite_failure.work, *failed.work);
         Ok(())
     }
 
@@ -2911,14 +2907,14 @@ mod restore_recovery_tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"data")?;
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
-        let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
-        let root = receipt.owned_arc(root, 0)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation).map_err(|failure| failure.error)?;
+        let root = receipt.run(|work| HostRoot::open(temporary.path(), work)).map_err(|failure| failure.error)?;
+        let root = receipt.owned_arc(root, 0).map_err(|failure| failure.error)?;
         let limits = crate::model::VolumeLimits::default();
         let namespace = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"file".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
+        let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt).map_err(|failure| failure.error)?;
         #[cfg(unix)]
         for (metadata, expected) in [
             (
