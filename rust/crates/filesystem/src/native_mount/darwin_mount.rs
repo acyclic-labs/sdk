@@ -479,7 +479,7 @@ impl FlushLedger {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
+        source.flush(work.native).map_err(|error| work.native_error(error.into()))?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
@@ -4048,7 +4048,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     let _span = callback_span!(TRACE, link);
     ffi(address, &_span, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        context.mutate(|| context.source.hard_link_with_meter(&source, &destination, work.native), work)?;
+        context.mutate(|| context.source.hard_link(&source, &destination, work.native), work)?;
         context.namespace_changed();
         Ok(0)
     })
@@ -4134,7 +4134,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
         .then(|| super::device::split_device(device));
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_special_with_meter(
+            context.source.create_special(
                 &path,
                 kind,
                 device,
@@ -4439,7 +4439,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
                         .logical_bytes
                         .saturating_sub(source_offset),
                 );
-                context.source.clone_range_by_id_with_meter(
+                context.source.clone_range_by_id(
                     source_lookup.node.file_id,
                     source_offset,
                     destination_lookup.node.file_id,
