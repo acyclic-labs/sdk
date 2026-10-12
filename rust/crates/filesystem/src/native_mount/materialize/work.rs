@@ -93,56 +93,13 @@ impl GenerationReceipt {
         values: &mut Vec<T>,
         additional: usize,
     ) -> Result<(), MaterializeError> {
-        let old_capacity = values.capacity();
         let required = values
             .len()
             .checked_add(additional)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        let growth = required.saturating_sub(old_capacity);
-        let bytes = growth
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        if growth == 0 {
-            return Ok(());
-        }
-        let result = self
-            .custody
-            .work()
-            .allocations(|ledger, work, budget, cancellation| {
-                cancellation
-                    .check()
-                    .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
-                let prior_peak = work.peak_allocation_bytes;
-                ledger
-                    .claim_bytes(bytes as u64, 1, work, budget)
-                    .map_err(|error| {
-                        error.into_work_or(crate::NativeTreeMaterializationError::Io(
-                            std::io::ErrorKind::OutOfMemory.into(),
-                        ))
-                    })?;
-                if values.try_reserve_exact(additional).is_err() {
-                    ledger.release(bytes as u64).map_err(|_| {
-                        crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
-                    })?;
-                    work.peak_allocation_bytes = prior_peak;
-                    return Err(crate::NativeTreeMaterializationError::Io(
-                        std::io::ErrorKind::OutOfMemory.into(),
-                    ));
-                }
-                let actual = (values.capacity() - old_capacity) * std::mem::size_of::<T>();
-                ledger
-                    .record_owned_bytes(actual.saturating_sub(bytes) as u64, work)
-                    .map_err(|_| {
-                        crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
-                    })?;
-                // Retain the physical capacity even when its observed surplus fails
-                // the late check; the caller drops the vector before this custody.
-                Ok(work.verify(budget))
-            });
-        let (verified, mut custody) = result.map_err(materialize_native_error)?;
-        let absorbed = self.custody.absorb(&mut custody);
-        absorbed.map_err(materialize_native_error)?;
-        verified.map_err(MaterializeError::Work)
+        let work = self.custody.work().clone();
+        crate::core_state::reserve(values, required, &work, &mut self.custody)
+            .map_err(materialize_native_error)
     }
 
     pub(super) fn push<T>(

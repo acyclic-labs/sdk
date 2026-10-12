@@ -116,7 +116,7 @@ pub(super) fn check_dto(dto: Dto, value: &Value, work: NativeWork<'_>) -> Result
         }
         Err(source) => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() { return Err(Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody }); }
+            if work.is_some() { return Err(Error::NativeJson { code: crate::wire::ErrorCode::Invalid, source, custody }); }
             Err(Error::Invalid(source.to_string()))
         }
     }
@@ -269,7 +269,7 @@ mod tests {
             "messages":[{"role":"untrusted\u{1}role","content":{"type":"text","text":"external"}}]
         }), Some(&work)).expect_err("invalid role");
         match &failure {
-            Error::NativeDecode { source, custody: Some(custody), .. } => {
+            Error::NativeJson { source, custody: Some(custody), .. } => {
                 assert!(source.is_data());
                 assert!(custody.bytes() > 0);
                 assert!(custody.shares_ledger(&original));

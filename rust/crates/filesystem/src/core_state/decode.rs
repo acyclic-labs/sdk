@@ -34,6 +34,27 @@ impl MaterializationDecode<'_> {
             "materialization decode allocation boundary"
         })
     }
+
+    fn grow_sequence(&self, width: usize, capacity: &mut usize) -> Result<(), &'static str> {
+        let minimum = match width {
+            1 => 8,
+            2..=1024 => 4,
+            _ => 1,
+        };
+        let next = if *capacity == 0 {
+            minimum
+        } else {
+            capacity
+                .checked_mul(2)
+                .ok_or("sequence capacity overflow")?
+        };
+        let bytes = (next - *capacity)
+            .checked_mul(width)
+            .ok_or("sequence allocation overflow")?;
+        self.grow(bytes as u64)?;
+        *capacity = next;
+        Ok(())
+    }
 }
 
 pub(super) struct MaterializationDeserializer<'a, 'b, D> {
@@ -307,30 +328,9 @@ impl<'de, A: serde::de::SeqAccess<'de>> serde::de::SeqAccess<'de>
         if value.is_some() {
             let width = std::mem::size_of::<S::Value>();
             if self.owned && width != 0 && self.length == self.capacity {
-                // With no size hint serde's Vec visitor starts at zero; these
-                // are Vec's actual minimum and amortized growth capacities.
-                let minimum = if width == 1 {
-                    8
-                } else if width <= 1024 {
-                    4
-                } else {
-                    1
-                };
-                let next = if self.capacity == 0 {
-                    minimum
-                } else {
-                    self.capacity
-                        .checked_mul(2)
-                        .ok_or_else(|| Self::Error::custom("journal sequence capacity overflow"))?
-                };
-                let bytes = next
-                    .checked_sub(self.capacity)
-                    .and_then(|count| count.checked_mul(width))
-                    .ok_or_else(|| Self::Error::custom("journal sequence allocation overflow"))?;
                 self.decode
-                    .grow(bytes as u64)
+                    .grow_sequence(width, &mut self.capacity)
                     .map_err(Self::Error::custom)?;
-                self.capacity = next;
             }
             self.length += 1;
         }
@@ -385,27 +385,9 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de>
                 .map(|bytes| bytes & !(alignment - 1))
                 .ok_or_else(|| Self::Error::custom("flat map entry layout overflow"))?;
             if size != 0 && self.length == self.capacity {
-                let minimum = if size == 1 {
-                    8
-                } else if size <= 1024 {
-                    4
-                } else {
-                    1
-                };
-                let next = if self.capacity == 0 {
-                    minimum
-                } else {
-                    self.capacity
-                        .checked_mul(2)
-                        .ok_or_else(|| Self::Error::custom("flat map capacity overflow"))?
-                };
-                let bytes = (next - self.capacity)
-                    .checked_mul(size)
-                    .ok_or_else(|| Self::Error::custom("flat map allocation overflow"))?;
                 self.decode
-                    .grow(bytes as u64)
+                    .grow_sequence(size, &mut self.capacity)
                     .map_err(Self::Error::custom)?;
-                self.capacity = next;
             }
             self.length += 1;
         }

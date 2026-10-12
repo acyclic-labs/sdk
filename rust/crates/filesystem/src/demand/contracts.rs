@@ -201,16 +201,6 @@ pub trait SourceWatch: Send + Sync {
     fn is_exact(&self) -> bool;
 }
 
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub(super) fn measured<T>(
-    operation: impl FnOnce(&mut WorkCounters) -> Result<T, DemandError>,
-) -> DemandResult<T> {
-    let mut work = WorkCounters::default();
-    operation(&mut work)
-        .map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
 /// Provider contract for exact lookup, bounded pages, ranges, and metadata.
 pub trait DemandSource: Send + Sync {
     /// Current opaque source reference.

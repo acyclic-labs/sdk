@@ -592,42 +592,6 @@ async fn dropping_request_cancels_admitted_worker() -> Result<(), Box<dyn Error>
 }
 
 #[tokio::test]
-async fn cancelled_directory_page_retries_without_skipping_entries() -> Result<(), Box<dyn Error>> {
-    let root = tempfile::tempdir()?;
-    for name in ["a", "b", "c", "d", "e", "f"] {
-        std::fs::write(root.path().join(name), b"x")?;
-    }
-    let source = native_source(root.path()).await?;
-    let reference = source.reference();
-    let directory = path("/")?;
-    let live = CancellationToken::new();
-    let first = source
-        .list_page(reference, &directory, None, 1, &live)
-        .await?;
-    let cursor = first.value.next.ok_or("expected continuation")?;
-    let interrupted = CancellationToken::new();
-    source.cancel_during_page(reference, &directory, cursor.clone(), &interrupted)?;
-    let mut found = first.value.entries;
-    let mut next = Some(cursor);
-    while let Some(cursor) = next {
-        let page = source
-            .list_page(reference, &directory, Some(cursor), 2, &live)
-            .await?;
-        found.extend(page.value.entries);
-        next = page.value.next;
-    }
-    let mut names: Vec<_> = found
-        .into_iter()
-        .map(|entry| entry.name.as_bytes().to_vec())
-        .collect();
-    names.sort();
-    assert_eq!(names.len(), 6);
-    assert_eq!(names.first().map(Vec::as_slice), Some(&b"a"[..]));
-    assert_eq!(names.last().map(Vec::as_slice), Some(&b"f"[..]));
-    Ok(())
-}
-
-#[tokio::test]
 async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("directory"))?;

@@ -108,7 +108,7 @@ mod task_commands;
 mod task_runtime;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint, ConfiguredRecursiveToolSource,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource,
     ConfiguredRecursiveToolsConfig,
 };
 pub(crate) use default_tools::InvocationCancellation;
@@ -217,7 +217,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         O: 'static,
     {
         if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "Root publication allocation names another original volume",
@@ -239,7 +239,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require(volume, VolumeOperation::Write, io)?;
         let publication_permit = acyclic_fs::PublicationPermit::Unrestricted;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "content provider or size limit mismatch",
@@ -254,14 +254,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let provisional = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 volume.copy(work)?,
-                fork_preparer_io::clone_text(path, io)?,
-                fork_preparer_io::clone_text("pending", io)?,
+                stock_string_copy(path, io)?,
+                stock_string_copy("pending", io)?,
                 FileDescriptor::new(
                     *descriptor.sha256(),
                     descriptor.byte_length(),
-                    fork_preparer_io::clone_text(descriptor.media_type(), io)?,
+                    stock_string_copy(descriptor.media_type(), io)?,
                 )?,
-                fork_preparer_io::clone_text(display_name, io)?,
+                stock_string_copy(display_name, io)?,
                 work,
             )
         })?;
@@ -286,7 +286,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || provisional.path() == "turns/.canonical"
                 || provisional.path().starts_with("turns/.canonical/") =>
             {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "internal storage paths are reserved",
@@ -392,10 +392,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let receipt = crate::executor::with_history_io(io, |work| {
                 FileRef::new(
                     volume.copy(work)?,
-                    fork_preparer_io::clone_text(&receipt_path, io)?,
-                    fork_preparer_io::clone_text(&version, io)?,
+                    stock_string_copy(&receipt_path, io)?,
+                    stock_string_copy(&version, io)?,
                     receipt_descriptor,
-                    fork_preparer_io::clone_text("receipt.json", io)?,
+                    stock_string_copy("receipt.json", io)?,
                     work,
                 )
             })?;
@@ -418,7 +418,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             };
             if indexed.as_ref() != metadata_bytes.as_slice() {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "upload metadata index does not match",
@@ -430,24 +430,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 crate::executor::with_history_io(io, |work| {
                     crate::conversation::FileRef::new(
                         (volume).copy(work)?,
-                        crate::filesystem::fork_preparer_io::clone_text(path, io)?,
-                        crate::filesystem::fork_preparer_io::clone_text(&version, io)?,
+                        stock_string_copy(path, io)?,
+                        stock_string_copy(&version, io)?,
                         crate::conversation::FileDescriptor::new(
                             *descriptor.sha256(),
                             descriptor.byte_length(),
-                            crate::filesystem::fork_preparer_io::clone_text(
-                                descriptor.media_type(),
-                                io,
-                            )?,
+                            stock_string_copy(descriptor.media_type(), io)?,
                         )?,
-                        crate::filesystem::fork_preparer_io::clone_text(display_name, io)?,
+                        stock_string_copy(display_name, io)?,
                         work,
                     )
                 })
             }?;
             let committed = self.read_pinned_io(&reference, maximum_bytes, io).await?;
             if committed.as_ref() != bytes {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "upload identity belongs to different content",
@@ -457,12 +454,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let absolute =
             crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{}", provisional.path()), work))?;
-        let mut mutations = fork_preparer_io::vector(6, io)?;
+        let mut mutations = crate::model::vec_with_capacity(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
             && !parent.is_empty()
         {
             mutations.push(WorkspaceMutation::CreateDirectory {
-                path: fork_preparer_io::clone_text(parent, io)?,
+                path: stock_string_copy(parent, io)?,
             });
         }
         let owned_bytes = fork_preparer_io::clone_bytes(bytes, io)?;
@@ -471,10 +468,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             bytes: owned_bytes,
         });
         mutations.push(WorkspaceMutation::CreateDirectory {
-            path: fork_preparer_io::clone_text("/.system/harness-uploads", io)?,
+            path: stock_string_copy("/.system/harness-uploads", io)?,
         });
         mutations.push(WorkspaceMutation::CreateDirectory {
-            path: fork_preparer_io::clone_text("/.system/harness-file-metadata", io)?,
+            path: stock_string_copy("/.system/harness-file-metadata", io)?,
         });
         mutations.push(WorkspaceMutation::PutFile {
             path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?,
@@ -640,17 +637,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::with_history_io(io, |work| {
                 crate::conversation::FileRef::new(
                     (volume).copy(work)?,
-                    crate::filesystem::fork_preparer_io::clone_text(path, io)?,
-                    crate::filesystem::fork_preparer_io::clone_text(&version, io)?,
+                    stock_string_copy(path, io)?,
+                    stock_string_copy(&version, io)?,
                     crate::conversation::FileDescriptor::new(
                         *descriptor.sha256(),
                         descriptor.byte_length(),
-                        crate::filesystem::fork_preparer_io::clone_text(
-                            descriptor.media_type(),
-                            io,
-                        )?,
+                        stock_string_copy(descriptor.media_type(), io)?,
                     )?,
-                    crate::filesystem::fork_preparer_io::clone_text(display_name, io)?,
+                    stock_string_copy(display_name, io)?,
                     work,
                 )
             })
@@ -670,9 +664,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io.and_then(|io| io.original_native_work().map(|original| (io, original)))
         {
             use sha2::Digest as _;
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(
+            reference.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                 original,
-            )?))?;
+            ).map(crate::store::HistoryWork::new)?))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {
@@ -754,7 +748,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .await,
                 )?;
                 let capacity = bytes.retained_capacity().ok_or_else(|| {
-                    fork_preparer_io::failure(
+                    stock_boundary(
                         Some(io),
                         crate::wire::ErrorCode::Unsupported,
                         "content producer does not expose its owned capacity",
@@ -796,3 +790,5 @@ mod tests;
 
 mod stock_turn;
 pub use stock_turn::StockTurnMachine;
+
+use crate::executor::{stock_boundary, stock_string_copy};

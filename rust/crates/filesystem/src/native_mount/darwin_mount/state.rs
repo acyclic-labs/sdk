@@ -10,25 +10,19 @@ pub(super) struct DarwinMountContext {
     pub(super) mount_uid: u32,
     pub(super) mount_gid: u32,
     pub(super) next_handle: AtomicU64,
-    pub(super) next_inode: AtomicU64,
     pub(super) inodes: Mutex<DarwinOwned<HashMap<FileId, u64>>>,
-    /// Changes the source did not record that this mount was told of.
     pub(super) forgotten: AtomicU64,
-    pub(super) files: RwLock<DarwinOwned<HashMap<u64, FileHandle>>>,
+    pub(super) files: RwLock<DarwinOwned<HashMap<u64, Arc<DarwinOwned<FileHandle>>>>>,
     pub(super) directories:
         Mutex<DarwinOwned<HashMap<u64, Arc<DarwinOwned<Mutex<DirectoryHandle>>>>>>,
-    pub(super) directory_checkpoints:
-        Mutex<DarwinOwned<HashMap<MountPath, DarwinOwned<(CacheEpochs, i64)>>>>,
     pub(super) ledger: FlushLedger,
     pub(super) changes: ChangeLabels,
-    /// Attributes every change this mount's callbacks make to the mount.
     pub(super) origin: ViewOrigin,
     pub(super) callbacks: CallbackGate,
     pub(super) around: AroundChanges,
     pub(super) callback_guard: Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
     pub(super) source_original_work: Option<crate::NativeMaterializationWork>,
     pub(super) native_allocation: crate::NativeAllocation,
-    pub(super) allocation_custody: Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>>,
 }
 
 #[derive(Default)]
@@ -44,23 +38,14 @@ impl DarwinCallbackState {
     }
 }
 
-/// Changes made around the mount, which the NFS client learns of only when its cached attributes expire.
 pub(super) struct AroundChanges {
-    /// Changes another origin reported, plus views forgotten.
     pub(super) made: AtomicU64,
-    /// `made` as of the latest barrier that waited them out.
     pub(super) settled: AtomicU64,
-    /// Fences that could not confirm every change was reported.
     pub(super) unconfirmed: AtomicU64,
-    /// `unconfirmed` as of the latest barrier that verified or waited them out.
     pub(super) verified: AtomicU64,
 }
 
 impl ViewObserver for DarwinMountContext {
-    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
-        self.allocation_custody.clone()
-    }
-
     fn view_changed(&self, _position: ViewStamp, origin: ViewOrigin) {
         // The client learns of this mount's own changes from their replies.
         if origin != self.origin {
@@ -73,7 +58,6 @@ impl ViewObserver for DarwinMountContext {
     }
 }
 
-/// Uptime excluding sleep: the clock the NFS client stamps cached attributes with (`microuptime`).
 pub(super) fn uptime(
     work: &crate::NativeMaterializationWork,
 ) -> Result<Duration, NativeMountError> {

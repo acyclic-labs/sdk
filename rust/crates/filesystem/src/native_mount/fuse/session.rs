@@ -56,7 +56,11 @@ impl FuseSession {
             ..crate::WorkCounters::UNCHARGED
         })?;
         let normal = work.allocation_work();
-        let retirement_helper = FuseRetirementHelper::prepare(&normal)?;
+        let retirement_helper = match fuse_recovery_helper(&normal) {
+            Ok(program) => Some(FuseRetirementHelper::prepare(program, &normal)?),
+            Err(NativeMountError::CapabilityUnavailable(_)) => None,
+            Err(error) => return Err(error),
+        };
         let control_allocation = normal.claim(
             std::mem::size_of::<FuseDriverControl>() as u64,
             1,

@@ -47,14 +47,7 @@ impl NativeCheckout {
     pub async fn read_metadata(&self, path: String) -> Result<NativeMetadataResult> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_metadata(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, read_metadata(&path,))?;
         Ok(NativeMetadataResult {
             canonical_bytes: Buffer::from(
                 encode_file_metadata(
@@ -73,14 +66,7 @@ impl NativeCheckout {
     pub async fn read_metadata_by_id(&self, file_id: Buffer) -> Result<NativeMetadataResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_metadata_by_id(
-                file_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, read_metadata_by_id(file_id,))?;
         Ok(NativeMetadataResult {
             canonical_bytes: Buffer::from(
                 encode_file_metadata(

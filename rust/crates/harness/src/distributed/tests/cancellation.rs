@@ -9,11 +9,7 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
     let child = OperationId::from_bytes([45; 16]);
     let grandchild = OperationId::from_bytes([46; 16]);
     declare(&mut coordinator, spec(parent, 0)?, "cancel-parent-declare").await?;
-    let worker = Worker {
-        id: "cancel-parent-worker".into(),
-        available: ResourceSnapshot::default(),
-        labels: BTreeMap::new(),
-    };
+    let worker = worker("cancel-parent-worker");
     let lease = start(&mut coordinator, &worker, "cancel-parent-start").await?;
     assert_eq!(lease.operation.operation_id, parent);
     let fence = LeaseFence::from(&lease.reservation);

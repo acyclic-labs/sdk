@@ -157,21 +157,11 @@ impl NativeDemandFile {
         context.admit(copying)?;
         let original = context.native_source_work();
         let (mut data, mut allocation, mut native_allocation) = if let Some(original) = &original {
-            let owned = crate::native_host::native_buffer::<u8>(capacity, original)
+            let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, &mut &*original)
                 .map_err(crate::native_name::original_name_error)?;
-            (owned.data, 0, Some(owned._allocation))
+            (data, 0, Some(allocation))
         } else {
-            let mut allocation = context.claim(capacity as u64)?;
-            let mut data = Vec::new();
-            let reserved = data
-                .try_reserve_exact(capacity)
-                .map_err(DemandError::Allocation);
-            let reconciled = context.reconcile_allocation(&mut allocation, data.capacity() as u64);
-            if let Err(error) = reserved.and(reconciled) {
-                drop(data);
-                context.release(allocation)?;
-                return Err(error);
-            }
+            let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, context)?;
             (data, allocation, None)
         };
         let result = (|| {
@@ -273,21 +263,7 @@ impl DemandFile for NativeDemandFile {
         length: u64,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-        let mut context = match accounting.native_work() {
-            Some(original) => CallbackWork::Original(original.clone()),
-            None => CallbackWork::Ordinary(DemandWork::new(
-                accounting.remaining().map_err(DemandError::from)?,
-                match &*accounting {
-                    crate::kernel::KernelAccounting::Standalone { cancellation, .. }
-                    | crate::kernel::KernelAccounting::BorrowedStandalone {
-                        cancellation, ..
-                    }
-                    | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => {
-                        cancellation
-                    }
-                },
-            )),
-        };
+        let mut context = callback_work(accounting)?;
         if self.provider.inner.inline {
             let result = self.read(offset, length, &mut context);
             return finish_context(result, context, accounting);

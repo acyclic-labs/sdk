@@ -75,13 +75,13 @@ pub(super) fn finish_decode<'a, T>(
             Ok((value, held))
         }
         #[cfg(not(target_arch = "wasm32"))]
-        Err(Error::NativeDecode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
         }) if io.original_native_work().is_some() => {
             let (source, custody) = native_decoded((source, held))?;
-            Err(Error::NativeDecode {
+            Err(Error::NativeJson {
                 code,
                 source,
                 custody: Some(custody),
@@ -97,13 +97,13 @@ pub(super) fn finish_encoding<T>(
 ) -> Result<T> {
     match result {
         #[cfg(not(target_arch = "wasm32"))]
-        Err(Error::NativeEncode {
+        Err(Error::NativeJson {
             code,
             source,
             custody: None,
         }) => {
             let (source, custody) = native_decoded((source, diagnostics))?;
-            Err(Error::NativeEncode {
+            Err(Error::NativeJson {
                 code,
                 source,
                 custody: Some(custody),

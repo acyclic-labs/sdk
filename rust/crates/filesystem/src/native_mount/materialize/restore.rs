@@ -1,27 +1,18 @@
 use super::*;
 
-pub(super) async fn restore_io<T: Send + 'static>(
+pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     lock: Option<File>,
-    work: Arc<NativeDemandReadMeter>,
-    operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, MaterializeError> + Send + 'static,
-) -> Result<T, MaterializeError> {
-    let observer: Arc<dyn acyclic_native_runtime::NativeReadMeter> = work.clone();
+    work: crate::NativeMaterializationWork,
+    operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
+) -> Result<Result<T, E>, std::io::Error> {
+    let observer = work.runtime_meter();
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
-        operation(&mut crate::NativeMaterializationWork::from_meter((&work).clone()))
+        operation(&mut crate::NativeMaterializationWork::clone(&work))
     };
-    let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))
-        .map_err(|error| {
-            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
-                error,
-            ))
-        })?;
-    task.await.map_err(|error| {
-        materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
-            error,
-        ))
-    })?
+    let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))?;
+    task.await
 }
 
 pub(super) fn restore_demand_error(error: crate::demand::DemandError) -> MaterializeError {
@@ -72,8 +63,12 @@ pub(super) fn prepare_restore(
     let lock = acquire_restore_lock(&destination_parent, &relative.0, true, work)?;
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
-        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange_held(&destination_parent.directory, Path::new(destination_name), work)
-            .map_err(restore_demand_error)?,
+        HostPathReplacement::Atomic => crate::native_exchange::recover_native_entry_exchange_held(
+            &destination_parent.directory,
+            Path::new(destination_name),
+            work,
+        )
+        .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
             &destination_parent,
             Path::new(destination_name),
@@ -120,7 +115,9 @@ pub(super) fn prepare_restore(
             drop(stage_root);
             let _ = stage_owner
                 .remove_identity(&stage_name.0, identity, work)
-                .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
+                .and_then(|()| {
+                    crate::native_host::sync_directory_held(&stage_owner.directory, work)
+                });
             return Err(error);
         }
     };
@@ -150,8 +147,14 @@ pub(super) fn publish_restore(
     let name = Path::new(destination_name);
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
-            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held(&destination_parent.directory, name, &stage_parent.directory, name, work)
-                .map_err(restore_demand_error)?,
+            HostPathReplacement::Atomic => crate::native_exchange::exchange_native_entries_held(
+                &destination_parent.directory,
+                name,
+                &stage_parent.directory,
+                name,
+                work,
+            )
+            .map_err(restore_demand_error)?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,
                 name,
@@ -169,7 +172,8 @@ pub(super) fn publish_restore(
                 .map_err(restore_demand_error)?;
             crate::native_host::sync_directory_held(&destination_parent.directory, work)
                 .map_err(restore_demand_error)?;
-            crate::native_host::sync_directory_held(&stage_parent.directory, work).map_err(restore_demand_error)?;
+            crate::native_host::sync_directory_held(&stage_parent.directory, work)
+                .map_err(restore_demand_error)?;
         }
         Err(error) => return Err(restore_demand_error(error)),
     }
@@ -182,7 +186,7 @@ pub(super) fn validate_host_relative_measured(
 ) -> Result<(), MaterializeError> {
     let mut any = false;
     for component in relative.components() {
-        work.started_io(WorkCounters {
+        work.charge(WorkCounters {
             source_path_components: 1,
             items_examined: 1,
             ..WorkCounters::UNCHARGED
@@ -251,12 +255,16 @@ pub(super) fn create_restore_stage(
                     // deleting this name, which may already have been swapped.
                     Err(error) => return Err(restore_demand_error(error)),
                 };
-                if let Err(error) = crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error) {
+                if let Err(error) = crate::native_host::sync_directory_held(&parent.directory, work)
+                    .map_err(restore_demand_error)
+                {
                     let identity = root.identity();
                     drop(root);
                     let _ = parent
                         .remove_identity(&name.0, identity, work)
-                        .and_then(|()| crate::native_host::sync_directory_held(&parent.directory, work));
+                        .and_then(|()| {
+                            crate::native_host::sync_directory_held(&parent.directory, work)
+                        });
                     return Err(error);
                 }
                 return Ok((name, root));
@@ -297,7 +305,7 @@ pub(super) fn restore_artifact_name(
     {
         use std::os::windows::ffi::OsStrExt as _;
         for unit in relative.as_os_str().encode_wide() {
-            work.started_io(WorkCounters {
+            work.charge(WorkCounters {
                 bytes_hashed: 2,
                 bytes_encoded: 2,
                 ..WorkCounters::UNCHARGED
@@ -312,7 +320,7 @@ pub(super) fn restore_artifact_name(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta).map_err(restore_demand_error)?;
-    work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(restore_demand_error)?;
+    work.allocate(bytes as u64).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
@@ -344,14 +352,15 @@ pub(super) fn acquire_restore_lock(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<File, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let file = crate::native_host::open_leaf(&parent.directory,
-                name,
-                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-                work,
-            )
-            .map_err(restore_demand_error)?;
+        let file = crate::native_host::open_leaf(
+            &parent.directory,
+            name,
+            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            work,
+        )
+        .map_err(restore_demand_error)?;
         loop {
-            work.started_io(WorkCounters {
+            work.charge(WorkCounters {
                 backend_write_operations: 1,
                 ..WorkCounters::UNCHARGED
             })
@@ -377,12 +386,13 @@ pub(super) fn create_restore_witness(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
     use std::io::Write as _;
-    let mut file = crate::native_host::open_leaf(&parent.directory,
-            name,
-            &crate::native_host::NativeOpenOptions::CreateNew,
-            work,
-        )
-        .map_err(restore_demand_error)?;
+    let mut file = crate::native_host::open_leaf(
+        &parent.directory,
+        name,
+        &crate::native_host::NativeOpenOptions::CreateNew,
+        work,
+    )
+    .map_err(restore_demand_error)?;
     let mut remaining = contents;
     while !remaining.is_empty() {
         work.admit(WorkCounters {
@@ -391,7 +401,7 @@ pub(super) fn create_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.started_io(WorkCounters {
+        work.charge(WorkCounters {
             backend_write_operations: 1,
             ..WorkCounters::UNCHARGED
         })
@@ -416,7 +426,7 @@ pub(super) fn create_restore_witness(
             Err(error) => return Err(error.into()),
         }
     }
-    work.started_io(WorkCounters {
+    work.charge(WorkCounters {
         durability_operations: 1,
         ..WorkCounters::UNCHARGED
     })
@@ -432,16 +442,20 @@ pub(super) fn validate_restore_witness(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<bool, MaterializeError> {
     use std::io::Read as _;
-    let mut file =
-        match crate::native_host::open_leaf(&parent.directory, name, &crate::native_host::NativeOpenOptions::Read, work) {
-            Ok(file) => file,
-            Err(crate::demand::DemandError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound =>
-            {
-                return Ok(false);
-            }
-            Err(error) => return Err(restore_demand_error(error)),
-        };
+    let mut file = match crate::native_host::open_leaf(
+        &parent.directory,
+        name,
+        &crate::native_host::NativeOpenOptions::Read,
+        work,
+    ) {
+        Ok(file) => file,
+        Err(crate::demand::DemandError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Ok(false);
+        }
+        Err(error) => return Err(restore_demand_error(error)),
+    };
     let mut contents = [0_u8; 64];
     let bound = expected
         .len()
@@ -456,7 +470,7 @@ pub(super) fn validate_restore_witness(
             ..WorkCounters::UNCHARGED
         })
         .map_err(restore_demand_error)?;
-        work.started_io(WorkCounters {
+        work.charge(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
         })
@@ -523,7 +537,8 @@ pub(super) fn cleanup_removed_restore(
                                 ));
                             }
                             parent.remove(removed, work).map_err(restore_demand_error)?;
-                            crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                            crate::native_host::sync_directory_held(&parent.directory, work)
+                                .map_err(restore_demand_error)?;
                             remove_restore_witness(parent, witness, work)?;
                         }
                         Err(crate::demand::DemandError::Io(error))
@@ -569,9 +584,11 @@ pub(super) fn remove_restored_path(
                             parent
                                 .rename_to(destination_name, parent, removed, work)
                                 .map_err(restore_demand_error)?;
-                            crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                            crate::native_host::sync_directory_held(&parent.directory, work)
+                                .map_err(restore_demand_error)?;
                             parent.remove(removed, work).map_err(restore_demand_error)?;
-                            crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                            crate::native_host::sync_directory_held(&parent.directory, work)
+                                .map_err(restore_demand_error)?;
                         }
                         Err(crate::demand::DemandError::Io(error))
                             if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -607,7 +624,8 @@ pub(super) fn replace_live_mount(
                     parent
                         .rename_to(destination_name, parent, backup, work)
                         .map_err(restore_demand_error)?;
-                    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                    crate::native_host::sync_directory_held(&parent.directory, work)
+                        .map_err(restore_demand_error)?;
                     if let Err(error) =
                         staged_parent.rename_to(staged_name, parent, destination_name, work)
                     {
@@ -619,13 +637,17 @@ pub(super) fn replace_live_mount(
                                 rollback,
                             });
                         }
-                        crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                        crate::native_host::sync_directory_held(&parent.directory, work)
+                            .map_err(restore_demand_error)?;
                         return Err(restore_demand_error(error));
                     }
-                    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
-                    crate::native_host::sync_directory_held(&staged_parent.directory, work).map_err(restore_demand_error)?;
+                    crate::native_host::sync_directory_held(&parent.directory, work)
+                        .map_err(restore_demand_error)?;
+                    crate::native_host::sync_directory_held(&staged_parent.directory, work)
+                        .map_err(restore_demand_error)?;
                     parent.remove(backup, work).map_err(restore_demand_error)?;
-                    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                    crate::native_host::sync_directory_held(&parent.directory, work)
+                        .map_err(restore_demand_error)?;
                     remove_restore_witness(parent, witness, work)
                 },
             )
@@ -680,7 +702,8 @@ pub(super) fn recover_live_mount_replacement(
                         }
                         Err(error) => return Err(restore_demand_error(error)),
                     }
-                    crate::native_host::sync_directory_held(&parent.directory, work).map_err(restore_demand_error)?;
+                    crate::native_host::sync_directory_held(&parent.directory, work)
+                        .map_err(restore_demand_error)?;
                     remove_restore_witness(parent, witness, work)
                 },
             )

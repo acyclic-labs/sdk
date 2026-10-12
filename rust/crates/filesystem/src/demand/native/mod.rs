@@ -1,10 +1,7 @@
 use super::*;
 use crate::facade::FsWork;
 use crate::model::{FilesystemProfile, VolumeLimits};
-#[cfg(unix)]
 use crate::native_host::HostListedEntry;
-#[cfg(windows)]
-use crate::native_host::HostListedWideEntry as HostListedEntry;
 use crate::native_host::NativeHostWork;
 use crate::native_host::{HostRoot, HostStat, HostStatReader};
 use crate::source_watch::CallbackWork;

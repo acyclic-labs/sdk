@@ -92,9 +92,6 @@ const other = { ...file, volume: { ...file.volume,
 const validated: number[] = [];
 const binding = (marker: number) => ({
   validate: (_reference: FileRef) => { validated.push(marker); },
-  verify: (reference: FileRef, bytes: Uint8Array) => {
-    if (reference.volume.provider.family === "filesystem" && bytes[0] !== 1) throw new Error("wrong owner");
-  },
   read: async () => Uint8Array.of(marker, marker),
   fileReadCapability: () => "read:file",
   volumeReadCapability: () => "read:volume",
@@ -113,7 +110,7 @@ expect([...await content.read(other)]).toEqual([2, 2]);
 content.validate(file, DEFAULT_LIMITS);
 content.validate(other, DEFAULT_LIMITS);
 expect(validated).toEqual([1, 2]);
-expect(() => content.verify(file, Uint8Array.of(2))).toThrow();
+expect(() => contracts.verifyFileBytes(file, Uint8Array.of(2))).toThrow();
 expect(() => composeContentBindings(contracts, [
   { volume: file.volume, content: first },
   { volume: file.volume, content: second },
@@ -154,7 +151,7 @@ const writer = {
   stage: async () => file,
 };
 const binding = {
-  validate: () => {}, verify: () => {},
+  validate: () => {},
   read: async () => Uint8Array.of(1),
   fileReadCapability: () => "read:original",
   volumeReadCapability: () => "volume:original",
@@ -178,7 +175,7 @@ test("artifact binding is independent of conversation content and retains owner 
 const file = await mailboxFile(1);
 const bytes = new Uint8Array(1);
 const artifacts = {
-  validate: () => {}, verify: () => {},
+  validate: () => {},
   read: async () => bytes,
   fileReadCapability: () => "artifact:read",
   volumeReadCapability: () => "artifact:read",
@@ -754,7 +751,7 @@ test("file batches check every scope and bound before the first owner read", asy
 const first = await mailboxFile(1);
 const denied = { ...first, path: "denied" };
 let reads = 0;
-const content = { validate: () => {}, verify: () => {},
+const content = { validate: () => {},
   read: async () => { reads++; return Uint8Array.of(0); },
   fileReadCapability: (file: FileRef) => `read:${file.path}`,
   volumeReadCapability: () => "read:volume", directoryReadCapability: () => "read:directory" };

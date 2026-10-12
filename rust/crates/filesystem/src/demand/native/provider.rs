@@ -14,13 +14,7 @@ impl DemandSource for NativeDemandSource {
         let mut accounting = work.accounting(cancellation);
         let result = (|| {
             accounting.check().map_err(DemandError::from)?;
-            let mut context = match accounting.native_work() {
-                Some(original) => CallbackWork::Original(original.clone()),
-                None => CallbackWork::Ordinary(DemandWork::new(
-                    accounting.remaining().map_err(DemandError::from)?,
-                    cancellation,
-                )),
-            };
+            let mut context = callback_work(&mut accounting)?;
             let result = self.subscribe(sink, &mut context);
             finish_context(result, context, &mut accounting)
         })();
@@ -153,4 +147,19 @@ fn finish_context<T>(
             )
         }
     }
+}
+
+fn callback_work(
+    accounting: &mut crate::kernel::KernelAccounting<'_>,
+) -> Result<CallbackWork, DemandError> {
+    if let Some(original) = accounting.native_work() {
+        return Ok(CallbackWork::Original(original.clone()));
+    }
+    let budget = accounting.remaining().map_err(DemandError::from)?;
+    let stop = match &*accounting {
+        crate::kernel::KernelAccounting::Standalone { cancellation, .. }
+        | crate::kernel::KernelAccounting::BorrowedStandalone { cancellation, .. }
+        | crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
+    };
+    Ok(CallbackWork::Ordinary(DemandWork::new(budget, stop)))
 }

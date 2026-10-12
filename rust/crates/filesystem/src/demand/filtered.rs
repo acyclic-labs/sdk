@@ -151,10 +151,11 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
             if self.excludes(directory) {
                 return Err(DemandError::Absent);
             }
-            let mut page = {
+            let mut page = async {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    self.inner
+                    return self
+                        .inner
                         .list_page(
                             source,
                             directory,
@@ -163,39 +164,23 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
                             original,
                             cancellation,
                         )
-                        .await?
-                } else {
-                    let budget = accounting.remaining().map_err(DemandError::from)?;
-                    let answer = self
-                        .inner
-                        .list_page(
-                            source,
-                            directory,
-                            cursor,
-                            maximum_entries,
-                            budget,
-                            cancellation,
-                        )
                         .await;
-                    accept_source_result(answer, &mut accounting)?
                 }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let budget = accounting.remaining().map_err(DemandError::from)?;
-                    let answer = self
-                        .inner
-                        .list_page(
-                            source,
-                            directory,
-                            cursor,
-                            maximum_entries,
-                            budget,
-                            cancellation,
-                        )
-                        .await;
-                    accept_source_result(answer, &mut accounting)?
-                }
-            };
+                let budget = accounting.remaining().map_err(DemandError::from)?;
+                let answer = self
+                    .inner
+                    .list_page(
+                        source,
+                        directory,
+                        cursor,
+                        maximum_entries,
+                        budget,
+                        cancellation,
+                    )
+                    .await;
+                accept_source_result(answer, &mut accounting)
+            }
+            .await?;
             page.entries
                 .retain(|entry| !self.excludes_child(directory, &entry.name));
             Ok(page)

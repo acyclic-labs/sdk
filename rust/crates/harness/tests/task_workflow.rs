@@ -1999,7 +1999,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
         let state = json!({"policy":"review", "revision":"7", "plan":acyclic_fs::encode_merge_plan(&described)
             .map_err(|e| Error::Invalid(e.to_string()))?});
-        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
+        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state, u64::MAX, &mut None)?,
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
@@ -2013,7 +2013,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
         let state = json!({"candidate":input});
         resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
-            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input)?,
+            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input, u64::MAX, &mut None)?,
             prior: admission.initial.clone(), input,
             transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
             next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };

@@ -126,7 +126,7 @@ impl DurableWorkflowHost {
         let result = self.advance(operation_id, key, input, check, Some(&io)).await;
         if result.is_err() {
             match (self.index_custody.as_mut(), original_index_bytes) {
-                (Some(previous), Some(bytes)) => { let _ = previous.substitute(bytes); }
+                (Some(previous), Some(bytes)) => { let _ = previous.bytes().checked_sub(bytes).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| previous.release(bytes)); }
                 _ => self.index_custody = None,
             }
         }
@@ -192,7 +192,7 @@ impl DurableWorkflowHost {
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         self.reserved_operations.extend(record.operation_ids());
         self.intents.insert(operation_id, (record.prior.revision, match digest {
-            Some(digest) => digest, None => crate::contract::canonical_json_digest(&record)?,
+            Some(digest) => digest, None => crate::contract::canonical_json_digest(&record, u64::MAX, &mut None)?,
         }));
         Ok((transition, checkpoint_retained, transition_retained))
     }

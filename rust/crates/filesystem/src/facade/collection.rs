@@ -268,19 +268,18 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         cancellation.check()?;
-        let head = match ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .head((authority_id), &mut authority)
-                .await;
-            authority.receipt(result)
-        }) {
-            Ok(head) => head.value,
-            // Released since it was listed.
-            Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => return Ok(()),
-            Err(failure) => return Err(failure.error.into()),
+        let head = match self
+            .inner
+            .authority
+            .head(
+                authority_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
+            .await
+        {
+            Ok(head) => head,
+            Err(AuthorityStoreError::Retired) => return Ok(()),
+            Err(error) => return Err(error.into()),
         };
         if head.sequence == Sequence::GENESIS {
             return Ok(());
@@ -406,26 +405,21 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         count: u32,
         cancellation: &CancellationToken,
     ) -> Result<Vec<crate::foundation::DurableCommit>, FsError> {
-        Ok(({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .replay(
-                    (authority_id),
-                    (after),
-                    (ReplayLimit {
-                        records: count,
-                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
-                    }),
-                    &mut authority,
-                )
-                .await
-                .map(|(value, _allocation)| value);
-            authority.receipt(result)
-        })
-        .map_err(|failure| FsError::from(failure.error))?
-        .value)
+        Ok(self
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                after,
+                ReplayLimit {
+                    records: count,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
+                },
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
+            .await
+            .map_err(FsError::from)?
+            .0)
     }
 
     /// Whether the workspace `volume_id` was deleted; one never created was
@@ -434,16 +428,16 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         volume_id: VolumeId,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
-        match ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .head((volume_authority_id(volume_id)), &mut authority)
-                .await;
-            authority.receipt(result)
-        }) {
-            Err(failure) if matches!(failure.error, AuthorityStoreError::Missing) => Ok(false),
+        match self
+            .inner
+            .authority
+            .head(
+                volume_authority_id(volume_id),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
+            .await
+        {
+            Err(AuthorityStoreError::Missing) => Ok(false),
             _ => self.local_volume_ended(volume_id, cancellation).await,
         }
     }
@@ -455,25 +449,20 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
         let authority_id = volume_authority_id(volume_id);
-        let head = match ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .head((authority_id), &mut authority)
-                .await;
-            authority.receipt(result)
-        }) {
-            Ok(head) => head.value,
-            Err(failure)
-                if matches!(
-                    failure.error,
-                    AuthorityStoreError::Retired | AuthorityStoreError::Missing
-                ) =>
-            {
+        let head = match self
+            .inner
+            .authority
+            .head(
+                authority_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
+            .await
+        {
+            Ok(head) => head,
+            Err(AuthorityStoreError::Retired | AuthorityStoreError::Missing) => {
                 return Ok(true);
             }
-            Err(failure) => return Err(failure.error.into()),
+            Err(error) => return Err(error.into()),
         };
         if head.sequence == Sequence::GENESIS {
             return Ok(false);
@@ -497,16 +486,14 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         authority_id: crate::foundation::AuthorityId,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .retire_authority((authority_id), &mut authority)
-                .await;
-            authority.receipt(result)
-        })
-        .map_err(|failure| FsError::from(failure.error))?;
+        self.inner
+            .authority
+            .retire_authority(
+                authority_id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation),
+            )
+            .await
+            .map_err(FsError::from)?;
         Ok(())
     }
 }

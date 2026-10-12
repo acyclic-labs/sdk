@@ -13,8 +13,6 @@ mod model;
 pub use cursor::SourceCursor;
 mod contracts;
 mod filtered;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-use contracts::measured;
 pub use contracts::*;
 pub use filtered::FilteredDemandSource;
 pub use model::*;

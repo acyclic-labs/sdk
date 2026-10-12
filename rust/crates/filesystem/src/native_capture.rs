@@ -1596,7 +1596,7 @@ fn collect_host_walk_measured(
                 .map_err(capture_demand_error)?;
             #[cfg(windows)]
             let entry = reader
-                .next_wide(&mut meter.source())
+                .next(&mut meter.source())
                 .map_err(capture_demand_error)?;
             let Some((entry, name_allocation)) = entry else {
                 break;
@@ -3643,7 +3643,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
         let file = source_root
-            .open_file_positional_wide(host_path, &mut meter.source())
+            .open_file_wide(host_path, windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0), &mut meter.source())
             .map_err(capture_demand_error)?;
         let file = file.into_std();
         let metadata = source_root

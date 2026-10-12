@@ -1,7 +1,7 @@
 use super::*;
 
 impl NativeDemandSource {
-    async fn request<W: FsWork + Send, T: Send + 'static>(
+    pub(super) async fn request<W: FsWork + Send, T: Send + 'static>(
         &self,
         path: &NamespacePath,
         work: W,
@@ -13,10 +13,7 @@ impl NativeDemandSource {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             cancellation.check().map_err(|_| DemandError::Cancelled)?;
-            let mut context = match accounting.native_work() {
-                Some(original) => CallbackWork::Original(original.clone()),
-                None => CallbackWork::Ordinary(DemandWork::new(accounting.remaining().map_err(DemandError::from)?, cancellation)),
-            };
+            let mut context = callback_work(&mut accounting)?;
             let cancellation = cancellation.clone();
             let (path, allocation) = {
                 context.check()?;

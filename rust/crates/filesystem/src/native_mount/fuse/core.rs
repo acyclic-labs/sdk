@@ -135,10 +135,26 @@ impl ProjectionCore {
             crate::WorkCounters::UNCHARGED,
         )?;
         let mut state = ProjectionState::new(writable, uid, gid);
-        state.by_inode = HashMap::from([(ROOT_INODE, entry)]);
         allocation.grow(std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64)?;
-        state.inode_by_path = HashMap::from([(FuseOwned::empty(MountPath::root()), ROOT_INODE)]);
-        state.inode_by_file = HashMap::from([(root.node.file_id, (ROOT_INODE, identity_storage))]);
+        state
+            .by_inode
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
+        state
+            .inode_by_path
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
+        state
+            .inode_by_file
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
+        state.by_inode.insert(ROOT_INODE, entry);
+        state
+            .inode_by_path
+            .insert(FuseOwned::empty(MountPath::root()), ROOT_INODE);
+        state
+            .inode_by_file
+            .insert(root.node.file_id, (ROOT_INODE, identity_storage));
         let (handler_budget, handler_cancellation) = {
             let work = native.state.lock();
             (work.budget, work.cancellation().clone())

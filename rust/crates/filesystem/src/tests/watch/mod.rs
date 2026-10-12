@@ -247,7 +247,6 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         },
         profile: FilesystemProfile::Portable,
         limits: VolumeLimits::default(),
-        #[cfg(any(target_os = "linux", windows))]
         maximum_queued_changes: 1,
     };
     let (sender, receiver) = sync_channel(1);
@@ -358,6 +357,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         tracker: 7,
         from: directory.path().join("moved-out"),
         to: None,
+        allocation: None,
     });
     assert!(matches!(
         watch.finish_rescan()?,

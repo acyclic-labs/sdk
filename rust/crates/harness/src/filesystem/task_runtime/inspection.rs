@@ -385,7 +385,7 @@ where
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
         let volumes = self
@@ -395,7 +395,7 @@ where
         owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
         let reader = ProjectSourceReader::open(
@@ -448,7 +448,7 @@ where
         &self,
         input: &TurnInput,
         step: u32,
-    ) -> Result<crate::executor::ModelToolsProgress> {
+    ) -> Result<crate::executor::ExecutionProgress<Vec<crate::model::ModelMessage>>> {
         self.validate_input(input)?;
         deadline::run(
             &self.host,

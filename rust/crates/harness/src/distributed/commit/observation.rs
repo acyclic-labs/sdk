@@ -14,9 +14,7 @@ fn retain_received_owned(
     match work.retain_owned(bytes) {
         Ok(()) => custody.adopt(bytes)?,
         Err(error) => {
-            if failure.is_none() {
-                *failure = Some(error);
-            }
+            failure.get_or_insert(error);
         }
     }
     Ok(())
@@ -44,29 +42,16 @@ pub(super) fn observe_commit(
                 &mut failure,
             )?;
             for mutation in &envelope.mutations {
-                let records = match mutation {
+                let (records, path_bytes) = match mutation {
                     CommittedMutation::Append(append) => {
-                        retain_received_owned(
-                            append.path.as_str().len() as u64,
-                            custody,
-                            &mut failure,
-                        )?;
-                        &append.records
+                        (&append.records, append.path.as_str().len())
                     }
-                    CommittedMutation::Fork(fork) => {
-                        retain_received_owned(
-                            fork.source.as_str().len() as u64,
-                            custody,
-                            &mut failure,
-                        )?;
-                        retain_received_owned(
-                            fork.destination.as_str().len() as u64,
-                            custody,
-                            &mut failure,
-                        )?;
-                        &fork.records
-                    }
+                    CommittedMutation::Fork(fork) => (
+                        &fork.records,
+                        fork.source.as_str().len() + fork.destination.as_str().len(),
+                    ),
                 };
+                retain_received_owned(path_bytes as u64, custody, &mut failure)?;
                 retain_received_owned(
                     (records.capacity() * std::mem::size_of::<acyclic_stream::Record>()) as u64,
                     custody,
@@ -87,9 +72,7 @@ pub(super) fn observe_commit(
                         Ok(()) if !native => custody.adopt(bytes)?,
                         Ok(()) => {}
                         Err(error) => {
-                            if failure.is_none() {
-                                failure = Some(error);
-                            }
+                            failure.get_or_insert(error);
                         }
                     }
                     if direct_acknowledgment {
@@ -147,9 +130,8 @@ pub(super) fn observe_recovery(
             }
         }
         IdempotencyOutcome::Fork(receipt) => {
-            retain_received_owned(receipt.source.as_str().len() as u64, custody, &mut failure)?;
             retain_received_owned(
-                receipt.destination.as_str().len() as u64,
+                (receipt.source.as_str().len() + receipt.destination.as_str().len()) as u64,
                 custody,
                 &mut failure,
             )?;

@@ -20,7 +20,7 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "content admission limit must be positive",
@@ -64,7 +64,7 @@ where
     O: AsyncObjectStore + 'static,
 {
     fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
-        fork_preparer_io::item(io, 0)?;
+        crate::model::charge_items(io, 1)?;
         let mut history = io.map(PreparationIo::history_io);
         volume.validate(
             &mut history
@@ -111,7 +111,7 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "prefix read exceeds provider limit",
@@ -150,7 +150,7 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
         if io.is_some() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "finite private directory discovery is unavailable",
@@ -341,9 +341,9 @@ where
         }
         self.verifier.verify(
             &self.scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         if volume.provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -380,7 +380,7 @@ where
             context
                 .verify_original_execution_owner_with_native_work(work)?
                 .await?;
-            let mut observer = crate::store::history::native_work_io(work)?;
+            let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
             let grant = ContentGrant::verify_directory_read(
                 &self.verifier,
                 &self.scope,
@@ -388,7 +388,7 @@ where
                 granted_prefix,
                 &mut Some(&mut observer),
             )?;
-            let grant_custody = observer.into_custody();
+            let grant_custody = observer.into_custody()?;
             grant.require_directory_path(
                 volume,
                 path,
@@ -495,7 +495,7 @@ pub(in crate::filesystem) fn require_file_read(
     let inherited = crate::conversation::is_inherited_context_path(reference.path());
     let internal_owner = reference.path().starts_with(".system/") && !inherited;
     if internal && !inherited && !internal_owner {
-        return Err(fork_preparer_io::failure(
+        return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Unauthorized,
             "internal storage file is not public content",
@@ -505,7 +505,7 @@ pub(in crate::filesystem) fn require_file_read(
         return Ok(());
     }
     if internal_owner {
-        return Err(fork_preparer_io::failure(
+        return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Unauthorized,
             "volume operation is not granted",
@@ -536,9 +536,11 @@ pub(in crate::filesystem) fn require_file_read(
             }
         }
     }
-    Err(fork_preparer_io::failure(
+    Err(stock_boundary(
         Some(io),
         crate::wire::ErrorCode::Unauthorized,
         "file read is not granted by its owner",
     ))
 }
+
+use crate::executor::{stock_boundary};

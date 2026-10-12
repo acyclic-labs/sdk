@@ -2,44 +2,35 @@ use super::*;
 
 pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) stock: &'a StockExecutor,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::executor) native:
-        Option<(&'a Arc<crate::runtime::NativeTaskContext>, OperationId)>,
+    pub(in crate::executor) context: Option<(&'a Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) io: Option<&'a PreparationIo>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
-    pub(in crate::executor) reconciliation_only: bool,
 }
 
 impl<'a> StockExecution<'a> {
     pub(in crate::executor) fn ordinary(stock: &'a StockExecutor) -> Self {
         Self {
             stock,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native: None,
+            context: stock
+                .task_context
+                .as_ref()
+                .map(|(context, operation)| (context, *operation)),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             interactions: None,
             io: None,
             summary: None,
-            reconciliation_only: stock.reconciliation_only,
         }
-    }
-    pub(in crate::executor) fn io(&self) -> Option<&PreparationIo> {
-        self.io
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) fn native_work(
         &self,
     ) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.io().and_then(PreparationIo::original_native_work)
+        self.io.and_then(PreparationIo::original_native_work)
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some((native, _)) = self.native {
-            return Some(native.context());
-        }
-        self.stock.task_context.as_ref().map(|(context, _)| context)
+        self.context.map(|(context, _)| context.as_ref())
     }
     pub(in crate::executor) fn context_pipeline(&self) -> &ContextPipeline {
         self.summary
@@ -75,7 +66,7 @@ impl<'a> StockExecution<'a> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_execution_supported(
     stock: &StockExecutor,
-    context: &Arc<crate::runtime::NativeTaskContext>,
+    context: &Arc<crate::runtime::TaskContext>,
     journal: &dyn ExecutionJournal,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
@@ -92,17 +83,14 @@ pub(in crate::executor) fn native_execution_supported(
             reason: "native stock producer is unavailable",
         });
     }
-    if context.context().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
+    if context.as_ref().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
         return Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "stock owner differs from the issued context",
         });
     }
     if let Some((host, task, fence)) = stock.task.as_ref() {
-        if !context
-            .context()
-            .original_task_binding_matches(*task, fence)
-        {
+        if !context.original_task_binding_matches(*task, fence) {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock execution owner differs from the issued context",
@@ -119,15 +107,14 @@ pub(in crate::executor) fn native_execution_supported(
         .context
         .validate(Some(&PreparationIo::from_native_work(work)?))?;
     for (_, policy) in context
-        .context()
         .stock_tool_policy_binding()
         .into_iter()
-        .chain(context.context().stock_tool_policy_overrides())
+        .chain(context.as_ref().stock_tool_policy_overrides())
     {
         policy.supports_native_policy(work)?;
     }
     if let Some(policy) = &stock.policy {
-        let Some((_, original)) = context.context().stock_tool_policy_binding() else {
+        let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock policy is not the original context policy",
@@ -140,13 +127,13 @@ pub(in crate::executor) fn native_execution_supported(
             });
         }
     }
-    context.context().validate_stock_scope_with_native_work(
+    context.as_ref().validate_stock_scope_with_native_work(
         &stock.tool_scope,
         stock.limits,
         work,
     )?;
-    if context.context().scope().run_limits() != stock.tool_scope.run_limits()
-        || context.context().scope().extensions() != stock.tool_scope.extensions()
+    if context.as_ref().scope().run_limits() != stock.tool_scope.run_limits()
+        || context.as_ref().scope().extensions() != stock.tool_scope.extensions()
     {
         return Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
@@ -159,48 +146,40 @@ pub(in crate::executor) fn native_execution_supported(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_session<'a>(
     stock: &'a StockExecutor,
-    context: &'a Arc<crate::runtime::NativeTaskContext>,
+    context: &'a Arc<crate::runtime::TaskContext>,
     operation: OperationId,
     io: &'a PreparationIo,
-    reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> StockExecution<'a> {
     StockExecution {
         stock,
-        native: Some((context, operation)),
+        context: Some((context, operation)),
         io: Some(io),
         interactions,
         summary: None,
-        reconciliation_only: reconcile,
     }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_progress<'a>(
     stock: &'a StockExecutor,
-    context: &'a Arc<crate::runtime::NativeTaskContext>,
+    context: &'a Arc<crate::runtime::TaskContext>,
     input: &'a TurnInput,
     journal: &'a dyn ExecutionJournal,
     work: &'a acyclic_fs::NativeMaterializationWork,
-    reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
+) -> Result<
+    crate::NativeFutureBundle<'a, (ExecutionProgress<TurnOutput>, acyclic_fs::NativeAllocation)>,
+> {
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.claim(
-            std::mem::size_of::<StockTurnProgress>() as u64,
+            std::mem::size_of::<ExecutionProgress<TurnOutput>>() as u64,
             0,
             acyclic_fs::WorkCounters::default(),
         )?)?;
         let progress = {
-            let session = native_session(
-                stock,
-                context,
-                input.operation_id,
-                &io,
-                reconcile,
-                interactions,
-            );
+            let session = native_session(stock, context, input.operation_id, &io, interactions);
             session.execute_progress(input, journal).await?
         };
         let retained = native_progress_owned_bytes(&progress)?;
@@ -273,7 +252,7 @@ impl StockExecutor {
         &self,
         input: TurnInput,
         journal: &dyn ExecutionJournal,
-    ) -> Result<StockTurnProgress> {
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         let span = obs_span!(
             "acyclic.harness.executor.execute",
             operation_id = format_args!("{}", input.operation_id)

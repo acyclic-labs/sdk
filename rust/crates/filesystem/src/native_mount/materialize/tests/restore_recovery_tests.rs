@@ -533,13 +533,17 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     let original = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(
         restoration_work(),
     )));
-    let waiter = tokio::spawn(restore_io(Some(lock), Arc::clone(&original), move |_| {
-        let _ = started.send(());
-        // Dropping release on an early test exit also unblocks the worker.
-        blocked.recv().map_err(std::io::Error::other)?;
-        let _ = finished.send(());
-        Ok::<_, MaterializeError>(())
-    }));
+    let waiter = tokio::spawn(host_io(
+        Some(lock),
+        crate::NativeMaterializationWork::from_meter(Arc::clone(&original)),
+        move |_| {
+            let _ = started.send(());
+            // Dropping release on an early test exit also unblocks the worker.
+            blocked.recv().map_err(std::io::Error::other)?;
+            let _ = finished.send(());
+            Ok::<_, MaterializeError>(())
+        },
+    ));
     entered.await?;
     // Native waiting must not hold the original accounting leaf.
     original.with_original_leaf(|work| {

@@ -187,7 +187,7 @@ impl ResourcePreparationRequest {
         let (request, reserved, original) = decoded?;
         released?;
         request.validate(quota.work())?;
-        let retained = crate::contract::canonical_json_digest_with_work(
+        let retained = crate::contract::canonical_json_digest(
             &request,
             request.maximum_bytes,
             quota.work(),
@@ -615,7 +615,7 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
         crate::NativeFutureBundle::new(work, || async move {
             self.verify(
                 settlement,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await
         })
@@ -1285,7 +1285,7 @@ fn created_access_canonical_capability<T: Serialize + ?Sized>(
     prefix: &'static str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    let digest = blake3::Hash::from_bytes(crate::contract::canonical_json_digest_with_work(
+    let digest = blake3::Hash::from_bytes(crate::contract::canonical_json_digest(
         identity,
         crate::store::default_projection_read_limits().maximum_bytes,
         work,
@@ -1314,7 +1314,7 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify_with_io<'a>(
         &'a self,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(

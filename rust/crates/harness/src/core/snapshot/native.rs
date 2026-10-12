@@ -196,7 +196,7 @@ impl Snapshot {
                         .expect("native decoder observer")
                         .take_native_custody(bytes)?;
                     quota.transfer();
-                    return Err(Error::NativeDecode {
+                    return Err(Error::NativeJson {
                         code: crate::wire::ErrorCode::Storage,
                         source,
                         custody: Some(custody),

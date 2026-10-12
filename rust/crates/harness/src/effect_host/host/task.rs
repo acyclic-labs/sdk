@@ -24,11 +24,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self
             .run_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;
@@ -131,11 +129,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self
             .reconcile_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;
@@ -199,7 +195,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         action: TaskEffectAction<'_>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::core::ApplyResult> {
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             &("task-effect", effect_id, phase),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -275,7 +271,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut retained = crate::wire_codec::CodecQuota::new(work, 0)?;
         let attestation = attestation;
         retained.adopt(attestation_owned_bytes(&attestation)?)?;
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             &(effect_id, &attestation),
             acyclic_stream::MAX_RECORD_BYTES as u64,
             retained.work(),

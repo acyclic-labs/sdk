@@ -11,11 +11,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     ffi(address, &span, false, |context, work| {
         let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
         // SAFETY: the bridge supplies a writable NativeStat.
-        copying(
-            work,
-            copy_work(std::mem::size_of::<NativeStat>() as u64),
-            || unsafe { result.write(attributes) },
-        )?;
+        work.charge(copy_work(std::mem::size_of::<NativeStat>() as u64))?;
+        unsafe { result.write(attributes) };
         Ok(0)
     })
 }
@@ -35,11 +32,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_open(
         |context, work| {
             let opened = context.open(&*mount_path(path, work)?, 0, work)?;
             // SAFETY: the bridge supplies a writable handle.
-            copying(
-                work,
-                copy_work(std::mem::size_of::<u64>() as u64),
-                || unsafe { handle.write(opened) },
-            )?;
+            work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+            unsafe { handle.write(opened) };
             Ok(0)
         },
     )
@@ -71,11 +65,8 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
         )?;
         let opened = context.open(&path, context.ledger.latest(), work)?;
         // SAFETY: the bridge supplies a writable handle.
-        copying(
-            work,
-            copy_work(std::mem::size_of::<u64>() as u64),
-            || unsafe { handle.write(opened) },
-        )?;
+        work.charge(copy_work(std::mem::size_of::<u64>() as u64))?;
+        unsafe { handle.write(opened) };
         Ok(0)
     })
 }
@@ -119,9 +110,10 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_read(
                 return Err(driver_errno(libc::EIO));
             }
             // SAFETY: the reply fits the bridge's length-byte output buffer.
-            copying(work, copy_work(bytes.len() as u64), || unsafe {
+            work.charge(copy_work(bytes.len() as u64))?;
+            unsafe {
                 ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len());
-            })?;
+            };
             c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW))
         })
     })

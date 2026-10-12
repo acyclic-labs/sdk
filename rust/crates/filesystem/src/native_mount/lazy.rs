@@ -286,7 +286,8 @@ impl<'w> MountSyncWork<'w> {
     async fn lock_checkout<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self, source: &'a CheckoutMountSource<A, O>, cancellation: crate::CancellationToken,
     ) -> Result<super::adapter::SharedCheckoutGuard<'a, A, O>, MountSourceError> {
-        source.shared_checkout().lock_with_carrier(
+        super::adapter::await_lock(
+            source.shared_checkout().lock(),
             &mut self.meter, &cancellation, Some(source.cancellation()),
         ).await
     }
@@ -866,8 +867,8 @@ where
     for _ in 0..MAXIMUM_PROMOTION_RETRIES {
         work.items(1)?;
         authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
-        let (mut candidate, epoch, stamp) = authored.shared_checkout().prepare_native_phase_with_carrier(
-            &mut work.meter, &cancellation, Some(authored.cancellation()),
+        let (mut candidate, epoch, stamp) = authored.shared_checkout().candidate(
+            None, &mut work.meter, &cancellation, Some(authored.cancellation()),
         ).await?;
         let changed = if let Some(original) = work.meter.original_native_work() {
             lazy.stage_into_checkout(
@@ -2182,8 +2183,8 @@ where
             recorder_check(work, source.clone())?;
             authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
             if !effect.is_empty() {
-                authored.record_projection_change_with_native_work(
-                    &ViewChange::Effect(&effect), work,
+                authored.record_projection_change(
+                    &ViewChange::Effect(&effect), &mut super::adapter::NativeDemandCarrier::Native(work),
                     || {
                         recorder_check(work, source.clone()).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -2196,8 +2197,8 @@ where
             if unconfirmed {
                 recorder_check(work, source.clone())?;
                 authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
-                authored.record_projection_change_with_native_work(
-                    &ViewChange::Unconfirmed, work,
+                authored.record_projection_change(
+                    &ViewChange::Unconfirmed, &mut super::adapter::NativeDemandCarrier::Native(work),
                     || {
                         recorder_check(work, source.clone()).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -3934,7 +3935,7 @@ where
         let selected = self.removals.lock().map_err(|_| MountSourceError::Stale)?
             .publication.filter(|custody| custody.selected.is_some() && !custody.published);
         let (mut transaction, epoch, stamp) = self.authored.shared_checkout()
-            .prepare_native_phase_for_operation_with_carrier(
+            .candidate(
                 selected.map(|custody| custody.operation), &mut work.meter,
                 cancellation, Some(self.authored.cancellation()),
             ).await?;

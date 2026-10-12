@@ -32,15 +32,15 @@ impl NativeFilesystemVerificationBinding {
     ) -> Result<Self> {
         verifier.verify(
             scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
-        let mut observer = crate::store::history::native_work_io(work).map_err(Error::from)?;
+        let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new).map_err(Error::from)?;
         let verifier = verifier.copy(&mut Some(&mut observer))?;
         let scope = scope.copy(&mut Some(&mut observer))?;
         Ok(Self {
             verifier,
             scope,
-            custody: observer.into_custody(),
+            custody: observer.into_custody()?,
         })
     }
 
@@ -56,7 +56,7 @@ impl NativeFilesystemVerificationBinding {
         }
         self.verifier.verify(
             &self.scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )
     }
 
@@ -174,7 +174,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .unwrap_or_else(|| maximum_inherited_bytes.saturating_mul(1_024));
         let io = original.map(|(_, _, io)| io);
         if maximum_inherited_bytes == 0 || maximum_total_reference_bytes == 0 {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "fork reference limits must be positive",
@@ -205,7 +205,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         if original.is_some() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "native fork verification is unavailable",
@@ -338,7 +338,7 @@ where
                     self.require_seed_file_with_io(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork manifest belongs to another provider",
@@ -353,7 +353,7 @@ where
                     return Ok((bytes, 0));
                 }
                 let retained = bytes.retained_capacity().ok_or_else(|| {
-                    fork_preparer_io::failure(
+                    stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unsupported,
                         "manifest producer does not expose its admitted owned capacity",
@@ -394,7 +394,7 @@ where
                     self.require_seed_file_with_io(seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "fork file belongs to another provider",
@@ -470,7 +470,7 @@ where
                 Ok(reservation) => reservation,
                 Err((source, custody)) => {
                     let primary = Error::NativeWorkspace { source, custody };
-                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation_with_native_work(
+                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation(
                         operation, work, work.cancellation()).await
                     {
                         guard.reservation = Some(reservation);
@@ -540,3 +540,5 @@ where
 }
 
 mod seed;
+
+use crate::executor::{stock_boundary};

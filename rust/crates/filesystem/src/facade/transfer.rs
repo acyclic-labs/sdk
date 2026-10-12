@@ -9,20 +9,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::storage::ObjectRead> {
-        let receipt = ({
-            let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-            let __object_result = self
-                .inner
-                .objects
-                .read(object_id, maximum_bytes, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        Ok(OperationReceipt {
-            value: receipt.value,
-            work: receipt.work,
-        })
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = self
+            .inner
+            .objects
+            .read(object_id, maximum_bytes, &mut work)
+            .await
+            .map_err(FsError::from);
+        work.receipt(result)
     }
 
     /// Idempotently imports one immutable object under its canonical identity.
@@ -33,21 +27,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        let receipt = ({
-            let authority_input_1 = bytes.into();
-            let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-            let __object_result = self
-                .inner
-                .objects
-                .put(object_id, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        Ok(OperationReceipt {
-            value: (),
-            work: receipt.work,
-        })
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = self
+            .inner
+            .objects
+            .put(object_id, bytes.into(), &mut work)
+            .await
+            .map_err(FsError::from);
+        work.receipt(result)
     }
 
     /// Reads one ordered resumable page from a canonical generation manifest.

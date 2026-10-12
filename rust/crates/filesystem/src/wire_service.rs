@@ -751,8 +751,7 @@ where
             return Ok(Response::new(commit_message(first)));
         }
         match transaction
-            .rebase(request.maximum_conflicts)
-            .await
+            .rebase(request.maximum_conflicts, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
@@ -795,8 +794,7 @@ where
             apply_mutation(&mut transaction, mutation).await?;
         }
         match transaction
-            .rebase(request.maximum_conflicts)
-            .await
+            .rebase(request.maximum_conflicts, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?
         {
             TransactionRebase::Rebased(generation) => {
@@ -855,8 +853,7 @@ where
         let to = self.generation(request.to).await?;
         let workspace = from.workspace.clone();
         let changes = workspace
-            .diff(&from, &to, request.maximum_changes)
-            .await
+            .diff(&from, &to, request.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::DiffResponse {
             from: Some(generation_ref(changes.from())),
@@ -947,8 +944,7 @@ where
                 request.maximum_changes,
                 request.maximum_conflicts,
             )
-            .plan()
-            .await
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         if plan.source_head() != source.id() || plan.target_head() != target.id() {
             return Err(Status::failed_precondition(
@@ -970,9 +966,7 @@ where
             request.maximum_conflicts,
         );
         let changes = plan
-            .source_changes()
-            .await
-            .map_err(|error| status(&error))?;
+            .source_changes(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| status(&failure.error))?;
         let file_changes = changes.value.files.iter().map(file_record_change).collect();
         let binding_changes = changes
             .value
@@ -1059,7 +1053,7 @@ where
                 supplied.maximum_changes,
                 supplied.maximum_conflicts,
             )
-            .plan_generations(source, target, target_authority_head)
+            .plan_generations(source, target, target_authority_head, &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()), &crate::CancellationToken::new())
             .await
             .map_err(|error| status(&error))?;
         let expected_base_ref =
@@ -1641,7 +1635,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .write_range(&value.path, value.offset, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes).await,
+        Mutation::Resize(value) => transaction.resize(&value.path, value.logical_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::ZeroRange(value) => {
             let range = required(value.range, "range")?;
             transaction
@@ -1652,9 +1646,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         length: range.length,
                     },
                     value.allocated,
-                    value.extend,
-                )
-                .await
+                    value.extend, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::Preallocate(value) => {
             let range = required(value.range, "range")?;
@@ -1665,9 +1658,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         offset: range.offset,
                         length: range.length,
                     },
-                    value.keep_size,
-                )
-                .await
+                    value.keep_size, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CloneRange(value) => {
             transaction
@@ -1676,9 +1668,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     value.source_offset,
                     &value.destination,
                     value.destination_offset,
-                    value.length,
-                )
-                .await
+                    value.length, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+                ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::SetMetadata(value) => {
             transaction
@@ -1691,7 +1682,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .write(&value.path, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
+        Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
     }
     .map_err(|error| status(&error))
 }

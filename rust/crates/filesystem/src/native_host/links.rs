@@ -28,10 +28,7 @@ pub(crate) fn read_link_held_wide<W: NativeHostWork>(
             windows_link_target_range::<W>(&buffer[..returned], maximum, &invalid_request)?;
         let target = &buffer[target];
         let length = target.len();
-        let copied = WorkCounters {
-            bytes_copied: length as u64,
-            ..WorkCounters::UNCHARGED
-        };
+        let copied = copy_work(length as u64);
         work.admit(copied)?;
         let (mut wide, allocation) = super::buffer(length / 2, work)?;
         wide.extend(
@@ -68,7 +65,6 @@ pub(super) fn open_windows_link<W: NativeHostWork>(
         FILE_READ_ATTRIBUTES | SYNCHRONIZE,
         FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-        &invalid_request,
     )?
     .ok_or_else(invalid_request)
 }
@@ -174,17 +170,11 @@ pub(super) fn prepare_source_link_buffer<W: SourceDemandReadWork>(
         return Err(error);
     }
     let copied = original
-        .reserve_work(WorkCounters {
-            bytes_copied: allocation,
-            ..WorkCounters::UNCHARGED
-        })
+        .reserve_work(copy_work(allocation))
         .map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
     copied
-        .record_completed(WorkCounters {
-            bytes_copied: allocation,
-            ..WorkCounters::UNCHARGED
-        })
+        .record_completed(copy_work(allocation))
         .map_err(crate::native_name::original_name_error)?;
     acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter()).map_err(
         |failure| match failure.into_error() {
@@ -283,7 +273,6 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
     name: &OsStr,
     maximum_bytes: u64,
     work: &mut W,
-    invalid_request: impl Fn() -> W::Error,
 ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
     let maximum = maximum_bytes.saturating_add(1).min(isize::MAX as u64);
     let mut size = maximum.min(256);
@@ -291,52 +280,35 @@ pub(super) fn read_unix_link<W: NativeHostWork>(
         source_bytes_read: size,
         ..WorkCounters::UNCHARGED
     })?;
-    let (buffer, buffer_allocation, count) = unix_name(name, work, |name, work| {
+    unix_name(name, work, |name, work| {
         loop {
             work.admit(WorkCounters {
                 source_bytes_read: size,
                 ..WorkCounters::UNCHARGED
             })?;
-            let (mut buffer, allocation) = super::buffer(size as usize, work)?;
-            buffer.resize(size as usize, 0u8);
-            let result = read_unix_link_into(parent, name, &mut buffer, work);
-            let count = match result {
-                Ok(count) => count,
-                Err(error) => {
-                    drop(buffer);
-                    work.release(allocation)?;
-                    return Err(error);
+            let (mut output, allocation) = buffer(size as usize, work)?;
+            output.resize(size as usize, 0);
+            let result = read_unix_link_into(parent, name, &mut output, work);
+            if let Ok(count) = result.as_ref() {
+                if *count < output.len() && *count as u64 <= maximum_bytes {
+                    if let Err(error) = work.check() {
+                        drop(output);
+                        work.release(allocation)?;
+                        return Err(error);
+                    }
+                    output.truncate(*count);
+                    return Ok((output, allocation));
                 }
-            };
-            if count < buffer.len() && count as u64 <= maximum_bytes {
-                return Ok((buffer, allocation, count));
             }
-            drop(buffer);
+            drop(output);
             work.release(allocation)?;
+            result?;
             if size == maximum {
-                return Err(invalid_request());
+                return Err(W::invalid_request());
             }
             size = size.saturating_mul(2).min(maximum);
         }
-    })?;
-    let result = (|| {
-        let copied = WorkCounters {
-            bytes_copied: count as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(copied)?;
-        let (mut exact, allocation) = super::buffer(count, work)?;
-        exact.extend_from_slice(&buffer[..count]);
-        if let Err(error) = work.record(copied).and_then(|()| work.check()) {
-            drop(exact);
-            work.release(allocation)?;
-            return Err(error);
-        }
-        Ok((exact, allocation))
-    })();
-    drop(buffer);
-    work.release(buffer_allocation)?;
-    result
+    })
 }
 
 #[cfg(unix)]

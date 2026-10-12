@@ -113,7 +113,7 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     budget.items_examined = 128;
     budget.bytes_copied = 4096;
     budget.bytes_encoded = 4096;
-    budget.bytes_hashed = COORDINATOR_WIRE_CONTRACT.len() as u64 + 2;
+    budget.bytes_hashed = 2;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
     let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
@@ -121,7 +121,7 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
         .refresh(&mut Some(&mut observer))
         .await
         .expect_err("original typed scheduler Deserialize failure");
-    assert!(matches!(&error, Error::NativeDecode {
+    assert!(matches!(&error, Error::NativeJson {
         code: wire::ErrorCode::Storage, source, custody: Some(guard),
     } if source.is_data() && guard.bytes() > 0));
     assert_eq!(coordinator.revision(), 0);
