@@ -545,12 +545,12 @@ impl<'a> ForkWork<'a> {
     pub(crate) fn decode_epoch(&mut self, bytes: &[u8], domain: &[u8])
         -> Result<Epoch, ForkFailure> {
         if !self.is_native() {
-            return decode_epoch(bytes, domain).map_err(|error| ForkFailure::new(error, self.work));
+            return decode_epoch(bytes, domain, false).map_err(|error| ForkFailure::new(error, self.work));
         }
         let copies = if bytes.len() == domain.len().saturating_add(8) && bytes.starts_with(domain) { 8 } else { 0 };
         let delta = WorkCounters { bytes_copied: copies, ..WorkCounters::default() };
         self.admit(delta)?;
-        let result = authority_decode_epoch(bytes, domain);
+        let result = decode_epoch(bytes, domain, true);
         self.charge(delta)?;
         result.map_err(|error| ForkFailure::new(error, self.spent()))
     }
@@ -576,41 +576,21 @@ impl<'a> ForkWork<'a> {
             self.spent()))
     }
 
+    fn decode_fixed<const N: usize>(
+        &mut self, value: &[u8], domain: &[u8], invalid: &'static str,
+    ) -> Result<[u8; N], ForkFailure> {
+        let bytes = record_bytes::<N>(value, domain).ok_or_else(|| authority_corrupt(invalid, self))?;
+        let copied = WorkCounters { bytes_copied: N as u64, ..WorkCounters::UNCHARGED };
+        self.admit(copied)?;
+        let bytes = *bytes;
+        self.charge(copied)?;
+        Ok(bytes)
+    }
+
     fn decode_gate(&mut self, value: &[u8]) -> Result<Option<OperationId>, ForkFailure> {
-        if value == PUBLICATION_GATE_FREE {
-            return Ok(None);
-        }
-        let bytes = value.strip_prefix(PUBLICATION_GATE_ACTIVE)
-            .filter(|bytes| bytes.len() == 16)
-            .ok_or_else(|| authority_corrupt("invalid publication gate record", self))?;
-        let copied = WorkCounters { bytes_copied: 16, ..WorkCounters::UNCHARGED };
-        self.admit(copied)?;
-        let operation = <[u8; 16]>::try_from(bytes)
-            .map_err(|_| authority_corrupt("invalid publication gate record", self))?;
-        self.charge(copied)?;
-        Ok(Some(OperationId::from_bytes(operation)))
-    }
-
-    fn decode_lineage_tail(&mut self, value: &[u8]) -> Result<u64, ForkFailure> {
-        let bytes = value.strip_prefix(LINEAGE_TAIL_DOMAIN).filter(|bytes| bytes.len() == 8)
-            .ok_or_else(|| authority_corrupt("invalid Stream generation locator", self))?;
-        let copied = WorkCounters { bytes_copied: 8, ..WorkCounters::UNCHARGED };
-        self.admit(copied)?;
-        let bytes = <[u8; 8]>::try_from(bytes)
-            .map_err(|_| authority_corrupt("truncated generation locator", self))?;
-        self.charge(copied)?;
-        Ok(u64::from_le_bytes(bytes))
-    }
-
-    fn decode_lineage_generation(&mut self, value: &[u8]) -> Result<GenerationId, ForkFailure> {
-        let bytes = value.strip_prefix(LINEAGE_DOMAIN).filter(|bytes| bytes.len() == 32)
-            .ok_or_else(|| authority_corrupt("invalid Stream generation lineage record", self))?;
-        let copied = WorkCounters { bytes_copied: 32, ..WorkCounters::UNCHARGED };
-        self.admit(copied)?;
-        let digest = <[u8; 32]>::try_from(bytes)
-            .map_err(|_| authority_corrupt("truncated generation lineage record", self))?;
-        self.charge(copied)?;
-        Ok(GenerationId::new(Digest::from_bytes(digest)))
+        if value == PUBLICATION_GATE_FREE { return Ok(None); }
+        self.decode_fixed::<16>(value, PUBLICATION_GATE_ACTIVE, "invalid publication gate record")
+            .map(|bytes| Some(OperationId::from_bytes(bytes)))
     }
 
     pub(crate) fn finish<T>(&self, value: T) -> Result<AuthorityReceipt<T>, ForkFailure> {
@@ -634,23 +614,6 @@ struct ForkBytes {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsRef<[u8]> for ForkBytes {
     fn as_ref(&self) -> &[u8] { &self.bytes }
-}
-
-pub(crate) enum ForkRecord {
-    Standalone(acyclic_stream::Record),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(acyclic_stream::NativeObservedRecord),
-}
-
-impl std::ops::Deref for ForkRecord {
-    type Target = acyclic_stream::Record;
-    fn deref(&self) -> &Self::Target {
-        match self {
-            Self::Standalone(record) => record,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(record) => record.value(),
-        }
-    }
 }
 
 pub(crate) fn fork_fs_failure<E: From<crate::FsError>>(failure: impl Into<ForkFailure>) -> ForkFailure<E> {
@@ -1122,16 +1085,6 @@ fn authority_missing(error: &AuthorityStoreError) -> bool {
         || matches!(authority_stream_error(error), Some(acyclic_stream::StreamError::NotFound))
 }
 
-fn authority_decode_epoch(encoded: &[u8], domain: &[u8]) -> Result<Epoch, AuthorityStoreError> {
-    if encoded.len() != domain.len().saturating_add(8) || !encoded.starts_with(domain) {
-        return Err(AuthorityStoreError::CorruptStatic("invalid Stream epoch record"));
-    }
-    let bytes = encoded[domain.len()..].try_into()
-        .map_err(|_| AuthorityStoreError::CorruptStatic("truncated Stream epoch record"))?;
-    Epoch::new(u64::from_le_bytes(bytes))
-        .map_err(|_| AuthorityStoreError::CorruptStatic("zero Stream epoch"))
-}
-
 fn authority_decode_borrowed<'a>(
     authority: AuthorityId, encoded: &'a [u8], meter: &mut ForkWork<'_>,
 ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, ForkFailure> {
@@ -1171,8 +1124,9 @@ enum AuthorityProviderOutput<T> {
     Native(acyclic_stream::NativeStreamOutput<T>),
 }
 
-impl<T> AuthorityProviderOutput<T> {
-    fn value(&self) -> &T {
+impl<T> std::ops::Deref for AuthorityProviderOutput<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
         match self {
             Self::Plain(value) => value,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1205,7 +1159,7 @@ impl AuthorityRead {
         if let Some(record) = &value {
             let delta = WorkCounters {
                 authority_records_read: 1,
-                authority_bytes_read: record.value().value.len() as u64,
+                authority_bytes_read: record.value.len() as u64,
                 ..WorkCounters::default()
             };
             meter.admit(delta)?;
@@ -1278,7 +1232,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         if meter.is_native() {
             let outcome = guard.native_commit(self, request, deadline, meter).await?;
             meter.release_request()?;
-            if matches!(outcome.value(), acyclic_stream::CommitOutcome::Committed(_)) {
+            if matches!(&*outcome, acyclic_stream::CommitOutcome::Committed(_)) {
                 meter.charge(submitted)?;
             }
             meter.check()?;
@@ -1322,7 +1276,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut payload_bytes = 0_u64;
         for _ in 0..limit.records {
             let Some(record) = stream.next(meter).await? else { break };
-            let borrowed = authority_decode_borrowed(authority, &record.value().value, meter)?;
+            let borrowed = authority_decode_borrowed(authority, &record.value, meter)?;
             payload_bytes = payload_bytes.checked_add(borrowed.payload.len() as u64)
                 .ok_or_else(|| ForkFailure::new(AuthorityStoreError::ReplayRecordTooLarge {
                     observed: u64::MAX, maximum: limit.payload_bytes,
@@ -1335,7 +1289,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 }
                 break;
             }
-            let durable = authority_copy_durable(borrowed, record.value().committed_at_micros, meter)?;
+            let durable = authority_copy_durable(borrowed, record.committed_at_micros, meter)?;
             meter.push(&mut output.value, durable)?;
         }
         meter.check()?;
@@ -1380,7 +1334,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let outcome = self.authority_commit(acyclic_stream::CommitRequest {
             conditions, mutations, idempotency_key,
         }, meter).await?;
-        match outcome.value() {
+        match &*outcome {
             acyclic_stream::CommitOutcome::Committed(_) => Ok(FenceOutcome::Advanced(Head { epoch, ..expected })),
             acyclic_stream::CommitOutcome::Conflict(_) => {
                 let actual = self.fork_snapshot(authority, meter).await?.head;
@@ -1398,7 +1352,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let mut output = AuthorityOutput { value: None, allocation };
         let key = meter.operation_key(authority, operation)?;
         let observation = self.authority_inspect(key, meter).await?;
-        let Some(observation) = observation.value() else { return Ok(output) };
+        let Some(observation) = &*observation else { return Ok(output) };
         let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
             return Err(authority_corrupt("operation identity retained another Stream mutation family", meter));
         };
@@ -1508,10 +1462,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             ));
         }
         let epoch_record = read_one(self.provider.as_ref(), epochs, epoch_tail - 1).await?;
-        let epoch = decode_epoch(&epoch_record.value, EPOCH_DOMAIN)?;
+        let epoch = decode_epoch(&epoch_record.value, EPOCH_DOMAIN, false)?;
         let head = if record_tail == 1 {
             let genesis = read_one(self.provider.as_ref(), records, 0).await?;
-            let _genesis_epoch = decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
+            let _genesis_epoch = decode_epoch(&genesis.value, GENESIS_DOMAIN, false)?;
             Head::genesis(epoch)
         } else {
             let record = read_one(self.provider.as_ref(), records, record_tail - 1).await?;
@@ -1559,7 +1513,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             path: acyclic_stream::StreamPath,
             from: u64,
             meter: &mut ForkWork<'_>,
-        ) -> Result<ForkRecord, ForkFailure> {
+        ) -> Result<AuthorityProviderOutput<acyclic_stream::Record>, ForkFailure> {
             #[cfg(not(target_arch = "wasm32"))]
             if meter.is_native() {
                 meter.check()?;
@@ -1583,7 +1537,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 };
                 meter.admit(semantic)?;
                 meter.charge(semantic)?;
-                return Ok(ForkRecord::Native(record));
+                return Ok(AuthorityProviderOutput::Native(record));
             }
             // Standalone opaque bounds are admission-only, never actual capacity.
             let peak = meter.allocations.as_ref().expect("standalone fork funding").live_bytes().checked_add(STREAM_RECORD_LIMIT)
@@ -1643,7 +1597,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                     *work,
                 ));
             }
-            Ok(ForkRecord::Standalone(record))
+            Ok(AuthorityProviderOutput::Plain(record))
         }
 
     async fn tail(
@@ -1886,7 +1840,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let result = guard.commit(self, request, &mut meter).await;
         if !meter.is_native() { meter.release_request().map_err(fork_fs_failure)?; }
         match result {
-            Ok(outcome) => match outcome.value() {
+            Ok(outcome) => match &*outcome {
                 acyclic_stream::CommitOutcome::Committed(_) => {
                     // An ACK confirms this operation, including keyed replay.
                     guard.seal(&mut meter).await?;
@@ -1950,7 +1904,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(AppendFailure::Owner(error)) => return Err(ForkFailure::new(error, meter.spent())),
             };
             if !meter.is_native() { meter.release_request().map_err(fork_fs_failure)?; }
-            match result.as_ref().map(AuthorityProviderOutput::value) {
+            match result.as_ref().map(std::ops::Deref::deref) {
                 Some(acyclic_stream::CommitOutcome::Committed(_)) => {
                     guard.seal(&mut meter).await?;
                     return Ok(crate::FsReceipt { value: WorkspaceForkOutcome::Committed, work: meter.spent() });
@@ -1999,7 +1953,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 AppendFailure::Owner(error) => ForkFailure::new(error, meter.spent()),
             })?;
             if !meter.is_native() { meter.release_request().map_err(fork_fs_failure)?; }
-            let value = match result.value() {
+            let value = match &*result {
                 acyclic_stream::CommitOutcome::Committed(_) => {
                     guard.seal(&mut meter).await?;
                     CreateAuthorityOutcome::Created(Head::genesis(epoch))
@@ -2033,7 +1987,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         for sequence in 0..tail {
             let record = read_one(self.provider.as_ref(), path.clone(), sequence).await?;
             lineage.push(ForkWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .decode_lineage_generation(&record.value).map_err(|failure| failure.error)?);
+                .decode_fixed::<32>(&record.value, LINEAGE_DOMAIN, "invalid Stream generation lineage record").map(|bytes| GenerationId::new(Digest::from_bytes(bytes))).map_err(|failure| failure.error)?);
         }
         Ok(lineage)
     }
@@ -2299,12 +2253,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             match tail {
                 Ok(1) => {
                     let located = self.record(locator, 0, &mut meter).await?;
-                    let located_tail = meter.decode_lineage_tail(&located.value)?;
+                    let located_tail = meter.decode_fixed::<8>(&located.value, LINEAGE_TAIL_DOMAIN, "invalid Stream generation locator").map(u64::from_le_bytes)?;
                     if located_tail == 0 {
                         return Err(authority_corrupt("generation locator selects an empty lineage", &meter).into());
                     }
                     let entry = self.record(lineage, located_tail - 1, &mut meter).await?;
-                    if meter.decode_lineage_generation(&entry.value)? != generation {
+                    if meter.decode_fixed::<32>(&entry.value, LINEAGE_DOMAIN, "invalid Stream generation lineage record").map(|bytes| GenerationId::new(Digest::from_bytes(bytes)))? != generation {
                         return Err(authority_corrupt("generation locator selected another generation", &meter).into());
                     }
                 }
@@ -2344,7 +2298,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             meter.release(retired)?;
         }
         let value = match result {
-            Ok(outcome) => match outcome.value() {
+            Ok(outcome) => match &*outcome {
                 CommitOutcome::Committed(envelope) => {
                     let record = envelope.mutations.iter().find_map(|mutation| match mutation {
                         acyclic_stream::CommittedMutation::Append(append) if append.path == records =>
@@ -2942,16 +2896,10 @@ fn epochs_path(
 }
 
 fn decode_publication_gate(value: &[u8]) -> Result<Option<OperationId>, AuthorityStoreError> {
-    if value == PUBLICATION_GATE_FREE {
-        return Ok(None);
-    }
-    let operation = value
-        .strip_prefix(PUBLICATION_GATE_ACTIVE)
-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
-        .ok_or_else(|| {
-            AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
-        })?;
-    Ok(Some(OperationId::from_bytes(operation)))
+    if value == PUBLICATION_GATE_FREE { return Ok(None); }
+    let bytes = record_bytes::<16>(value, PUBLICATION_GATE_ACTIVE)
+        .ok_or_else(|| AuthorityStoreError::Corrupt("invalid publication gate record".to_owned()))?;
+    Ok(Some(OperationId::from_bytes(*bytes)))
 }
 
 fn stream_key(
@@ -3066,7 +3014,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let (observed, _retained_key_bytes) = self.reservation_observation(
             authority_id, operation_id, prior_gate, &mut meter,
         ).await?;
-        let observation = observed.value().as_ref().ok_or_else(|| unavailable(meter.work))?;
+        let observation = observed.as_ref().ok_or_else(|| unavailable(meter.work))?;
         if !self.qualified_reservation_observation(observation, authority_id, operation_id, gate_tail, &mut meter)? {
             return Err(unavailable(meter.work));
         }
@@ -3193,7 +3141,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             authority_id, Some(snapshot), operation_id, gate_tail, false, Some(gate), &mut meter,
         )?;
         let result = self.reservation_commit(request, &mut meter).await?;
-        match result.value() {
+        match &*result {
             acyclic_stream::CommitOutcome::Committed(_) => {
                 let value = ReservationOutcome::Reserved(PublicationReservation {
                     authority_id, operation_id, expected, gate_tail: next_gate_tail,
@@ -3225,7 +3173,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let (observed, retained_bytes) = self.reservation_inspect(
             b"release-publication", &identity, &mut meter,
         ).await?;
-        if let Some(observation) = observed.value().as_ref() {
+        if let Some(observation) = observed.as_ref() {
             let retained_key = observation.idempotency_key.as_bytes();
             const DOMAIN: &[u8] = b"release-publication\0";
             if retained_key.len() != DOMAIN.len() + identity.len()
@@ -3277,7 +3225,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             reservation.gate_tail, true, Some(gate), &mut meter,
         )?;
         let result = self.reservation_commit(request, &mut meter).await?;
-        match result.value() {
+        match &*result {
             acyclic_stream::CommitOutcome::Committed(_) if meter.is_native() =>
                 Ok(AuthorityReceipt { value: (), work: meter.spent() }),
             acyclic_stream::CommitOutcome::Committed(_) => meter.finish(()),
@@ -3378,7 +3326,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         };
         let mut actual = WorkCounters { backend_read_operations: u64::from(!meter.is_native()), ..WorkCounters::UNCHARGED };
         if let Ok(output) = &result
-            && let Some(observation) = output.value()
+            && let Some(observation) = &**output
             && let acyclic_stream::IdempotencyOutcome::Commit(acyclic_stream::CommitOutcome::Committed(envelope)) = &observation.outcome
         {
             for mutation in &envelope.mutations {
@@ -3396,11 +3344,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         }
         meter.charge(actual)?;
         let result = result?;
-        let retained_bytes = match result.value() {
+        let retained_bytes = match &*result {
             Some(observation) if observation.idempotency_key.as_bytes().as_ptr() as usize == key_pointer => key_bytes,
             _ => { meter.release(key_bytes)?; 0 }
         };
-        if result.value().is_some() { meter.hold_opaque(ceiling)?; }
+        if result.is_some() { meter.hold_opaque(ceiling)?; }
         Ok((result, retained_bytes))
     }
 
@@ -3456,7 +3404,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         ) -> Result<bool, ForkFailure> {
             let Some(prior) = gate_tail.checked_sub(1) else { return Ok(false); };
             let (observed, retained_bytes) = self.reservation_observation(authority, operation, prior, meter).await?;
-            let Some(observation) = observed.value().as_ref() else { return Ok(false); };
+            let Some(observation) = observed.as_ref() else { return Ok(false); };
             if !self.qualified_reservation_observation(observation, authority, operation, gate_tail, meter)? {
                 drop(observed);
                 meter.release(retained_bytes)?;
@@ -3525,7 +3473,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(AppendFailure::Owner(error)) => return Err(ForkFailure::new(error, meter.spent())),
             };
             if !meter.is_native() { meter.release_request().map_err(fork_fs_failure)?; }
-            match committed.as_ref().map(AuthorityProviderOutput::value) {
+            match committed.as_ref().map(std::ops::Deref::deref) {
                 Some(acyclic_stream::CommitOutcome::Committed(_)) => {
                     guard.seal(&mut meter).await?;
                     Ok(crate::OperationReceipt {
@@ -3661,56 +3609,29 @@ fn generation_from_payload(
     Ok(Some(GenerationId::new(digest)))
 }
 
+fn record_bytes<'a, const N: usize>(encoded: &'a [u8], domain: &[u8]) -> Option<&'a [u8; N]> {
+    encoded.strip_prefix(domain)?.try_into().ok()
+}
+
 fn decode_lineage_generation(encoded: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
-    if encoded.len() != LINEAGE_DOMAIN.len().saturating_add(32)
-        || !encoded.starts_with(LINEAGE_DOMAIN)
-    {
-        return Err(AuthorityStoreError::CorruptStatic(
-            "invalid Stream generation-lineage record",
-        ));
-    }
-    let digest = encoded
-        .get(LINEAGE_DOMAIN.len()..)
-        .ok_or_else(|| {
-            AuthorityStoreError::CorruptStatic("truncated Stream generation-lineage record")
-        })?
-        .try_into()
-        .map(Digest::from_bytes)
-        .map_err(|_| {
-            AuthorityStoreError::CorruptStatic("truncated Stream generation-lineage record")
-        })?;
-    Ok(GenerationId::new(digest))
+    let bytes = record_bytes::<32>(encoded, LINEAGE_DOMAIN)
+        .ok_or(AuthorityStoreError::CorruptStatic("invalid Stream generation-lineage record"))?;
+    Ok(GenerationId::new(Digest::from_bytes(*bytes)))
 }
 
 fn decode_lineage_tail(encoded: &[u8]) -> Result<u64, AuthorityStoreError> {
-    if encoded.len() != LINEAGE_TAIL_DOMAIN.len().saturating_add(8)
-        || !encoded.starts_with(LINEAGE_TAIL_DOMAIN)
-    {
-        return Err(AuthorityStoreError::CorruptStatic(
-            "invalid Stream generation locator",
-        ));
-    }
-    let bytes: [u8; 8] = encoded
-        .get(LINEAGE_TAIL_DOMAIN.len()..)
-        .ok_or_else(|| AuthorityStoreError::CorruptStatic("truncated generation locator"))?
-        .try_into()
-        .map_err(|_| AuthorityStoreError::CorruptStatic("truncated generation locator"))?;
-    Ok(u64::from_le_bytes(bytes))
+    let bytes = record_bytes::<8>(encoded, LINEAGE_TAIL_DOMAIN)
+        .ok_or(AuthorityStoreError::CorruptStatic("invalid Stream generation locator"))?;
+    Ok(u64::from_le_bytes(*bytes))
 }
 
-fn decode_epoch(encoded: &[u8], domain: &[u8]) -> Result<Epoch, AuthorityStoreError> {
-    if encoded.len() != domain.len().saturating_add(8) || !encoded.starts_with(domain) {
-        return Err(AuthorityStoreError::Corrupt(
-            "invalid Stream epoch record".to_owned(),
-        ));
-    }
-    let bytes: [u8; 8] = encoded
-        .get(domain.len()..)
-        .ok_or_else(|| AuthorityStoreError::Corrupt("truncated Stream epoch record".to_owned()))?
-        .try_into()
-        .map_err(|_| AuthorityStoreError::Corrupt("truncated Stream epoch record".to_owned()))?;
-    Epoch::new(u64::from_le_bytes(bytes))
-        .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
+fn decode_epoch(encoded: &[u8], domain: &[u8], native: bool) -> Result<Epoch, AuthorityStoreError> {
+    let bytes = record_bytes::<8>(encoded, domain).ok_or_else(|| if native {
+        AuthorityStoreError::CorruptStatic("invalid Stream epoch record")
+    } else { AuthorityStoreError::Corrupt("invalid Stream epoch record".to_owned()) })?;
+    Epoch::new(u64::from_le_bytes(*bytes)).map_err(|error| if native {
+        AuthorityStoreError::CorruptStatic("zero Stream epoch")
+    } else { AuthorityStoreError::Corrupt(error.to_string()) })
 }
 
 async fn read_one<P: acyclic_stream::StreamProvider>(

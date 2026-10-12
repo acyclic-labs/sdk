@@ -514,25 +514,25 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
     fn check(&self) -> std::io::Result<()> { self.with_io(|work| work.check()) }
 
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_operations(kind, count))
+        self.with_original_leaf(|work| work.reserve(kind, count, false))
     }
     fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_operations(kind, count));
+        self.with_original_leaf(|work| work.refund(kind, count, false));
     }
     fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_operation(kind))
+        self.with_original_leaf(|work| work.complete(kind, 1, 1, false))
     }
     fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
         self.with_original_leaf(|work| work.admit_native_write_bytes(maximum))
     }
     fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_bytes(kind, maximum))
+        self.with_original_leaf(|work| work.reserve(kind, maximum, true))
     }
     fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_bytes(kind, maximum));
+        self.with_original_leaf(|work| work.refund(kind, maximum, true));
     }
     fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_bytes(kind, maximum, actual))
+        self.with_original_leaf(|work| work.complete(kind, maximum, actual, true))
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
         self.with_io(|work| work.claim_native_owned(bytes, u64::from(bytes != 0), &None))
