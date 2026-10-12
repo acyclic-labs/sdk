@@ -1413,7 +1413,7 @@ impl ExtensionAdmission {
             {
                 return Err(boundary_error(work, Invalid, "extension configuration is invalid"));
             }
-            configuration.content.validate_with_work(work)?;
+            configuration.content.validate(work)?;
             let position = self.selected.iter().position(|extension| extension == &configuration.extension);
             if position.is_none_or(|position| last_position.is_some_and(|last| position <= last)) {
                 return Err(boundary_error(work, Conflict,

@@ -403,7 +403,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         }
         let verifier = self.issuer.verifier(&mut Some(&mut io))?;
         verifier.verify_audience(&self.authority, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        verifier.verify_with_native_work(&self.scope, work)?;
+        verifier.verify(&self.scope, &mut Some(&mut io))?;
         if !self.scope.capabilities().contains(capability::EFFECT_RUN) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -420,19 +420,16 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let authority = io.clone_authority(&self.authority)?;
-        let mut issuer = self.issuer.clone_with_native_work(work)?;
+        let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
         let schemas = self.schemas.clone_with_work(&mut Some(&mut io))?;
         let providers = self.providers.clone_with_native_work(work)?;
         let mut host = Self::new_with_native_work(
-            self.stream.clone(), authority, issuer.0, scope, schemas,
+            self.stream.clone(), authority, issuer, scope, schemas,
             Arc::clone(&self.content), providers, io.into_custody(), work,
         )?;
         host.effect_history_limits = self.effect_history_limits;
         host.terminal_effect_limit = self.terminal_effect_limit;
-        host.native_metadata.as_mut().expect("native host constructor")
-            .absorb(&mut issuer.1)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(host)
     }
 
