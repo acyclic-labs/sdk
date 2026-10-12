@@ -271,8 +271,7 @@ impl PiForkCoordinator {
          }
     }
 
-    /// The same original-root policy seals inspect/import/fork reads. It never
-    /// broadens the caller's grants or exports the source's private authority.
+    /// The same original-root policy seals inspect/import/fork reads.
     #[allow(clippy::too_many_arguments, reason = "exact original caller, source selection and bounds")]
     pub(crate) async fn authorize_selected_project_with_native_work(
         &self, context: &acyclic_harness::runtime::TaskContext,
@@ -542,8 +541,6 @@ impl PiForkCoordinator {
             "acyclic.pi", "1", input, owner.task_id(), context.scope(), work)?;
         let mut child_grants = self.child_content_grants(&child.0.grants, &input_read.0, work)?;
         child.0.grants = child_grants.0;
-        // The ordinary preparation will seal only its actual child creations.
-        // Parent creation attestations never become child authority or metadata.
         child.0.resource_proofs.clear();
         child.1.absorb(&mut child_grants.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, self.owner.policy().maximum_payload_bytes, work)?;
@@ -582,8 +579,6 @@ impl PiForkCoordinator {
             _source_read: source_read_custody, _preparation: Some(request_custody), _container: container }));
         let mut plan = PiForkPlan { original, commit, preparation, request, source_checkpoint: checkpoint.reference,
             source: snapshot, caller_project, frozen, history_limits, project_creation, _input_allocations: input_allocations };
-        // This is an immutable original piInputs argument, not a retry or
-        // launch ledger. Persist the exact cut before companion custody work.
         let mut publication = self.stage_original_input(original, "fork-plan", &plan).await?;
         if let Some(allocations) = plan._input_allocations.as_mut() {
             Arc::get_mut(allocations).ok_or_else(|| Error::NativeBoundary {
@@ -602,8 +597,7 @@ impl PiForkCoordinator {
         self.load_original_plan(original, budget, cancel).await
     }
 
-    /// Reads only the original protected piInputs directory. No executing
-    /// source lease, writable content binding, or replacement admission exists.
+    /// Reads only the original protected piInputs directory.
     pub(crate) async fn load_original_plan(&self, original: OperationId, budget: WorkBudget,
         cancel: &CancellationToken) -> Result<Option<PiForkPlan>> {
         self.runtime.verify_owner_with_native_work(&self.owner, &self.work)?;
@@ -707,7 +701,6 @@ impl PiForkCoordinator {
     }
 
     /// Observes genuine completed preparation, admission and historical bind.
-    /// It cannot drive preparation, admit, publish, acquire a lease, or launch.
     pub(crate) async fn observe_prepared(&self, plan: &PiForkPlan, source: Arc<LocalLazyWorkspace>,
         budget: WorkBudget, cancel: CancellationToken) -> Result<Option<PreparedPiFork>> {
         let original = self.load_original_plan(plan.original, self.remaining(budget)?, &cancel).await?
@@ -840,8 +833,7 @@ impl PiForkCoordinator {
         Ok(())
     }
 
-    /// The service persists its existing Preparing route after this ordinary
-    /// admission and before advance may run the provider's FS creator.
+    /// The service persists its existing Preparing route after this ordinary admission and before advance may run the provider's FS creator.
     pub(crate) async fn admit_preparation(&self, context: &acyclic_harness::runtime::TaskContext,
         owner: &TaskJournalOwner<LocalStream>, fence: &LeaseFence, plan: &PiForkPlan,
     ) -> Result<()> {
@@ -853,11 +845,9 @@ impl PiForkCoordinator {
         Ok(())
     }
 
-    /// Drives only the retained ordinary preparation. Unknown acknowledgements
-    /// never become replacement tasks, resources, or a new session budget.
+    /// Drives only the retained ordinary preparation.
     #[allow(clippy::too_many_arguments, reason = "exact parent lease and immutable source selection")]
-    /// Advances only the ordinary registered preparation task. Child grants
-    /// remain unsealed and no child task is admitted by this method.
+    /// Advances only the ordinary registered preparation task.
     pub(crate) async fn prepare(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken,
@@ -925,8 +915,6 @@ impl PiForkCoordinator {
         let host = self.runtime.runtime.task_host();
         self.verify_owner(owner).await?;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
-        // The existing host seals actual creator receipts under this same
-        // original parent lease before any child adapter may dispatch.
         self.admit_original(&plan.request.child, fence).await?;
         let admission = self.observe_admission(plan.request.child.task_id()).await?;
         if admission.value != plan.request.child {
@@ -940,8 +928,7 @@ impl PiForkCoordinator {
         Ok(Some(prepared))
     }
 
-    /// Reopens only a previously published and bound admitted child. A terminal
-    /// original caller never receives a replacement lease or fabricated admit.
+    /// Reopens only a previously published and bound admitted child.
     pub(crate) async fn restore_admitted(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
         source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken) -> Result<PreparedPiFork> {

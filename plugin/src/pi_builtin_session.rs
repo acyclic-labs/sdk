@@ -13,8 +13,6 @@ impl PiSession {
         let work = if caller == owner.policy().root_task { query_work.clone() }
             else { native.invocation_work(caller).await? };
         let request_bytes = bounded_input_size(arguments)?;
-        // Input transport custody is still alive; reserve the DTO copy before
-        // allocating it, and keep that charge through its final use.
         let _request_custody = work.retain_owned(request_bytes).map_err(native_error)?;
         let request = builtin_request(caller, event, arguments)?;
         request.validate()?;
@@ -36,8 +34,7 @@ impl PiSession {
                 kind, payload: reference,
             };
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), &self.resources, &self.state).with_builtin_controls(&host)
-                .with_work(work.clone()).control_command_with_native_work(command).await?
+                self.stream.clone(), &self.resources, &self.state, work.clone()).with_builtin_controls(&host).control_command_with_native_work(command).await?
         } else { self.native_child_builtin_command(owner, &native, &request, &work).await? };
         let binding = self.binding(caller)?;
         #[derive(Serialize)]
@@ -51,8 +48,6 @@ impl PiSession {
             caller_task: caller, operation: &request.sdk_operation, event,
             phase: match request.io { PiBuiltinIo::EditRead { .. } => Some("read"),
                 PiBuiltinIo::EditWrite { .. } => Some("write"), _ => None }, body: &value };
-        // Both the original body and its custody remain live while the SDK
-        // observes every allocation of the final canonical response.
         let (response, response_custody) = pi_root_provider::guarded_pi_value(&response,
             MAXIMUM_BUILTIN_BYTES * 2, &work)?;
         drop(value);
@@ -72,8 +67,6 @@ impl PiSession {
         if live.binding.task_id != request.caller {
             return Err(invalid("builtin command substituted the original native task binding"));
         }
-        // Clone only the genuine held owner's fence, paying its two actual
-        // String producers before construction. No reservation is reacquired.
         let original_fence = live.owner.task_binding().1;
         let reservation = work.display(&original_fence.reservation_id).map_err(native_error)?;
         let _reservation_custody = reservation.1;
@@ -84,8 +77,6 @@ impl PiSession {
         };
         #[derive(Serialize)]
         struct ToolCommand<'a> { name: &'a str, revision: &'a str, arguments: &'a PiBuiltinRequest }
-        // The stock ToolTaskCommand decoder consumes this exact closed record;
-        // borrowing arguments avoids an intermediate cloned JSON tree.
         let payload = pi_root_provider::guarded_pi_value(&ToolCommand {
             name: PI_BUILTIN_COMMAND_KIND, revision: crate::pi_builtin::PI_BUILTIN_TOOL_REVISION,
             arguments: request,
@@ -101,8 +92,6 @@ impl PiSession {
             operation_id: operation, kind: kind.0, payload: staged.0,
         };
         let commands = self.runtime.runtime.commands();
-        // Stock dispatch owns immutable arguments, original ToolStarted and
-        // reconciliation. An existing started effect is never reseeded here.
         match commands.execute_with_native_work(live.context.clone(), fence, command, payload.0, work)?.await? {
             TaskCommandProgress::ReadyWithNativeCustody { value, custody } => Ok((value, custody)),
             TaskCommandProgress::Ready(_) => Err(invalid("native builtin acknowledgement lost its original SDK custody")),

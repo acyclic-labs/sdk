@@ -253,7 +253,7 @@ async fn root_at<P: StreamProvider>(
         });
     }
     let (path, path_owned) = certificate_path_with_work(authority, work)?;
-    let record = operations::one_record_with_work(client, &path, revision - 1, work).await;
+    let record = operations::one_record(client, &path, revision - 1, work).await;
     drop(path);
     let record = release_after_drop(record, path_owned, work)?
         .ok_or_else(|| Error::Unsupported(
@@ -286,7 +286,7 @@ async fn root_at<P: StreamProvider>(
             "effect cut certificate proof differs".into(),
         ));
     }
-    let canonical = operations::one_record_with_work(
+    let canonical = operations::one_record(
         client,
         &source_path,
         revision - 1,
@@ -350,7 +350,7 @@ async fn load_node<P: StreamProvider>(
 ) -> Result<Node> {
     let (path, path_owned) = node_path_with_work(authority, hash, work)?;
     let result = async {
-    let record = operations::one_record_with_work(client, &path, 0, work)
+    let record = operations::one_record(client, &path, 0, work)
         .await?
         .ok_or_else(|| Error::Storage("authenticated effect index node is missing".into()))?;
     let node = async {

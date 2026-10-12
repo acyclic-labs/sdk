@@ -712,9 +712,11 @@ pub enum MaterializeError {
     RestoreCleanup {
         /// Original primary cause in its pre-admitted physical slot.
         #[source]
-        primary: MaterializeCleanupCause,
+        primary: Box<MaterializeError>,
         /// Actual cleanup cause, without diagnostic copying.
         cleanup: crate::DemandError,
+        /// Allocation released after both error payloads.
+        allocation: crate::NativeAllocation,
     },
     /// Host filesystem operation failed.
     #[error("host filesystem operation failed: {0}")]
@@ -725,42 +727,6 @@ pub enum MaterializeError {
     /// The original caller cancellation stopped materialization.
     #[error(transparent)]
     Cancelled(#[from] crate::CancellationError),
-}
-
-/// A primary error retained in the slot admitted before restoration effects.
-pub struct MaterializeCleanupCause {
-    error: Box<Option<MaterializeError>>,
-    _allocation: crate::NativeAllocation,
-}
-
-impl std::ops::Deref for MaterializeCleanupCause {
-    type Target = MaterializeError;
-    fn deref(&self) -> &MaterializeError {
-        self.error.as_ref().as_ref().expect("completed restoration primary slot")
-    }
-}
-
-impl std::fmt::Debug for MaterializeCleanupCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&**self, formatter)
-    }
-}
-
-impl std::fmt::Display for MaterializeCleanupCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&**self, formatter)
-    }
-}
-
-impl std::error::Error for MaterializeCleanupCause {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&**self) }
-}
-
-impl GenerationOwned<Box<Option<MaterializeError>>> {
-    fn into_cleanup_cause(mut self, error: MaterializeError) -> MaterializeCleanupCause {
-        *self.value = Some(error);
-        MaterializeCleanupCause { error: self.value, _allocation: self._custody }
-    }
 }
 
 impl From<crate::FsError> for MaterializeError {
@@ -1231,36 +1197,6 @@ where
     Ok(OperationReceipt { value: receipt.value, work })
 }
 
-/// Materializes a host-relative path using the checkout's configured name profile.
-pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let span = crate::obs::span!(
-        DEBUG,
-        "acyclic.fs.materialize_host_path",
-        outcome = crate::obs::Empty,
-        error.kind = crate::obs::Empty,
-        work.items = crate::obs::Empty,
-        work.bytes = crate::obs::Empty,
-        work.durability = crate::obs::Empty,
-    );
-    crate::obs::measured_on(
-        &span,
-        crate::obs::in_span(&span, async move {
-            let receipt = GenerationReceipt::new(budget, cancellation)?;
-            materialize_host_path(
-                checkout, relative, options, receipt,
-            ).await
-        })
-        .await.map_err(OperationFailure::from),
-        |receipt| &receipt.work,
-    )
-}
-
 /// Keeps all host-relative selections in one original traversal and hard-link map.
 pub(crate) async fn materialize_checkout_host_paths_with_work_guarded<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
@@ -1408,10 +1344,10 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
             let result = async {
                 validate_bounds(options)?;
                 let allocation_work = crate::NativeMaterializationWork::from_native_mount_meter_work(native_work);
-                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<Option<MaterializeError>>() as u64)
+                let cleanup_allocation = allocation_work.claim(std::mem::size_of::<MaterializeError>() as u64)
                     .map_err(materialize_native_error)?;
                 let cleanup_slot = GenerationOwned {
-                    value: Box::new(None),
+                    value: Box::new(MaterializeError::InvalidOptions),
                     _custody: cleanup_allocation,
                 };
                 let (destination_root, relative) = {
@@ -1452,6 +1388,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     value: materialize_options.destination, _custody: stage_allocation,
                 };
                 restore_io(worker_context, Some(lock), Arc::clone(&work), move |work| {
+                    let mut cleanup_slot = cleanup_slot;
                     // Every destination operation retains the originally bound
                     // root and parent; publication never reopens an ambient path.
                     let _root = root;
@@ -1476,9 +1413,12 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                         (Ok(value), Ok(())) => Ok(value),
                         (Ok(_), Err(error)) => Err(restore_demand_error(error)),
                         (Err(error), Ok(())) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(MaterializeError::RestoreCleanup {
-                            primary: cleanup_slot.into_cleanup_cause(primary), cleanup,
-                        }),
+                        (Err(primary), Err(cleanup)) => {
+                            *cleanup_slot.value = primary;
+                            Err(MaterializeError::RestoreCleanup {
+                                primary: cleanup_slot.value, cleanup, allocation: cleanup_slot._custody,
+                            })
+                        }
                     }
                 }).await
             }.await;
@@ -1535,22 +1475,13 @@ type RestoreOwnedPath = GenerationOwned<PathBuf>;
 
 impl RestoreOwnedPath {
     fn copy(path: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.copy_path(path).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.copy_path(path).map_err(materialize_native_error)?;
         Ok(Self { value: path, _custody: allocation })
     }
 
     fn join(parent: &Path, name: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.join_path(parent, name).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.join_path(parent, name).map_err(materialize_native_error)?;
         Ok(Self { value: path, _custody: allocation })
-    }
-}
-
-fn restore_allocation_error(error: crate::NativeTreeMaterializationError) -> MaterializeError {
-    match error {
-        crate::NativeTreeMaterializationError::Work(error) => MaterializeError::Work(error),
-        crate::NativeTreeMaterializationError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
-        crate::NativeTreeMaterializationError::Io(error) => MaterializeError::Io(error),
-        error => MaterializeError::Io(std::io::Error::other(error)),
     }
 }
 
@@ -1672,7 +1603,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
         let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
         work.preflight(delta).map_err(restore_demand_error)?;
-        let allocation = allocation_work.claim(bytes as u64).map_err(restore_allocation_error)?;
+        let allocation = allocation_work.claim(bytes as u64).map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
         work.record(delta).map_err(restore_demand_error)?;
@@ -1784,7 +1715,6 @@ fn sync_restore_parent(parent: &HostRoot, work: &mut impl crate::demand::SourceD
 
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
-
 
 fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
     use std::io::Write as _;
@@ -2044,7 +1974,7 @@ where
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                => crate::NativeTreeMaterializationError::InvalidLayout,
             });
             let bytes = receipt.custody_result(bytes)?;
             let written = write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;

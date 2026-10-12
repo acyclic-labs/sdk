@@ -842,7 +842,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                => {
                     FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
                 }
             })?);
@@ -1104,7 +1104,7 @@ impl BlobIndexBuilder {
     fn push_child<'a, 'store, 'accounting, S: AsyncObjectStore>(
         &'a mut self, store: &'a mut BlobBatchStore<'store, S>, mut level: usize, mut child: BlobChild,
         accounting: &'a mut KernelAccounting<'accounting>, cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<(), FsError>> + crate::async_storage::StorageFuture + 'a {
+    ) -> impl Future<Output = Result<(), FsError>> + acyclic_stream::ProviderTask + 'a {
         let cancellation = cancellation.clone();
         async move {
         loop {
