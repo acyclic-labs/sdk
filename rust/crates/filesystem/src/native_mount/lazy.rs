@@ -5736,14 +5736,14 @@ where
         self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.settle_with_meter(work))
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
-        self.with_view(super::adapter::NativeDemandCarrier::Native(work), |file| file.read_sparse_range_with_meter(offset, length, work))
+        self.with_view(super::adapter::NativeDemandCarrier::Native(work), |file| file.read_sparse_range(offset, length, work))
     }
 
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_sparse_range_with_meter(offset, range, work))
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_sparse_range(offset, range, work))
     }
 
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
@@ -6130,10 +6130,10 @@ where
         })
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, false, |file, node, carrier| {
-            if let Some(file) = file { return file.read_sparse_range_with_meter(offset, length, work); }
+            if let Some(file) = file { return file.read_sparse_range(offset, length, work); }
             let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
@@ -6183,9 +6183,9 @@ where
         })
     }
 
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_authored_with_meter(work, |file| file.write_sparse_range_with_meter(offset, range, work))
+        self.with_authored_with_meter(work, |file| file.write_sparse_range(offset, range, work))
     }
 
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
@@ -10209,7 +10209,7 @@ mod tests {
         assert!(handle.read_attribute_with_meter(b"absent", &context)?.is_none());
         assert!(handle.list_attributes_with_meter(None, 2, &context)?.0.names.is_empty());
         handle.settle_with_meter(&context)?;
-        let (sparse, owned) = handle.read_sparse_range_with_meter(1, 3, &context)?;
+        let (sparse, owned) = handle.read_sparse_range(1, 3, &context)?;
         assert_eq!(sparse.logical_bytes, 3);
         assert_eq!(sparse.spans.len(), 1);
         assert_eq!(sparse.spans[0].relative_offset, 0);
