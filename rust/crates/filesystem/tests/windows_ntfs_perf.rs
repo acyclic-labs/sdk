@@ -99,18 +99,15 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
         MemoryLazyWorkspaceStore::default(),
     )
     .await?;
-    let exact = tokio::spawn(async move {
-        (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = lazy.exactify("/hot", acyclic_fs::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
-            .await
-    })
-    .await??;
-    let file = exact.value.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let alias = exact.value.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let exact = lazy.exactify("/hot", PublicationPermit::Unrestricted, &work).await?;
+    let file = exact.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = exact.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     let view = tempfile::tempdir()?;
     exact
-        .value
         .materialize(
             std::iter::once("/hot"),
             &MaterializeOptions::native(view.path()),
@@ -428,16 +425,13 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     )
     .await?;
     let started = Instant::now();
-    let phase_exact = tokio::spawn(async move {
-        (async { let cancellation = &CancellationToken::new(); let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = phase_lazy.exactify("/hot", acyclic_fs::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
-            .await
-    })
-    .await??;
+    let cancellation = CancellationToken::new();
+    let work = acyclic_fs::lazy_workspace::LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let phase_exact = phase_lazy.exactify("/hot", PublicationPermit::Unrestricted, &work).await?;
     let exactify_us = started.elapsed().as_micros();
     let phase_view = tempfile::tempdir()?;
     let started = Instant::now();
     phase_exact
-        .value
         .materialize(
             std::iter::once("/hot"),
             &MaterializeOptions::native(phase_view.path()),
