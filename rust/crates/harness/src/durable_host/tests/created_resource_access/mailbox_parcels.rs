@@ -103,6 +103,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
         OperationId::from_bytes([175;16]), "mailbox/changed.txt", b"changed", "text/plain", "changed.txt",
     ).await?;
     assert!(matches!(parent.send(child, send, changed.clone()).await, Err(Error::Conflict(_))));
+    let owner = runtime.task_host().journal_owner(child, child_fence.clone()).await?;
     for mutation in 0..4 {
         let mut forged = item.clone();
         match mutation {
@@ -111,12 +112,15 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
             2 => forged.payload = changed.clone(),
             _ => forged.sequence += 1,
         }
-        assert!(runtime.task_host().read_received_mail_owned(child, child_fence.clone(), child_receive, &forged).await.is_err());
+        assert!(runtime.task_host().read_received_mail_owned(&owner, child_receive, &forged, None).await.is_err());
     }
-    assert!(runtime.task_host().read_received_mail_owned(child, child_fence.clone(), parent_receive, &item).await.is_err());
+    assert!(runtime.task_host().read_received_mail_owned(&owner, parent_receive, &item, None).await.is_err());
     let mut stale = child_fence.clone();
     stale.reservation_id.push_str("-stale");
-    assert!(runtime.task_host().read_received_mail_owned(child, stale, child_receive, &item).await.is_err());
+    assert!(async {
+        let owner = runtime.task_host().journal_owner(child, stale).await?;
+        runtime.task_host().read_received_mail_owned(&owner, child_receive, &item, None).await
+    }.await.is_err());
     drop(receiver);
     drop(parent);
     drop(runtime);
