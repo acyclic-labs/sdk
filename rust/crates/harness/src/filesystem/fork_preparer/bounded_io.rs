@@ -969,10 +969,6 @@ pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wi
     }
 }
 
-pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))
-}
-
 pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => crate::store::history::HistoryIo::clone_text(&mut io.history_io(), value),
@@ -1074,13 +1070,6 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
         io.retain_owned(value.len() as u64)?;
     }
     Ok(())
-}
-
-pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
-    match io {
-        Some(io) => reference.copy(&mut Some(&mut io.history_io())),
-        None => Ok(reference.clone()),
-    }
 }
 
 pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {
