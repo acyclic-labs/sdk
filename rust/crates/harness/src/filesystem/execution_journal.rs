@@ -2466,7 +2466,7 @@ mod tests {
     )]
     async fn observation_reopen_preserves_original_turn_and_rejects_header_substitution()
     -> Result<()> {
-        let provider = ProviderRef::new("observation-identity", "filesystem", "2")?;
+        let provider = ProviderRef::new("observation-identity".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             provider.clone(),
@@ -2608,7 +2608,7 @@ mod tests {
             acyclic_stream::MemoryStream,
         >::default());
         let client = provider.clone();
-        let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
+        let fs_provider = ProviderRef::new("cold-canonical-source".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             fs_provider.clone(),

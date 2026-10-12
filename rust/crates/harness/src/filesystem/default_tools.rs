@@ -689,8 +689,8 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
             recursive_observe(io, |work| {
                 plan.source_project.validate(work)?;
                 plan.target_project.validate(work)?;
-                plan.source_generation.validate_with_work(work)?;
-                plan.expected_target_generation.validate_with_work(work)?;
+                plan.source_generation.validate(work)?;
+                plan.expected_target_generation.validate(work)?;
                 plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {

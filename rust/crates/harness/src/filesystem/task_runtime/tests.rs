@@ -187,7 +187,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("deadline-control", "filesystem", "2")?;
+        let provider = ProviderRef::new("deadline-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([101; 16]);
         let volume = VolumeRef::new(provider, "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;

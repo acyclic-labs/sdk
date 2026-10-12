@@ -2069,7 +2069,7 @@ mod tests {
         use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
         let file = FileRef::new(
             VolumeRef::new(
-                crate::resources::ProviderRef::new("test", "filesystem", "2")?,
+                crate::resources::ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),

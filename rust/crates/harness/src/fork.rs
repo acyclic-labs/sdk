@@ -374,7 +374,7 @@ impl CompositeForkVerifier {
         let mut providers = BTreeMap::new();
         for verifier in verifiers {
             owned.checkpoint()?;
-            verifier.provider().validate_with_work(owned.work())?;
+            verifier.provider().validate(owned.work())?;
             if providers.contains_key(verifier.provider()) {
                 return Err(owned.invalid("fork provider verifier is registered twice"));
             }
@@ -912,7 +912,7 @@ impl ContentForkVerifier {
         provider: ProviderRef,
         content: std::sync::Arc<dyn ContentResidencyVerifier>,
     ) -> Result<Self> {
-        provider.validate()?;
+        provider.validate(&mut None)?;
         Ok(Self { provider, content })
     }
 }
@@ -997,7 +997,7 @@ impl StreamHistoryForkVerifier {
     /// Registers the exact Stream provider using the caller's optional ledger.
     pub fn new(provider: &ProviderRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         let mut owned = CodecQuota::observed(work)?;
-        provider.validate_with_work(owned.work())?;
+        provider.validate(owned.work())?;
         if provider.family() != "stream" {
             return Err(boundary_error(owned.work(), crate::wire::ErrorCode::Invalid,
                 "history verifier requires a Stream provider"));
@@ -1131,7 +1131,7 @@ impl ResourceRevision {
                 && volume.provider().family() == "filesystem" =>
             {
                 volume.validate(work)?;
-                generation.validate_with_work(work)?;
+                generation.validate(work)?;
                 if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
                     return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
                         "too many scratch paths"));
@@ -1150,20 +1150,20 @@ impl ResourceRevision {
                 Ok(())
             }
             Self::History(value) if value.as_resource().provider().family() == "stream" => {
-                value.validate_with_work(work)
+                value.validate(work)
             }
             Self::Project { volume, generation }
                 if generation.as_resource().provider() == volume.provider()
                     && volume.provider().family() == "filesystem" =>
             {
                 volume.validate(work)?;
-                generation.validate_with_work(work)
+                generation.validate(work)
             }
-            Self::Context(value) => value.validate_with_work(work),
+            Self::Context(value) => value.validate(work),
             Self::Process(value) if value.as_resource().provider().family() == "machines" => {
-                value.validate_with_work(work)
+                value.validate(work)
             }
-            Self::Artifact(value) => value.validate_with_work(work),
+            Self::Artifact(value) => value.validate(work),
             Self::SharedVolume(value) if value.class() == VolumeClass::SessionShared => {
                 value.validate(work)
             }
@@ -1177,7 +1177,7 @@ impl ResourceRevision {
                 && *version > 0
                 && *implementation_digest != [0; 32] =>
             {
-                reference.validate_with_work(work)
+                reference.validate(work)
             }
             _ => Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
                 "fork resource has an invalid kind or provider")),
@@ -1214,7 +1214,7 @@ impl AttestedBoundary {
     pub(crate) fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.provider.validate_with_work(work)?;
+        self.provider.validate(work)?;
         if self.evidence.is_empty() {
             return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
                 "fork boundary evidence is invalid"));
@@ -1363,7 +1363,7 @@ fn validate_child_result_generation(
         (None, None) => Ok(()),
         (Some(result), Some(generation)) => {
             validate_child_result_volume(result, scratch, child, work)?;
-            generation.validate_with_work(work)?;
+            generation.validate(work)?;
             if generation.as_resource().provider() != result.provider() {
                 return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
                     "child result generation belongs to another provider"));
@@ -1932,7 +1932,7 @@ impl ForkReport {
             }
         }
         self.child_private_volume.validate(work.work())?;
-        self.child_private_generation.as_resource().validate_with_work(work.work())?;
+        self.child_private_generation.as_resource().validate(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.request.child_agent)
@@ -2117,7 +2117,7 @@ impl ForkSeed {
             return Err(work.invalid("fork attached agents are not unique"));
         }
         self.child_private_volume.validate(work.work())?;
-        self.child_private_generation.as_resource().validate_with_work(work.work())?;
+        self.child_private_generation.as_resource().validate(work.work())?;
         if self.child_private_volume.class() != VolumeClass::AgentPrivate
             || self.child_private_volume.provider().family() != "filesystem"
             || self.child_private_volume.owner() != &VolumeOwner::Agent(self.child_agent)
@@ -2440,7 +2440,7 @@ mod physical_clones {
     }
 
     fn resource(source: &ResourceRef, quota: &mut CodecQuota<'_, '_>) -> Result<ResourceRef> {
-        ResourceRef::new_with_work(
+        ResourceRef::new(
             source.kind(),
             provider(source.provider(), quota)?,
             bytes(source.key(), quota)?,
@@ -2779,7 +2779,7 @@ mod tests {
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         mutation = seed;
         mutation.child_result_generation = Some(GenerationRef::new(
-            ProviderRef::new(provider.namespace(), provider.family(), "foreign-result-provider")?, [73; 32], None)?);
+            ProviderRef::new(provider.namespace().into(), provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32], None)?);
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         Ok(())
     }
@@ -2869,7 +2869,7 @@ mod tests {
 
     #[test]
     fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
-        let provider = ProviderRef::new("test", "filesystem", "2")?;
+        let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
         let parent = VolumeRef::new(
             provider.clone(),
             "parent",
@@ -2938,7 +2938,7 @@ mod tests {
         ));
         let complete = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
-            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
+            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test".into(), "stream".into(), "2".into(), &mut None)?)),
         ], &mut None)?;
         futures::executor::block_on(complete.verify(&seed, &mut None))?;
         let project_resource = seed
@@ -2964,13 +2964,13 @@ mod tests {
         missing_seed.validate(&mut None)?;
         let missing = CompositeForkVerifier::new(&[
             std::sync::Arc::new(MissingFileVerifier(filesystem.clone())),
-            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
+            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test".into(), "stream".into(), "2".into(), &mut None)?)),
         ], &mut None)?;
         assert!(matches!(
             futures::executor::block_on(missing.verify(&missing_seed, &mut None)),
             Err(Error::NotFound(_))
         ));
-        let objects = ProviderRef::new("test", "objects", "2")?;
+        let objects = ProviderRef::new("test".into(), "objects".into(), "2".into(), &mut None)?;
         let object_volume = VolumeRef::new(
             objects.clone(),
             "attachments",
@@ -3040,7 +3040,7 @@ mod tests {
         let cached_manifest: acyclic_stream::OwnedBytes = bytes.into();
         let verifier = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
-            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
+            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test".into(), "stream".into(), "2".into(), &mut None)?)),
             std::sync::Arc::new(ManifestVerifier {
                 provider: objects,
                 bytes: cached_manifest.clone(),
@@ -3049,7 +3049,7 @@ mod tests {
         futures::executor::block_on(verifier.verify(&attached_manifest_only, &mut None))?;
         let missing_manifest = CompositeForkVerifier::new(&[
             std::sync::Arc::new(AcceptingVerifier(filesystem.clone())),
-            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test", "stream", "2")?)),
+            std::sync::Arc::new(AcceptingVerifier(ProviderRef::new("test".into(), "stream".into(), "2".into(), &mut None)?)),
             std::sync::Arc::new(MissingFileVerifier(manifest.volume().provider().clone())),
         ], &mut None)?;
         assert!(matches!(

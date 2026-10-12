@@ -3998,7 +3998,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "resource creation registry is already configured"));
         }
         for (index, provider) in providers.iter().enumerate() {
-            provider.provider().validate_with_work(&mut observer)?;
+            provider.provider().validate(&mut observer)?;
             if providers[..index].iter().any(|bound| bound.provider() == provider.provider()) {
                 return Err(admission_boundary(&observer, crate::wire::ErrorCode::Invalid,
                     "resource creation provider is registered twice"));
@@ -6093,7 +6093,7 @@ pub(crate) mod tests {
         fn new() -> Result<Self> {
             Ok(Self {
                 volume: VolumeRef::new(
-                    ProviderRef::new("batch-test", "filesystem", "2")?,
+                    ProviderRef::new("batch-test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "private",
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
@@ -7202,7 +7202,7 @@ pub(crate) mod tests {
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await.map_err(|error| Error::Storage(error.to_string()))?;
         let stream = Arc::new(provider);
-        let filesystem_provider = ProviderRef::new("native-owned-release", "filesystem", "2")?;
+        let filesystem_provider = ProviderRef::new("native-owned-release".into(), "filesystem".into(), "2".into(), &mut None)?;
         let filesystem = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(), filesystem_provider.clone(),
         )?);
@@ -7600,7 +7600,7 @@ pub(crate) mod tests {
         #[cfg(feature = "filesystem")]
         let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
             use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
-            let provider = ProviderRef::new("owned-workflow", "filesystem", "2")?;
+            let provider = ProviderRef::new("owned-workflow".into(), "filesystem".into(), "2".into(), &mut None)?;
             let filesystem = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 provider.clone(),
