@@ -343,7 +343,7 @@ where
             drop(history);
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            Some(crate::source_authorization::ProjectSourceReadHandle::seal_with_work(
+            Some(crate::source_authorization::ProjectSourceReadHandle::seal(
                 authorization, verifier, &mut observer,
             )?)
         }

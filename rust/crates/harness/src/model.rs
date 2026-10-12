@@ -1160,7 +1160,7 @@ impl ModelRequest {
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
             model_step(io, 1)?;
-            tool.validate_with_io(io)?;
+            crate::executor::with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
@@ -1179,7 +1179,7 @@ impl ModelRequest {
                         arguments,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
                                 "model tool call role or identity is invalid".into(),
@@ -1199,7 +1199,7 @@ impl ModelRequest {
                         content,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
                             return Err(Error::Invalid(

@@ -1925,7 +1925,7 @@ where
                     "merge receipt belongs to another provider or retry identity".into(),
                 ));
             }
-            receipt.provider_proof.validate()?;
+            receipt.provider_proof.validate(&mut None)?;
             let source = workspace_ref(
                 self.host.provider.clone(),
                 &receipt.source_project.storage_name()?,

@@ -7339,7 +7339,8 @@ pub(crate) mod tests {
         journal.append(attempt, "started".into(), ExecutionEvent::Started).await?;
         let invocation = crate::tool::ToolInvocation::for_model_call(
             attempt, 0, "native-owned-tool".into(), "test".into(), serde_json::json!({}),
-        );
+            None,
+        )?;
         let invocation = crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None).await?;
         journal.append(attempt, "tool-started".into(), ExecutionEvent::ToolStarted {
             step: 0, call_id: "native-owned-tool".into(), invocation,
@@ -7425,7 +7426,8 @@ pub(crate) mod tests {
                 .tail().await?;
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
-            );
+                None,
+            )?;
             let invocation = crate::executor::stage_json(&journal, attempt, "interleaved-tool-invocation", &invocation, None).await?;
             journal.append(attempt, "interleaved-tool-started".into(), ExecutionEvent::ToolStarted {
                 step: 1, call_id: "interleaved-native-tool".into(), invocation,
@@ -7955,7 +7957,8 @@ pub(crate) mod tests {
                 "owned-tool".into(),
                 "test".into(),
                 serde_json::json!({}),
-            );
+                None,
+            )?;
             let invocation =
                 crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None)
                     .await?;

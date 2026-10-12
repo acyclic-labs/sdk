@@ -789,10 +789,10 @@ where
             if let crate::model::ModelEvent::ToolCall { call_id, name, arguments } = event {
                 let invocation = match io {
                     #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => crate::tool::ToolInvocation::for_model_call_with_native_work(
-                        operation, step, call_id, name, arguments, io.original_native_work().expect("native approval IO"),
+                    Some(io) => crate::tool::ToolInvocation::for_model_call(
+                        operation, step, call_id, name, arguments, Some(io.original_native_work().expect("native approval IO")),
                     )?,
-                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments),
+                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments, None)?,
                 };
                 let select = |event: &ExecutionEvent| matches!(event,
                     ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
