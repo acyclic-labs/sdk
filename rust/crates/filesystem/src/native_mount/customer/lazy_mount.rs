@@ -6,7 +6,6 @@ pub struct LazyMount<A, O, D, S> {
     pub(super) session: Mutex<Option<NativeMountSession>>,
     pub(super) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
-    pub(super) payload_custody: Option<NativeAllocation>,
 }
 
 impl<A, O, D, S> LazyMount<A, O, D, S> {
@@ -36,12 +35,9 @@ where
         &mut self,
         incoming: &mut NativeAllocation,
     ) -> Result<(), MountLifecycleError> {
-        if let Some(custody) = self.payload_custody.as_mut() {
-            custody.absorb(incoming)?;
-        } else {
-            self.payload_custody = Some(incoming.split_off(incoming.bytes())?);
-        }
-        Ok(())
+        self._destination_custody
+            .absorb(incoming)
+            .map_err(Into::into)
     }
 
     /// Authenticated post-mount native root witness.
@@ -152,7 +148,6 @@ where
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let input = (plan, allocation);
-        let cancellation = cancellation.clone();
         async move {
             let allocation = input.1;
             let plan = input.0;
@@ -178,7 +173,7 @@ where
                         operation,
                         permit,
                         super::super::adapter::NativeDemandCarrier::Native(work),
-                        &cancellation,
+                        cancellation,
                         before_publication,
                     )
                     .await?;

@@ -1,9 +1,9 @@
+use super::tests::{head, native_lazy_source};
 use super::*;
-use crate::demand::native::NativeDemandSource;
 use crate::kernel::NamespacePath;
 use crate::lazy_workspace::LazyReadonlyNode;
-use crate::model::{FilesystemProfile, VolumeLimits};
-use crate::{CancellationToken, Fs, MemoryLazyWorkspaceStore, WorkBudget};
+use crate::model::VolumeLimits;
+use crate::{CancellationToken, WorkBudget};
 use std::future::{Ready, ready};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -19,30 +19,12 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let physical = tempfile::tempdir()?;
     std::fs::write(physical.path().join("source.txt"), b"source")?;
     let destination = tempfile::tempdir()?;
-    let fs = Fs::memory();
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(physical.path().to_path_buf()),
-        FilesystemProfile::Portable,
-        VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await
-    .map_err(|failure| failure.error)?
-    .value;
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "measured-native-customer",
-        Arc::new(demand),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let lazy =
+        native_lazy_source(physical.path(), "measured-native-customer", &cancellation).await?;
     lazy.workspace()
         .write_text("/authored.txt", "authored")
         .await?;
-    let generation = lazy.workspace().head(&setup, &cancellation).await?.id();
+    let generation = head(lazy.workspace(), &setup).await?;
     let options = MountOptions::read_write().publication(MountPublication::Manual);
 
     assert!(new_work(WorkBudget::default()).is_err());
@@ -60,10 +42,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .is_err()
     );
     path_work.receipt().verify(path_budget)?;
-    assert_eq!(
-        lazy.workspace().head(&setup, &cancellation).await?.id(),
-        generation
-    );
+    assert_eq!(head(lazy.workspace(), &setup).await?, generation);
     assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
 
     let startup_work = new_work(WorkBudget::UNBOUNDED)?;
@@ -150,10 +129,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .ok_or("owner guard was bypassed")?;
     assert!(!denied.source_acknowledged);
     assert!(denied.publication.is_none());
-    assert_eq!(
-        lazy.workspace().head(&setup, &cancellation).await?.id(),
-        generation
-    );
+    assert_eq!(head(lazy.workspace(), &setup).await?, generation);
     assert!(mount.snapshot(&query, &cancellation).await.is_err());
     let callback_work = publication_work.clone();
     let published = mount
@@ -193,7 +169,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let child_snapshot = child
         .snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation))
         .await?;
-    let imported_head = lazy.workspace().head(&setup, &cancellation).await?.id();
+    let imported_head = head(lazy.workspace(), &setup).await?;
     assert!(
         mount
             .selected_import_snapshot(operation, &query, &cancellation)
@@ -216,6 +192,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             LazyReadonlyNode::Portable(_) => unreachable!("native plan retains its funding"),
         }
     };
+    let allow = |_: &NativeMaterializationWork| ready(Ok::<(), MountLifecycleError>(()));
     let import = async |plan,
                         custody,
                         work: &NativeMaterializationWork,
@@ -243,34 +220,19 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .await
         .is_err()
     );
-    assert_eq!(
-        lazy.workspace().head(&setup, &cancellation).await?.id(),
-        imported_head
-    );
+    assert_eq!(head(lazy.workspace(), &setup).await?, imported_head);
     let (plan, custody) = prepare().await?;
-    let unpolled = import(plan, custody, &selected_work, |_| {
-        ready(Ok::<(), MountLifecycleError>(()))
-    });
+    let unpolled = import(plan, custody, &selected_work, allow);
     drop(unpolled);
-    assert_eq!(
-        lazy.workspace().head(&setup, &cancellation).await?.id(),
-        imported_head
-    );
+    assert_eq!(head(lazy.workspace(), &setup).await?, imported_head);
     let (plan, custody) = prepare().await?;
     assert!(matches!(
-        import(plan, custody, &foreign, |_| ready(Ok::<
-            (),
-            MountLifecycleError,
-        >(())),)
-        .await,
-        Err(MountLifecycleError::Native(
-            NativeMountError::Materialization(crate::NativeTreeMaterializationError::InvalidLayout)
+        import(plan, custody, &foreign, allow).await,
+        Err(MountLifecycleError::Materialization(
+            crate::NativeTreeMaterializationError::InvalidLayout
         ))
     ));
-    assert_eq!(
-        lazy.workspace().head(&setup, &cancellation).await?.id(),
-        imported_head
-    );
+    assert_eq!(head(lazy.workspace(), &setup).await?, imported_head);
     let (plan, custody) = prepare().await?;
     let imported = import(plan, custody, &selected_work, |_| {
         ready(Ok::<(), MountLifecycleError>(()))
@@ -278,7 +240,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     .await?;
     assert_eq!(
         imported.authored_generation,
-        lazy.workspace().head(&setup, &cancellation).await?.id()
+        head(lazy.workspace(), &setup).await?
     );
     let completed_work = new_work(WorkBudget::UNBOUNDED)?;
     assert_eq!(

@@ -166,20 +166,15 @@ where
         destination: impl AsRef<Path>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
-        let work = if let Some(work) = options.work.as_ref() {
-            work.clone()
-        } else {
-            acyclic_native_runtime::initialize_native_io_services()
-                .map_err(NativeMountError::from)?;
-            super::super::initialize_native_mount_services()?;
-            NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
-        };
+        let work = options.work(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )?;
         let work = &work;
-        super::super::adapter::validate_native_source_io_binding(work, native_original)?;
+        super::super::adapter::validate_native_source_io_binding(
+            work,
+            options.native_original.as_ref(),
+        )?;
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;
@@ -207,7 +202,6 @@ where
             1,
             crate::WorkCounters::default(),
         )?;
-        let mut slot = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
         let prepared =
             super::super::prepare_native_mount_start(work).map_err(NativeMountError::from)?;
         let request = NativeMountRequest {
@@ -216,29 +210,22 @@ where
             destination: session_destination.0,
             writable: options.writable,
         };
-        let source = match LazyMountSource::new(
-            lazy,
-            authored,
-            root_text,
-            super::super::adapter::NativeDemandCarrier::Native(work),
-            Some((root_custody, &mut source_allocation)),
-        ) {
-            Ok(source) => source,
-            Err(error) => {
-                return Err(prepared
-                    .retain_source_startup_failure(request, session_destination.1, error)
-                    .into());
-            }
-        };
-        Arc::get_mut(&mut slot)
-            .expect("unpublished source slot is unique")
-            .write(source);
-        // SAFETY: the unique slot was initialized before its Arc was published.
-        #[allow(
-            unsafe_code,
-            reason = "initializes the real source payload before publishing its Arc"
-        )]
-        let source = unsafe { slot.assume_init() };
+        let source = Arc::new(
+            match LazyMountSource::new(
+                lazy,
+                authored,
+                root_text,
+                super::super::adapter::NativeDemandCarrier::Native(work),
+                Some((root_custody, &mut source_allocation)),
+            ) {
+                Ok(source) => source,
+                Err(error) => {
+                    return Err(prepared
+                        .retain_source_startup_failure(request, session_destination.1, error)
+                        .into());
+                }
+            },
+        );
         let session = prepared.start(
             request,
             source.clone() as Arc<dyn MountFilesystem>,
@@ -250,7 +237,6 @@ where
             session: Mutex::new(Some(session)),
             destination,
             _destination_custody: destination_custody,
-            payload_custody: None,
         })
     }
 }
