@@ -2159,7 +2159,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2471,9 +2471,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view(
-        loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
-    )?;
+    let (history, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo))?;
     let mut message_ids = Vec::new();
     for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
     let selection = crate::conversation::ModelContextSelection {
@@ -2762,7 +2760,7 @@ mod tests {
                             sequence,
                             kind,
                             content: file.clone(),
-                            attachments: Vec::new().into(),
+                            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                             reply_to,
                             tool_call_id: None,
                             extensions: Default::default(),

@@ -1189,7 +1189,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                             sequence: 3,
                             kind: MessageKind::Interaction,
                             content: previous_file.clone(),
-                            attachments: Vec::new().into(),
+                            attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                             reply_to: None,
                             tool_call_id: None,
                             extensions: BTreeMap::new(),
