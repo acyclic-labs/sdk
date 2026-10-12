@@ -106,7 +106,7 @@ pub(super) async fn spawn_local_in_group<I, O>(
         let descendants = context_group.child(scope.concurrency_bound(self.concurrency), None)?;
         let (identity, receive_identity) = tokio::sync::oneshot::channel();
         let admitted = group
-            .try_spawn_with_operation(operation_id.unwrap_or_default(), async move {
+            .spawn(operation_id.unwrap_or_default(), async move {
                 let task_id = receive_identity
                     .await
                     .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;

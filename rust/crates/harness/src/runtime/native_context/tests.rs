@@ -5,7 +5,7 @@ const BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(16_3
 
 fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(BUDGET, cancellation)
-        .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+        .map_err(|failure| Error::NativeWork { cause: failure.0, custody: None })
 }
 
 #[tokio::test]
@@ -354,8 +354,8 @@ async fn native_tool_scope_restricts_without_replacing_the_issued_context_or_lin
         task, created.request.child.operation_id, &original,
     ).await?;
     let shared = context.into_native_shared(custody, &original)?;
-    let read = created.private.capability(crate::conversation::VolumeOperation::Read)?;
-    let write = created.private.capability(crate::conversation::VolumeOperation::Write)?;
+    let read = created.private.capability(crate::conversation::VolumeOperation::Read, &mut None)?;
+    let write = created.private.capability(crate::conversation::VolumeOperation::Write, &mut None)?;
     assert!(shared.context().scope().grants().contains(&write));
     let limits = shared.context().scope().limits();
     let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?

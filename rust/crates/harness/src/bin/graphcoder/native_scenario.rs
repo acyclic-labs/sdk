@@ -6,7 +6,6 @@ use super::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
 use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
-use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, Limits, MessageKind,
@@ -40,7 +39,6 @@ const ISSUER: &str = "graphcoder-explicit-trusted-local-qualification";
 // Public test authority, deliberately not production authentication or a secret.
 const TEST_KEY: [u8; 32] = [91; 32];
 const PAYLOAD_BYTES: u64 = super::terminal::MAX_FRAME_BYTES as u64;
-
 
 struct Caller {
     task: TaskId,
@@ -494,7 +492,7 @@ impl Producer {
                     native_snapshot: None,
                 }, 16 * 1024 * 1024, 16 * 1024 * 1024).await?)
         } else { None };
-        let binding = recursive_fork_source(&self.runtime, self.files.clone(), &self.stream,
+        let binding = recursive_fork_source(self.files.clone(), &self.stream,
             &parent.aggregate, verifier, parent.binding.scope.clone(), &context,
             RecursiveSourceSnapshot {
                 task: parent.task, project: parent.project.clone(),

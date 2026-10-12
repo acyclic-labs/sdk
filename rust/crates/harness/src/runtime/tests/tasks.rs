@@ -483,20 +483,20 @@ async fn durable_reattachment_requires_the_exact_admitted_definition() -> Result
 fn private_root_directory_grant_reads_descendants_without_write_authority() -> Result<()> {
         let volume = VolumeRef::new(ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?, ("private").into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([77; 16])), &mut None)?;
         let file = FileRef::new(volume.clone(), ("notes/nested/message.txt").into(), ("version-1").into(), FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?, ("message.txt").into(), &mut None)?;
-        let grants = Capabilities::new([volume.directory_read_capability("")?]);
+        let grants = Capabilities::new([volume.directory_read_capability("", &mut None)?]);
         assert!(read_granted(&grants, &file)?);
         assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
         for capability in [
             file.read_capability()?,
             volume.capability(VolumeOperation::Read, &mut None)?,
-            volume.directory_read_capability("notes")?,
-            volume.directory_read_capability("notes/nested")?,
+            volume.directory_read_capability("notes", &mut None)?,
+            volume.directory_read_capability("notes/nested", &mut None)?,
         ] {
             let grants = Capabilities::new([capability]);
             assert!(read_granted_with_work(&grants, &file, &mut None)?);
         }
         let unrelated = Capabilities::new([
-            volume.directory_read_capability("notes/other")?,
+            volume.directory_read_capability("notes/other", &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]);
         assert!(!read_granted_with_work(&unrelated, &file, &mut None)?);

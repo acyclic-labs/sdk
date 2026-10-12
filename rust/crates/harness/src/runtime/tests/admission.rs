@@ -194,7 +194,7 @@ fn task_children_validation_matches_typescript_boundary() -> Result<()> {
         validate_children_request(parent, None, usize::MAX)?;
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
         validate_children_request(parent, Some(&"x".repeat(1_024)), 1)?;
-        validate_children_request(parent, Some("rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sumÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©"), 1)?;
+        validate_children_request(parent, Some("rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©sumÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©"), 1)?;
 
         let child = TaskChild {
             slot: "a".into(),
@@ -310,7 +310,7 @@ fn rejected_native_admission_releases_conversion_reservation() -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(1_000_000, 64 * 1024 * 1024), &cancellation)
-        .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })?;
+        .map_err(|failure| Error::NativeWork { cause: failure.0, custody: None })?;
     let mut io = crate::store::native_work_io(&work)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let (value, held) = io.decode_json_value(&bytes)?;

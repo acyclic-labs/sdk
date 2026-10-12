@@ -5198,8 +5198,10 @@ mod tests {
     struct Projection;
 
     impl crate::tool::ToolProjection for Projection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(serde_json::json!({"kind":"json","value":result.value}))
+        fn project(&self, _: &ToolInvocation, result: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
+            Ok((serde_json::json!({"kind":"json","value":result.value}), None))
         }
     }
 

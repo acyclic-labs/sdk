@@ -1835,6 +1835,9 @@ mod tests {
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
             if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
             crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .get(reference.path())
@@ -1847,7 +1850,13 @@ mod tests {
     }
 
     fn interaction_file(path: &str, bytes: &[u8]) -> Result<FileRef> {
-        FileRef::new(content()?.volume().clone(), (path).into(), ("generation-1").into(), FileDescriptor::from_bytes(bytes, "application/json", &mut None)?, ("interaction.json").into(), &mut None)
+        FileRef::new(
+            content()?.volume().clone(),
+            path.into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+            "interaction.json".into(),
+         &mut None)
     }
 
     fn authority() -> Authority {
@@ -1875,7 +1884,18 @@ mod tests {
     const EXTENSION_BYTES: &[u8] = br#"{"text":"hello"}"#;
 
     fn content() -> Result<FileRef> {
-        FileRef::new(VolumeRef::new(ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, ("extension").into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])), &mut None)?, ("extension/event.json").into(), ("generation-1").into(), FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json", &mut None)?, ("event.json").into(), &mut None)
+        FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
+                "extension".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
+             &mut None)?,
+            "extension/event.json".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(EXTENSION_BYTES, "application/json", &mut None)?,
+            "event.json".into(),
+         &mut None)
     }
 
     struct TestContent;
@@ -1917,6 +1937,9 @@ mod tests {
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
             if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
             crate::conversation::BoundedContentFuture::new(io, || async move {
+                if reference.descriptor().byte_length() > maximum_bytes {
+                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
+                }
                 let bytes = self
                     .0
                     .lock()
@@ -1946,7 +1969,13 @@ mod tests {
                 }
                 self.stages
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let reference = FileRef::new(self.volume.clone(), (path).into(), ("generation-1").into(), FileDescriptor::from_bytes(bytes, media_type, &mut None)?, (display_name).into(), &mut None)?;
+                let reference = FileRef::new(
+                    self.volume.clone(),
+                    path.into(),
+                    "generation-1".into(),
+                    FileDescriptor::from_bytes(bytes, media_type, &mut None)?,
+                    display_name.into(),
+                 &mut None)?;
                 self.files.insert(&reference, bytes)?;
                 Ok((reference, None))
             })
@@ -2179,8 +2208,8 @@ mod tests {
             .lock()
             .map_err(|_| Error::Storage("head race lock".into()))? = Some(
             publication
-                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?)
-                .await?,
+                .request(&client, StreamIdempotencyKey::new("head-racing-commit")?, &mut None)
+                .await?.0,
         );
         assert!(reader.latest_conversation_message(65_536).await?.is_none());
         assert_eq!(
@@ -2638,11 +2667,16 @@ mod tests {
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
             )?);
-            let private = crate::conversation::VolumeRef::new(filesystem_provider, ("journal").into(), crate::conversation::VolumeClass::AgentPrivate, crate::conversation::VolumeOwner::Agent(agent), &mut None)?;
+            let private = crate::conversation::VolumeRef::new(
+                filesystem_provider,
+                "journal".into(),
+                crate::conversation::VolumeClass::AgentPrivate,
+                crate::conversation::VolumeOwner::Agent(agent),
+             &mut None)?;
             host.create_volume(&private).await?;
             let journal_scope = issuer().issue("cold-selection-journal", &Capabilities::new([
-                    private.capability(crate::conversation::VolumeOperation::Read)?,
-                    private.capability(crate::conversation::VolumeOperation::Write)?,
+                    private.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    private.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(agent), None, &mut None).expect("scope proof");
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
@@ -3203,7 +3237,7 @@ mod tests {
                     "extension:migrate".to_owned(),
                     content()?
                         .volume()
-                        .capability(crate::conversation::VolumeOperation::Write)?,
+                        .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::MigrateExtensionState {
@@ -3333,7 +3367,12 @@ mod tests {
             to_version: 2,
         };
         let publisher = TestPublisher {
-            volume: VolumeRef::new(ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, ("extension-child").into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])), &mut None)?,
+            volume: VolumeRef::new(
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
+                "extension-child".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
+             &mut None)?,
             stages: std::sync::atomic::AtomicUsize::new(0),
             files: files.clone(),
         };
@@ -3341,11 +3380,11 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         let unauthorized = issuer().issue("child-unauthorized", &Capabilities::new([publisher
                 .volume
-                .capability(crate::conversation::VolumeOperation::Write)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
+                .capability(crate::conversation::VolumeOperation::Write, &mut None)?]), Some(crate::AgentId::from_bytes([9; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
                 .migrate_extension_state(request.clone(), unauthorized, &publisher)
@@ -3363,7 +3402,7 @@ mod tests {
                 "extension:migrate".to_owned(),
                 publisher
                     .volume
-                    .capability(crate::conversation::VolumeOperation::Write)?,
+                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             aggregate
@@ -3488,13 +3527,14 @@ mod tests {
 
         let agent = crate::AgentId::from_bytes([94; 16]);
         let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let volume = VolumeRef::new(provider.clone(), ("admission-bytes").into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
+        let volume = VolumeRef::new(provider.clone(), "admission-bytes".into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);
         host.create_volume(&volume).await?;
         let issuer = issuer();
         let scope = issuer.issue("content-owner", &Capabilities::new([
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let publisher = FilesystemContentPublisher::new(
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
@@ -3503,7 +3543,7 @@ mod tests {
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
-            "interactions/request.json", &published, "application/json", "request.json").await?;
+            "interactions/request.json", &published, "application/json", "request.json", None)?.await?.0;
         let ticket = InteractionTicket {
             id: uuid::Uuid::from_bytes([96; 16]), kind: InteractionKind::Question,
             request: reference.clone(), deadline_unix_ms: None, approval: None,
@@ -3546,7 +3586,9 @@ mod tests {
             &Action::OpenInteraction { ticket: ticket.clone() }, &mut Some(&mut io)).await?;
         native.admit_retained(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let missing = FileRef::new(volume, ("interactions/missing.json").into(), (reference.version()).into(), FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json", &mut None)?, ("missing.json").into(), &mut None)?;
+        let missing = FileRef::new(volume, "interactions/missing.json".into(), reference.version().into(),
+            FileDescriptor::from_bytes(br#"{"type":"question","value":"yes"}"#, "application/json", &mut None)?,
+            "missing.json".into(), &mut None)?;
         let error = aggregate.validate_interaction_part_with_work(
             &ticket, &missing, None, &mut Some(&mut io)).await
             .expect_err("real publisher has no second response file");
