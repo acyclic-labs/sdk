@@ -294,12 +294,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             Some(work) => native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native summary publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?,
-            None => if let Some(preparation) = preparation { preparation.verify_creation().await?; },
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?,
+            None => if let Some(preparation) = preparation { preparation.verify(false, io)?.await?; },
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(preparation) = preparation {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         if let Some(io) = io {
             let capability = io.capability(&self.project, "volume:read:")?;

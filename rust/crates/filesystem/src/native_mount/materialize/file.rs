@@ -18,12 +18,12 @@ where
     let custody = receipt
         .custody
         .split_off(owned_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let meter = receipt.custody.work().runtime_meter();
     let write = file
         .write_async(offset, bytes, meter, custody)
-        .map_err(materialize_runtime_error)?;
-    write.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    write.await.map_err(MaterializeError::from)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
 }
@@ -42,13 +42,13 @@ where
     let meter = receipt.custody.work().runtime_meter();
     let sync = file
         .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
-        .map_err(materialize_runtime_error)?;
-    sync.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    sync.await.map_err(MaterializeError::from)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
 #[cfg(windows)]
-pub(super) fn mark_sparse_measured(
+pub(super) fn mark_sparse(
     file: &File,
     meter: &dyn acyclic_native_runtime::NativeReadMeter,
 ) -> std::io::Result<()> {
@@ -105,7 +105,7 @@ where
     receipt
         .custody
         .release(resolved_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let metadata = resolved.description().metadata;
     let mut offset = 0_u64;
     while offset < logical_bytes {
@@ -148,8 +148,8 @@ where
                                 },
                                 Some(meter),
                             )
-                            .map_err(materialize_runtime_error)?;
-                        control.await.map_err(materialize_runtime_error)?;
+                            .map_err(MaterializeError::from)?;
+                        control.await.map_err(MaterializeError::from)?;
                         generation_action(
                             before_effect,
                             NativeMaterializationActionPhase::Completed,
@@ -179,7 +179,7 @@ where
         receipt
             .custody
             .release(plan_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         if !reads.is_empty() {
             read_content_spans(
                 reader,
@@ -207,7 +207,7 @@ where
         receipt
             .custody
             .release(write_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         offset += length;
     }
     Ok(metadata)
@@ -258,11 +258,11 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
     receipt
         .custody
         .release(request_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     receipt
         .custody
         .release(result_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     Ok(())
 }
 

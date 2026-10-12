@@ -31,9 +31,9 @@ where
                 .await?;
             let mut checkout = inputs.observer(&observation, cancellation)?;
             let (page, source_allocation) = checkout
-                .list_directory_records_with_native_work(
+                .list_directory_records(
                     &path,
-                    cursor.as_ref(),
+                    cursor.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     work,
                     cancellation,

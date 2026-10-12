@@ -12,8 +12,8 @@ mod mutations;
 pub use mutations::*;
 mod invocation;
 pub use invocation::*;
-mod export;
-pub use export::*;
+/// TypeScript declaration exports.
+pub mod export;
 
 #[cfg(kani)]
 mod formal_proofs;

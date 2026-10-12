@@ -488,9 +488,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);
     let recovered_seed = recovered.clone().into_seed(&mut None)?;
     let readable = recovered_seed.reference_capabilities(attached_reader)?;
-    assert!(readable.contains(&text.read_capability()?));
-    assert!(readable.contains(&attachment.read_capability()?));
-    assert!(readable.contains(&manifest.read_capability()?));
+    assert!(readable.contains(&text.read_capability( &mut None)?));
+    assert!(readable.contains(&attachment.read_capability( &mut None)?));
+    assert!(readable.contains(&manifest.read_capability( &mut None)?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");

@@ -9,8 +9,8 @@ pub(super) fn check_native_plan(
         .len()
         .checked_mul(2)
         .ok_or(crate::WorkError::Overflow)?;
-    let paths = crate::native_host::native_buffer::<&str>(count, work)?;
-    if validate_plan(plan, paths.data, || {
+    let (paths, _allocation) = crate::native_host::buffer::<&str, _>(count, &mut &*work)?;
+    if validate_plan(plan, paths, || {
         work.charge(NativeResourceCredit::Items.delta(1))
     })? {
         Ok(())

@@ -28,7 +28,9 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
     };
     request.validate(&mut Some(&mut io.history_io()))?;
-    proof.validate(&mut None)?;
+    proof.provider.validate(&mut None)?;
+    proof.resource.validate(&mut None)?;
+    proof.evidence.validate(&mut None)?;
     if request.provider != host.provider
         || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
@@ -68,12 +70,12 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let digest = crate::model::hash_bytes(&encoded, Some(io))?;
     drop(encoded);
     drop(hold);
-    if request.resources.len() != creation_volumes(&fork).count() {
+    if request.resources().count() != creation_volumes(&fork).count() {
         return Err(Error::Unauthorized(
             "created identities differ from the exact fork allocation".into(),
         ));
     }
-    for (volume, resource) in creation_volumes(&fork).zip(&request.resources) {
+    for (volume, resource) in creation_volumes(&fork).zip(request.resources()) {
         if volume.provider() != &host.provider {
             return Err(Error::Unauthorized(
                 "created volume belongs to another provider".into(),
@@ -89,9 +91,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         drop(workspace);
         drop(held);
     }
-    let index = request
-        .resources
-        .iter()
+    let index = request.resources()
         .position(|resource| resource == &proof.resource)
         .ok_or_else(|| Error::Unauthorized("proof does not name a created fork volume".into()))?;
     let volume = creation_volumes(&fork)
@@ -278,7 +278,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     for file in &request.input_files {
         if !crate::runtime::read_granted(&selected.origin.source_grants, file)?
-            || !request.child.grants.contains(&file.read_capability()?)
+            || !request.child.grants.contains(&file.read_capability(&mut None)?)
         {
             return Err(Error::Unauthorized(
                 "child input lacks original donor and exact child read authority".into(),
@@ -291,7 +291,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let held = io.guard_bytes(&bytes)?;
             drop(bytes);
             drop(held);
-            if granted.insert(file.read_capability()?) {
+            if granted.insert(file.read_capability(&mut None)?) {
                 selected.reference_files.push(file.clone());
             }
         }

@@ -170,7 +170,9 @@ impl crate::resource_preparation::ResourceCreationProofRef {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
             copy_owned(self, quota, |proof, work| {
-                proof.validate(work)?;
+                proof.provider.validate(work)?;
+                proof.resource.validate(work)?;
+                proof.evidence.validate(work)?;
                 owned_sum([
                     proof.provider.logical_owned_bytes()?,
                     proof.resource.logical_owned_bytes()?,
@@ -209,20 +211,6 @@ copy_fields!(
         owned_bytes(value)
     }
 );
-copy_fields!(
-    copy_extension_record,
-    ExtensionRecord,
-    |value: &ExtensionRecord, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(copy_status, EffectStatus, |value: &EffectStatus, work| {
-    if let EffectStatus::Succeeded { result } = value {
-        result.validate(work)?;
-    }
-    owned_bytes(value)
-});
 copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
     value.request.validate(work)?;
     value.result_schema.validate(work)?;
@@ -316,9 +304,7 @@ pub(in crate::core) fn copy_receipt(
     source: &ProjectMergeReceipt,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ProjectMergeReceipt> {
-    let (receipt, bytes) = source.clone_with_work_and_custody(quota.work())?;
-    quota.adopt(bytes)?;
-    Ok(receipt)
+    source.copy(quota)
 }
 pub(in crate::core) fn copy_message(
     source: &ConversationMessage,

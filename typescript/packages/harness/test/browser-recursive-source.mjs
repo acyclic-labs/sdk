@@ -10,7 +10,7 @@ export async function exerciseBrowserRecursiveSource() {
   const grants = ["operation:declare", "operation:observe", "operation:cancel", "operation:wake",
     "task:spawn:test.browser@1", "fork:publish",
     fixture.owner.volumeCapability(volume, "read"), fixture.owner.volumeCapability(volume, "write")];
-  const runtimeScope = fixture.owner.issueScopeForAgent(agent, "recursive-caller", grants);
+  const runtimeScope = fixture.owner.issueScope("recursive-caller", grants, agent);
   const owner = new WasmReducer({ kind: "conversation", id: crypto.randomUUID() },
     "recursive-source", new Uint8Array(32).fill(71), []);
   let runtime;
@@ -35,9 +35,9 @@ export async function exerciseBrowserRecursiveSource() {
     const work = await runtime.runOperation({ id: "recursive-source-worker", available: {}, labels: {} }, caller, 2);
     if (work?.kind !== "unresolved") throw new Error("expected exact retained caller lease");
     const fence = { reservation_id: work.lease.reservation.id, placement: work.lease.reservation.placement };
-    const scope = owner.issueScopeForAgent(agent, "recursive-source", grants);
+    const scope = owner.issueScope("recursive-source", grants, agent);
     owner.apply({ operation_id: crypto.randomUUID(), idempotency_key: "local-only-bind", expected_revision: 0n,
-      scope: owner.issueScopeForAgent(agent, "local-only", ["conversation:bind"]), causal_parent: null,
+      scope: owner.issueScope("local-only", ["conversation:bind"], agent), causal_parent: null,
       action: { kind: "bind_conversation", agent } });
     const streamProvider = { namespace: "browser-task", family: "stream", version: "1" };
     const generation = { kind: "generation", provider: volume.provider, key: [1], revision: "1" };
@@ -50,7 +50,7 @@ export async function exerciseBrowserRecursiveSource() {
     const prepare = (selectedScope, selectedFence = fence) => runtime.prepareRecursiveForkSource(caller,
       selectedFence, owner, selectedScope, source, streamProvider, crypto.randomUUID(), { id: child, msg: "child" }, config, []);
     await rejects(() => prepare(scope), "fork caller conversation has no agent");
-    await rejects(() => prepare(owner.issueScopeForAgent(agent, "upgraded", [...grants, "foreign:read"])),
+    await rejects(() => prepare(owner.issueScope("upgraded", [...grants, "foreign:read"], agent)),
       "original caller scope");
     await rejects(() => prepare(scope, { ...fence, reservation_id: crypto.randomUUID() }));
     // Exact original local snapshot must not silently substitute current-tail

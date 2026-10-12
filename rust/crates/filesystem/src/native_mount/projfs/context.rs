@@ -73,9 +73,9 @@ impl Runtime {
         if let Some(guard) = guard {
             let callbacks = super::super::adapter::CallbackRuntime::existing()?;
             if authored {
-                callbacks.verify_native_callback_write_guard(guard.as_ref(), &work)?;
+                callbacks.verify_callback(&work, || guard.check_write(&work))?;
             } else {
-                callbacks.verify_native_callback_guard(guard.as_ref(), &work)?;
+                callbacks.verify_callback(&work, || guard.check(&work))?;
             }
         }
         Ok(work)

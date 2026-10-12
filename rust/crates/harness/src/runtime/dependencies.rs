@@ -270,7 +270,7 @@ pub(super) fn validate_task_dependencies(
         let preparation = io;
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let preparation = None;
-        let available = tools.get_version(name, version, preparation)?.is_some()
+        let available = tools.get(name, Some(version), preparation)?.is_some()
             || resumable_tools.get(name, version, &mut work)?.is_some();
         if available {
             native_startup::item(io, std::mem::size_of::<(String, String)>())?;
