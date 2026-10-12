@@ -362,21 +362,11 @@ impl<P: StreamProvider> HistoryReader<P> {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<crate::fork::PreparedForkHistory> {
         self.verifier.verify_audience_with_work(parent.authority(), work)?;
-        let source = parent.conversation().ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork archive parent is unbound" };
-            }
-            Error::Invalid("fork archive parent is unbound".into())
-        })?;
+        let source = parent.conversation().ok_or_else(|| super::guarded_boundary(
+            work, crate::wire::ErrorCode::Invalid, "fork archive parent is unbound"))?;
         if through_sequence > source.logical_revision() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork archive exceeds the logical parent cut" });
-            }
-            return Err(Error::Invalid("fork archive exceeds the logical parent cut".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
+                "fork archive exceeds the logical parent cut"));
         }
         let cursor_authority = match work.as_deref_mut() {
             Some(work) => work.clone_authority(parent.authority())?,
@@ -403,12 +393,8 @@ impl<P: StreamProvider> HistoryReader<P> {
             && conversation.history_prefix_digest_with_work(through_sequence, work)?
                 != source.history_prefix_digest_with_work(through_sequence, work)?
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "fork archive differs from the authenticated parent prefix" });
-            }
-            return Err(Error::Storage("fork archive differs from the authenticated parent prefix".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "fork archive differs from the authenticated parent prefix"));
         }
         #[cfg(feature = "filesystem")]
         {

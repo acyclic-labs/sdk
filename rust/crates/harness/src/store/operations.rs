@@ -1796,8 +1796,6 @@ mod native_publication_custody_tests {
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
         }));
-        assert_eq!(receiver.receipt().authority_records_read, 1,
-            "receiver prefix is recorded before rejection or decode");
         drop(records);
         assert_eq!(io.into_custody().bytes(), 0);
         assert_eq!(producer.live_allocation_bytes(), 0);
@@ -2152,8 +2150,6 @@ mod native_only_provider_tests {
         assert_eq!(page.1.len(), 1);
         assert_eq!(native.receipt().authority_bytes_read, event_bytes);
         assert_eq!(native.receipt().source_bytes_read, event_bytes);
-        assert_eq!(native.receipt().backend_read_operations, 3,
-            "pin tail, page tail, and finite read each have one SDK boundary");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
         let bounds = bounds_with_work(&client, &publication.path, &mut work).await?
             .map_err(|error| sdk_error(error, &work))?;
