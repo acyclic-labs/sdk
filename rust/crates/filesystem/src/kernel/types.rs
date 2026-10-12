@@ -256,7 +256,7 @@ impl LogicalName {
         Ok((encoding, bytes))
     }
 
-    pub(super) fn decode_cursor_with_accounting(
+    pub(crate) fn decode_cursor_with_accounting(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
