@@ -13,11 +13,7 @@ fn staging_refuses_a_link_in_place_of_its_directory() -> Result<(), Box<dyn std:
     let parent = tempfile::tempdir()?;
     let root = parent.path().join("mount");
     std::fs::create_dir(&root)?;
-    let work = crate::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| error)?;
+    let work = setup_work()?;
     assert!(super::staging_directory(&root, &work).is_ok());
     std::fs::remove_dir(super::staging_path(&root))?;
     let elsewhere = tempfile::tempdir()?;
@@ -52,11 +48,7 @@ fn projection_cleanup_rejects_a_replaced_root_identity() -> Result<(), Box<dyn s
     let original = tempfile::tempdir()?;
     let replacement = tempfile::tempdir()?;
     let original_identity = crate::capture_root_identity(original.path())?;
-    let work = crate::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| error)?;
+    let work = setup_work()?;
     assert!(
         super::remove_empty_recovery_destination(
             replacement.path(),
