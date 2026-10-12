@@ -442,11 +442,11 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::NativeWork(error) => return MountSourceError::NativeWork(error),
         WatchError::Mount(error) => return error,
         #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        WatchError::LinuxMetadata(error) => return MountSourceError::LinuxMetadata(error),
+        WatchError::Metadata(error) => return MountSourceError::LinuxMetadata(error),
         #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        WatchError::MacMetadata(error) => return MountSourceError::MacMetadata(error),
+        WatchError::Metadata(error) => return MountSourceError::MacMetadata(error),
         #[cfg(all(windows, any(feature = "native-mount", test)))]
-        WatchError::WindowsMetadata(error) => return MountSourceError::WindowsMetadata(error),
+        WatchError::Metadata(error) => return MountSourceError::WindowsMetadata(error),
         WatchError::Cancelled(_) => return MountSourceError::Cancelled,
         WatchError::Work(error) => return MountSourceError::Work(error),
         WatchError::InvalidOptions => "filesystem engine failure: source demand failed: native watcher options are invalid",

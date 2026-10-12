@@ -3983,8 +3983,7 @@ mod tests {
     };
     use crate::path::PortablePath;
     use crate::{
-        ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WatchEpoch,
-        WatchSequence, WorkBudget,
+        ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget,
     };
     use bytes::Bytes;
     use std::time::{Duration, Instant};
@@ -4707,9 +4706,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(2),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 2,
                 changes: vec![WatchChange::Created(third.clone())],
                 original: Default::default(),
             },
@@ -4719,6 +4718,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4765,9 +4765,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(2),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 1,
+                first_sequence: 2,
+                next_sequence: 3,
                 changes: vec![WatchChange::Created(existing.clone())],
                 original: Default::default(),
             },
@@ -4777,6 +4777,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4819,6 +4820,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4990,9 +4992,9 @@ mod tests {
         let watch = capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(11),
-                next_sequence: WatchSequence::from_u64(12),
+                epoch: 7,
+                first_sequence: 11,
+                next_sequence: 12,
                 changes: vec![WatchChange::Renamed {
                     from: file.clone(),
                     to: renamed.clone(),
@@ -5005,11 +5007,12 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
         .await?;
-        assert_eq!(watch.value.next_sequence.get(), 12);
+        assert_eq!(watch.value.next_sequence, 12);
         let old = checkout
             .lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
@@ -5042,9 +5045,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(12),
-                next_sequence: WatchSequence::from_u64(14),
+                epoch: 7,
+                first_sequence: 12,
+                next_sequence: 14,
                 changes: vec![
                     WatchChange::Renamed {
                         from: renamed.clone(),
@@ -5060,6 +5063,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5098,9 +5102,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(14),
-                next_sequence: WatchSequence::from_u64(15),
+                epoch: 7,
+                first_sequence: 14,
+                next_sequence: 15,
                 changes: vec![WatchChange::Created(renamed.clone())],
                 original: Default::default(),
             },
@@ -5110,6 +5114,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5129,9 +5134,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(7),
-                first_sequence: WatchSequence::from_u64(15),
-                next_sequence: WatchSequence::from_u64(17),
+                epoch: 7,
+                first_sequence: 15,
+                next_sequence: 17,
                 changes: vec![
                     WatchChange::Created(renamed.clone()),
                     WatchChange::Modified(renamed.clone()),
@@ -5144,6 +5149,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5164,6 +5170,7 @@ mod tests {
                 maximum_paths: 16,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5199,6 +5206,7 @@ mod tests {
                 maximum_paths: 16,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5235,9 +5243,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 8,
+                first_sequence: 0,
+                next_sequence: 1,
                 changes: vec![WatchChange::Renamed {
                     from: missing,
                     to: arrived.clone(),
@@ -5250,6 +5258,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5289,9 +5298,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 8,
+                first_sequence: 1,
+                next_sequence: 3,
                 changes: vec![
                     WatchChange::Created(temporary_name.clone()),
                     WatchChange::Renamed {
@@ -5307,6 +5316,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5330,9 +5340,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(8),
-                first_sequence: WatchSequence::from_u64(3),
-                next_sequence: WatchSequence::from_u64(5),
+                epoch: 8,
+                first_sequence: 3,
+                next_sequence: 5,
                 changes: vec![
                     WatchChange::Created(created_and_modified.clone()),
                     WatchChange::Modified(created_and_modified.clone()),
@@ -5345,6 +5355,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5412,6 +5423,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5423,13 +5435,14 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 1,
                 changes: vec![WatchChange::Created(parent.clone())],
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5447,9 +5460,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(3),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 3,
                 changes: vec![
                     WatchChange::Removed(parent.clone()),
                     WatchChange::Removed(child.clone()),
@@ -5457,6 +5470,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5497,6 +5511,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5512,9 +5527,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(6),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 6,
                 changes: vec![
                     WatchChange::Created(child.clone()),
                     WatchChange::MetadataChanged(child.clone()),
@@ -5526,6 +5541,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5580,9 +5596,9 @@ mod tests {
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(0),
-                next_sequence: WatchSequence::from_u64(2),
+                epoch: 1,
+                first_sequence: 0,
+                next_sequence: 2,
                 changes: vec![
                     WatchChange::Created(path.clone()),
                     WatchChange::Modified(path.clone()),
@@ -5595,6 +5611,7 @@ mod tests {
                 maximum_paths: 16,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5703,6 +5720,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
+            &crate::CapturePolicy::allow_all(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
