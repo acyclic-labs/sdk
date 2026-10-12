@@ -1235,9 +1235,14 @@ pub(crate) async fn git_apply_patch(
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
     workspace
-        .read(&patch_path, 16 * 1024 * 1024)
+        .read(&patch_path, 16 * 1024 * 1024, &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &CancellationToken::new(),
+        })
         .await
-        .map(|bytes| Some(bytes.to_vec()))
+        .map(|chunk| Some(chunk.bytes.to_vec()))
         .map_err(display)
 }
 
@@ -1286,8 +1291,13 @@ pub(crate) async fn git_policy(
 pub(crate) async fn git_ignore_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<GitIgnorePolicy, String> {
-    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024).await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024, &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: acyclic_fs::WorkCounters::UNCHARGED,
+            budget: WorkBudget::UNBOUNDED,
+            cancellation: &CancellationToken::new(),
+        }).await {
+        Ok(chunk) => String::from_utf8_lossy(&chunk.bytes).into_owned(),
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),
     };
