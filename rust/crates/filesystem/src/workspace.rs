@@ -387,10 +387,6 @@ impl<A, O> Workspace<A, O> {
         self.id
     }
 
-    pub(crate) fn authority(&self) -> &A {
-        self.volume.fs.authority()
-    }
-
     pub(crate) const fn authority_id(&self) -> crate::AuthorityId {
         crate::kernel::volume_authority_id(self.id.volume_id())
     }
@@ -399,14 +395,6 @@ impl<A, O> Workspace<A, O> {
     #[must_use]
     pub fn name(&self) -> &WorkspaceName {
         &self.name
-    }
-
-    /// Derives the stable identity of a sibling workspace before creating it.
-    pub fn fork_workspace_id(
-        &self,
-        destination: impl AsRef<str>,
-    ) -> Result<WorkspaceId, WorkspaceNameError> {
-        self.volume.fs.workspace_id(destination)
     }
 
     /// Exact immutable filesystem profile selected when this workspace was created.
@@ -438,12 +426,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
     ) -> crate::MeasuredResult<crate::OperationReceipt<crate::PublicationReservation>, WorkspaceError> {
         cancellation.check()
             .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        let head = self.authority().head(
+        let head = self.volume.fs.authority().head(
             self.authority_id(), budget, cancellation,
         ).await.map_err(|failure| failure.map_with_prior_work(
             crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
         ))?;
-        let reserved = self.authority().reserve_publication(
+        let reserved = self.volume.fs.authority().reserve_publication(
             self.authority_id(), head.value, operation_id,
             head.work.remaining(budget)
                 .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
@@ -481,7 +469,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         }
         cancellation.check()
             .map_err(|error| crate::OperationFailure::before_work(WorkspaceError::from(error)))?;
-        self.authority().release_publication(reservation, budget, cancellation).await
+        self.volume.fs.authority().release_publication(reservation, budget, cancellation).await
             .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
             .map_err(|failure| failure.map_with_prior_work(
                 crate::WorkCounters::UNCHARGED, |error| WorkspaceError::from(FsError::Authority(error)),
@@ -500,9 +488,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
             let authority_id = self.authority_id();
-            let head = self.authority().head_with_native_work(authority_id, original, cancellation)
+            let head = self.volume.fs.authority().head_with_native_work(authority_id, original, cancellation)
                 .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
-            let reservation = self.authority().reserve_publication_with_native_work(
+            let reservation = self.volume.fs.authority().reserve_publication_with_native_work(
                 authority_id, head, operation_id, original, cancellation,
             ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if reservation.authority_id != authority_id || reservation.operation_id != operation_id {
@@ -522,7 +510,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         let result = async {
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
-            let reservation = self.authority().publication_reservation_with_native_work(
+            let reservation = self.volume.fs.authority().publication_reservation_with_native_work(
                 self.authority_id(), operation_id, original, cancellation,
             ).await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))?;
             if let Some(proof) = reservation
@@ -547,29 +535,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             original.admit(crate::WorkCounters::UNCHARGED).map_err(WorkspaceError::from)?;
             cancellation.check().map_err(WorkspaceError::from)?;
-            self.authority().release_publication_with_native_work(reservation, original, cancellation)
+            self.volume.fs.authority().release_publication_with_native_work(reservation, original, cancellation)
                 .await.map_err(|error| WorkspaceError::from(FsError::Authority(error)))
         }.await;
         result.map_err(|error| (error, None))
     }
 
-    /// Resolves an original committed generation without adopting the mutable
-    pub async fn operation_generation(
-        &self,
-        idempotency_key: IdempotencyKey,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<Option<Generation<A, O>>>, WorkspaceError>
-    {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
+    /// Resolves one immutable operation without adopting the mutable head.
+    pub async fn operation_generation<W: crate::facade::FsWork>(
+        &self, key: IdempotencyKey, work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<Option<Generation<A, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let result = self.volume.fs.workspace_operation_generation(
-            &self.volume, idempotency_key.operation_id(), &mut accounting, cancellation,
-        ).await.map(|(value, allocation)| { drop(allocation); value });
-        let receipt = crate::facade::measured(result, &accounting)?;
-        Ok(crate::OperationReceipt {
-            value: receipt.value.map(|(id, record)| { drop(record); Generation { workspace: self.clone(), id, publication_closure: None } }),
-            work: receipt.work,
-        })
+            &self.volume, key.operation_id(), &mut accounting, cancellation,
+        ).await.map(|mut observed| {
+            let id = observed.0.take().map(|(id, record)| { drop(record); id });
+            drop(observed);
+            id.map(|id| Generation { workspace: self.clone(), id, publication_closure: None })
+        });
+        work.finish(result, &accounting)
     }
 
     /// Returns the protected original operation record with its genuine
@@ -589,25 +573,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             )),
             work: receipt.work,
         })
-    }
-
-    /// Resolves the exact original operation without adopting the current head.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn operation_generation_with_native_work(
-        &self,
-        operation_id: crate::OperationId,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<Generation<A, O>>, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-        let mut observed = self.volume.fs.workspace_operation_generation(
-            &self.volume, operation_id, &mut accounting, cancellation,
-        ).await.map_err(|error| (error, None))?;
-        let id = observed.0.take().map(|(id, record)| { drop(record); id });
-        drop(observed);
-        Ok(id.map(|id| Generation {
-            workspace: self.clone(), id, publication_closure: None,
-        }))
     }
 
     /// Keeps original record bytes ahead of their metadata allocation until

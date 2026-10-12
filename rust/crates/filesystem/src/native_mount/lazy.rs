@@ -8707,7 +8707,7 @@ mod tests {
                     let allowance = original.remaining().map_err(MountSourceError::NativeWork)?;
                     let prefix = original.receipt();
                     let workspace = view.lazy.workspace();
-                    let inspected = workspace.authority().publication_reservation_with_native_work(
+                    let inspected = workspace.volume.fs.authority().publication_reservation_with_native_work(
                         workspace.authority_id(), operation, &original, original.cancellation(),
                     ).await.map_err(|error| MountSourceError::Filesystem(crate::FsError::Authority(error)))?;
                     assert!(inspected.is_none(), "unrestricted filesystem permit is not task authority");
