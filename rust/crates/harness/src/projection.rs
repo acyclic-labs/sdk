@@ -101,7 +101,7 @@ pub fn select_turn_delta(
         if !conversation
             .checkpoint_covers_archived_prefix(&reference, envelope.selection.conversation_revision)
         {
-            validate_model_context_selection_at_revision(conversation, &envelope.selection, envelope.selection.conversation_revision, None)?;
+            validate_model_context_selection(conversation, &envelope.selection, envelope.selection.conversation_revision, &mut None)?;
         }
         if envelope.selection.conversation_revision >= current.sequence {
             return Err(Error::Conflict(
@@ -294,7 +294,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
-    validate_model_context_selection_at_revision(conversation, &selection, conversation_revision, io)?;
+    crate::executor::with_history_io(io, |work| validate_model_context_selection(conversation, &selection, conversation_revision, work))?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
         || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
@@ -304,7 +304,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
     let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
-    let mut tool_calls = ProjectionIndex::<usize>::new(io);
+    let mut tool_calls = ProjectionIndex::new(io);
     for id in &selection.message_ids {
         projection_step(io, 1)?;
         let message = conversation
@@ -415,92 +415,74 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     })
 }
 
-/// Reuses the canonical validation engine for an already admitted history observer; the native facade borrows its original ledger and creates no budget.
-pub(crate) fn validate_model_context_selection_at_revision_with_work(
-    conversation: &ConversationState,
-    selection: &ModelContextSelection,
-    conversation_revision: u64,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(native) = work.as_deref()
-        .and_then(crate::store::history::HistoryIo::original_native_work)
-    {
-        let io = crate::executor::PreparationIo::from_native_work(native)?;
-        return validate_model_context_selection_at_revision(
-            conversation, selection, conversation_revision, Some(&io),
-        );
-    }
-    if let Some(io) = work.as_deref_mut() {
-        io.check_cancellation()?;
-    }
-    validate_model_context_selection_at_revision(
-        conversation, selection, conversation_revision, None,
-    )
-}
-
 /// Validates ordered source identities and tool linkage at the pinned revision.
-pub fn validate_model_context_selection_at_revision(
-    conversation: &ConversationState,
-    selection: &ModelContextSelection,
-    conversation_revision: u64,
-    io: Option<&crate::executor::PreparationIo>,
+pub fn validate_model_context_selection(
+    conversation: &ConversationState, selection: &ModelContextSelection, conversation_revision: u64,
+    work: &mut Option<&mut dyn crate::store::HistoryIo>,
 ) -> Result<()> {
+    use crate::wire::ErrorCode::{Conflict, Invalid, Unsupported};
+    if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
     if selection.conversation_revision != conversation_revision {
-        return Err(projection_conflict(io, "model context selection has a stale conversation revision"));
+        return Err(crate::scheduler::diagnostic(work, Conflict,
+            "model context selection has a stale conversation revision"));
     }
-    if let Some(checkpoint) = &selection.checkpoint {
-        match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => checkpoint.validate(&mut Some(&mut io.history_io()))?,
-            _ => checkpoint.validate(&mut None)?,
-        }
-    }
+    if let Some(checkpoint) = &selection.checkpoint { checkpoint.validate(work)?; }
     let mut previous_sequence = 0;
-    let mut tool_calls = ProjectionIndex::<&ConversationMessage>::new(io);
+    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
+    let mut tool_calls = HashMap::<Uuid, &ConversationMessage>::new();
     for id in &selection.message_ids {
-        projection_step(io, 1)?;
-        let message = conversation
-            .message(*id)
-            .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
+        if let Some(observer) = quota.work().as_deref_mut() {
+            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        }
+        let message = conversation.message(*id).ok_or_else(||
+            crate::scheduler::diagnostic(quota.work(), Invalid, "selected conversation message is missing"))?;
         if message.sequence <= previous_sequence || message.sequence > conversation_revision {
-            return Err(projection_invalid(io, "model context selection is not ordered and unique"));
+            return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                "model context selection is not ordered and unique"));
         }
         previous_sequence = message.sequence;
-        validate_projection_message(message, io)?;
-        match &message.kind {
+        message.validate(quota.work())?;
+        match message.kind {
             MessageKind::ToolCall => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(projection_invalid(io, "tool artifact type or rendering limit is invalid"));
+                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                        "tool artifact type or rendering limit is invalid"));
                 }
-                tool_calls.insert(&message.id, message)?;
+                if let Some(observer) = quota.work().as_deref_mut() {
+                    observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                }
+                let bytes = tool_calls.len().checked_add(1)
+                    .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, &ConversationMessage)>()))
+                    .ok_or_else(|| crate::scheduler::diagnostic(quota.work(), Invalid,
+                        "projection index ownership overflows"))?;
+                quota.replace(bytes as u64)?;
+                if let Some(observer) = quota.work().as_deref_mut() {
+                    observer.admit_copy(16)?;
+                    observer.copy_bytes(16)?;
+                }
+                tool_calls.insert(*id, message);
             }
             MessageKind::ToolResult => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(projection_invalid(io, "tool result artifact type is invalid"));
+                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                        "tool result artifact type is invalid"));
                 }
-                let call_id = message
-                    .tool_call_id
-                    .as_deref()
-                    .ok_or_else(|| projection_invalid(io, "tool result lacks call identity"))?;
-                let linked_call_id = message.reply_to.map(|id| tool_calls.get(&id)).transpose()?
-                    .flatten().and_then(|call| call.tool_call_id.as_deref())
-                    .ok_or_else(|| projection_invalid(io, "selected tool result lacks its call"))?;
-                if linked_call_id != call_id {
-                    return Err(projection_invalid(io, "selected tool result lacks its call"));
+                let call_id = message.tool_call_id.as_deref().ok_or_else(||
+                    crate::scheduler::diagnostic(quota.work(), Invalid, "tool result lacks call identity"))?;
+                let linked_call_id = if let Some(id) = message.reply_to {
+                    if let Some(observer) = quota.work().as_deref_mut() {
+                        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    }
+                    tool_calls.get(&id).and_then(|call| call.tool_call_id.as_deref())
+                } else { None };
+                if linked_call_id != Some(call_id) {
+                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                        "selected tool result lacks its call"));
                 }
             }
             MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
-            kind => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                        reason: "message kind requires a specialized model projection" });
-                }
-                return Err(Error::Unsupported(format!(
-                    "message kind {kind:?} requires a specialized model projection"
-                )));
-            }
+            _ => return Err(crate::scheduler::diagnostic(quota.work(), Unsupported,
+                "message kind requires a specialized model projection")),
         }
     }
     Ok(())
@@ -513,15 +495,6 @@ fn projection_invalid(io: Option<&crate::executor::PreparationIo>, reason: &'sta
     }
     let _ = io;
     Error::Invalid(reason.into())
-}
-
-fn projection_conflict(io: Option<&crate::executor::PreparationIo>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
-    }
-    let _ = io;
-    Error::Conflict(reason.into())
 }
 
 fn projection_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
@@ -546,16 +519,10 @@ fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>
 }
 
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
-    struct Omission(usize);
-    impl std::fmt::Display for Omission {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "[{} additional attachments omitted from this bounded model context]", self.0)
-        }
-    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let (text, custody) = io.original_native_work().expect("checked native work")
-            .display(&Omission(count)).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            .display(&format_args!("[{count} additional attachments omitted from this bounded model context]")).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         io.absorb_native_custody(custody)?;
         return Ok(text);
     }
@@ -569,38 +536,14 @@ fn projection_omission_text(count: usize, io: Option<&crate::executor::Preparati
         let next = acyclic_fs::WorkCounters { bytes_encoded: length as u64, ..Default::default() };
         io.preflight(next)?;
         let mut text = String::with_capacity(length);
-        write!(&mut text, "{}", Omission(count)).expect("literal omission formatter writes into String");
+        write!(&mut text, "[{count} additional attachments omitted from this bounded model context]").expect("literal omission formatter writes into String");
         io.charge(next)?;
         return Ok(text);
     }
     let _ = io;
-    Ok(format!("{}", Omission(count)))
+    Ok(format!("[{count} additional attachments omitted from this bounded model context]"))
 }
 
-
-fn validate_projection_message(
-    message: &ConversationMessage, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return message.validate(&mut Some(&mut history));
-    }
-    let _ = io;
-    message.validate(&mut None)
-}
-
-fn validate_projection_attachment(
-    attachment: &Attachment, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut history = io.history_io();
-        return attachment.validate(&mut Some(&mut history));
-    }
-    let _ = io;
-    attachment.validate(&mut None)
-}
 
 fn projection_result_attachment<'a>(
     attachments: &'a [Attachment], io: Option<&crate::executor::PreparationIo>,
@@ -636,15 +579,15 @@ fn validate_projection_tool_identity(
     ToolInvocation::validate_identity(call_id, Some(name), &mut None)
 }
 
-struct ProjectionIndex<'a, T> {
-    values: HashMap<Uuid, T>,
+struct ProjectionIndex<'a> {
+    values: HashMap<Uuid, usize>,
     io: Option<&'a crate::executor::PreparationIo>,
 }
 
-impl<T> Drop for ProjectionIndex<'_, T> {
+impl Drop for ProjectionIndex<'_> {
     fn drop(&mut self) {
         #[cfg(feature = "filesystem")]
-        let bytes = self.values.len() * std::mem::size_of::<(Uuid, T)>();
+        let bytes = self.values.len() * std::mem::size_of::<(Uuid, usize)>();
         drop(std::mem::take(&mut self.values));
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
@@ -653,19 +596,19 @@ impl<T> Drop for ProjectionIndex<'_, T> {
     }
 }
 
-impl<'a, T> ProjectionIndex<'a, T> {
+impl<'a> ProjectionIndex<'a> {
     fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
         Self { values: HashMap::new(), io }
     }
 
     // Callers validate unique ordered message ids before insertion.
-    fn insert(&mut self, id: &Uuid, value: T) -> Result<()> {
+    fn insert(&mut self, id: &Uuid, value: usize) -> Result<()> {
         projection_step(self.io, 1)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
-            let bytes = std::mem::size_of::<(Uuid, T)>() as u64;
+            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
             self.values.len().checked_add(1)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, T)>()))
+                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, usize)>()))
                 .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
             let slot = io.reserve_decode(bytes)?;
             let copied = acyclic_fs::WorkCounters {
@@ -679,7 +622,7 @@ impl<'a, T> ProjectionIndex<'a, T> {
         Ok(())
     }
 
-    fn get(&self, id: &Uuid) -> Result<Option<&T>> {
+    fn get(&self, id: &Uuid) -> Result<Option<&usize>> {
         projection_step(self.io, 1)?;
         Ok(self.values.get(id))
     }
@@ -720,7 +663,7 @@ impl ProjectionAttachments<'_> {
             Self::Borrowed(items) => {
                 for attachment in items.iter().take(count) {
                     projection_step(io, 1)?;
-                    validate_projection_attachment(attachment, io)?;
+                    crate::executor::with_history_io(io, |work| attachment.validate(work))?;
                     append(crate::model::clone_file(&attachment.file, io)?)?;
                 }
                 return Ok(());
@@ -747,7 +690,7 @@ impl ProjectionAttachments<'_> {
         let move_files = { _hold = source_hold; io.is_none() };
         for attachment in items.into_iter().take(count) {
             projection_step(io, 1)?;
-            validate_projection_attachment(&attachment, io)?;
+            crate::executor::with_history_io(io, |work| attachment.validate(work))?;
             let file = if move_files { attachment.file }
                 else { crate::model::clone_file(&attachment.file, io)? };
             append(file)?;
