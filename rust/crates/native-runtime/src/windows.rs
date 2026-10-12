@@ -49,18 +49,9 @@ use windows_sys::Win32::System::Threading::{
 };
 
 #[derive(Clone, Debug)]
-struct ArcFile(Arc<NativeFilePayload>);
-
-impl compio_driver::AsFd for ArcFile {
-    fn as_fd(&self) -> BorrowedFd<'_> {
-        BorrowedFd::from(self.0.as_handle())
-    }
-}
-
-#[derive(Clone, Debug)]
 enum DriverFile {
     Reopened(SharedFd<OwnedFd>),
-    Original(SharedFd<ArcFile>),
+    Original(SharedFd<Arc<NativeFilePayload>>),
 }
 
 impl compio_driver::AsFd for DriverFile {
@@ -1019,9 +1010,7 @@ impl DriverState {
                     }
                 }
             }
-            return Ok(DriverFile::Original(SharedFd::new(ArcFile(Arc::clone(
-                file,
-            )))));
+            return Ok(DriverFile::Original(SharedFd::new(Arc::clone(file))));
         }
         let reopened = reopen_overlapped(file, access)?;
         self.proactor.attach(reopened.as_raw_handle().cast())?;

@@ -39,6 +39,13 @@ impl std::os::fd::AsFd for NativeFilePayload {
 }
 
 #[cfg(windows)]
+impl std::os::windows::io::AsHandle for NativeFilePayload {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        std::os::windows::io::AsHandle::as_handle(&self.file)
+    }
+}
+
+#[cfg(windows)]
 type FileIdentity = windows::FileIdentity;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 type FileIdentity = (u64, u64);
@@ -514,12 +521,17 @@ impl NativeFile {
     }
 
     /// Runs a platform-specific handle control in this file's operation order.
-    #[must_use]
-    pub fn control_async(
-        &self, operation: impl FnOnce(&File) -> io::Result<()> + Send + 'static,
-    ) -> NativeCompletion<()> {
-        self.submit_unit(NativeUnitOperation::Control(Box::new(operation)), None)
-            .expect("unmetered unit construction cannot fail")
+    pub fn control_async<F>(
+        &self, operation: F, meter: Option<Arc<dyn NativeReadMeter>>,
+    ) -> io::Result<NativeCompletion<()>>
+    where F: FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send + 'static {
+        if let Some(meter) = &meter { meter.check()?; }
+        let allocation = meter.as_ref().map(|meter| ReadAllocation::new(
+            meter, std::mem::size_of::<F>(),
+        )).transpose()?;
+        self.submit_unit(NativeUnitOperation::Control {
+            operation: Box::new(operation), _allocation: allocation,
+        }, meter)
     }
 
     /// Borrows the already-held file for measured scalar metadata operations.
@@ -606,29 +618,19 @@ impl NativeFile {
         self.submit_unit(NativeUnitOperation::Sync(durability), meter)
     }
 
-    /// Writes an already-accounted owned payload through this file's ordered native queue.
-    pub fn write_bounded_async(
-        &self,
-        offset: u64,
-        bytes: Bytes,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeCompletion<()>> {
-        self.validate_bounded_write(offset, bytes.len(), meter.as_ref())?;
-        self.submit_unit(NativeUnitOperation::BoundedWrite { offset, bytes }, Some(meter))
-    }
-
     /// Writes a caller-accounted payload on this same ordered native driver.
-    pub fn write_bounded_async_with_custody<B: AsRef<[u8]> + Send + 'static, C: Send + 'static>(
+    pub fn write_async<B: AsRef<[u8]> + Send + 'static, C: Send + 'static>(
         &self, offset: u64, bytes: B,
         meter: Arc<dyn NativeReadMeter>, custody: C,
     ) -> io::Result<NativeCompletion<()>> {
         let owned = (bytes, custody);
         self.validate_bounded_write(offset, owned.0.as_ref().len(), meter.as_ref())?;
-        self.control_bounded_async(move |file, meter| {
+        self.control_async(move |file, meter| {
+            let meter = meter.expect("bounded write meter");
             let result = write_bounded_in_place(file, offset, owned.0.as_ref(), meter);
             drop(owned);
             result
-        }, meter)
+        }, Some(meter))
     }
 
     fn validate_bounded_write(
@@ -642,20 +644,6 @@ impl NativeFile {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
         Ok(())
-    }
-
-    /// Executes measured held-handle controls in this file's native order.
-    pub fn control_bounded_async<F>(
-        &self, operation: F, meter: Arc<dyn NativeReadMeter>,
-    ) -> io::Result<NativeCompletion<()>>
-    where F: FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send + 'static {
-        meter.check()?;
-        let allocation = ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
-        self.submit_unit(
-            NativeUnitOperation::MeasuredControl {
-                operation: Box::new(operation), _allocation: allocation,
-            }, Some(meter),
-        )
     }
 
     fn submit_unit(
@@ -1992,17 +1980,13 @@ enum NativeJob {
 
 enum NativeUnitOperation {
     Write(Vec<OwnedWrite>),
-    BoundedWrite { offset: u64, bytes: Bytes },
     SetLen(u64),
     Sync(Durability),
-    Control(FileControl),
-    MeasuredControl {
-        operation: Box<dyn FnOnce(&File, &dyn NativeReadMeter) -> io::Result<()> + Send>,
-        _allocation: ReadAllocation,
+    Control {
+        operation: Box<dyn FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send>,
+        _allocation: Option<ReadAllocation>,
     },
 }
-
-type FileControl = Box<dyn FnOnce(&File) -> io::Result<()> + Send>;
 
 impl NativeJob {
     fn set_completion(&mut self, fence: Arc<OperationFence>) {
@@ -2144,15 +2128,9 @@ impl NativeJob {
                                 Some(meter) => set_len(&file, size, meter.as_ref()),
                                 None => file.set_len(size),
                             },
-                            NativeUnitOperation::Sync(durability) => match &meter {
-                                Some(meter) => sync_file(&file, durability, Some(meter.as_ref())),
-                                None => sync_file(&file, durability, None),
-                            },
-                            NativeUnitOperation::Control(operation) => operation(&file),
-                            NativeUnitOperation::BoundedWrite { offset, bytes } =>
-                                write_bounded_in_place(&file, offset, &bytes, meter.as_ref().expect("bounded job meter").as_ref()),
-                            NativeUnitOperation::MeasuredControl { operation, _allocation } =>
-                                operation(&file, meter.as_ref().expect("bounded job meter").as_ref()),
+                            NativeUnitOperation::Sync(durability) => sync_file(&file, durability, meter.as_deref()),
+                            NativeUnitOperation::Control { operation, _allocation } =>
+                                operation(&file, meter.as_deref()),
                         }}))
                         .unwrap_or_else(|_| std::process::abort());
                     drop(file);
