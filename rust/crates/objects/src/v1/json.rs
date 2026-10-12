@@ -1,6 +1,8 @@
 //! Descriptor-authoritative Protobuf JSON mapping shared by native and WASM clients.
 use super::{Error, FILE_DESCRIPTOR_SET, wire};
 use prost::Message;
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+use std::sync::Arc;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 
 fn pool() -> Result<&'static DescriptorPool, Error> {
@@ -16,15 +18,14 @@ pub fn encode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
-    let descriptor = pool()?
-        .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let message = DynamicMessage::decode(descriptor, bytes)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    let message = decode_input(name, bytes)?;
     serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 /// Decodes bounded descriptor JSON to generated binary wire bytes.
 pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {
+    Ok(decode_json(name, bytes, maximum)?.encode_to_vec())
+}
+fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessage, Error> {
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
@@ -36,7 +37,7 @@ pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
     json.end()
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    Ok(message.encode_to_vec())
+    Ok(message)
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
@@ -52,18 +53,7 @@ fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
 }
 /// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
 pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {
-    if bytes.len() > maximum {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
-    let descriptor = pool()?
-        .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message = DynamicMessage::deserialize(descriptor, &mut json)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    json.end()
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    message
+    decode_json(name, bytes, maximum)?
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
@@ -72,7 +62,7 @@ pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) ->
 pub(crate) fn encode_native(
     name: &str,
     query: &impl Message,
-    controls: &super::response::NativeGetControls,
+    controls: &Arc<super::NativeTransportErrors>,
 ) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
     let maximum = query.encoded_len().checked_mul(12).and_then(|value| value.checked_add(256))
         .ok_or_else(super::response::invalid)?;
@@ -97,7 +87,7 @@ pub(crate) fn encode_native(
 pub(crate) fn decode_get_native(
     bytes: &[u8],
     maximum: usize,
-    controls: &super::response::NativeGetControls,
+    controls: &Arc<super::NativeTransportErrors>,
     mut allocation: acyclic_native_runtime::ReadAllocation,
 ) -> Result<(wire::GetObjectResponse, acyclic_native_runtime::ReadAllocation), Error> {
     let frame: wire::GetObjectResponse = decode("GetObjectResponse", bytes, maximum)?;

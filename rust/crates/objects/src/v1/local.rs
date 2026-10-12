@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 
-
 fn spawn_native_read<F>(
     future: F,
     meter: &Arc<dyn NativeReadMeter>,
@@ -18,8 +17,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = super::GuardedFuture {
-        future: tracing::Instrument::in_current_span(future),
+    let mut future = super::Guarded {
+        value: tracing::Instrument::in_current_span(future),
         _allocation: None,
     };
     future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
@@ -327,29 +326,13 @@ impl ObjectsProvider for LocalObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v1::tests::{bucket, get, identity};
     mod collection;
-    fn bucket() -> Option<wire::BucketRef> {
-        Some(wire::BucketRef {
-            name: "customer.inputs".into(),
-        })
-    }
-    fn identity(key: &str) -> Option<wire::MutationIdentity> {
-        Some(wire::MutationIdentity {
-            idempotency_key: key.into(),
-        })
-    }
     fn put(key: &str) -> wire::PutObjectHeader {
         wire::PutObjectHeader {
             bucket: bucket(),
             object_key: key.into(),
             mutation: identity(key),
-            ..Default::default()
-        }
-    }
-    fn get(key: &str) -> wire::GetObjectRequest {
-        wire::GetObjectRequest {
-            bucket: bucket(),
-            object_key: key.into(),
             ..Default::default()
         }
     }
@@ -395,7 +378,7 @@ mod tests {
             first
         );
         assert_eq!(
-            provider.get(get("value"), 5).await?.into_body(),
+            provider.get(get(bucket(), "value"), 5).await?.into_body(),
             OwnedBytes::from_static(b"after")
         );
         assert_eq!(
@@ -418,9 +401,9 @@ mod tests {
         assert!(results.iter().all(Result::is_ok));
         let reads = provider
             .get_batch(vec![
-                (get("third"), 5),
-                (get("missing"), 10),
-                (get("second"), 3),
+                (get(bucket(), "third"), 5),
+                (get(bucket(), "missing"), 10),
+                (get(bucket(), "second"), 3),
             ])
             .await;
         assert_eq!(

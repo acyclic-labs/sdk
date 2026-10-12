@@ -184,7 +184,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
     pub fn from_lazy<D: DemandSource + 'static, S: LazyWorkspaceStore>(
         lazy: Arc<LazyWorkspace<A, O, D, S>>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let custody = work.retain_owned(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64)
+        let custody = work.claim(std::mem::size_of::<RetainedRootLazy<A, O, D, S>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
             .map_err(Error::from)?;
@@ -353,7 +353,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             None => io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?,
         }; }
         #[cfg(target_arch = "wasm32")]
-        { opened = io.receive(self.host.filesystem.open_workspace_measured(name, io.remaining()?, context.cancellation).await)?; }
+        { opened = io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?; }
         #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_none() { io.retain_owned(opened.name().as_str().len() as u64)?; }
         #[cfg(target_arch = "wasm32")]
@@ -375,7 +375,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             #[cfg(not(target_arch = "wasm32"))]
             let frozen = match io.original_native_work() {
                 Some(work) => {
-                    frozen_hold = Some(work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?);
+                    frozen_hold = Some(work.claim(std::mem::size_of::<LazySnapshotRef>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
                     crate::contract::json_from_slice_bounded(
                         std::marker::PhantomData::<LazySnapshotRef>, &encoded, bounds, 0, Some(crate::wire::ErrorCode::Invalid),
                         Some(crate::contract::JsonValueSchema::None), &mut |charge| io.codec_charge(charge, false))?
@@ -430,7 +430,7 @@ fn source_json<T: serde::Serialize>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
-        let diagnostic = work.retain_owned(crate::contract::sdk_json_diagnostic_bytes())?;
+        let diagnostic = work.claim(crate::contract::sdk_json_diagnostic_bytes(), 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let bytes = crate::contract::canonical_json_bytes_bounded(
             value, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| io.codec_charge(charge, true),

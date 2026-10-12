@@ -56,10 +56,10 @@ impl MemoryStream {
 }
 
 fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<Vec<u8>>> {
-    let mut out = Vec::new();
     let mut funding = MemoryOutput::fund(meter);
+    let mut out = Vec::new();
     write(&mut out, &mut funding, MAGIC)?;
-    write_u64(&mut out, &mut funding, state.decision)?;
+    write_u64(&mut out, &mut funding, state.commits.len() as u64)?;
     write_u64(&mut out, &mut funding, state.last_committed_at_micros)?;
     write(&mut out, &mut funding, state.hierarchy_version.as_bytes())?;
     // Each node follows every node it reaches: decoding links backwards.
@@ -94,15 +94,15 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
         }
         funding.retire(chain_bytes)?;
     }
-    write_u64(&mut out, &mut funding, (nodes.len()) as u64)?;
+    write_u64(&mut out, &mut funding, nodes.len() as u64)?;
     for node in &nodes {
         funding.examine(1)?;
         match node.as_ref() {
             History::Batch { parent, records, .. } => {
                 write(&mut out, &mut funding, &[NODE_BATCH])?;
                 let reference = node_reference(&indices, parent, &funding)?;
-                write_u64(&mut out, &mut funding, (reference) as u64)?;
-                write_u64(&mut out, &mut funding, (records.value.len()) as u64)?;
+                write_u64(&mut out, &mut funding, reference as u64)?;
+                write_u64(&mut out, &mut funding, records.value.len() as u64)?;
                 for record in records.value.iter() {
                     funding.examine(1)?;
                     write_u64(&mut out, &mut funding, record.sequence)?;
@@ -114,17 +114,17 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
             History::Prefix { source, tail, .. } => {
                 write(&mut out, &mut funding, &[NODE_PREFIX])?;
                 let reference = node_reference(&indices, source, &funding)?;
-                write_u64(&mut out, &mut funding, (reference) as u64)?;
+                write_u64(&mut out, &mut funding, reference as u64)?;
                 write_u64(&mut out, &mut funding, *tail)?;
             }
         }
     }
-    write_u64(&mut out, &mut funding, (state.paths.len()) as u64)?;
+    write_u64(&mut out, &mut funding, state.paths.len() as u64)?;
     for (path, stream) in &state.paths {
         funding.examine(1)?;
         write_bytes(&mut out, &mut funding, path.as_str().as_bytes())?;
         let reference = node_reference(&indices, &stream.history, &funding)?;
-        write_u64(&mut out, &mut funding, (reference) as u64)?;
+        write_u64(&mut out, &mut funding, reference as u64)?;
         write_u64(&mut out, &mut funding, stream.tail)?;
     }
     let node_bytes = nodes.capacity() * std::mem::size_of::<Arc<History>>();
@@ -133,7 +133,7 @@ fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<V
     let index_bytes = indices.capacity() * std::mem::size_of::<(*const History, usize)>();
     drop(indices);
     funding.retire(index_bytes)?;
-    write_u64(&mut out, &mut funding, (state.retained.len()) as u64)?;
+    write_u64(&mut out, &mut funding, state.retained.len() as u64)?;
     for retained in &state.retained {
         funding.examine(1)?;
         let replay = retained.replay.as_ref()
@@ -234,20 +234,19 @@ fn write_message(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, v
 }
 
 fn decode(encoded: &[u8]) -> Option<State> {
-    let mut input = Input(encoded.strip_prefix(MAGIC)?);
-    let decision = input.u64()?;
-    let last_committed_at_micros = input.u64()?;
-    let hierarchy_version = CommitId::from_bytes(input.array()?);
+    let mut input = encoded.strip_prefix(MAGIC)?;
+    let decision = read_u64(&mut input)?;
+    let last_committed_at_micros = read_u64(&mut input)?;
+    let hierarchy_version = CommitId::from_bytes(read_array(&mut input)?);
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes.0)?;
     let mut state = State::default();
     state.paths = paths;
     state.path_bytes = path_bytes;
-    state.decision = decision;
     state.last_committed_at_micros = last_committed_at_micros;
     state.hierarchy_version = hierarchy_version;
     decode_retained(&mut input, &mut state)?;
-    if !input.0.is_empty() {
+    if !input.is_empty() {
         return None;
     }
     if encode(&state, None).expect("unmetered encoding cannot fail").value != encoded {
@@ -269,7 +268,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
     }) {
         return None;
     }
-    if state.decision != u64::try_from(state.commits.len()).ok()? {
+    if decision != u64::try_from(state.commits.len()).ok()? {
         return None;
     }
     validate_inventory(&state)?;
@@ -403,26 +402,26 @@ fn history_tail(history: Option<&Arc<History>>) -> Option<u64> {
     }
 }
 
-fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
-    let count = input.len()?;
-    let mut nodes = DecodedNodes(Vec::with_capacity(count.min(input.0.len())));
+fn decode_nodes(input: &mut &[u8]) -> Option<DecodedNodes> {
+    let count = read_len(input)?;
+    let mut nodes = DecodedNodes(Vec::with_capacity(count.min(input.len())));
     for _ in 0..count {
-        let tag = input.u8()?;
-        let parent = reference(&nodes.0, input.len()?)?;
+        let tag = read_u8(input)?;
+        let parent = reference(&nodes.0, read_len(input)?)?;
         let node = match tag {
             NODE_BATCH => {
-                let count = input.len()?;
+                let count = read_len(input)?;
                 if count == 0 || count > crate::MAX_ITEMS {
                     return None;
                 }
                 let mut sequence = history_tail(parent.as_ref())?;
-                let mut records = Vec::with_capacity(count.min(input.0.len()));
+                let mut records = Vec::with_capacity(count.min(input.len()));
                 for _ in 0..count {
                     let record = Record {
-                        sequence: input.u64()?,
-                        commit_id: CommitId::from_bytes(input.array()?),
-                        committed_at_micros: input.u64()?,
-                        value: OwnedBytes::copy_from_slice(input.bytes()?),
+                        sequence: read_u64(input)?,
+                        commit_id: CommitId::from_bytes(read_array(input)?),
+                        committed_at_micros: read_u64(input)?,
+                        value: OwnedBytes::copy_from_slice(read_bytes(input)?),
                     };
                     if record.sequence != sequence || record.value.len() > crate::MAX_RECORD_BYTES {
                         return None;
@@ -437,7 +436,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 }
             }
             NODE_PREFIX => {
-                let tail = input.u64()?;
+                let tail = read_u64(input)?;
                 if tail > history_tail(parent.as_ref())? {
                     return None;
                 }
@@ -455,15 +454,15 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
 }
 
 fn decode_paths(
-    input: &mut Input<'_>,
+    input: &mut &[u8],
     nodes: &[Arc<History>],
 ) -> Option<(BTreeMap<StreamPath, PathState>, usize)> {
     let mut paths = BTreeMap::new();
     let mut path_bytes = 0_usize;
-    for _ in 0..input.len()? {
-        let path = input.path()?;
-        let history = reference(nodes, input.len()?)?;
-        let tail = input.u64()?;
+    for _ in 0..read_len(input)? {
+        let path = StreamPath::new(std::str::from_utf8(read_bytes(input)?).ok()?).ok()?;
+        let history = reference(nodes, read_len(input)?)?;
+        let tail = read_u64(input)?;
         if tail != history_tail(history.as_ref())? || paths.contains_key(&path) {
             return None;
         }
@@ -493,17 +492,17 @@ fn retained_fact_bound() -> Option<usize> {
         .checked_add(128)
 }
 
-fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
-    for _ in 0..input.len()? {
-        let flags = input.u8()?;
+fn decode_retained(input: &mut &[u8], state: &mut State) -> Option<()> {
+    for _ in 0..read_len(input)? {
+        let flags = read_u8(input)?;
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
             return None;
         }
         let observation = if flags & RETAINS_REPLAY == 0 { None } else {
-            Some(crate::persistence::decode_observation(input.bytes()?, retained_fact_bound()?).ok()?)
+            Some(crate::persistence::decode_observation(read_bytes(input)?, retained_fact_bound()?).ok()?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 { None } else {
-            Some(crate::persistence::decode_envelope(input.bytes()?, retained_fact_bound()?).ok()?)
+            Some(crate::persistence::decode_envelope(read_bytes(input)?, retained_fact_bound()?).ok()?)
         };
         let commit = envelope.as_ref().map(|envelope| envelope.commit_id);
         let (replay, digest, result, envelope) = match observation {
@@ -587,40 +586,25 @@ fn put_bytes(out: &mut Vec<u8>, value: &[u8]) {
     out.extend_from_slice(value);
 }
 
-struct Input<'a>(&'a [u8]);
+fn take<'a>(input: &mut &'a [u8], count: usize) -> Option<&'a [u8]> {
+    let (taken, rest) = input.split_at_checked(count)?;
+    *input = rest;
+    Some(taken)
+}
 
-impl<'a> Input<'a> {
-    fn take(&mut self, count: usize) -> Option<&'a [u8]> {
-        let (taken, rest) = self.0.split_at_checked(count)?;
-        self.0 = rest;
-        Some(taken)
-    }
+fn read_array<const N: usize>(input: &mut &[u8]) -> Option<[u8; N]> {
+    take(input, N)?.try_into().ok()
+}
 
-    fn array<const N: usize>(&mut self) -> Option<[u8; N]> {
-        self.take(N)?.try_into().ok()
-    }
+fn read_u8(input: &mut &[u8]) -> Option<u8> { Some(read_array::<1>(input)?[0]) }
 
-    fn u8(&mut self) -> Option<u8> {
-        Some(self.array::<1>()?[0])
-    }
+fn read_u64(input: &mut &[u8]) -> Option<u64> { Some(u64::from_le_bytes(read_array(input)?)) }
 
-    fn u64(&mut self) -> Option<u64> {
-        Some(u64::from_le_bytes(self.array()?))
-    }
+fn read_len(input: &mut &[u8]) -> Option<usize> { usize::try_from(read_u64(input)?).ok() }
 
-    fn len(&mut self) -> Option<usize> {
-        usize::try_from(self.u64()?).ok()
-    }
-
-    fn bytes(&mut self) -> Option<&'a [u8]> {
-        let count = self.len()?;
-        self.take(count)
-    }
-
-    fn path(&mut self) -> Option<StreamPath> {
-        let bytes = self.bytes()?;
-        StreamPath::new(std::str::from_utf8(bytes).ok()?).ok()
-    }
+fn read_bytes<'a>(input: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let count = read_len(input)?;
+    take(input, count)
 }
 
 #[cfg(test)]
@@ -630,20 +614,11 @@ impl<'a> Input<'a> {
 )]
 mod tests {
     use super::*;
-    use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
+    use crate::{AppendRequest, IdempotencyObservation, MemoryLimits, ReadRequest, StreamProvider};
     use crate::wire_codec::observation_wire;
     use futures::StreamExt as _;
     use prost::Message as _;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    #[derive(Default)]
-    struct TestClock(AtomicU64);
-
-    impl UnixMillisClock for TestClock {
-        fn now_unix_millis(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
 
     #[tokio::test]
     async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError> {
@@ -1194,8 +1169,8 @@ mod tests {
 
     #[tokio::test]
     async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
-        let clock = Arc::new(TestClock::default());
-        clock.0.store(100, Ordering::SeqCst);
+        let clock = Arc::new(AtomicU64::default());
+        clock.store(100, Ordering::SeqCst);
         let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
         let path = StreamPath::new("snapshot/timed")?;
         stream
@@ -1207,7 +1182,7 @@ mod tests {
             })
             .await?;
         let timed = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
-        clock.0.store(90, Ordering::SeqCst);
+        clock.store(90, Ordering::SeqCst);
         let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
         restored.install_state(&timed).await?;
         let timed_record = restored

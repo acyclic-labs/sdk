@@ -397,7 +397,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),
         });
-        let runner = DurableToolRunner::new(tools.clone(), journal.clone());
+        let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
         assert_eq!(
             runner
                 .run_with_context(

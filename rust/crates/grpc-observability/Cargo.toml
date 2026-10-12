@@ -12,7 +12,7 @@ description = "Shared terminal observability for first-party gRPC clients"
 default = ["runtime"]
 runtime = ["dep:http-body", "dep:pin-project-lite", "dep:tonic", "dep:tracing"]
 codegen = ["dep:syn", "dep:prettyplease"]
-test-support = ["dep:tracing", "dep:tracing-subscriber", "dep:tokio", "dep:rcgen", "dep:tempfile"]
+test-support = ["dep:http-body", "dep:tonic", "dep:tracing", "dep:tracing-subscriber", "dep:tokio", "tokio/time", "dep:rcgen", "dep:tempfile"]
 
 [dependencies]
 syn = { version = "=3.0.6", features = ["full", "visit"], optional = true }
@@ -30,6 +30,11 @@ tracing = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 futures.workspace = true
+http-body = "1.1.0"
+tonic.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+rcgen = "0.14.10"
+tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
 [lints]

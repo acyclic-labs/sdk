@@ -126,9 +126,13 @@ impl<'a> PublicationAccounting<'a> {
     }
 
     fn retain(&mut self, bytes: u64) -> Result<(), crate::FsError> {
-        if let Self::Standalone { retained, .. } = self {
-            *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            self.remaining()?;
+        match self {
+            Self::Standalone { retained, .. } => {
+                *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                self.remaining()?;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(_) => {}
         }
         Ok(())
     }
@@ -435,9 +439,7 @@ where
         }
     };
     let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
-        let future = authority.compare_and_append_guarded(
-            request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,
-        );
+        let future =async move { let __authority_args = (request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) };
         async move {
             future.await.map(|receipt| (
                 PublicationAppend {
@@ -509,9 +511,7 @@ where
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
-            let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(
-                request, original, cancellation, &mut owner,
-            ).await.map_err(|error| PublicationStepFailure {
+            let (outcome, allocation) =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }.await).map_err(|error| PublicationStepFailure {
                 cause: match error {
                     NativePublicationOwnerFailure::Owner(error) => error,
                     NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),
@@ -605,8 +605,10 @@ where
     };
     // Field order keeps the concrete proof data physically ahead of its guard.
     let mut output = ProvenPublication { proof, guard };
-    if let PublicationProofGuard::Standalone(guard) = &output.guard {
-        accounting.retain(guard.retained_bytes()).map_err(E::from)?;
+    match &output.guard {
+        PublicationProofGuard::Standalone(guard) => accounting.retain(guard.retained_bytes()).map_err(E::from)?,
+        #[cfg(not(target_arch = "wasm32"))]
+        PublicationProofGuard::Native(_) => {}
     }
     if output.proof.root.volume_id != request.volume_id {
         return Err(E::from(crate::FsError::Publication(PublicationError::VolumeMismatch {
@@ -847,7 +849,7 @@ fn prepare_publication_commit(
             )?;
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED)?;
-            let control = original.claim(super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?)?;
+            let control = { let claim_bytes = super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?; original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             let (payload, fingerprint) = built;
             let super::persistent_point::Owned { value: payload, allocation, .. } = payload;
             let super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {

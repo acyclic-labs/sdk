@@ -178,9 +178,7 @@ pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     if !budget.has_finite_allowances() {
         return Err(AccountingError::InvalidBounds);
     }
-    let head = authority
-        .head(authority_id, budget, cancellation)
-        .await
+    let head =({ let __authority_args = (authority_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(|e| AccountingError::Authority(e.error.to_string()))?;
     accounting_page_at_head(
         authority,
@@ -227,9 +225,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
         return Err(AccountingError::InvalidHistory);
     }
     let mut measured = AccountingReadWork { budget, work: WorkCounters::default(), live_bytes: 0 };
-    let mut head_records = measured.replay(
-        authority, authority_id, Sequence::new(head.sequence.get() - 1), 1, cancellation,
-    ).await?;
+    let mut head_records =measured.replay(authority, authority_id, Sequence::new(head.sequence.get() - 1), 1, cancellation).await?;
     let head_record = head_records.pop().ok_or(AccountingError::InvalidHistory)?;
     if head_record.sequence != head.sequence
         || head_record.digest != head.digest
@@ -258,9 +254,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
     drop(head_record);
     drop(head_records);
     if cursor.sequence != Sequence::GENESIS && cursor.sequence < head.sequence {
-        let anchor = measured.replay(
-            authority, authority_id, Sequence::new(cursor.sequence.get() - 1), 1, cancellation,
-        ).await?;
+        let anchor =measured.replay(authority, authority_id, Sequence::new(cursor.sequence.get() - 1), 1, cancellation).await?;
         let record = anchor.first().ok_or(AccountingError::InvalidHistory)?;
         if record.sequence != cursor.sequence
             || record.digest != cursor.digest
@@ -281,9 +275,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
             return Err(AccountingError::InvalidHistory);
         }
     }
-    let first = measured.replay(
-        authority, authority_id, Sequence::GENESIS, 1, cancellation,
-    ).await?;
+    let first =measured.replay(authority, authority_id, Sequence::GENESIS, 1, cancellation).await?;
     let initial = first.first().ok_or(AccountingError::InvalidHistory)?;
     let initial_stamp = verify_record(authority_id, AccountingCursor::genesis(), initial)?;
     if initial_stamp > watermark_settled_at_micros
@@ -325,9 +317,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
             work: measured.work,
         });
     }
-    let records = measured.replay(
-        authority, authority_id, cursor.sequence, maximum_records, cancellation,
-    ).await?;
+    let records =measured.replay(authority, authority_id, cursor.sequence, maximum_records, cancellation).await?;
     if records.is_empty() || records.len() > maximum_records as usize {
         return Err(AccountingError::InvalidHistory);
     }
@@ -662,14 +652,10 @@ impl AccountingReadWork {
         maximum_records: u32,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DurableCommit>, AccountingError> {
-        let receipt = authority.replay(
-            authority_id, after,
-            ReplayLimit {
+        let receipt =({ let __authority_args = (authority_id, after, ReplayLimit {
                 records: maximum_records,
                 payload_bytes: MAX_EVENT_BYTES * u64::from(maximum_records),
-            },
-            self.remaining()?, cancellation,
-        ).await.map_err(|failure| AccountingError::Authority(failure.error.to_string()))?;
+            }, self.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).map_err(|failure| AccountingError::Authority(failure.error.to_string()))?;
         self.backend(receipt.work)?;
         if receipt.value.len() > maximum_records as usize
             || receipt.value.iter().any(|record| record.payload.len() as u64 > MAX_EVENT_BYTES)

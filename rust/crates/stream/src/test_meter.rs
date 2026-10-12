@@ -8,12 +8,6 @@ impl std::fmt::Display for NativeDenial {
 }
 impl std::error::Error for NativeDenial {}
 
-#[derive(Default)]
-pub(crate) struct TestClock(pub(crate) AtomicU64);
-impl crate::UnixMillisClock for TestClock {
-    fn now_unix_millis(&self) -> u64 { self.0.load(Ordering::SeqCst) }
-}
-
 pub(crate) struct Meter {
     pub(crate) check_on_record: bool,
     pub(crate) deny_allocation: AtomicBool,
@@ -21,7 +15,7 @@ pub(crate) struct Meter {
     pub(crate) cancel_on_write: AtomicBool,
     pub(crate) cancel_on_copy: AtomicBool,
     pub(crate) cancel_on_durability: AtomicBool,
-    pub(crate) expire_after_hash: Mutex<Option<(Arc<TestClock>, u64)>>,
+    pub(crate) expire_after_hash: Mutex<Option<(Arc<AtomicU64>, u64)>>,
     pub(crate) read_operations: AtomicU64,
     pub(crate) write_operations: AtomicU64,
     pub(crate) durability_operations: AtomicU64,
@@ -187,7 +181,7 @@ impl NativeReadMeter for Meter {
         self.hashed.fetch_add(hashed, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) { self.cancelled.store(true, Ordering::SeqCst); }
         if hashed != 0 && let Some((clock, now)) = self.expire_after_hash.lock().expect("test clock is not poisoned").take() {
-            clock.0.store(now, Ordering::SeqCst);
+            clock.store(now, Ordering::SeqCst);
         }
         self.recorded()
     }
@@ -254,4 +248,3 @@ impl NativeReadMeter for Meter {
         self.record_write_operations(1)
     }
 }
-

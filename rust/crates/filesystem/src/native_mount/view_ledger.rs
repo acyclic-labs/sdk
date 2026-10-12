@@ -331,6 +331,38 @@ fn observer_allocation_error(
     super::lazy::mount_engine_error(crate::collection::handle_allocation_error(error))
 }
 
+fn grow_registry<T>(
+    entries: &mut Vec<T>, allocations: &mut crate::kernel::allocation::AllocationLedger,
+    counters: &mut crate::WorkCounters, budget: crate::WorkBudget,
+    items_examined: u64, allocation_error: &'static str,
+) -> Result<(), super::MountSourceError> {
+    if entries.len() < entries.capacity() { return Ok(()); }
+    let capacity = entries.capacity().max(1).checked_mul(2)
+        .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
+    let width = std::mem::size_of::<T>();
+    let copied = crate::WorkCounters {
+        items_examined,
+        bytes_copied: entries.len().checked_mul(width)
+            .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    counters.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
+    let bytes = capacity.checked_mul(width)
+        .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
+    allocations.claim_bytes(bytes, 1, counters, budget).map_err(observer_allocation_error)?;
+    let mut replacement = Vec::new();
+    if replacement.try_reserve_exact(capacity).is_err() {
+        allocations.release(bytes).map_err(observer_allocation_error)?;
+        return Err(super::MountSourceError::Engine(allocation_error.into()));
+    }
+    let old_bytes = (entries.capacity() * width) as u64;
+    replacement.append(entries);
+    *entries = replacement;
+    counters.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
+    allocations.release(old_bytes).map_err(observer_allocation_error)?;
+    Ok(())
+}
+
 struct ObserverRegistryAdmission {
     ledger: Weak<ViewLedger>,
     registry: Option<(u64, u64)>,
@@ -399,31 +431,9 @@ impl ViewObserverAdmissions {
             self.first = Some(ObserverRegistryAdmission { ledger: identity, registry: None });
             return Ok(self.first.as_mut().expect("new first observer admission"));
         }
-        if self.more.len() == self.more.capacity() {
-            let capacity = self.more.capacity().max(1).checked_mul(2)
-                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
-            let width = std::mem::size_of::<ObserverRegistryAdmission>();
-            let copied = crate::WorkCounters {
-                items_examined: self.more.len() as u64,
-                bytes_copied: self.more.len().checked_mul(width)
-                    .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            work.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
-            let bytes = capacity.checked_mul(width)
-                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-            allocations.claim_bytes(bytes, 1, work, budget).map_err(observer_allocation_error)?;
-            let mut vector = Vec::new();
-            if vector.try_reserve_exact(capacity).is_err() {
-                allocations.release(bytes).map_err(observer_allocation_error)?;
-                return Err(super::MountSourceError::Engine("observer admission allocation failed".into()));
-            }
-            let old_bytes = (self.more.capacity() * width) as u64;
-            vector.append(&mut self.more);
-            self.more = vector;
-            work.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
-            allocations.release(old_bytes).map_err(observer_allocation_error)?;
-        }
+        let items = self.more.len() as u64;
+        grow_registry(&mut self.more, allocations, work, budget, items,
+            "observer admission allocation failed")?;
         self.more.push(ObserverRegistryAdmission { ledger: identity, registry: None });
         Ok(self.more.last_mut().expect("new observer admission"))
     }
@@ -663,30 +673,8 @@ impl ViewLedgerAdmissions {
             self.first = Some(LedgerRegistryAdmission { ledger: identity, admission: Some(admission) });
             return Ok((0, local));
         }
-        if self.more.len() == self.more.capacity() {
-            let capacity = self.more.capacity().max(1).checked_mul(2)
-                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
-            let width = std::mem::size_of::<LedgerRegistryAdmission>();
-            let copied = crate::WorkCounters {
-                bytes_copied: self.more.len().checked_mul(width)
-                    .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            counters.admit(&copied, &budget).map_err(super::MountSourceError::Work)?;
-            let bytes = capacity.checked_mul(width)
-                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-            allocations.claim_bytes(bytes, 1, counters, budget).map_err(observer_allocation_error)?;
-            let mut replacement = Vec::new();
-            if replacement.try_reserve_exact(capacity).is_err() {
-                allocations.release(bytes).map_err(observer_allocation_error)?;
-                return Err(super::MountSourceError::Engine("view admission allocation failed".into()));
-            }
-            let old_bytes = (self.more.capacity() * width) as u64;
-            replacement.append(&mut self.more);
-            self.more = replacement;
-            counters.charge(&copied, &budget).map_err(super::MountSourceError::Work)?;
-            allocations.release(old_bytes).map_err(observer_allocation_error)?;
-        }
+        grow_registry(&mut self.more, allocations, counters, budget, 0,
+            "view admission allocation failed")?;
         let admission = ViewLedgerAdmission::shared(allocations, counters, budget)?;
         let local = admission.alias();
         let slot = self.more.len() + 1;
@@ -731,7 +719,7 @@ impl ViewLedger {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, super::MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
+        let allocation = original.claim(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(super::MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);
@@ -1269,7 +1257,7 @@ impl ViewRecordWork<'_> {
                 work.claim_allocation(bytes, operations).map_err(super::lazy::mount_demand_error)?;
                 Ok(None)
             }
-            Self::Native(work) => work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
+            Self::Native(work) => work.claim(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(Some).map_err(super::MountSourceError::NativeWork),
         }
     }

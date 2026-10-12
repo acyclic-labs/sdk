@@ -461,7 +461,7 @@ impl ToolExecutor for LocalListFilesTool {
                         .map_err(Error::from)?;
                     Ok((Some(output.0), output.1))
                 }
-                None => Ok((None, work.retain_owned(std::mem::size_of::<Option<ToolResult>>() as u64)
+                None => Ok((None, work.claim(std::mem::size_of::<Option<ToolResult>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(Error::from)?)),
             }
         })
@@ -469,31 +469,26 @@ impl ToolExecutor for LocalListFilesTool {
 }
 
 impl ToolProjection for LocalListFilesTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        _work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = _work {
+            #[derive(serde::Serialize)]
+            struct Projection<'a> { kind: &'static str, value: &'a Value }
+            self.supports_native_projection(Some(work))?;
+            return crate::tool::value(&Projection { kind: "json", value: &result.value },
+                acyclic_stream::MAX_RECORD_BYTES as u64, work)
+                .map(|(value, custody)| (value, Some(custody)));
+        }
+        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining().map_err(Error::from)?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining().map_err(Error::from)?; }
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn project_with_native_work(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        #[derive(serde::Serialize)]
-        struct Projection<'a> {
-            kind: &'static str,
-            value: &'a Value,
-        }
-        self.supports_native_projection(work)?;
-        crate::tool::value(&Projection { kind: "json", value: &result.value }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
-    }
 }
 
 struct MemoryContentPublisher {
@@ -1453,7 +1448,7 @@ mod tests {
                     .execute_with_context(context.clone(), invocation.clone())
                     .await?;
                 assert_eq!(result.value, json!("pinned text"));
-                let projection = tool.projection.project(&invocation, &result)?;
+                let projection = tool.projection.project(&invocation, &result, None)?.0;
                 assert_eq!(projection, expected_projection);
                 let content = tool.definition.validate_projection(&projection, limits, None)?;
                 content.validate_limits(limits, &mut None)?;

@@ -103,7 +103,7 @@ impl TaskGroup {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if let Some(work) = work {
             let bytes = (std::mem::size_of::<GroupState>() + std::mem::size_of::<Semaphore>()) as u64;
-            let custody = work.retain_owned(bytes)
+            let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
                 .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
             work.charge(acyclic_fs::WorkCounters {
                 allocation_operations: 2, ..Default::default()
@@ -152,7 +152,7 @@ impl TaskGroup {
                         cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
                         custody: None,
                     })? as u64;
-                let custody = work.retain_owned(bytes)
+                let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
                 work.charge(acyclic_fs::WorkCounters {
                     allocation_operations: 1, ..Default::default()
@@ -197,39 +197,8 @@ impl TaskGroup {
         Ok(child)
     }
 
-    /// Admits one live task.
-    pub async fn spawn<T, F>(&self, future: F) -> TaskHandle<T>
-    where
-        T: Send + 'static,
-        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
-    {
-        match self.try_spawn(future).await {
-            Admission::Accepted(handle) => handle,
-            Admission::Rejected { reason } => TaskHandle {
-                id: OperationId::new(),
-                join: spawn_live(async move { Outcome::Failed { message: reason } }),
-            },
-            Admission::Indeterminate { operation_id } => TaskHandle {
-                id: operation_id,
-                join: spawn_live(async move {
-                    Outcome::Indeterminate { operation_id }
-                }),
-            },
-        }
-    }
-
-    /// Returns an explicit rejection when cancellation has closed admission.
-    pub async fn try_spawn<T, F>(&self, future: F) -> Admission<TaskHandle<T>>
-    where
-        T: Send + 'static,
-        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
-    {
-        self.try_spawn_with_operation(OperationId::new(), future)
-            .await
-    }
-
     /// Admits one live operation under its caller-retained identity.
-    pub async fn try_spawn_with_operation<T, F>(
+    pub async fn spawn<T, F>(
         &self,
         id: OperationId,
         future: F,
@@ -328,19 +297,6 @@ impl TaskGroup {
         }
     }
 
-    /// Admits many independent tasks without serially awaiting results.
-    pub async fn spawn_many<T, F, I>(&self, futures: I) -> Vec<TaskHandle<T>>
-    where
-        T: Send + 'static,
-        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
-        I: IntoIterator<Item = F>,
-    {
-        stream::iter(futures)
-            .then(|future| self.spawn(future))
-            .collect()
-            .await
-    }
-
 }
 
 /// Addressable handle for an admitted live task.
@@ -413,13 +369,6 @@ pub fn completion_stream<T: Send + 'static>(
         .boxed()
 }
 
-/// Returns the first terminal task; cancellation remains an explicit group action.
-pub async fn race<T: Send + 'static>(
-    handles: Vec<TaskHandle<T>>,
-) -> Option<(OperationId, Outcome<T>)> {
-    completion_stream(handles).next().await
-}
-
 /// Folds terminal outcomes in admission order regardless of completion order.
 pub async fn ordered_reduce<T, A, F>(handles: Vec<TaskHandle<T>>, initial: A, reducer: F) -> A
 where
@@ -443,35 +392,17 @@ pub async fn first_success<T: Send + 'static>(
     Err(failures)
 }
 
-/// Collects the first `required` successes.
-pub async fn quorum<T: Send + 'static>(
-    handles: Vec<TaskHandle<T>>,
-    required: usize,
-) -> std::result::Result<Vec<T>, Vec<Outcome<T>>> {
-    if required == 0 {
-        return Ok(Vec::new());
-    }
-    let mut completions = completion_stream(handles);
-    let mut successes = Vec::with_capacity(required);
-    let mut failures = Vec::new();
-    while let Some((_id, outcome)) = completions.next().await {
-        match outcome {
-            Outcome::Succeeded(value) => {
-                successes.push(value);
-                if successes.len() == required {
-                    return Ok(successes);
-                }
-            }
-            outcome => failures.push(outcome),
-        }
-    }
-    Err(failures)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct MarkDropped(Arc<AtomicBool>);
+    impl Drop for MarkDropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
 
     #[tokio::test]
     async fn grandchildren_retain_the_original_cancellation_parent() {
@@ -480,7 +411,7 @@ mod tests {
         let grandchild = parent.child(1, None).unwrap();
         drop(parent);
         root.cancel();
-        assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
+        assert!(matches!(grandchild.spawn(OperationId::new(), async { 1_u64 }).await,
             Admission::Rejected { .. }));
     }
 
@@ -504,7 +435,7 @@ mod tests {
         let grandchild = parent.child(1, Some(&work))?;
         drop(parent);
         root.cancel();
-        assert!(matches!(grandchild.try_spawn(async { 1_u64 }).await,
+        assert!(matches!(grandchild.spawn(OperationId::new(), async { 1_u64 }).await,
             Admission::Rejected { .. }));
         drop(grandchild);
         assert!(work.live_allocation_bytes() > 0);
@@ -518,7 +449,7 @@ mod tests {
         let group = TaskGroup::new(2, None).unwrap();
         let operation = OperationId::new();
         let Admission::Accepted(handle) = group
-            .try_spawn_with_operation(operation, std::future::pending::<u64>())
+            .spawn(operation, std::future::pending::<u64>())
             .await
         else {
             panic!("first admission rejected")
@@ -526,23 +457,14 @@ mod tests {
         assert_eq!(*handle.id(), operation);
         assert!(matches!(
             group
-                .try_spawn_with_operation(operation, async { 99_u64 })
+                .spawn(operation, async { 99_u64 })
                 .await,
             Admission::Rejected { .. }
         ));
-        assert!(
-            group
-                .state
-                .admission
-                .lock()
-                .unwrap()
-                .active
-                .contains_key(&operation)
-        );
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
         let Admission::Accepted(retried) = group
-            .try_spawn_with_operation(operation, async { 7_u64 })
+            .spawn(operation, async { 7_u64 })
             .await
         else {
             panic!("settled retry rejected")
@@ -552,7 +474,7 @@ mod tests {
         group.close();
         assert!(matches!(
             group
-                .try_spawn_with_operation(operation, async { 9_u64 })
+                .spawn(operation, async { 9_u64 })
                 .await,
             Admission::Rejected { .. }
         ));
@@ -561,25 +483,20 @@ mod tests {
     #[tokio::test]
     async fn dropping_an_owned_wait_cancels_only_its_task() -> Result<(), Box<dyn std::error::Error>>
     {
-        struct MarkDropped(Arc<AtomicBool>);
-        impl Drop for MarkDropped {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
         let group = TaskGroup::new(2, None).unwrap();
         let dropped = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&dropped);
         let (started, observed) = tokio::sync::oneshot::channel();
-        let handle = group
-            .spawn(async move {
+        let Admission::Accepted(handle) = group
+            .spawn(OperationId::new(), async move {
                 let _guard = MarkDropped(flag);
                 let _ = started.send(());
                 std::future::pending::<u64>().await
             })
-            .await;
+            .await else { panic!("task rejected"); };
         observed.await?;
-        let other = group.spawn(std::future::pending::<u64>()).await;
+        let Admission::Accepted(other) = group.spawn(OperationId::new(), std::future::pending::<u64>()).await
+        else { panic!("task rejected"); };
         // Cancellation must also work when the returned wait was never polled.
         drop(handle.result());
         for _ in 0..16 {
@@ -589,17 +506,16 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(dropped.load(Ordering::SeqCst));
-        assert!(
-            !other
-                .join
-                .as_ref()
-                .ok_or("missing other task")?
-                .is_finished()
-        );
-        other.cancel();
-        assert_eq!(other.result().await, Outcome::Cancelled);
+        let abort_other = other.join.abort_handle();
+        let other_result = other.result();
+        futures::pin_mut!(other_result);
+        assert!(futures::poll!(&mut other_result).is_pending());
+        abort_other.abort();
+        assert_eq!(other_result.await, Outcome::Cancelled);
+        let Admission::Accepted(next) = group.spawn(OperationId::new(), async { 11_u64 }).await
+        else { panic!("task rejected"); };
         assert_eq!(
-            group.spawn(async { 11_u64 }).await.result().await,
+            next.result().await,
             Outcome::Succeeded(11)
         );
         Ok(())
@@ -607,7 +523,9 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_is_explicit() {
-        let handle = TaskGroup::new(1, None).unwrap().spawn(std::future::pending::<u64>()).await;
+        let Admission::Accepted(handle) = TaskGroup::new(1, None).unwrap()
+            .spawn(OperationId::new(), std::future::pending::<u64>()).await
+        else { panic!("task rejected"); };
         handle.cancel();
         assert_eq!(handle.result().await, Outcome::Cancelled);
     }
@@ -615,25 +533,20 @@ mod tests {
     #[tokio::test]
     async fn first_success_observes_without_implicitly_cancelling_losers()
     -> Result<(), Box<dyn std::error::Error>> {
-        struct MarkDropped(Arc<AtomicBool>);
-        impl Drop for MarkDropped {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
         let dropped = Arc::new(AtomicBool::new(false));
         let (started, observed) = tokio::sync::oneshot::channel();
         let flag = Arc::clone(&dropped);
         let group = TaskGroup::new(2, None).unwrap();
-        let loser = group
-            .spawn(async move {
+        let Admission::Accepted(loser) = group
+            .spawn(OperationId::new(), async move {
                 let _guard = MarkDropped(flag);
                 let _ = started.send(());
                 std::future::pending::<u64>().await
             })
-            .await;
+            .await else { panic!("task rejected"); };
         observed.await?;
-        let winner = group.spawn(async { 7_u64 }).await;
+        let Admission::Accepted(winner) = group.spawn(OperationId::new(), async { 7_u64 }).await
+        else { panic!("task rejected"); };
         assert_eq!(first_success(vec![loser, winner]).await, Ok(7));
         assert!(!dropped.load(Ordering::SeqCst));
         group.cancel();
@@ -651,13 +564,14 @@ mod tests {
     async fn ordered_reduction_uses_admission_order() -> Result<(), Box<dyn std::error::Error>> {
         let group = TaskGroup::new(2, None).unwrap();
         let (release, wait) = tokio::sync::oneshot::channel();
-        let first = group
-            .spawn(async move {
+        let Admission::Accepted(first) = group
+            .spawn(OperationId::new(), async move {
                 let _ = wait.await;
                 1_u64
             })
-            .await;
-        let second = group.spawn(async { 2_u64 }).await;
+            .await else { panic!("task rejected"); };
+        let Admission::Accepted(second) = group.spawn(OperationId::new(), async { 2_u64 }).await
+        else { panic!("task rejected"); };
         release.send(()).map_err(|_| "first task stopped waiting")?;
         let values = ordered_reduce(vec![first, second], Vec::new(), |mut values, outcome| {
             values.push(outcome);
