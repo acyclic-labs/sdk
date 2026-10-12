@@ -24,7 +24,7 @@ impl PiSession {
                 &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), work.clone())?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
-            let staged = pi_root_provider::stage_pi_input_with_native_work(owner, &self.filesystem,
+            let staged = pi_root_provider::stage_pi_input(owner, &self.filesystem,
                 request.operation(owner.policy().root_task), "command", &payload, &work).await?;
             let _reference_custody = staged.1;
             let reference = staged.0;
@@ -92,7 +92,7 @@ impl PiSession {
         }, MAXIMUM_BUILTIN_BYTES * 2, work)?;
         let _payload_custody = payload.1;
         let operation = request.operation(owner.policy().root_task);
-        let staged = pi_root_provider::stage_pi_input_with_native_work(
+        let staged = pi_root_provider::stage_pi_input(
             owner, &self.filesystem, operation, "command", &payload.0, work).await?;
         let _reference_custody = staged.1;
         let kind = work.display(TOOL_TASK_COMMAND_KIND).map_err(native_error)?;

@@ -231,7 +231,7 @@ impl BrowserStream {
             }
         }
         let journal = journal_command(&command);
-        if journal.encoded_len().map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
+        if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec().map_err(|_| StreamError::Capacity)?;

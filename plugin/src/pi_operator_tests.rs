@@ -50,20 +50,6 @@ fn prepared_descriptor_admission_fails_before_typed_growth_without_fake_allocati
     assert_eq!(original_work.receipt().bytes_copied, before.bytes_copied);
 }
 
-#[test]
-fn prepared_descriptor_schema_error_keeps_original_decoder_and_custody() {
-    let original_work = work();
-    let original_custody = original_work.retain_owned(0).unwrap();
-    let result = decode_prepared_approval(b"{}", &original_work);
-    let Err(Error::NativeDecode { code, source, custody: Some(custody) }) = &result else {
-        panic!("expected the original typed decoder error with its admitted custody");
-    };
-    assert_eq!(*code, acyclic_harness::wire::ErrorCode::Invalid);
-    assert_eq!(source.classify(), serde_json::error::Category::Data);
-    assert!(custody.bytes() > 0);
-    assert!(custody.shares_ledger(&original_custody));
-}
-
 #[tokio::test]
 async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_foreign_owner() {
     let fixture = Fixture::new().await;
@@ -105,8 +91,7 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     drop(parsed_custody);
 }
 
-/// Production LocalStream, Filesystem and admitted Root conversation. Losing the
-/// host response never creates a replacement interaction or a new SDK operation.
+/// Production LocalStream, Filesystem and admitted Root conversation.
 #[tokio::test]
 async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_decline_survives_reopen() {
     let fixture = Fixture::new().await;
@@ -151,7 +136,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     let fixture = Fixture::new().await;
     let work = work();
     let plan = fixture.plan_with_native_work(&work).await;
-    let coordinator = crate::pi_fork::PiForkCoordinator::new_with_native_work(
+    let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
@@ -187,7 +172,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     let operation = crate::pi_fork::derived_with_native_work(original, "selected-writeback-publish", &work).unwrap();
     let private_custody;
     let private;
-    (private, private_custody) = pi_root_provider::stage_pi_operator_input_with_native_work(
+    (private, private_custody) = pi_root_provider::stage_pi_operator_input(
         &fixture.owner, &fixture.filesystem, operation, "operator-proof-isolation", &request, &work).await.unwrap();
     assert!(private.path().starts_with(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY));
     assert!(!child_context.context().scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(

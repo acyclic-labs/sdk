@@ -50,58 +50,31 @@ const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
-/// Native errors retain their original I/O value; ordinary callers retain the existing semantic projection.
-enum LocalCompletionError {
-    Stream(StreamError),
-    GuardedStream(NativeStreamFailure),
-    Native(std::io::Error),
-}
+use crate::memory::{MemoryFailure, MemoryObserver, MemoryResult};
 
-impl From<StreamError> for LocalCompletionError {
-    fn from(error: StreamError) -> Self { Self::Stream(error) }
-}
-
-impl From<std::io::Error> for LocalCompletionError {
-    fn from(error: std::io::Error) -> Self { Self::Native(error) }
-}
-
-impl LocalCompletionError {
-    fn ordinary(self) -> StreamError {
-        match self {
-            Self::Stream(error) => error,
-            Self::GuardedStream(error) => error.into_parts().0,
-            Self::Native(_) => StreamError::Unavailable,
-        }
-    }
-}
-
-type LocalCompletion<T> = Result<T, LocalCompletionError>;
-
-fn from_native<T>(result: NativeStreamResult<T>) -> LocalCompletion<NativeStreamOutput<T>> {
-    result.map_err(LocalCompletionError::Native)?
-        .map_err(LocalCompletionError::GuardedStream)
+fn ordinary_failure(error: MemoryFailure) -> StreamError {
+    match error { MemoryFailure::Provider(error) => error, MemoryFailure::Observer(_) => StreamError::Unavailable }
 }
 
 fn into_native<T>(
-    result: LocalCompletion<NativeStreamOutput<T>>,
+    result: MemoryResult<NativeStreamOutput<T>>,
     meter: &Arc<dyn NativeReadMeter>,
 ) -> NativeStreamResult<T> {
     match result {
         Ok(value) => Ok(Ok(value)),
-        Err(LocalCompletionError::Stream(error)) => Ok(Err(NativeStreamFailure::new(
+        Err(MemoryFailure::Provider(error)) => Ok(Err(NativeStreamFailure::new(
             error, ReadAllocation::empty(meter),
         ))),
-        Err(LocalCompletionError::GuardedStream(error)) => Ok(Err(error)),
-        Err(LocalCompletionError::Native(error)) => Err(error),
+        Err(MemoryFailure::Observer(error)) => Err(error),
     }
 }
 
-fn publication_error(error: LocalStreamError) -> LocalCompletionError {
+fn publication_error(error: LocalStreamError) -> MemoryFailure {
     match error {
-        LocalStreamError::Io(error) => LocalCompletionError::Native(error),
-        LocalStreamError::InvalidLimits => LocalCompletionError::Stream(StreamError::Capacity),
-        LocalStreamError::Replay(error) => LocalCompletionError::Stream(error),
-        _ => LocalCompletionError::Stream(StreamError::Unavailable),
+        LocalStreamError::Io(error) => MemoryFailure::Observer(error),
+        LocalStreamError::InvalidLimits => MemoryFailure::Provider(StreamError::Capacity),
+        LocalStreamError::Replay(error) => MemoryFailure::Provider(error),
+        _ => MemoryFailure::Provider(StreamError::Unavailable),
     }
 }
 
@@ -307,7 +280,7 @@ impl LocalInner {
         file: &File,
         durability: LocalDurability,
         mut admission: Option<OwnedNativeOperationReservation>,
-    ) -> LocalCompletion<()> {
+    ) -> MemoryResult<()> {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal.journal) as usize;
@@ -357,7 +330,7 @@ struct JournalFlushWork {
 }
 
 impl JournalFlushWork {
-    fn run(self) -> LocalCompletion<()> {
+    fn run(self) -> MemoryResult<()> {
         self.plan.inner.flush_through(
             self.target, &self.plan.file, self.plan.durability, self.plan.admission,
         )
@@ -365,7 +338,7 @@ impl JournalFlushWork {
 }
 
 struct MutationCompletion<T> {
-    result: LocalCompletion<()>,
+    result: MemoryResult<()>,
     flush: Option<JournalFlushPlan>,
     // Keep SDK-owned request controls alive through accepted durability drain.
     _input: Option<MutationInput>,
@@ -383,11 +356,6 @@ struct CommitCompletion<T> {
     // A rejected original guard did not publish and must not write its frame.
     persist: bool,
     primary_failure: bool,
-}
-
-struct GuardedCommitOutput<E, F> {
-    result: NativeStreamResult<CommitOutcome, E>,
-    _before: Option<F>,
 }
 
 struct CommitVisibility {
@@ -474,7 +442,7 @@ impl PreparedLocalWork {
             Ok(body) => body,
             Err(error) => return into_native(Err(error.into()), &self.meter),
         };
-        let result: LocalCompletion<NativeStreamOutput<CommitOutcome>> = (|| {
+        let result: MemoryResult<NativeStreamOutput<CommitOutcome>> = (|| {
             // Input was supplied before taking any provider lock.
             let [crate::CommitMutation::Append { records, .. }] = self.input.request.mutations.as_mut_slice()
                 else { return Err(StreamError::InvalidArgument.into()); };
@@ -485,17 +453,17 @@ impl PreparedLocalWork {
             self.stream.check_available()?;
             let committed_at = self.stream.inner.commit_clock.source.now_unix_millis();
             let wire = crate::journal::journal_command(CommandRef::Commit(&self.input.request));
-            let encoded_length = wire.encoded_len()?;
+            let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut work.late, self.meter.record_examination(1, 0));
             let command_length = FRAME_TIME_BYTES.checked_add(encoded_length)
                 .and_then(|length| u32::try_from(length).ok())
-                .ok_or(LocalCompletionError::Stream(StreamError::Capacity))?;
+                .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
             let frame_length = 4 + command_length as usize + FRAME_CHECKSUM_BYTES;
             self.persist.operation.frame.write_wire(
                 &wire, committed_at, encoded_length, command_length.to_le_bytes(), frame_length, &mut work,
             ).map_err(publication_error)?;
             self.stream.inner.journal.journal.lock()
-                .map_err(|_| LocalCompletionError::Stream(self.stream.inner.poison()))?
+                .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
                 .admit(&self.persist.operation.frame).map_err(publication_error)?;
             self.stream.inner.commit_clock.pin(committed_at);
             let completion = self.runtime.block_on(
@@ -504,19 +472,19 @@ impl PreparedLocalWork {
                 ),
             );
             self.stream.inner.commit_clock.unpin();
-            let completion = completion.map_err(LocalCompletionError::Native)?
-                .map_err(LocalCompletionError::Stream)?;
+            let completion = completion.map_err(MemoryFailure::Observer)?
+                .map_err(MemoryFailure::Provider)?;
             let (physical, observed) = self.persist.run(JournalPersistWork::run);
             if physical.is_err() { self.stream.inner.poison(); }
             else { self.stream.inner.changed.send_modify(|revision| *revision = revision.saturating_add(1)); }
             if physical.is_ok() && self.stream.inner.journal.compaction_due()
-                .map_err(|_| LocalCompletionError::Stream(self.stream.inner.poison()))? {
+                .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))? {
                 self.stream.inner.prepared_compaction.store(true, Ordering::Release);
             }
             keep_observation(&mut work.late, observed);
             drop(visibility);
             work.late?;
-            if let Some(error) = completion.error { return Err(LocalCompletionError::Native(error)); }
+            if let Some(error) = completion.error { return Err(MemoryFailure::Observer(error)); }
             physical.map_err(publication_error)?;
             Ok(completion.outcome)
         })();
@@ -743,14 +711,14 @@ impl LocalStream {
         command: CommandRef<'_>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
         pin: bool,
-    ) -> LocalCompletion<(PreparedFrame, u64)> {
+    ) -> MemoryResult<(PreparedFrame, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
             let length = match command {
                 CommandRef::Append(request) =>
-                    Some(crate::memory::append_encoded_len(request, &crate::memory::MemoryObserver { meter: Some(Arc::clone(meter)) })?),
+                    Some(crate::wire_codec::CanonicalWire::Append(request).encoded_len(None, Some(&MemoryObserver { meter: Some(Arc::clone(meter)) }))?),
                 CommandRef::Commit(request) =>
-                    Some(crate::memory::commit_encoded_len(request, &crate::memory::MemoryObserver { meter: Some(Arc::clone(meter)) })?),
+                    Some(crate::wire_codec::CanonicalWire::Commit(request).encoded_len(None, Some(&MemoryObserver { meter: Some(Arc::clone(meter)) }))?),
                 CommandRef::Fork(_) => None,
             };
             if let Some(length) = length {
@@ -766,7 +734,7 @@ impl LocalStream {
         let frame = PreparedFrame::encode(command, committed_at_millis, meter)
             .map_err(publication_error)?;
         self.inner.journal.journal.lock()
-            .map_err(|_| LocalCompletionError::Stream(StreamError::Unavailable))?
+            .map_err(|_| MemoryFailure::Provider(StreamError::Unavailable))?
             .admit(&frame)
             .map_err(publication_error)?;
         if pin { self.inner.commit_clock.pin(committed_at_millis); }
@@ -817,7 +785,7 @@ impl LocalStream {
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
         let plan = self.plan_persist(frame, None, None)
             .map_err(|_| self.inner.poison())?;
-        self.persist_planned(plan, None).await.map_err(LocalCompletionError::ordinary)
+        self.persist_planned(plan, None).await.map_err(ordinary_failure)
     }
 
     fn plan_persist(
@@ -838,12 +806,12 @@ impl LocalStream {
         &self,
         plan: FundedLocalTask<JournalPersistWork>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> LocalCompletion<()>
+    ) -> MemoryResult<()>
     {
         let (physical, observed) = tokio::task::spawn_blocking(
             move || plan.run(JournalPersistWork::run),
         ).await
-            .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
+            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
         if let Err(error) = physical {
             self.inner.poison();
             // A previously observed original cause remains the primary cause.
@@ -860,9 +828,9 @@ impl LocalStream {
     async fn compact_if_due_observed(
         &self,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> LocalCompletion<()> {
+    ) -> MemoryResult<()> {
         if !self.inner.journal.compaction_due()
-            .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?
+            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
         {
             return Ok(());
         }
@@ -876,7 +844,7 @@ impl LocalStream {
         let operation = FundedLocalTask::new(move || {
             span.in_scope(|| {
                 let mut journal = inner.journal.journal.lock()
-                    .map_err(|_| LocalCompletionError::Stream(inner.poison()))?;
+                    .map_err(|_| MemoryFailure::Provider(inner.poison()))?;
                 let (physical, observed, started) =
                     journal.compact_observed(&state.value, observer.as_ref());
                 if physical.is_ok() {
@@ -890,15 +858,15 @@ impl LocalStream {
             })
         }, meter)?;
         tokio::task::spawn_blocking(move || operation.run(|operation| operation())).await
-            .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?
+            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
     }
 
     fn plan_flush(
         &self,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> LocalCompletion<JournalFlushPlan> {
+    ) -> MemoryResult<JournalFlushPlan> {
         let journal = self.inner.journal.journal.lock()
-            .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
+            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
         let admission = meter.map(|meter| OwnedNativeOperationReservation::new(
             Arc::clone(meter), NativeOperationKind::Durability, 1,
         )).transpose()?;
@@ -919,7 +887,7 @@ impl LocalStream {
         sequence: u64,
         meter: Option<&Arc<dyn NativeReadMeter>>,
         mut planned: Option<JournalFlushPlan>,
-    ) -> LocalCompletion<()> {
+    ) -> MemoryResult<()> {
         let mut synced = self.inner.synced.subscribe();
         loop {
             let drain_poison = self.inner.poisoned.load(Ordering::Acquire) && planned.is_some();
@@ -931,7 +899,7 @@ impl LocalStream {
             }
             let lead = {
                 let mut journal = self.inner.journal.journal.lock()
-                    .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
+                    .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
                 if journal.syncing || (!drain_poison && journal.synced >= sequence) {
                     None
                 } else {
@@ -941,7 +909,7 @@ impl LocalStream {
                             drop(journal);
                             let plan = self.plan_flush(meter)?;
                             journal = self.inner.journal.journal.lock()
-                                .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
+                                .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?;
                             if journal.syncing || journal.synced >= sequence {
                                 planned = Some(plan);
                                 continue;
@@ -960,7 +928,7 @@ impl LocalStream {
                 Some((work, synced_before, journal_bytes)) => {
                     let target = work.target;
                     tokio::task::spawn_blocking(move || work.run()).await
-                        .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))??;
+                        .map_err(|_| MemoryFailure::Provider(self.inner.poison()))??;
                     tracing::debug!(
                         fsyncs = 1_u64,
                         batch_len = target.saturating_sub(synced_before),
@@ -977,7 +945,7 @@ impl LocalStream {
                         if planned.is_none() { meter.check()?; }
                     }
                     synced.changed().await
-                        .map_err(|_| LocalCompletionError::Stream(StreamError::Unavailable))?;
+                        .map_err(|_| MemoryFailure::Provider(StreamError::Unavailable))?;
                 }
             }
         }
@@ -996,7 +964,7 @@ impl LocalStream {
         self.exclusive_observed(span, None, MutationVisibility::BeforeMutation, move |stream| async move {
             let (result, value) = match mutation(stream).await {
                 Ok(value) => (Ok(()), Some(value)),
-                Err(error) => (Err(LocalCompletionError::Stream(error)), None),
+                Err(error) => (Err(MemoryFailure::Provider(error)), None),
             };
             MutationCompletion {
                 result,
@@ -1006,7 +974,7 @@ impl LocalStream {
                 value,
                 primary_failure: false,
             }
-        }).await.map_err(LocalCompletionError::ordinary)
+        }).await.map_err(ordinary_failure)
     }
 
     async fn exclusive_observed<T, F>(
@@ -1015,7 +983,7 @@ impl LocalStream {
         meter: Option<Arc<dyn NativeReadMeter>>,
         visibility: MutationVisibility,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
-    ) -> LocalCompletion<T>
+    ) -> MemoryResult<T>
     where
         T: Send + 'static,
         F: Future<Output = MutationCompletion<T>> + Send + 'static,
@@ -1064,7 +1032,7 @@ impl LocalStream {
                             let work = JournalFlushWork { plan, target: 0 };
                             let _ = tokio::task::spawn_blocking(move || work.run()).await;
                         }
-                        Err(LocalCompletionError::Stream(error))
+                        Err(MemoryFailure::Provider(error))
                     }
                 };
                 completion.result?;
@@ -1076,10 +1044,8 @@ impl LocalStream {
             }).await;
             match &result {
                 Ok(_) => { let _ = obs::finish(&operation, Ok::<(), StreamError>(())); }
-                Err(LocalCompletionError::Stream(error)) => obs::failed(&operation, error.code()),
-                Err(LocalCompletionError::GuardedStream(error)) =>
-                    obs::failed(&operation, error.source().code()),
-                Err(LocalCompletionError::Native(_)) => obs::failed(
+                Err(MemoryFailure::Provider(error)) => obs::failed(&operation, error.code()),
+                Err(MemoryFailure::Observer(_)) => obs::failed(
                     &operation,
                     if observer.is_some() { "native_work" } else { StreamError::Unavailable.code() },
                 ),
@@ -1089,31 +1055,22 @@ impl LocalStream {
         let task = FundedLocalTask::new(task, meter.as_ref())?;
         tokio::spawn(task).await.map_err(|_| {
             obs::failed(span, StreamError::Unavailable.code());
-            LocalCompletionError::Stream(StreamError::Unavailable)
+            MemoryFailure::Provider(StreamError::Unavailable)
         })?
     }
 
-    /// Runs one read under shared visibility, then returns its result once every frame it may have observed is durable.
-    async fn visible<T>(
+    async fn visible<T, E>(
         &self,
-        read: impl Future<Output = Result<T, StreamError>>,
-    ) -> Result<T, StreamError> {
-        self.visible_observed(async { read.await.map_err(LocalCompletionError::Stream) }, None)
-            .await.map_err(LocalCompletionError::ordinary)
-    }
-
-    async fn visible_observed<T>(
-        &self,
-        read: impl Future<Output = LocalCompletion<T>>,
+        read: impl Future<Output = Result<T, E>>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> LocalCompletion<T> {
+    ) -> MemoryResult<T> where MemoryFailure: From<E> {
         self.check_available()?;
         if let Some(meter) = meter { meter.check()?; }
         let (result, required) = {
             let _visibility = self.inner.visibility.read().await;
             self.check_available()?;
             if let Some(meter) = meter { meter.check()?; }
-            (read.await, self.inner.journal.required()?)
+            (read.await.map_err(MemoryFailure::from), self.inner.journal.required()?)
         };
         let durable = self.await_durable_observed(required, meter, None).await;
         // A produced original cause wins over a later drain observation.
@@ -1124,15 +1081,7 @@ impl LocalStream {
     }
 
     async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.visible(self.inner.provider.read(request)).await
-    }
-
-    async fn native_visible<T>(
-        &self,
-        read: impl Future<Output = NativeStreamResult<T>>,
-        meter: &Arc<dyn NativeReadMeter>,
-    ) -> NativeStreamResult<T> {
-        into_native(self.visible_observed(async { from_native(read.await) }, Some(meter)).await, meter)
+        self.visible(self.inner.provider.read(request), None).await.map_err(ordinary_failure)
     }
 
     /// The ordinary and native calls share frame preparation, visibility, persistence, compaction, clock pinning, and group completion.
@@ -1143,10 +1092,10 @@ impl LocalStream {
         meter: Option<Arc<dyn NativeReadMeter>>,
         visibility: MutationVisibility,
         execute: impl FnOnce(MemoryStream, MutationInput, Option<u64>, u64, u64) -> F + Send + 'static,
-    ) -> LocalCompletion<T>
+    ) -> MemoryResult<T>
     where
         T: Send + 'static,
-        F: Future<Output = LocalCompletion<CommitCompletion<T>>> + Send + 'static,
+        F: Future<Output = MemoryResult<CommitCompletion<T>>> + Send + 'static,
     {
         let is_commit = matches!(&input, MutationInput::Commit(_));
         let span = obs::OwnedSpan::new(match &input {
@@ -1201,7 +1150,7 @@ impl LocalStream {
                     Ok(())
                 };
                 if let Some(error) = completion.error {
-                    return Err(LocalCompletionError::Native(error));
+                    return Err(MemoryFailure::Observer(error));
                 }
                 if primary_failure {
                     return Ok(());
@@ -1309,8 +1258,8 @@ impl LocalStream {
                             }
                         }
                     };
-                    let completion = provider.native_commit_completion_guarded_borrowed_inner(
-                        &mut input.request, deadline, Arc::clone(&execute_meter),
+                    let observer = MemoryObserver { meter: Some(Arc::clone(&execute_meter)) };
+                    let completion = provider.apply_commit(&mut input.request, deadline, &observer,
                         if guarded { Some(&mut acquire) } else { None },
                     ).await;
                     drop(acquire);
@@ -1318,27 +1267,29 @@ impl LocalStream {
                         Ok(Ok((completion, visibility))) => {
                             let result = match completion.error {
                                 Some(error) => Err(error),
-                                None => Ok(Ok(completion.outcome)),
+                                None => crate::memory::native(Ok(completion.outcome), &execute_meter).map(|result| result.map_err(E::from)),
                             };
                             (result, visibility, true)
                         }
                         Ok(Err(error)) => (Ok(Err(error)), None, false),
-                        Err(error) => (Err(error), None, false),
+                        Err(MemoryFailure::Observer(error)) => (Err(error), None, false),
+                        Err(MemoryFailure::Provider(error)) => (Ok(Err(E::from(NativeStreamFailure::new(
+                            error, ReadAllocation::empty(&execute_meter),
+                        )))), None, false),
                     };
                     let primary_failure = !matches!(&result, Ok(Ok(_)));
                     Ok(CommitCompletion {
-                        value: GuardedCommitOutput { result, _before: before },
+                        value: (result, before),
                         error: None, input: Some(MutationInput::Commit(input)), revision: None, visibility, persist, primary_failure,
                     })
                 },
             ).await;
             match result {
-                Ok(completion) => completion.result,
-                Err(LocalCompletionError::Native(error)) => Err(error),
-                Err(LocalCompletionError::Stream(error)) => Ok(Err(E::from(NativeStreamFailure::new(
+                Ok(completion) => completion.0,
+                Err(MemoryFailure::Observer(error)) => Err(error),
+                Err(MemoryFailure::Provider(error)) => Ok(Err(E::from(NativeStreamFailure::new(
                     error, ReadAllocation::empty(&failure_meter),
                 )))),
-                Err(LocalCompletionError::GuardedStream(error)) => Ok(Err(E::from(error))),
             }
         })
     }
@@ -1351,16 +1302,16 @@ impl StreamProvider for LocalStream {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.visible(self.inner.provider.inspect_idempotency(idempotency_key))
-            .await
+        self.visible(self.inner.provider.inspect_idempotency(idempotency_key), None)
+            .await.map_err(ordinary_failure)
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.visible(self.inner.provider.tail(path)).await
+        self.visible(self.inner.provider.tail(path), None).await.map_err(ordinary_failure)
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.visible(self.inner.provider.bounds(path)).await
+        self.visible(self.inner.provider.bounds(path), None).await.map_err(ordinary_failure)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -1374,7 +1325,7 @@ impl StreamProvider for LocalStream {
                 _ => None,
             };
             Ok(CommitCompletion { value, error: None, persist, revision, input: None, visibility: None, primary_failure: false })
-        }).await.map_err(LocalCompletionError::ordinary)
+        }).await.map_err(ordinary_failure)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -1385,7 +1336,7 @@ impl StreamProvider for LocalStream {
         ));
         span.scope(async {
             self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(CommandRef::Fork(&request), None, true).map(|(frame, _)| frame).map_err(LocalCompletionError::ordinary)?;
+                let frame = stream.prepare(CommandRef::Fork(&request), None, true).map(|(frame, _)| frame).map_err(ordinary_failure)?;
                 let outcome = stream.inner.provider.fork(request).await?;
                 stream.persist(frame).await?;
                 Ok(outcome)
@@ -1476,15 +1427,15 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        self.visible(self.inner.provider.children(request)).await
+        self.visible(self.inner.provider.children(request), None).await.map_err(ordinary_failure)
     }
 
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        self.visible(self.inner.provider.children_page(request))
-            .await
+        self.visible(self.inner.provider.children_page(request), None)
+            .await.map_err(ordinary_failure)
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -1492,7 +1443,7 @@ impl StreamProvider for LocalStream {
             let MutationInput::Commit(input) = input else { unreachable!() };
             let value = provider.commit(input.request).await?;
             Ok(CommitCompletion { value, error: None, input: None, revision: None, visibility: None, persist: true, primary_failure: false })
-        }).await.map_err(LocalCompletionError::ordinary)
+        }).await.map_err(ordinary_failure)
     }
 
     async fn commit_before(
@@ -1507,15 +1458,15 @@ impl StreamProvider for LocalStream {
                 let value = provider.commit_before(input.request, deadline.expect("deadline is supplied")).await?;
                 Ok(CommitCompletion { value, error: None, input: None, revision: None, visibility: None, persist: true, primary_failure: false })
             },
-        ).await.map_err(LocalCompletionError::ordinary)
+        ).await.map_err(ordinary_failure)
     }
 
     async fn read_commit(
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.visible(self.inner.provider.read_commit(commit_id))
-            .await
+        self.visible(self.inner.provider.read_commit(commit_id), None)
+            .await.map_err(ordinary_failure)
     }
 
     fn native_inspect_idempotency(
@@ -1523,12 +1474,11 @@ impl StreamProvider for LocalStream {
         key: IdempotencyKey,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        let observer = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            self.native_visible(
-                self.inner.provider.native_inspect_idempotency(key, Arc::clone(&observer)),
-                &observer,
-            ).await
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, async move {
+            let result = self.visible(self.inner.provider.inspect_inner(key, &observer), Some(&meter)).await;
+            crate::memory::native(result, &meter)
         })
     }
 
@@ -1548,18 +1498,19 @@ impl StreamProvider for LocalStream {
                 move |provider, input, _, _, _| async move {
                     let MutationInput::Append(mut input) = input else { unreachable!() };
                     let retain_conflict = input.request.idempotency_key.is_some();
-                    let completion = provider.native_append_completion_borrowed_inner(
-                        &mut input.request, execute_meter,
-                    ).await.map_err(LocalCompletionError::Native)?
-                        .map_err(LocalCompletionError::Stream)?;
-                    let persist = matches!(completion.outcome.value(), AppendOutcome::Committed(_))
+                    let completion = provider.apply_append(
+                        &mut input.request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
+                    ).await?;
+                    let value = crate::memory::native(Ok(completion.outcome), &execute_meter)?
+                        .expect("successful append completion");
+                    let persist = matches!(value.value(), AppendOutcome::Committed(_))
                         || retain_conflict;
-                    let revision = match completion.outcome.value() {
+                    let revision = match value.value() {
                         AppendOutcome::Committed(receipt) => Some(receipt.tail),
                         _ => None,
                     };
                     Ok(CommitCompletion {
-                        value: completion.outcome, error: completion.error,
+                        value, error: completion.error,
                         persist, revision, input: Some(MutationInput::Append(input)), visibility: None, primary_failure: false,
                     })
                 },
@@ -1573,11 +1524,12 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
-        let observer = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            self.native_visible(
-                self.inner.provider.native_tail(path, Arc::clone(&observer)), &observer,
-            ).await
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, async move {
+            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            let result = result.map(|output| crate::memory::MemoryOutput { value: output.value.tail, allocation: output.allocation });
+            crate::memory::native(result, &meter)
         })
     }
 
@@ -1586,11 +1538,11 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, StreamBounds> {
-        let observer = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            self.native_visible(
-                self.inner.provider.native_bounds(path, Arc::clone(&observer)), &observer,
-            ).await
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, async move {
+            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            crate::memory::native(result, &meter)
         })
     }
 
@@ -1609,9 +1561,12 @@ impl StreamProvider for LocalStream {
                 error.kind = Empty
             ));
             let mut observation = ReadObservation { span, finished: false };
-            let result = observation.span.scope(self.native_visible(
-                self.inner.provider.native_read(request, Arc::clone(&observer)), &observer,
-            )).await;
+            let result = observation.span.scope(async {
+                into_native(self.visible(async {
+                    self.inner.provider.native_read(request, Arc::clone(&observer)).await
+                        .map_err(MemoryFailure::Observer)?.map_err(|error| MemoryFailure::Provider(error.into_parts().0))
+                }, Some(&observer)).await, &observer)
+            }).await;
             observation.finished = true;
             finish_native(&observation.span, result)
         })
@@ -1622,11 +1577,11 @@ impl StreamProvider for LocalStream {
         commit_id: crate::CommitId,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommittedEnvelope> {
-        let observer = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            self.native_visible(
-                self.inner.provider.native_read_commit(commit_id, Arc::clone(&observer)), &observer,
-            ).await
+        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
+        let original = Arc::clone(&meter);
+        NativeProviderFuture::new(&original, async move {
+            let result = self.visible(self.inner.provider.read_commit_inner(commit_id, &observer), Some(&meter)).await;
+            crate::memory::native(result, &meter)
         })
     }
 
@@ -1661,7 +1616,7 @@ impl StreamProvider for LocalStream {
     ) -> NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result: LocalCompletion<crate::PreparedNativeCommit> = async {
+            let result: MemoryResult<crate::PreparedNativeCommit> = async {
                 self.check_available()?;
                 meter.check()?;
                 let mut input = CommitInput::capture(&request, &meter)?;
@@ -1672,26 +1627,26 @@ impl StreamProvider for LocalStream {
                 self.inner.prepared_compaction.store(false, Ordering::Release);
                 let prepared = self.inner.provider.native_prepare_commit_borrowed_inner(
                     &mut input.request, maximum_record_bytes, Arc::clone(&meter),
-                ).await.map_err(LocalCompletionError::Native)?
-                    .map_err(LocalCompletionError::Stream)?;
+                ).await.map_err(MemoryFailure::Observer)?
+                    .map_err(MemoryFailure::Provider)?;
                 let recovery = self.inner.provider.native_prepare_recovery_future(&prepared)
                     .map_err(|error| match error {
-                        crate::memory::MemoryFailure::Observer(error) => LocalCompletionError::Native(error),
-                        crate::memory::MemoryFailure::Provider(error) => LocalCompletionError::Stream(error),
+                        crate::memory::MemoryFailure::Observer(error) => MemoryFailure::Observer(error),
+                        crate::memory::MemoryFailure::Provider(error) => MemoryFailure::Provider(error),
                     })?;
                 meter.admit_examination(1, 0)?;
                 let maximum = crate::journal::journal_command(CommandRef::Commit(&input.request))
-                    .encoded_len_for_record_maximum(maximum_record_bytes)?;
+                    .encoded_len(Some(maximum_record_bytes), None)?;
                 meter.record_examination(1, 0)?;
                 meter.check()?;
                 if maximum > MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded.into()); }
                 let maximum_frame = maximum.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
-                    .ok_or(LocalCompletionError::Stream(StreamError::Capacity))?;
+                    .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
                 let mut frame = PreparedFrame::allocate_buffer(maximum_frame, Some(&meter))
                     .map_err(publication_error)?;
                 frame.bytes = maximum_frame as u64;
                 self.inner.journal.journal.lock()
-                    .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?
+                    .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
                     .admit(&frame).map_err(publication_error)?;
                 meter.admit_examination(1, 0)?;
                 meter.admit_codec(
@@ -1752,7 +1707,7 @@ impl StreamProvider for LocalStream {
                     Ok(future) => future,
                     Err(error) => {
                         slot.close();
-                        return Err(LocalCompletionError::Native(error));
+                        return Err(MemoryFailure::Observer(error));
                     }
                 };
                 Ok(crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes))
@@ -1888,7 +1843,7 @@ impl PreparedFrame {
         if let Some(meter) = meter {
             meter.admit_examination(1, 0)?;
         }
-        let encoded_length = journal.encoded_len()?;
+        let encoded_length = journal.encoded_len(None, None)?;
         if let Some(meter) = meter {
             meter.record_examination(1, 0)?;
             meter.check()?;
@@ -3880,11 +3835,11 @@ mod tests {
         let required = provider.inner.journal.required()?;
         assert_eq!(required, 1);
         provider.await_durable_observed(required, None, None).await
-            .map_err(LocalCompletionError::ordinary)?;
+            .map_err(ordinary_failure)?;
         provider.inner.poison();
         assert_eq!(
             provider.await_durable_observed(required, None, None).await
-                .map_err(LocalCompletionError::ordinary),
+                .map_err(ordinary_failure),
             Err(StreamError::Unavailable)
         );
         assert_eq!(

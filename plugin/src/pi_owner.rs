@@ -1,16 +1,10 @@
 //! Immutable, private host credentials for reopening one Pi root runtime.
-//! Native decoding uses the SDK's original source-shape admission for this
-//! closed, Value/Raw-free DTO. Retained configuration drops before its custody;
-//! plaintext buffers and the fixed signing-key array are cleared on release.
-//! Native private-file access requires the service's genuine held namespace
-//! owner plus relative coordinates; accounting is never namespace authority.
-//! Readonly observers share the decoder but perform no durability barriers.
 
 use super::pi_runtime::PiRuntimeAuthority;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     AgentId, Capabilities, Error, Result, TaskId,
-    conversation::{ContentResidencyVerifier, Limits, VolumeOperation, VolumeRef},
+    conversation::{Limits, VolumeOperation, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry},
     effect_host::ConversationEffectHost,
     effects::{EffectProvider, EffectRegistry},
@@ -47,8 +41,7 @@ const OWNER_MAGIC: &[u8; 8] = b"ACYPIOW1";
 const MAXIMUM_OWNER_BYTES: u64 = super::MAXIMUM_ADAPTER_STATE_BYTES;
 const ISSUER: &str = "acyclic.pi";
 
-/// Host-selected root policy. This is immutable service configuration, not a
-/// route selection or a task/effect ledger. Task admissions remain authoritative.
+/// Host-selected root policy.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiOwnerPolicy {
@@ -76,8 +69,6 @@ impl PiOwnerPolicy {
         }, slot, [journal.1, grants.1]))
     }
 }
-
-
 
 // Deliberately no Debug: configuration contains the signing key. It is never
 // returned to the extension, serialized into adapter state or included in logs.
@@ -382,11 +373,6 @@ impl PiOwnerConfig {
         })
     }
 
-    pub(crate) fn effect_verifier(&self) -> Result<acyclic_harness::core::AuthorityVerifier> {
-        self.authority()?;
-        Ok(self.effect_issuer().verifier())
-    }
-
     /// Called only after authenticating the actual task and its reconstructed
     /// scope. This signs that conversation's identity with the same original
     /// protected key; it does not create or admit a task or resource.
@@ -398,43 +384,6 @@ impl PiOwnerConfig {
         let issuer = AuthorityIssuer::new(ISSUER, self.key, audience.clone());
         let signed = issuer.root_for_agent(agent, format!("pi:conversation:{task}"), grants);
         Ok((audience, issuer, signed))
-    }
-
-
-    /// Composes the stock effect lifecycle with the original root credentials.
-    /// The caller supplies the original task-bound content source; this factory
-    /// never turns protected owner storage credentials into private input reads.
-    pub(crate) fn root_effects<P: StreamProvider + 'static>(
-        &self,
-        stream: StreamClient<P>,
-        content: Arc<dyn ContentResidencyVerifier>,
-        provider: Arc<dyn EffectProvider>,
-    ) -> Result<ConversationEffectHost<P>>
-    {
-        if provider.id() != super::pi_root_inputs::ROOT_ALLOCATION_PROVIDER {
-            return Err(invalid("Pi root allocation provider identity differs"));
-        }
-        self.authority()?;
-        let mut providers = EffectRegistry::default().with_result_resolver(content.clone());
-        providers.register(provider)?;
-        // Aggregate kind is part of the signed audience, keeping effect history
-        // separate from task admission without another key or identity source.
-        let issuer = self.effect_issuer();
-        let audience = issuer.verifier().audience().clone();
-        let scope = issuer.root_for_agent(
-            self.policy.agent,
-            self.policy.root_task.to_string(),
-            self.policy.grants.clone(),
-        );
-        ConversationEffectHost::new(
-            stream,
-            audience,
-            issuer,
-            scope,
-            SchemaRegistry::new(),
-            content,
-            providers,
-        )
     }
 
     /// Check the retained references before opening the owner's journals. The
@@ -684,27 +633,10 @@ impl PiOwnerConfig {
                             .ok_or_else(|| native_invalid("Pi owner decoder allowance overflow"))?;
                         custody.resize_retained(admitted).map_err(native_work_error)
                     }
-                    JsonCodecCharge::Work { bytes, items } => work.charge(acyclic_fs::WorkCounters {
-                        bytes_encoded: bytes, items_examined: items, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
-                    JsonCodecCharge::Inspect { items } => work.charge(acyclic_fs::WorkCounters {
-                        items_examined: items, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
-                    JsonCodecCharge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
-                        source_bytes_read: bytes, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
-                    JsonCodecCharge::CopyAdmission { bytes } => work.admit(acyclic_fs::WorkCounters {
-                        bytes_copied: bytes, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
-                    JsonCodecCharge::Copy { bytes } => work.charge(acyclic_fs::WorkCounters {
-                        bytes_copied: bytes, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
-                    JsonCodecCharge::AllocationOperation { .. } => work.charge(acyclic_fs::WorkCounters {
-                        allocation_operations: 1, ..acyclic_fs::WorkCounters::UNCHARGED
-                    }).map_err(native_work_error),
+
                     JsonCodecCharge::Retain { bytes } => custody.grow(bytes).map_err(native_work_error),
-                    JsonCodecCharge::Release { .. } => unreachable!(),
-                }
+
+                charge => super::pi_root_provider::native_buffer_codec_charge(work, &mut custody, charge),}
             },
         );
         match decoded {
@@ -724,8 +656,7 @@ impl PiOwnerConfig {
     }
 }
 
-/// Managed plaintext is wiped before its bytes and original allocation drop,
-/// including cancellation, malformed JSON and native authority failures.
+/// Managed plaintext is wiped before its bytes and original allocation drop, including cancellation, malformed JSON and native authority failures.
 struct NativeOwnerPlaintext {
     bytes: Vec<u8>,
     _custody: NativeAllocation,
@@ -747,8 +678,7 @@ fn storage(error: io::Error) -> Error { Error::Storage(error.to_string()) }
 #[path = "pi_owner_tests.rs"]
 mod tests;
 
-/// Consumes genuine original effect metadata before its protected owner moves
-/// into the Root provider. The SDK host retains authorization custody itself.
+/// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
     stream: StreamClient<P>,
     authority: (Authority, AuthorityIssuer, acyclic_harness::core::Scope),

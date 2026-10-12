@@ -215,7 +215,7 @@ impl SnapshotWriter<'_> {
     fn message(&mut self, value: &CanonicalWire<'_>) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = self.funding.meter() { meter.admit_examination(1, 0)?; }
-        let length = value.encoded_len()?;
+        let length = value.encoded_len(None, None)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = self.funding.meter() {
             meter.record_examination(1, 0)?;

@@ -209,6 +209,7 @@ struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
     maximum_record: Option<usize>,
+    observer: Option<&'a crate::memory::MemoryObserver>,
 }
 
 impl WireSink<'_> {
@@ -254,23 +255,28 @@ impl WireSink<'_> {
     }
 
     fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
+        if let Some(observer) = self.observer { observer.admit_item()?; }
         if let Some(length) = self.maximum_record {
             self.varint((tag << 3) | 2)?;
             self.varint(length as u64)?;
             self.length = self.length.checked_add(length)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-            Ok(())
         } else {
-            self.field(tag, value.as_ref(), true)
+            self.field(tag, value.as_ref(), true)?;
         }
+        if let Some(observer) = self.observer { observer.record_item()?; }
+        Ok(())
     }
 
     fn nested(&mut self, tag: u64, value: CanonicalWire<'_>) -> std::io::Result<()> {
         self.varint((tag << 3) | 2)?;
-        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record, observer: self.observer };
         value.write(&mut count)?;
         self.varint(count.length as u64)?;
-        value.write(self)
+        if self.output.is_some() { value.write(self) } else {
+            self.length = self.length.checked_add(count.length).ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(())
+        }
     }
 
     fn message(
@@ -278,34 +284,30 @@ impl WireSink<'_> {
         tag: u64,
         write: impl Fn(&mut WireSink<'_>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record, observer: self.observer };
         write(&mut count)?;
         self.varint((tag << 3) | 2)?;
         self.varint(count.length as u64)?;
-        write(self)
+        if self.output.is_some() { write(self) } else {
+            self.length = self.length.checked_add(count.length).ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(())
+        }
     }
 }
 
 impl CanonicalWire<'_> {
-    pub(crate) fn encoded_len(&self) -> std::io::Result<usize> {
-        let mut sink = WireSink { output: None, length: 0, maximum_record: None };
-        self.write(&mut sink)?;
-        Ok(sink.length)
-    }
-
-    /// Sizes the exact closed request with its late record at the admitted bound using the SAME field visitor, without allocating or copying bytes.
-    pub(crate) fn encoded_len_for_record_maximum(&self, maximum: usize) -> std::io::Result<usize> {
-        let mut sink = WireSink { output: None, length: 0, maximum_record: Some(maximum) };
+    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: Option<&crate::memory::MemoryObserver>) -> std::io::Result<usize> {
+        let mut sink = WireSink { output: None, length: 0, maximum_record, observer };
         self.write(&mut sink)?;
         Ok(sink.length)
     }
 
     pub(crate) fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
-        self.write(&mut WireSink { output: Some(output), length: 0, maximum_record: None })
+        self.write(&mut WireSink { output: Some(output), length: 0, maximum_record: None, observer: None })
     }
 
     pub(crate) fn encode_to_vec(&self) -> std::io::Result<Vec<u8>> {
-        let mut output = Vec::with_capacity(self.encoded_len()?);
+        let mut output = Vec::with_capacity(self.encoded_len(None, None)?);
         self.encode(&mut output)?;
         Ok(output)
     }
@@ -331,8 +333,16 @@ impl CanonicalWire<'_> {
                 if let Some(key) = &value.idempotency_key { sink.field(4, key.as_bytes(), true)?; }
             }
             Self::Commit(value) => {
-                for value in &value.conditions { sink.nested(1, Self::Condition(value))?; }
-                for value in &value.mutations { sink.nested(2, Self::Mutation(value))?; }
+                for value in &value.conditions {
+                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    sink.nested(1, Self::Condition(value))?;
+                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                }
+                for value in &value.mutations {
+                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    sink.nested(2, Self::Mutation(value))?;
+                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                }
                 sink.field(3, value.idempotency_key.as_bytes(), false)?;
             }
             Self::Condition(value) => match value {

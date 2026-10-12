@@ -6,7 +6,7 @@ use crate::heap_future::in_heap;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, NameEncoding, NamespacePath,
 };
-use crate::native_host::{HostDirectory, HostRoot};
+use crate::native_host::HostRoot;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Checkout, FileId,
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
@@ -1719,8 +1719,8 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     };
                     let stage_identity = stage_root.identity();
                     drop(stage_root);
-                    let cleanup = stage_owner.remove_identity_measured(&stage_name, stage_identity, work)
-                        .and_then(|()| stage_owner.sync_measured(work));
+                    let cleanup = stage_owner.remove_identity(&stage_name, stage_identity, work)
+                        .and_then(|()| stage_owner.sync(work));
                     match (result, cleanup) {
                         (Ok(value), Ok(())) => Ok(value),
                         (Ok(_), Err(error)) => Err(restore_demand_error(error)),
@@ -1771,8 +1771,8 @@ fn restore_demand_error(error: crate::demand::DemandError) -> MaterializeError {
 
 struct PreparedRestore {
     root: HostRoot,
-    destination_parent: HostDirectory,
-    stage_owner: HostDirectory,
+    destination_parent: HostRoot,
+    stage_owner: HostRoot,
     stage_root: HostRoot,
     stage_name: RestoreOwnedPath,
     stage_path: RestoreOwnedPath,
@@ -1854,7 +1854,7 @@ fn prepare_restore(
     let stage_parent_root = match replacement {
         HostPathReplacement::Atomic => HostRoot::open_with_work(&stage_parent_path, work)
             .map_err(restore_demand_error)?,
-        HostPathReplacement::LiveMount => destination_parent.open_root_measured(Path::new(""), work)
+        HostPathReplacement::LiveMount => destination_parent.open_child(Path::new(""), work)
             .map_err(restore_demand_error)?,
     };
     let stage_owner = stage_parent_root.create_dir_all_held_measured(Path::new(""), work)
@@ -1865,8 +1865,8 @@ fn prepare_restore(
         Err(error) => {
             let identity = stage_root.identity();
             drop(stage_root);
-            let _ = stage_owner.remove_identity_measured(&stage_name, identity, work)
-                .and_then(|()| stage_owner.sync_measured(work));
+            let _ = stage_owner.remove_identity(&stage_name, identity, work)
+                .and_then(|()| stage_owner.sync(work));
             return Err(error);
         }
     };
@@ -1878,7 +1878,7 @@ fn prepare_restore(
 }
 
 fn publish_restore(
-    destination_parent: &HostDirectory,
+    destination_parent: &HostRoot,
     stage_root: &HostRoot,
     relative: &Path,
     replacement: HostPathReplacement,
@@ -1887,7 +1887,7 @@ fn publish_restore(
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative, work)?;
     let name = Path::new(destination_name);
-    match destination_parent.stat_measured(name, work) {
+    match destination_parent.stat_with_work(name, work) {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => destination_parent
                 .exchange_to_measured(name, &stage_parent, name, work).map_err(restore_demand_error)?,
@@ -1896,7 +1896,7 @@ fn publish_restore(
             )?,
         },
         Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            stage_parent.rename_to_measured(name, destination_parent, name, work).map_err(restore_demand_error)?;
+            stage_parent.rename_to(name, destination_parent, name, work).map_err(restore_demand_error)?;
             sync_restore_parent(destination_parent, work)?;
             sync_restore_parent(&stage_parent, work)?;
         }
@@ -1919,12 +1919,12 @@ fn validate_host_relative_measured(relative: &Path, work: &mut impl crate::deman
     if any { Ok(()) } else { Err(MaterializeError::InvalidPath) }
 }
 
-fn held_parent(root: &HostRoot, relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<HostDirectory, MaterializeError> {
+fn held_parent(root: &HostRoot, relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<HostRoot, MaterializeError> {
     root.create_dir_all_held_measured(relative.parent().unwrap_or_else(|| Path::new("")), work)
         .map_err(restore_demand_error)
 }
 
-fn create_restore_stage(parent: &HostDirectory, allocation_work: &crate::NativeMaterializationWork, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(RestoreOwnedPath, HostRoot), MaterializeError> {
+fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMaterializationWork, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(RestoreOwnedPath, HostRoot), MaterializeError> {
     use std::fmt::Write as _;
     for _ in 0..16 {
         let sequence = RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1940,7 +1940,7 @@ fn create_restore_stage(parent: &HostDirectory, allocation_work: &crate::NativeM
         let name = RestoreOwnedPath { path: PathBuf::from(name), allocation };
         match parent.create_dir_measured(&name, work) {
             Ok(()) => {
-                let root = match parent.open_root_measured(&name, work) {
+                let root = match parent.open_child(&name, work) {
                     Ok(root) => root,
                     // Without the stage capability no identity authorizes
                     // deleting this name, which may already have been swapped.
@@ -1949,8 +1949,8 @@ fn create_restore_stage(parent: &HostDirectory, allocation_work: &crate::NativeM
                 if let Err(error) = sync_restore_parent(parent, work) {
                     let identity = root.identity();
                     drop(root);
-                    let _ = parent.remove_identity_measured(&name, identity, work)
-                        .and_then(|()| parent.sync_measured(work));
+                    let _ = parent.remove_identity(&name, identity, work)
+                        .and_then(|()| parent.sync(work));
                     return Err(error);
                 }
                 return Ok((name, root));
@@ -2017,13 +2017,13 @@ fn with_restore_artifact<T, W: crate::demand::SourceDemandReadWork>(
 }
 
 fn acquire_restore_lock(
-    parent: &HostDirectory,
+    parent: &HostRoot,
     relative: &Path,
     blocking: bool,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<File, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let file = parent.open_file_with_measured(
+        let file = parent.open_file_with(
             name, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         ).map_err(restore_demand_error)?;
         loop {
@@ -2039,17 +2039,17 @@ fn acquire_restore_lock(
     })
 }
 
-fn sync_restore_parent(parent: &HostDirectory, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
-    parent.sync_measured(work).map_err(restore_demand_error)
+fn sync_restore_parent(parent: &HostRoot, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+    parent.sync(work).map_err(restore_demand_error)
 }
 
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
 
-fn create_restore_witness(parent: &HostDirectory, name: &Path, contents: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
     use std::io::Write as _;
-    let mut file = parent.open_file_with_measured(
+    let mut file = parent.open_file_with(
         name, &crate::native_host::NativeOpenOptions::CreateNew, work,
     ).map_err(restore_demand_error)?;
     let mut remaining = contents;
@@ -2072,9 +2072,9 @@ fn create_restore_witness(parent: &HostDirectory, name: &Path, contents: &[u8], 
     sync_restore_parent(parent, work)
 }
 
-fn validate_restore_witness(parent: &HostDirectory, name: &Path, expected: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<bool, MaterializeError> {
+fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<bool, MaterializeError> {
     use std::io::Read as _;
-    let mut file = match parent.open_file_with_measured(
+    let mut file = match parent.open_file_with(
         name, &crate::native_host::NativeOpenOptions::Read, work,
     ) {
         Ok(file) => file,
@@ -2103,24 +2103,24 @@ fn validate_restore_witness(parent: &HostDirectory, name: &Path, expected: &[u8]
     }
 }
 
-fn remove_restore_witness(parent: &HostDirectory, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
-    parent.remove_measured(name, work).map_err(restore_demand_error)?;
+fn remove_restore_witness(parent: &HostRoot, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+    parent.remove(name, work).map_err(restore_demand_error)?;
     sync_restore_parent(parent, work)
 }
 
 fn cleanup_removed_restore(
-    parent: &HostDirectory,
+    parent: &HostRoot,
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
     with_restore_artifact(".acyclic-restore-removed-", relative, work, |removed, work| {
         with_restore_artifact(".acyclic-restore-remove-witness-", relative, work, |witness, work| {
-            match parent.stat_measured(removed, work) {
+            match parent.stat_with_work(removed, work) {
                 Ok(_) => {
                     if !validate_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)? {
                         return Err(MaterializeError::Engine("unowned restore-removal artifact collision"));
                     }
-                    parent.remove_measured(removed, work).map_err(restore_demand_error)?;
+                    parent.remove(removed, work).map_err(restore_demand_error)?;
                     sync_restore_parent(parent, work)?;
                     remove_restore_witness(parent, witness, work)?;
                 }
@@ -2137,7 +2137,7 @@ fn cleanup_removed_restore(
 }
 
 fn remove_restored_path(
-    parent: &HostDirectory,
+    parent: &HostRoot,
     destination_name: &Path,
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
@@ -2145,11 +2145,11 @@ fn remove_restored_path(
     with_restore_artifact(".acyclic-restore-removed-", relative, work, |removed, work| {
         with_restore_artifact(".acyclic-restore-remove-witness-", relative, work, |witness, work| {
             create_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)?;
-            match parent.stat_measured(destination_name, work) {
+            match parent.stat_with_work(destination_name, work) {
                 Ok(_) => {
-                    parent.rename_to_measured(destination_name, parent, removed, work).map_err(restore_demand_error)?;
+                    parent.rename_to(destination_name, parent, removed, work).map_err(restore_demand_error)?;
                     sync_restore_parent(parent, work)?;
-                    parent.remove_measured(removed, work).map_err(restore_demand_error)?;
+                    parent.remove(removed, work).map_err(restore_demand_error)?;
                     sync_restore_parent(parent, work)?;
                 }
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -2162,9 +2162,9 @@ fn remove_restored_path(
 
 
 fn replace_live_mount(
-    staged_parent: &HostDirectory,
+    staged_parent: &HostRoot,
     staged_name: &Path,
-    parent: &HostDirectory,
+    parent: &HostRoot,
     destination_name: &Path,
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
@@ -2173,10 +2173,10 @@ fn replace_live_mount(
     with_restore_artifact(".acyclic-restore-backup-", relative, work, |backup, work| {
         with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
             create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
-            parent.rename_to_measured(destination_name, parent, backup, work).map_err(restore_demand_error)?;
+            parent.rename_to(destination_name, parent, backup, work).map_err(restore_demand_error)?;
             sync_restore_parent(parent, work)?;
-            if let Err(error) = staged_parent.rename_to_measured(staged_name, parent, destination_name, work) {
-                if let Err(rollback) = parent.rename_to_measured(backup, parent, destination_name, work) {
+            if let Err(error) = staged_parent.rename_to(staged_name, parent, destination_name, work) {
+                if let Err(rollback) = parent.rename_to(backup, parent, destination_name, work) {
                     return Err(MaterializeError::RestoreRollback { primary: error, rollback });
                 }
                 sync_restore_parent(parent, work)?;
@@ -2184,7 +2184,7 @@ fn replace_live_mount(
             }
             sync_restore_parent(parent, work)?;
             sync_restore_parent(staged_parent, work)?;
-            parent.remove_measured(backup, work).map_err(restore_demand_error)?;
+            parent.remove(backup, work).map_err(restore_demand_error)?;
             sync_restore_parent(parent, work)?;
             remove_restore_witness(parent, witness, work)
         })
@@ -2192,14 +2192,14 @@ fn replace_live_mount(
 }
 
 fn recover_live_mount_replacement(
-    parent: &HostDirectory,
+    parent: &HostRoot,
     destination_name: &Path,
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
     with_restore_artifact(".acyclic-restore-backup-", relative, work, |backup, work| {
         with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
-            let backup_exists = match parent.stat_measured(backup, work) {
+            let backup_exists = match parent.stat_with_work(backup, work) {
                 Ok(_) => true,
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => return Err(restore_demand_error(error)),
@@ -2213,10 +2213,10 @@ fn recover_live_mount_replacement(
             if !validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
                 return Err(MaterializeError::Engine("unowned live-restore backup collision"));
             }
-            match parent.stat_measured(destination_name, work) {
-                Ok(_) => parent.remove_measured(backup, work).map_err(restore_demand_error)?,
+            match parent.stat_with_work(destination_name, work) {
+                Ok(_) => parent.remove(backup, work).map_err(restore_demand_error)?,
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    parent.rename_to_measured(backup, parent, destination_name, work).map_err(restore_demand_error)?;
+                    parent.rename_to(backup, parent, destination_name, work).map_err(restore_demand_error)?;
                 }
                 Err(error) => return Err(restore_demand_error(error)),
             }
@@ -3835,7 +3835,7 @@ mod restore_recovery_tests {
         std::fs::create_dir(&destination)?;
         std::fs::write(destination.join("entry"), b"old")?;
         let mut work = restoration_work();
-        let root = HostRoot::open_measured(&destination, &mut work)?;
+        let root = HostRoot::open_with_work(&destination, &mut work)?;
         let parent = held_parent(&root, Path::new("entry"), &mut work)?;
         std::fs::rename(&destination, &original)?;
         std::fs::create_dir(&destination)?;
@@ -3856,7 +3856,7 @@ mod restore_recovery_tests {
         std::fs::create_dir(&root)?;
         let relative = Path::new("entry");
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(&root, &mut work)?;
+        let held_root = HostRoot::open_with_work(&root, &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
         let first = acquire_restore_lock(&parent, relative, true, &mut work)?;
 
@@ -3875,7 +3875,7 @@ mod restore_recovery_tests {
         let temporary = tempfile::tempdir()?;
         let relative = Path::new("entry");
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(temporary.path(), &mut work)?;
+        let held_root = HostRoot::open_with_work(temporary.path(), &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
         let lock = acquire_restore_lock(&parent, relative, true, &mut work)?;
         let (started, entered) = tokio::sync::oneshot::channel();
@@ -3936,12 +3936,12 @@ mod restore_recovery_tests {
         let destination = root.join(relative);
         std::fs::write(&destination, b"before")?;
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(&root, &mut work)?;
+        let held_root = HostRoot::open_with_work(&root, &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
         let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
         let witness = restore_artifact_name(".acyclic-restore-live-witness-", relative, &mut work)?;
         create_restore_witness(&parent, &witness, LIVE_RESTORE_WITNESS, &mut work)?;
-        parent.rename_to(relative, &parent, &backup)?;
+        parent.rename_to(relative, &parent, &backup, &mut work)?;
 
         recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
 
@@ -3959,7 +3959,7 @@ mod restore_recovery_tests {
         let destination = root.join(relative);
         std::fs::write(&destination, b"after")?;
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(&root, &mut work)?;
+        let held_root = HostRoot::open_with_work(&root, &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
         let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
         let witness = restore_artifact_name(".acyclic-restore-live-witness-", relative, &mut work)?;
@@ -3983,7 +3983,7 @@ mod restore_recovery_tests {
         let destination = root.join(relative);
         std::fs::write(&destination, b"live")?;
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(&root, &mut work)?;
+        let held_root = HostRoot::open_with_work(&root, &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
         let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
         std::fs::write(root.join(&backup), b"unrelated")?;
@@ -4003,7 +4003,7 @@ mod restore_recovery_tests {
         let relative = Path::new("entry");
         std::fs::write(root.join(relative), b"old")?;
         let mut work = restoration_work();
-        let held_root = HostRoot::open_measured(&root, &mut work)?;
+        let held_root = HostRoot::open_with_work(&root, &mut work)?;
         let parent = held_parent(&held_root, relative, &mut work)?;
 
         remove_restored_path(&parent, relative, relative, &mut work)?;
