@@ -268,7 +268,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
 #[tokio::test]
 async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen() {
     use acyclic_harness::{Admission, OperationId, effect_host::TaskEffectPlan};
-    use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+    use acyclic_stream::{LocalStream, LocalStreamLimits};
     use std::sync::Arc;
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
@@ -342,11 +342,11 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         serde_json::to_value(&request).unwrap()
     );
     let filesystem = Arc::new(filesystem);
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(session.path().join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = crate::pi_runtime::PiTaskRuntime::open_with_native_work(
         stream, filesystem.clone(), &owner.policy.journal,
         owner.authority_with_native_work(&work).unwrap(), &work,

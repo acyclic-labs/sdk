@@ -18,7 +18,7 @@ async fn preparation_rejects_foreign_child_proof_owner_before_creation() -> Resu
 }
 
 async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let payloads = Arc::new(MemoryPayloads::new()?);
     let authority = Authority {
         kind: AggregateKind::Task,

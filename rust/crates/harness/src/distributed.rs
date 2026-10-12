@@ -19,7 +19,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
-    StreamClient, StreamError, StreamProvider,
+    StreamError, StreamProvider,
 };
 use acyclic_stream::OwnedBytes;
 use prost::Message as _;
@@ -81,7 +81,7 @@ fn intent_location_path(key: &str, work: &mut Option<&mut dyn HistoryIo>) -> Res
 }
 
 fn intent_location_stream_with_work<P: StreamProvider>(
-    client: &StreamClient<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
+    client: &std::sync::Arc<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::ObservedStream<P>> {
     let mut custody = CodecQuota::new(work, 0)?;
     let text = intent_location_path(key, custody.work())?;
@@ -291,12 +291,12 @@ pub struct CommittedSchedulerEvent {
 
 /// Reads one bounded page of verified coordinator events.
 pub async fn read_coordinator_event_page<P: StreamProvider>(
-    client: &StreamClient<P>, after_revision: u64, limit: u32,
+    client: &std::sync::Arc<P>, after_revision: u64, limit: u32,
 ) -> Result<Vec<CommittedSchedulerEvent>> {
     if limit == 0 {
         return Err(Error::Invalid("coordinator page limit is out of bounds".into()));
     }
-    let stream = client.stream(COORDINATOR_PATH)?;
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?;
     let page = read_records_with_work(client, &stream, after_revision,
         limit.min(READ_PAGE_SIZE), &mut None).await?.unwrap_or_default();
     let mut events = Vec::with_capacity(page.len());
@@ -311,7 +311,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
 }
 
 pub(crate) async fn observe_declaration<P: StreamProvider>(
-    client: &StreamClient<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    client: &std::sync::Arc<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
     operation_id: OperationId, declaration_key: &IdempotencyKey,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<OperationSpec>> {
@@ -344,7 +344,7 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 #[cfg(feature = "filesystem")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
-    client: &StreamClient<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    client: &std::sync::Arc<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
     operation: OperationId, candidate: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(OperationSpec, LeaseFence)> {
     if work.is_none() {
@@ -468,7 +468,7 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
 }
 
 async fn read_records_with_work<P: StreamProvider>(
-    client: &StreamClient<P>, stream: &Stream<P>, from: u64, maximum: u32,
+    client: &std::sync::Arc<P>, stream: &Stream<P>, from: u64, maximum: u32,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<Vec<operations::ObservedRecord>>> {
     let mut custody = CodecQuota::new(work, 0)?;
@@ -545,7 +545,7 @@ fn coordinator_boundary(
 }
 
 fn source_stream<P: StreamProvider>(
-    client: &StreamClient<P>, path: &str, work: &mut Option<&mut dyn HistoryIo>,
+    client: &std::sync::Arc<P>, path: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::ObservedStream<P>> {
     let portable = work.is_some()
         && !work.as_deref().is_some_and(operations::original_native_decode_mode);
@@ -562,7 +562,7 @@ fn source_stream<P: StreamProvider>(
 }
 
 async fn read_intent_location<P: StreamProvider>(
-    client: &StreamClient<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
+    client: &std::sync::Arc<P>, key: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<IntentLocation>> {
     let mut custody = CodecQuota::new(work, 0)?;
     validate_idempotency_key(key, custody.work())?;
@@ -605,7 +605,7 @@ async fn read_intent_location<P: StreamProvider>(
 }
 
 async fn read_indexed_intent_with_work<P: StreamProvider>(
-    client: &StreamClient<P>, key: &str, maximum_revision: Option<u64>,
+    client: &std::sync::Arc<P>, key: &str, maximum_revision: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<RetainedIntent>> {
     let mut custody = CodecQuota::new(work, 0)?;
@@ -657,7 +657,7 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
 
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
-    client: StreamClient<P>,
+    client: std::sync::Arc<P>,
     stream: operations::ObservedStream<P>,
     scheduler: Scheduler,
     revision: u64,
@@ -687,7 +687,7 @@ impl JournalWrite {
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
     #[cfg(feature = "filesystem")]
-    pub(crate) fn journal_client(&self) -> StreamClient<P> {
+    pub(crate) fn journal_client(&self) -> std::sync::Arc<P> {
         self.client.clone()
     }
 
@@ -720,7 +720,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Opens and replays the coordinator history.
     pub async fn open(
-        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
+        client: &std::sync::Arc<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
     ) -> Result<Self> {
         Self::open_with_work(client, content_verifier, &mut None).await
     }
@@ -728,7 +728,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Opens and replays the coordinator on the caller's native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
-        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
+        client: &std::sync::Arc<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let mut io = crate::store::history::native_work_io(work)?;
@@ -736,7 +736,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn open_with_work(
-        client: &StreamClient<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
+        client: &std::sync::Arc<P>, content_verifier: Arc<dyn ContentResidencyVerifier>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let stream = source_stream(client, COORDINATOR_PATH, work)?;
@@ -2541,7 +2541,7 @@ fn current_time_millis_with_work(work: &mut Option<&mut dyn HistoryIo>) -> Resul
 }
 
 pub(crate) async fn append_keyed<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>), record: OwnedBytes, if_tail: Option<u64>,
+    (stream, client): (&Stream<P>, &std::sync::Arc<P>), record: OwnedBytes, if_tail: Option<u64>,
     key: StreamIdempotencyKey, operation_id: OperationId, identity: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
@@ -2561,7 +2561,7 @@ pub(crate) async fn append_keyed<P: StreamProvider>(
 }
 
 async fn append_once_with_work<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>),
+    (stream, client): (&Stream<P>, &std::sync::Arc<P>),
     records: Vec<OwnedBytes>, if_tail: Option<u64>, key: StreamIdempotencyKey,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<AppendOutcome, SdkCallError>> {
@@ -2584,7 +2584,7 @@ async fn append_once_with_work<P: StreamProvider>(
 
 #[allow(clippy::too_many_arguments)]
 async fn append_records_keyed_with_work<P: StreamProvider>(
-    (stream, client): (&Stream<P>, &StreamClient<P>), records: Vec<OwnedBytes>,
+    (stream, client): (&Stream<P>, &std::sync::Arc<P>), records: Vec<OwnedBytes>,
     retained_request: u64, if_tail: Option<u64>, key: StreamIdempotencyKey,
     operation_id: OperationId, identity: &str, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<AppendOutcome, SdkCallError>> {
@@ -2718,7 +2718,7 @@ pub(crate) struct PreparedMaterializationCommit {
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 impl PreparedMaterializationCommit {
     pub(crate) async fn prepare<P: StreamProvider>(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         mut template: crate::filesystem::NativePreparationCompletionTemplate,
         proof: crate::durable_host::AcceptedMaterializationOwnerProof<'_>,
         reservation: acyclic_fs::NativeWorkReservation,
@@ -2852,7 +2852,7 @@ impl PreparedMaterializationCommit {
     }
 
     pub(crate) async fn finish<P: StreamProvider>(
-        self, client: &StreamClient<P>, counters: acyclic_fs::WorkCounters,
+        self, client: &std::sync::Arc<P>, counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
@@ -3011,7 +3011,7 @@ fn observe_recovery_with_work(
 }
 
 pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
-    client: &StreamClient<P>, key: StreamIdempotencyKey, retained_key: u64,
+    client: &std::sync::Arc<P>, key: StreamIdempotencyKey, retained_key: u64,
     work: &mut Option<&mut dyn HistoryIo>, phase: Option<&mut CommitPhase>,
     recovery: Option<PreparedNativeRecovery>,
 ) -> Result<std::result::Result<Option<(acyclic_stream::IdempotencyObservation, u64)>, SdkCallError>> {
@@ -3154,7 +3154,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
     }
 
     pub(crate) async fn commit<P: StreamProvider>(
-        mut self, client: &StreamClient<P>, operation: Option<OperationId>,
+        mut self, client: &std::sync::Arc<P>, operation: Option<OperationId>,
         mut phase: Option<&mut CommitPhase>, dispatch: Option<PreparedNativeDispatch>,
         recovery: Option<PreparedNativeRecovery>,
     ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
@@ -3311,7 +3311,7 @@ fn path_with_work(
 
 #[allow(clippy::too_many_arguments)]
 async fn append_if_execution_idle_with_work<P: StreamProvider>(
-    client: &StreamClient<P>, stream: &Stream<P>, record: OwnedBytes, tail: u64,
+    client: &std::sync::Arc<P>, stream: &Stream<P>, record: OwnedBytes, tail: u64,
     key: StreamIdempotencyKey, operation: OperationId, execution: OperationId, expected_tail: u64,
     workflow_guard: Option<(&str, u64)>, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
@@ -3488,8 +3488,8 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let stream = client.stream("keyed-append-native-mismatch").expect("source stream");
+        let client = Arc::new(MemoryStream::default());
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "keyed-append-native-mismatch").expect("source stream");
         let key = StreamIdempotencyKey::new(OwnedBytes::from_static(b"mismatch-key")).expect("key");
         let operation = OperationId::from_bytes([15; 16]);
         append_keyed((&stream, &client), OwnedBytes::from_static(b"original"), Some(0),
@@ -3513,7 +3513,7 @@ mod tests {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[tokio::test]
     async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
             .await.expect("original empty coordinator");
         let raw = OwnedBytes::from(encode(1, OperationId::from_bytes([16; 16]), "native-invalid-schema", *blake3::hash(b"{}").as_bytes(), b"{}".to_vec(), 1, &mut None).expect("original envelope producer"));
@@ -3552,7 +3552,7 @@ mod tests {
             (false, "write", CommitPhase::Unknown),
         ] {
             let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let path = acyclic_stream::StreamPath::new("native-publication-disposition")
                 .expect("original publication path");
             let cancellation = acyclic_fs::CancellationToken::new();
@@ -3602,7 +3602,7 @@ mod tests {
             drop(work);
             assert_eq!(io.into_custody().bytes(), 0, "payloads retire before their exact claims");
             provider.native_only.store(false, Ordering::SeqCst);
-            let stream = client.stream(path.as_str()).expect("original canonical stream");
+            let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str()).expect("original canonical stream");
             assert_eq!(stream.tail().await.expect("actual immutable tail"), expected_tail);
         }
     }
@@ -3671,7 +3671,7 @@ mod tests {
     {
         use std::sync::atomic::Ordering;
         let provider = Arc::new(LostSessionAck::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let operation = OperationId::from_bytes([1; 16]);
         let declaration = spec(operation, 0)?;
         let owner = declaration.owner.authority().clone();
@@ -3767,8 +3767,7 @@ mod tests {
             Err(Error::Conflict(_))
         ));
         provider.forbid_writes.store(false, Ordering::SeqCst);
-        client
-            .stream(intent_location_path(key.as_str(), &mut None)?)?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), intent_location_path(key.as_str(), &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
@@ -3789,7 +3788,7 @@ mod tests {
     #[tokio::test]
     async fn intent_locations_rebuild_legacy_history_and_replay_evicted_atomic_session()
     -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let root = OperationId::from_bytes([1; 16]);
         let root_spec = spec(root, 0)?;
         let limits = crate::scheduler::SessionLimits {
@@ -3818,11 +3817,11 @@ mod tests {
             let canonical = crate::contract::canonical_json_bytes(event)?;
             records.push(OwnedBytes::from(encode(offset as u64 + 1, root, intent_key, *blake3::hash(&canonical).as_bytes(), canonical, offset as u64 + 10, &mut None)?));
         }
-        let source = client.stream(COORDINATOR_PATH)?;
+        let source = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?;
         source
             .append_batch(records, Some(0), Some(stream_key_with_work(key, &mut None).map(|(key, _)| key)?))
             .await?;
-        assert!(client.bounds(&intent_location_path(key, &mut None)?).await.is_err());
+        assert!(client.bounds(acyclic_stream::StreamPath::new(&intent_location_path(key, &mut None)?)?).await.is_err());
         let (first, second) = tokio::join!(
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)),
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
@@ -3830,7 +3829,7 @@ mod tests {
         let mut coordinator = first?;
         let second = second?;
         assert_eq!(coordinator.scheduler(), second.scheduler());
-        assert_eq!(client.bounds(&intent_location_path(key, &mut None)?).await?.tail, 1);
+        assert_eq!(client.bounds(acyclic_stream::StreamPath::new(&intent_location_path(key, &mut None)?)?).await?.tail, 1);
         for identity in 2..=81u8 {
             declare(
                 &mut coordinator,
@@ -3912,20 +3911,19 @@ mod tests {
 
     #[tokio::test]
     async fn intent_locations_reject_forged_or_extended_projection_records() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let operation = OperationId::from_bytes([87; 16]);
         declare(&mut coordinator, spec(operation, 0)?, "projection-source").await?;
-        let source = client.stream(COORDINATOR_PATH)?;
+        let source = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?;
         let location = IntentLocation {
             key: "forged-location".into(),
             revision: 1,
             event_digest: [1; 32],
             commit_id: [2; 32],
         };
-        client
-            .stream(intent_location_path(&location.key, &mut None)?)?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), intent_location_path(&location.key, &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(
                     &location,
@@ -3941,8 +3939,7 @@ mod tests {
         let valid = read_intent_location(&coordinator.client, "projection-source", &mut None)
             .await?
             .ok_or_else(|| Error::NotFound("valid intent location".into()))?;
-        client
-            .stream(intent_location_path(&valid.key, &mut None)?)?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), intent_location_path(&valid.key, &mut None)?)?
             .append_batch(
                 vec![OwnedBytes::from(crate::contract::canonical_json_bytes(&valid)?)],
                 Some(1),
@@ -3973,7 +3970,7 @@ mod tests {
     #[tokio::test]
     async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() -> Result<()> {
         for cancel in [false, true] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let client = Arc::new(MemoryStream::default());
             let gate = Arc::new(PausedChildVerifier {
                 armed: std::sync::atomic::AtomicBool::new(false),
                 entered: tokio::sync::Notify::new(),
@@ -4116,7 +4113,7 @@ mod tests {
     }
 
     async fn child_cancellation_fixture<P: StreamProvider>(
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
     ) -> Result<(DistributedCoordinator<P>, LeaseFence)> {
         let mut coordinator = DistributedCoordinator::open(client, Arc::new(TestContentVerifier)).await?;
         let parent = OperationId::from_bytes([44; 16]);
@@ -4155,7 +4152,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         for lost_ack in [false, true] {
             let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let (mut coordinator, fence) = child_cancellation_fixture(&client).await?;
             let parent = OperationId::from_bytes([44; 16]);
             let child = OperationId::from_bytes([45; 16]);
@@ -4210,7 +4207,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_cancellation_rejects_a_stale_verified_revision() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let (mut coordinator, fence) = child_cancellation_fixture(&client).await?;
         let selected_revision = coordinator.revision();
         coordinator.apply(OperationId::from_bytes([44; 16]),
@@ -4238,7 +4235,7 @@ mod tests {
             (false, Some(true)),
         ] {
             let provider = Arc::new(LostSessionAck::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let gate = Arc::new(PausedChildVerifier {
                 armed: std::sync::atomic::AtomicBool::new(false),
                 entered: tokio::sync::Notify::new(),
@@ -4509,7 +4506,7 @@ mod tests {
 
     #[tokio::test]
     async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let operation_id = OperationId::from_bytes([91; 16]);
         let original = spec(operation_id, 0)?;
         let owner = original.owner.authority().clone();
@@ -4640,7 +4637,7 @@ mod tests {
 
     #[tokio::test]
     async fn initial_state_must_reside_before_declaration_is_published() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let operation_id = OperationId::from_bytes([51; 16]);
         let mut unbound =
             DistributedCoordinator::open(&client, Arc::new(DenyContentVerifier)).await?;
@@ -4686,7 +4683,7 @@ mod tests {
 
     #[tokio::test]
     async fn declarations_require_authenticated_matching_owner_and_capability() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let operation_id = OperationId::from_bytes([52; 16]);
@@ -4759,7 +4756,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_owner_cannot_attach_a_child_to_a_foreign_parent() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let parent = OperationId::from_bytes([54; 16]);
@@ -4788,7 +4785,7 @@ mod tests {
 
     #[tokio::test]
     async fn owner_observes_bounded_children_with_revision_checked_continuation() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let owner = Authority {
@@ -4900,7 +4897,7 @@ mod tests {
 
     #[tokio::test]
     async fn pull_enforces_operation_placement_labels() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let operation_id = OperationId::from_bytes([53; 16]);
@@ -4928,7 +4925,7 @@ mod tests {
 
     #[tokio::test]
     async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         assert!(read_coordinator_event_page(&client, 0, 1).await?.is_empty());
         let operation_id = OperationId::from_bytes([41; 16]);
         let mut coordinator =
@@ -4966,7 +4963,7 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     async fn authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable() -> Result<()>
     {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let owner = Authority {
             kind: AggregateKind::Task,
             id: "owner".into(),
@@ -5067,7 +5064,7 @@ mod tests {
     #[tokio::test]
     async fn live_coordinators_refresh_foreign_commits_and_reconcile_identical_declarations()
     -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut first =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let mut second =
@@ -5107,7 +5104,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_replays_and_pull_admission_is_exclusive() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let operation_id = OperationId::from_bytes([1; 16]);
         let spec = OperationSpec {
             operation_id,
@@ -5160,7 +5157,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_worker_reservations_are_subtracted_from_capacity() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let first = OperationId::from_bytes([3; 16]);
         let second = OperationId::from_bytes([4; 16]);
         let mut coordinator =
@@ -5261,19 +5258,19 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()> {
-        session_claim_race(StreamClient::new(Arc::new(MemoryStream::default()))).await?;
+        session_claim_race(Arc::new(MemoryStream::default())).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
-        atomic_session_race(StreamClient::new(Arc::new(MemoryStream::default()))).await?;
+        atomic_session_race(Arc::new(MemoryStream::default())).await?;
         Ok(())
     }
 
     #[tokio::test]
     async fn session_retry_rejects_separately_committed_lookalike_events() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let root = OperationId::from_bytes([86; 16]);
@@ -5334,7 +5331,7 @@ mod tests {
 
     #[tokio::test]
     async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let foreign = OperationId::from_bytes([1; 16]);
@@ -5431,7 +5428,7 @@ mod tests {
                 .operation(blocked)
                 .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
         );
-        let before = client.stream(COORDINATOR_PATH)?.tail().await?;
+        let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
         let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
         assert!(matches!(
             coordinator
@@ -5439,14 +5436,14 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, before);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, before);
         Ok(())
     }
 
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
     async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let first = OperationId::from_bytes([61; 16]);
@@ -5479,7 +5476,7 @@ mod tests {
             coordinator.scheduler().operation(first),
             first_before.as_ref()
         );
-        let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
+        let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
         assert!(matches!(
             coordinator
                 .pull_owned(&owner, &scope, &issuer.verifier(), &worker, Some(target), &mut None)
@@ -5505,7 +5502,7 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, tail);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
         let fence = LeaseFence::from(&lease.reservation);
         coordinator
             .apply(
@@ -5577,7 +5574,7 @@ mod tests {
     #[tokio::test]
     async fn exact_target_pull_preserves_live_partial_and_cancelled_reservations() -> Result<()> {
         for cancelled in [false, true] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let client = Arc::new(MemoryStream::default());
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
             let operation = OperationId::from_bytes([68; 16]);
@@ -5610,7 +5607,7 @@ mod tests {
                     .await?;
             }
             let before = coordinator.scheduler().operation(operation).cloned();
-            let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
+            let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
             let owner = Authority {
                 kind: AggregateKind::Task,
                 id: "owner".into(),
@@ -5644,7 +5641,7 @@ mod tests {
                     .as_ref(),
                 Some(&reservation)
             );
-            assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, tail);
+            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
         }
         Ok(())
     }
@@ -5663,7 +5660,7 @@ mod tests {
                 hide_location_read: AtomicBool::new(false),
                 ..Default::default()
             });
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
             let operation = OperationId::from_bytes([31; 16]);
@@ -5737,7 +5734,7 @@ mod tests {
             assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
             assert_eq!(retained.revision, lease.operation_revision);
             assert_eq!(retained.phase, crate::scheduler::OperationPhase::Admitted);
-            let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
+            let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
             assert!(matches!(
                 reopened
                     .pull_owned(
@@ -5749,7 +5746,7 @@ mod tests {
                     .await?,
                 WorkPull::Idle
             ));
-            assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, tail);
+            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
         }
         Ok(())
     }
@@ -5761,7 +5758,7 @@ mod tests {
             let expected_tail = existing_tail.unwrap_or(0);
             for mode in 0..4 {
                 let provider = Arc::new(LostSessionAck::default());
-                let client = StreamClient::new(provider.clone());
+                let client = provider.clone();
                 let mut coordinator =
                     DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
                 let task = OperationId::from_bytes([91; 16]);
@@ -5787,13 +5784,11 @@ mod tests {
                     )
                     .await?;
                 if let Some(tail) = existing_tail {
-                    client
-                        .stream(COORDINATOR_PATH)?
+                    acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
                         .fork(execution_path(execution, &mut None)?.as_str(), Some(0), None)
                         .await?;
                     if tail != 0 {
-                        client
-                            .stream(execution_path(execution, &mut None)?.as_str())?
+                        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), execution_path(execution, &mut None)?.as_str())?
                             .append_batch(
                                 vec![
                                     OwnedBytes::from_static(b"settled observation");
@@ -5847,8 +5842,7 @@ mod tests {
                     assert_eq!(retained.phase, OperationPhase::Running);
                     assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
                     assert_eq!(
-                        client
-                            .stream(execution_path(execution, &mut None)?.as_str())?
+                        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), execution_path(execution, &mut None)?.as_str())?
                             .tail()
                             .await?,
                         expected_tail + 1
@@ -5912,14 +5906,14 @@ mod tests {
     #[tokio::test]
     async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<()> {
         for hide_receipt in [false, true] {
-            let client = StreamClient::new(Arc::new(LostSessionAck {
+            let client = Arc::new(LostSessionAck {
                 inner: MemoryStream::default(),
                 lose_ack: std::sync::atomic::AtomicBool::new(true),
                 hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
                 location_fault: std::sync::atomic::AtomicU8::new(0),
                 hide_location_read: std::sync::atomic::AtomicBool::new(false),
                 ..Default::default()
-            }));
+            });
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
             let root = OperationId::from_bytes([87; 16]);
@@ -5975,14 +5969,14 @@ mod tests {
     #[tokio::test]
     async fn intent_projection_faults_recover_without_another_semantic_append() -> Result<()> {
         for fault in [1, 2, 3] {
-            let client = StreamClient::new(Arc::new(LostSessionAck {
+            let client = Arc::new(LostSessionAck {
                 inner: MemoryStream::default(),
                 lose_ack: std::sync::atomic::AtomicBool::new(false),
                 hide_receipt: std::sync::atomic::AtomicBool::new(false),
                 location_fault: std::sync::atomic::AtomicU8::new(fault),
                 hide_location_read: std::sync::atomic::AtomicBool::new(false),
                 ..Default::default()
-            }));
+            });
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
             let operation = OperationId::from_bytes([89; 16]);
@@ -5995,17 +5989,17 @@ mod tests {
                 assert_eq!(coordinator.revision, 0);
                 assert!(coordinator.scheduler().operation(operation).is_none());
             }
-            assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, 1);
+            assert_eq!(client.bounds(acyclic_stream::StreamPath::new(COORDINATOR_PATH)?).await?.tail, 1);
             coordinator.refresh().await?;
             assert_eq!(coordinator.revision, 1);
             assert_eq!(
                 declare(&mut coordinator, original, "projection-fault").await?,
                 false
             );
-            assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, 1);
+            assert_eq!(client.bounds(acyclic_stream::StreamPath::new(COORDINATOR_PATH)?).await?.tail, 1);
             assert_eq!(
                 client
-                    .bounds(&intent_location_path("projection-fault", &mut None)?)
+                    .bounds(acyclic_stream::StreamPath::new(&intent_location_path("projection-fault", &mut None)?)?)
                     .await?
                     .tail,
                 1
@@ -6018,17 +6012,17 @@ mod tests {
     #[tokio::test]
     async fn atomic_root_limits_survive_local_stream_reopen() -> Result<()> {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-        let client = StreamClient::new(Arc::new(
+        let client = Arc::new(
             acyclic_stream::LocalStream::open(directory.path(), Default::default())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
+        );
         let (root, limits) = atomic_session_race(client).await?;
-        let client = StreamClient::new(Arc::new(
+        let client = Arc::new(
             acyclic_stream::LocalStream::open(directory.path(), Default::default())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
+        );
         let coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         assert_eq!(coordinator.scheduler().session_limits(root, &mut None)?, limits);
@@ -6043,7 +6037,7 @@ mod tests {
     }
 
     async fn atomic_session_race<P: StreamProvider>(
-        client: StreamClient<P>,
+        client: std::sync::Arc<P>,
     ) -> Result<(OperationId, crate::scheduler::SessionLimits)> {
         let mut left = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let mut right =
@@ -6197,12 +6191,12 @@ mod tests {
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         );
-        let loser = session_claim_race(StreamClient::new(provider.clone())).await?;
+        let loser = session_claim_race(provider.clone()).await?;
         drop(provider);
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let client = StreamClient::new(Arc::new(provider));
+        let client = Arc::new(provider);
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         assert!(
@@ -6219,7 +6213,7 @@ mod tests {
     }
 
     async fn session_claim_race<P: StreamProvider>(
-        client: StreamClient<P>,
+        client: std::sync::Arc<P>,
     ) -> Result<SchedulerEvent> {
         let mut first =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -6444,7 +6438,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let cancelled = OperationId::from_bytes([5; 16]);
@@ -6491,7 +6485,7 @@ mod tests {
 
     #[tokio::test]
     async fn leases_are_fenced_and_recoverable() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let operation_id = OperationId::from_bytes([7; 16]);
@@ -6607,7 +6601,7 @@ mod tests {
 
     #[tokio::test]
     async fn generic_coordinator_apply_cannot_bypass_reducer_execution() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let operation_id = OperationId::from_bytes([13; 16]);

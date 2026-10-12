@@ -9,7 +9,7 @@ use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandHost, TaskCommandProgress, ForkPreparationLimits},
     core::SchemaRegistry, runtime::TaskContext, NativeTaskContext, NativeFutureBundle, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, Mutex}};
@@ -84,7 +84,7 @@ const PENDING_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider::ROOT_ARTIFA
 pub(crate) struct PiForkHost<'a> {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: &'a ServiceResources,
     protected: Arc<PiOwnerConfig>,
     retained: &'a AdapterState,
@@ -97,7 +97,7 @@ pub(crate) struct PiForkHost<'a> {
 impl<'a> PiForkHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original catalog, provider handles and protected runtime are independent")]
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>, native: Arc<PiNativeCommandHost>) -> Self {
         Self { runtime, filesystem, stream, resources, protected, retained, roots, native,
             pending: Mutex::new(None), prepared: Mutex::new(None) }
@@ -517,7 +517,7 @@ impl TaskCommandHost for PiForkHost<'_> {
 #[allow(clippy::too_many_arguments, reason = "the original creator, current owner and native source remain explicit")]
 pub(crate) async fn freeze_created_root_source(
     protected: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>, shared: &Arc<NativeTaskContext>,
+    stream: std::sync::Arc<LocalStream>, shared: &Arc<NativeTaskContext>,
     owner: &Arc<TaskJournalOwner<LocalStream>>, input: &PiTaskInput, key: &str,
     actual: &PiRootHandle, work: &NativeMaterializationWork,
 ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {

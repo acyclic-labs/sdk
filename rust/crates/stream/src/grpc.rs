@@ -3001,14 +3001,13 @@ mod tests {
                 .await
                 .is_err()
         );
-        let explicit = crate::StreamClient::connect_with_ca_certificate(
+        let explicit = std::sync::Arc::new(crate::grpc::Client::connect_with_ca_certificate(
             endpoint,
             "exact-token",
             certificate_pem,
-        )
-        .await?;
+        ).await?);
         assert_eq!(
-            explicit.stream(path.as_str())?.tail().await,
+            crate::Stream::new(std::sync::Arc::clone(&explicit), path.as_str())?.tail().await,
             Err(StreamError::NotFound)
         );
 
@@ -3162,7 +3161,7 @@ mod tests {
             "fixture",
         )?;
         let preferred = Arc::clone(&transport.preferred);
-        let stream = crate::StreamClient::new(Arc::new(transport)).stream("accounts/events")?;
+        let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
 
         let record = tokio::time::timeout(std::time::Duration::from_secs(1), async {
             stream

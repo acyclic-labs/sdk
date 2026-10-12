@@ -9,7 +9,7 @@ use acyclic_harness::{
     filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
     scheduler::ResourceSnapshot,
 };
-use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{BoxProviderFuture, LocalStream, LocalStreamLimits};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -217,11 +217,11 @@ async fn pi_root_stock_worker_reopens_original_effect_without_redispatch() {
         ).unwrap();
         let staged = stage_root_command(&owner, &filesystem, &request, &work).await.unwrap();
         let filesystem = Arc::new(filesystem);
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             LocalStream::open(session.path().join("stream"), LocalStreamLimits::default())
                 .await
                 .unwrap(),
-        ));
+        );
         let provider = Arc::new(FixtureProvider {
             id: ROOT_ALLOCATION_PROVIDER,
             result,

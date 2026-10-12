@@ -12,7 +12,7 @@ use acyclic_harness::{
     scheduler::SessionLimits,
 };
 use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -593,7 +593,7 @@ mod tests;
 
 /// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     authority: (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
     custody: NativeAllocation,
     content: Arc<dyn ContentResidencyVerifier>,

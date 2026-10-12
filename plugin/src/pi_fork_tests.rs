@@ -8,7 +8,7 @@ use acyclic_harness::{IdempotencyKey,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
     runtime::TaskRunLimits, scheduler::SessionLimits};
-use acyclic_stream::{LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStreamLimits};
 use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
 
@@ -16,7 +16,7 @@ pub(crate) struct Fixture {
     pub(crate) owner: Arc<PiOwnerConfig>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) filesystem: Arc<Filesystem>,
-    pub(crate) stream: StreamClient<LocalStream>,
+    pub(crate) stream: std::sync::Arc<LocalStream>,
     pub(crate) resources: ServiceResources,
     pub(crate) source: Arc<LocalLazyWorkspace>,
     physical: Arc<crate::SharedPhysicalRoot>,
@@ -91,7 +91,7 @@ impl Fixture {
         let owner = PiOwnerConfig::load_with_native_work(&private_root, &relative_session, &startup_work).unwrap()
             .into_native_shared(&startup_work).unwrap();
         let command = crate::pi_root_inputs::stage_root_command(&owner, &filesystem, &request, &startup_work).await.unwrap();
-        let stream = StreamClient::new(Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap()));
+        let stream = Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap());
         let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
         let _root_admission = runtime.admit_root_with_native_work(root_binding, request.root.clone(), command.0, &startup_work).await.unwrap();
@@ -547,8 +547,8 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
     let observation_work = acyclic_fs::NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
     let plan = fixture.plan().await;
     let first = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence, &plan, fixture.source.clone(), budget(), CancellationToken::new()).await.unwrap().unwrap();
-    let stream = StreamClient::new(Arc::new(LocalStream::open(fixture.resources.session_directory("fork-root").join("stream"),
-        LocalStreamLimits::default()).await.unwrap()));
+    let stream = Arc::new(LocalStream::open(fixture.resources.session_directory("fork-root").join("stream"),
+        LocalStreamLimits::default()).await.unwrap());
     let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), fixture.filesystem.clone(),
         &fixture.owner.policy().journal, fixture.owner.authority_with_native_work(&observation_work).unwrap(),
         &observation_work).await.unwrap());

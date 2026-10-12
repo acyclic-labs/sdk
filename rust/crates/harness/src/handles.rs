@@ -7,7 +7,7 @@ use crate::{
     },
     store::StreamAggregate,
 };
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 macro_rules! durable_handle {
@@ -20,7 +20,7 @@ macro_rules! durable_handle {
         impl<P: StreamProvider> $name<P> {
             /// Opens and replays this aggregate from its canonical Stream path.
             pub async fn open(
-                client: &StreamClient<P>,
+                client: &std::sync::Arc<P>,
                 id: $id,
                 authority_verifier: AuthorityVerifier,
                 schemas: SchemaRegistry,
@@ -112,7 +112,7 @@ mod tests {
 
     #[tokio::test]
     async fn handles_use_distinct_canonical_histories() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let agent_authority = Authority {
             kind: AggregateKind::Agent,
             id: AgentId::from_bytes([1; 16]).to_string(),

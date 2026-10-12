@@ -9,7 +9,7 @@ use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJour
     filesystem::{TaskCommandHost, TaskCommandProgress, TaskSourceInspection},
     runtime::{TaskContext, NativeTaskContext}, scheduler::LeaseFence, workflow::WorkflowCommand,
     conversation::VolumeRef};
-use acyclic_stream::{LocalStream, StreamClient, BoxProviderFuture};
+use acyclic_stream::{LocalStream, BoxProviderFuture};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -58,7 +58,7 @@ pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
 pub(crate) struct PiSelectedHost<'a> {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: &'a ServiceResources,
     protected: Arc<PiOwnerConfig>,
     retained: &'a AdapterState,
@@ -71,7 +71,7 @@ pub(crate) struct PiSelectedHost<'a> {
 impl<'a> PiSelectedHost<'a> {
     #[allow(clippy::too_many_arguments, reason = "original providers and invocation work are independent")]
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
+        stream: std::sync::Arc<LocalStream>, resources: &'a ServiceResources, protected: Arc<PiOwnerConfig>,
         retained: &'a AdapterState, roots: &'a BTreeMap<String, PiRootHandle>,
         native: Arc<PiNativeCommandHost>, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         runtime.verify_owner_with_native_work(&protected, work)?;

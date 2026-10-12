@@ -37,7 +37,7 @@ use acyclic_harness::{
         ToolResult,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
@@ -51,7 +51,7 @@ use std::sync::{
 struct TextModel(AtomicUsize);
 
 async fn bind_conversation(
-    stream: &StreamClient<MemoryStream>,
+    stream: &std::sync::Arc<MemoryStream>,
     issuer: &AuthorityIssuer,
     id: &str,
     agent: AgentId,
@@ -394,7 +394,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal_a = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -616,7 +616,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         ]),
     );
     let journal = Arc::new(FilesystemExecutionJournal::new(
-        StreamClient::new(Arc::new(MemoryStream::default())),
+        Arc::new(MemoryStream::default()),
         host,
         private,
         issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
@@ -1002,7 +1002,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
             private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
@@ -1076,8 +1076,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id, 0, 64).await?;
     assert_eq!(records.len(), 5);
-    let stream = stream
-        .stream(format!("harness/v2/execution/{operation_id}"))
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{operation_id}"))
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     use futures::TryStreamExt as _;
     let raw = stream
@@ -1133,7 +1132,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
         ]),
     );
     let unauthorized = issuer.root("bystander", Capabilities::default());
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
         &issuer,
@@ -1228,8 +1227,7 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             .await
             .is_err()
     );
-    let raw = stream
-        .stream("harness/v2/conversations/interaction-owner")
+    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/conversations/interaction-owner")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 3)
         .await
@@ -1286,7 +1284,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             "interaction:open".to_owned(),
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
         &issuer,
@@ -1498,7 +1496,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             &IdempotencyKey::new("foreign-upload")?,
         )
         .await?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let journal =
         FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
     let model = Arc::new(CapturingModel::default());

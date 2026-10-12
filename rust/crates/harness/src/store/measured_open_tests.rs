@@ -25,9 +25,9 @@ mod measured_open_tests {
         }
     }
 
-    async fn fixture() -> Result<(Arc<Provider>, StreamClient<Provider>)> {
+    async fn fixture() -> Result<(Arc<Provider>, std::sync::Arc<Provider>)> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
         for revision in 0..69 {
             writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
@@ -42,7 +42,7 @@ mod measured_open_tests {
     fn native_reader_constructor_rejects_before_copy_and_transfers_original_custody() -> Result<()> {
         use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
         let provider = Arc::new(Provider::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.bytes_copied = 0;
@@ -78,7 +78,7 @@ mod measured_open_tests {
     #[tokio::test]
     async fn prepared_publication_preserves_atomic_indexes_and_preallocation_denial() -> Result<()> {
         let provider = Arc::new(Provider::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let writer = with_content(StreamAggregate::open(
             &client, authority(), issuer().verifier(), schemas()).await?);
         let ApplyResult::Applied { event } = writer.reducer().plan(&command(1)?)? else {
@@ -390,7 +390,7 @@ mod measured_open_tests {
         assert!(matches!(failure.error, Error::Unauthorized(_)));
         assert_eq!(*failure.work, WorkCounters::default());
         let empty_provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let empty = StreamClient::new(empty_provider.clone());
+        let empty = empty_provider.clone();
         let receipt = StreamAggregate::open_measured(&empty, authority(), issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.map_err(|failure| failure.error)?;
         assert_eq!(receipt.value.reducer().revision(), 0);
         assert_eq!(receipt.work.authority_bytes_read, 0);
@@ -404,7 +404,7 @@ mod measured_open_tests {
         use crate::core::EffectGuarantee;
         use crate::{EffectAttemptId, EffectId};
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let request = content()?;
         let schema_bytes = br#"{"type":"object"}"#;
         let schema = FileRef::new(request.volume().clone(), "effects/schema.json", "generation-1", FileDescriptor::from_bytes(schema_bytes, "application/schema+json")?, "schema.json")?;

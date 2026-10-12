@@ -2626,7 +2626,7 @@ impl NativePreparationCompletionTemplate {
 /// Authenticates or publishes the original protected ROOT conversation Bind and returns that exact SDK command's canonical bytes.
 #[allow(clippy::too_many_arguments, reason = "original creator, owner and paid authority are distinct")]
 pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider + 'static>(
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &std::sync::Arc<P>,
     authority: (crate::core::Authority, crate::core::AuthorityIssuer, Scope),
     authority_custody: acyclic_fs::NativeAllocation,
     owner: &TaskJournalOwner<P>,
@@ -2756,7 +2756,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         }
     }
 
-    fn read_client(&self) -> &acyclic_stream::StreamClient<P> {
+    fn read_client(&self) -> &std::sync::Arc<P> {
         match &self.authority {
             NativePreparationAuthority::Owner { owner, .. } => owner.stream(),
             NativePreparationAuthority::Admission(witness) => witness.prepared_stream(),

@@ -416,14 +416,14 @@ async fn actual_original_native_approval_ledger_requires_exact_conversation_tick
         tool::ToolApprovalVerifier,
         store::StreamAggregate,
     };
-    use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+    use acyclic_stream::{LocalStream, LocalStreamLimits};
     let directory = tempfile::tempdir().map_err(|error| invalid(&error.to_string()))?;
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await
         .map_err(|error| invalid(&error.to_string()))?;
     let provider = ProviderRef::new("actual-native-approval-test", "filesystem", "1")?;
     let files = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
-    let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await
-        .map_err(|error| invalid(&error.to_string()))?));
+    let stream = Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await
+        .map_err(|error| invalid(&error.to_string()))?);
     for (index, conversation) in ["original-root-task", "original-child-task"].into_iter().enumerate() {
         let agent = AgentId::from_bytes([71 + index as u8; 16]);
         let private = VolumeRef::new(provider.clone(), conversation, VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;

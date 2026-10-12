@@ -482,7 +482,7 @@ type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::Loc
 pub(crate) struct PiBuiltinHost<'a> {
     runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
     filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
-    stream: acyclic_stream::StreamClient<acyclic_stream::LocalStream>,
+    stream: std::sync::Arc<acyclic_stream::LocalStream>,
     resources: &'a crate::ServiceResources,
     protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
     retained: &'a crate::AdapterState,
@@ -496,7 +496,7 @@ impl<'a> PiBuiltinHost<'a> {
     pub(crate) fn new(
         runtime: std::sync::Arc<crate::pi_native_host::PiNativeRuntime>,
         filesystem: std::sync::Arc<crate::pi_native_host::PiNativeFilesystem>,
-        stream: acyclic_stream::StreamClient<acyclic_stream::LocalStream>,
+        stream: std::sync::Arc<acyclic_stream::LocalStream>,
         resources: &'a crate::ServiceResources, protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
         retained: &'a crate::AdapterState,
         roots: &'a std::collections::BTreeMap<String, crate::pi_root_provider::PiRootHandle>,

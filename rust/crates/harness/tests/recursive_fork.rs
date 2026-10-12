@@ -32,7 +32,7 @@ use acyclic_harness::projection::{ModelContextSelection, select_model_context};
 use acyclic_harness::resources::{ProviderRef, StreamRef};
 use acyclic_harness::store::StreamAggregate;
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Result};
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -147,7 +147,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let filesystem = Fs::memory();
     let provider = ProviderRef::new("qualification", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let stream_provider = ProviderRef::new("qualification", "stream", "2")?;
 
     let shared = volume(
@@ -1067,7 +1067,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
         ])?));
         if level == 1 {
-            let prebound_stream = StreamClient::new(Arc::new(MemoryStream::default()));
+            let prebound_stream = Arc::new(MemoryStream::default());
             let mut prebound_child = StreamAggregate::open(
                 &prebound_stream,
                 child_authority.clone(),

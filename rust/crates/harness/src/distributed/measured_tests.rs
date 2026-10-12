@@ -34,19 +34,19 @@ impl ContentResidencyVerifier for UnmeasuredContent {
 }
 
 async fn append_source<P: StreamProvider>(
-    client: &StreamClient<P>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+    client: &std::sync::Arc<P>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
         *blake3::hash(&canonical).as_bytes(), canonical, time, &mut None)?;
     let length = bytes.len() as u64;
-    client.stream(COORDINATOR_PATH)?.append_batch(
+    acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.append_batch(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
 }
 
-async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result<()> {
+async fn seed(client: &std::sync::Arc<FaultStream>, ids: &[OperationId]) -> Result<()> {
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
     for (index, id) in ids.iter().enumerate() {
         let declaration = spec(*id, 0)?;
@@ -63,7 +63,7 @@ async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result
 async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call() -> Result<()> {
     for mode in 0..3 {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
         let bytes = append_source(&client, 1, "measured-quota", SchedulerEvent::Declared {
             spec: Box::new(spec(OperationId::from_bytes([104; 16]), 0)?),
@@ -89,7 +89,7 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
 #[tokio::test]
 async fn declared_content_without_measured_capability_rejects_before_ordinary_content_io() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let content = Arc::new(UnmeasuredContent::default());
     let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
     append_source(&client, 1, "unmeasured-content", SchedulerEvent::Declared {
@@ -110,7 +110,7 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
 }
 
 async fn admitted_fixture(
-    client: &StreamClient<FaultStream>,
+    client: &std::sync::Arc<FaultStream>,
     operation: OperationId,
 ) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
     seed(client, &[operation]).await?;
@@ -126,7 +126,7 @@ async fn admitted_fixture(
 #[tokio::test]
 async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified_revision() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([120; 16]);
     let execution = OperationId::from_bytes([121; 16]);
     let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
@@ -162,7 +162,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
 }
 
 async fn historical_source(
-    client: &StreamClient<FaultStream>, operation: OperationId,
+    client: &std::sync::Arc<FaultStream>, operation: OperationId,
 ) -> Result<(Authority, crate::core::AuthorityIssuer, Scope, LeaseFence, u64)> {
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
@@ -190,7 +190,7 @@ async fn historical_source(
 #[tokio::test]
 async fn original_reservation_proof_keeps_the_selected_old_origin_without_current_write_authority() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([128; 16]);
     let (owner, issuer, scope, original, time) = historical_source(&client, operation).await?;
     append_source(&client, 4, "original-released", SchedulerEvent::LeaseReleased {
@@ -225,7 +225,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
 async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selectors_without_writes() -> Result<()> {
     for duplicate in [false, true] {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let operation = OperationId::from_bytes([129; 16]);
         let (owner, issuer, scope, mut candidate, time) = historical_source(&client, operation).await?;
         if duplicate {

@@ -17,13 +17,13 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -175,7 +175,7 @@ where
     /// Authenticates and copies the conversation owner with optional accounting.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>,
         authority: &Authority, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
         owner_scope: &Scope, private_volume: &VolumeRef, maximum_bytes: u64,
         io: Option<&PreparationIo>,

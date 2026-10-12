@@ -7,7 +7,7 @@ use acyclic_harness::{Admission, AgentId, Capabilities,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceSnapshot, SessionLimits},
     tool::ToolRegistry, workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine}};
 use acyclic_fs::{CancellationToken, Fs, MemoryAuthorityBackend, MemoryObjectBackend};
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -26,7 +26,7 @@ impl ResumableMachine for Passive {
     }
 }
 struct Fixture {
-    stream: StreamClient<MemoryStream>, host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
+    stream: std::sync::Arc<MemoryStream>, host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef, issuer: AuthorityIssuer, signed: Scope, scope: RuntimeScope,
     tasks: TaskRegistry, machines: MachineRegistry,
 }
@@ -53,7 +53,7 @@ impl Fixture {
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
         let mut machines = MachineRegistry::default(); machines.register(machine)?;
-        Ok(Self { stream: StreamClient::new(Arc::new(MemoryStream::default())), host, volume, issuer, signed, scope, tasks, machines })
+        Ok(Self { stream: Arc::new(MemoryStream::default()), host, volume, issuer, signed, scope, tasks, machines })
     }
     async fn runtime(&self) -> Result<Arc<Runtime>> {
         Ok(Arc::new(Runtime::open(self.stream.clone(), self.host.clone(), self.volume.clone(), self.issuer.verifier(),

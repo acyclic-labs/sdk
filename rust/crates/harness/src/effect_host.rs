@@ -16,7 +16,7 @@ use crate::{
     },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 /// Immutable provider selection and ref-only request for one task command.
@@ -271,7 +271,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
 
 /// Resolves a pinned provider attempt into its owning conversation history.
 pub struct ConversationEffectHost<P> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     authority: Authority,
     issuer: AuthorityIssuer,
     scope: Scope,
@@ -287,7 +287,7 @@ pub struct ConversationEffectHost<P> {
 impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds one conversation, its signed effect-run scope and provider catalog.
     pub fn new(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         authority: Authority,
         issuer: AuthorityIssuer,
         scope: Scope,
@@ -349,7 +349,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "same owned conversation binding plus its original custody")]
     pub fn new_with_native_work(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         authority: Authority,
         issuer: AuthorityIssuer,
         scope: Scope,
@@ -456,7 +456,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     async fn aggregate(
-        &self, stream: &StreamClient<P>,
+        &self, stream: &std::sync::Arc<P>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ObservedEffectAggregate<P>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -817,7 +817,7 @@ mod native_metadata_controls {
             files, issuer.verifier(), scope.clone(),
         ));
         ConversationEffectHost::new(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
         )
     }

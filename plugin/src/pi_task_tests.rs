@@ -18,7 +18,7 @@ use acyclic_harness::{
     scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
     workflow::MachineRegistry,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits, StreamProvider as _};
 use std::{collections::BTreeMap, path::Path};
 
 #[path = "pi_task_model_tests.rs"]
@@ -265,11 +265,11 @@ async fn open_owner_with(
             .await
             .unwrap();
     }
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .unwrap(),
-    ));
+    );
     let runtime = PiTaskRuntime::open_with_native_work(
         stream, filesystem, &journal, authority, &work,
     ).await?;
@@ -424,14 +424,14 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
     ).unwrap();
@@ -577,14 +577,14 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
         )
         .unwrap(),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(
             directory.path().join("stream"),
             LocalStreamLimits::default(),
         )
         .await
         .unwrap(),
-    ));
+    );
     let mut state = session_state(&binding);
     let reopen_work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
@@ -1319,7 +1319,7 @@ mod native_transition {
         runtime: NativeRuntime,
         filesystem: Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
         provider: Arc<NativeStream>,
-        stream: StreamClient<NativeStream>,
+        stream: std::sync::Arc<NativeStream>,
         fence: LeaseFence,
         _startup_work: NativeMaterializationWork,
         _admission: (Admission<TaskId>, NativeAllocation),
@@ -1368,7 +1368,7 @@ mod native_transition {
             let provider = Arc::new(NativeStream::new(
                 LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.unwrap(),
             ));
-            let stream = StreamClient::new(provider.clone());
+            let stream = provider.clone();
             let runtime = PiTaskRuntime::open_with_native_work(
                 stream.clone(), filesystem.clone(), &journal,
                 owner.authority_with_native_work(&original).unwrap(), &original,
@@ -1424,7 +1424,7 @@ mod native_transition {
         }
 
         async fn original_pointer(&self, revision: u64) -> FileRef {
-            let records = self.stream.stream(self.journal_path()).unwrap().read(revision, 1)
+            let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), self.journal_path()).unwrap().read(revision, 1)
                 .await.unwrap().try_collect::<Vec<_>>().await.unwrap();
             let [record] = records.as_slice() else { panic!("original committed workflow pointer"); };
             serde_json::from_slice(&record.value).unwrap()
@@ -1672,7 +1672,7 @@ mod native_transition {
             &original).await.unwrap();
         assert_eq!(retried.0.state, session.checkpoint().state);
         assert_eq!(fixture.original_pointer(3).await, published);
-        assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 4);
+        assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(fixture.journal_path()).unwrap()).await.unwrap().tail, 4);
         assert_eq!(fixture.runtime.runtime.task_host().observe_admission(fixture.binding.task_id)
             .await.unwrap(), original_admission);
         assert!(original.receipt().peak_allocation_bytes > 128 * 1024);
@@ -1766,7 +1766,7 @@ mod native_transition {
         assert_eq!(replay.0[0].prior.revision, 0);
         assert_eq!(replay.0[0].next.revision, 1);
         assert_eq!(replay.0[0].transition, committed.0);
-        assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 1);
+        assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(fixture.journal_path()).unwrap()).await.unwrap().tail, 1);
         drop(failure);
         drop(rejected);
         drop(committed.0);
@@ -1798,7 +1798,7 @@ mod native_transition {
         assert_eq!(exact.0, expected);
         assert_eq!(recovered.checkpoint().revision, 1);
         assert_eq!(fixture.original_pointer(0).await, pointer);
-        assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 1);
+        assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(fixture.journal_path()).unwrap()).await.unwrap().tail, 1);
         let journal = fixture.journal(&original).await;
         let replay = fixture.replay(&journal, &original).await;
         assert_eq!(replay.0[0].transition, expected);
@@ -1852,7 +1852,7 @@ mod native_transition {
         let cancelled = fixture.native_step(&mut current, 151, "native-root-preparing",
             &Value::Null, &original).await.err().unwrap();
         assert_eq!(current.checkpoint(), &checkpoint);
-        assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 2);
+        assert_eq!(fixture.stream.bounds(acyclic_stream::StreamPath::new(fixture.journal_path()).unwrap()).await.unwrap().tail, 2);
         assert!(fixture.runtime.runtime.task_host().outcome(fixture.binding.task_id).await.unwrap().is_none(),
             "a cancellation request does not fabricate terminal settlement");
         drop(stale);

@@ -17,7 +17,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 
 type Files = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Runtime = FilesystemTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
@@ -47,7 +47,7 @@ impl Drop for FixtureRoot {
 struct Fixture {
     _directory: FixtureRoot,
     files: Arc<Files>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
     grants: Capabilities,
@@ -89,7 +89,7 @@ fn registries() -> Result<(TaskRegistry, MachineRegistry, acyclic_harness::regis
     Ok((tasks, machines, identity, machine_identity))
 }
 
-async fn open_runtime(stream: StreamClient<LocalStream>, files: Arc<Files>, volume: VolumeRef, issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities) -> Result<Runtime> {
+async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, volume: VolumeRef, issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities) -> Result<Runtime> {
     let (tasks, machines, _, _) = registries()?;
     FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
         tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await
@@ -138,7 +138,7 @@ impl Fixture {
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem, provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
-        let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?));
+        let stream = Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?);
         let runtime = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
         let (_, _, identity, machine) = registries()?;
         let runtime_scope = RuntimeScope::new(grants.clone(), Limits::default())?;
