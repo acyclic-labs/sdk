@@ -1,5 +1,4 @@
 //! Native lazy selections retain the original authored/overlay/shadow cut.
-//! The canonical Filesystem preparer remains the sole resource creator.
 
 use crate::{LocalLazyWorkspace, SharedPhysicalRoot, LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkBudget, WorkCounters};
@@ -49,7 +48,7 @@ impl PiLazyCapture {
             #[derive(serde::Serialize)]
             #[serde(tag = "kind", content = "reference", rename_all = "snake_case")]
             enum Revision<'a> { Artifact(Reference<'a>) }
-            let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+            let bytes = crate::pi_root_provider::canonical_pi_value(
                 &Revision::Artifact(Reference {
                     kind: acyclic_harness::resources::ResourceKind::Artifact,
                     provider: Provider { namespace: "acyclic.pi", family: "native-lazy", version: "1" },
@@ -86,7 +85,7 @@ impl PiLazyCapture {
         #[derive(serde::Serialize)]
         struct Selection<'a> { required: bool, revision: &'a ResourceRevision }
         let maximum = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64;
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+        let bytes = crate::pi_root_provider::canonical_pi_value(
             &Selection { required: true, revision: &self.revision }, maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<ForkSelection>(&bytes.0, maximum, maximum,
             acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
@@ -136,7 +135,7 @@ impl PiLazyCapture {
         #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
         enum ResultValue<'a> { Captured(Resource<'a>) }
         let maximum = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64;
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+        let bytes = crate::pi_root_provider::canonical_pi_value(
             &ResultValue::Captured(Resource { source: &self.revision, revision: &self.revision }), maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<Capture>(&bytes.0, maximum, maximum,
             acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
@@ -212,8 +211,7 @@ impl ForkSeedVerifier for PiLazyCapture {
     }
 }
 
-/// The Root's actual created-source guard spans the watcher, rebind and freeze
-/// on the command's existing ledger. The SDK owns every returned source guard.
+/// The Root's actual created-source guard spans the watcher, rebind and freeze on the command's existing ledger.
 pub(crate) async fn freeze_root_source_with_native_work<P, F, G>(
     original_root: acyclic_harness::TaskId,
     context: &acyclic_harness::runtime::TaskContext,
@@ -261,11 +259,7 @@ pub(crate) fn native_lazy_error(source: acyclic_fs::LazyWorkspaceError) -> Error
     }
 }
 
-/// Only an active source's ORIGINAL native view owner may checkpoint its dirty
-/// mounts. A selected caller's authority can never replace this source owner.
-/// `work` is that view's retained original source-operation work, not a
-/// selecting caller's query. Its returned custody remains separate from the
-/// caller's later sealed-read/preparation work.
+/// Only an active source's ORIGINAL native view owner may checkpoint its dirty mounts.
 pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
     context: &acyclic_harness::runtime::TaskContext,
     owner: &acyclic_harness::durable_host::TaskJournalOwner<P>,
