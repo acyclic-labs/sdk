@@ -1363,7 +1363,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [7; 16],
             &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "tool-1", 10, 100)
@@ -1617,7 +1618,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [12; 16],
             &crate::WorkspaceName::new("lease-identity").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease_id = OperationLeaseId::from_bytes([42; 16]);
         let first = coordinator
@@ -1650,7 +1652,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [13; 16],
             &crate::WorkspaceName::new("lease-renewal").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "owner", 1, 10)
@@ -1681,7 +1684,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [8; 16],
             &crate::WorkspaceName::new("agent").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 100)
@@ -1714,7 +1718,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [9; 16],
             &crate::WorkspaceName::new("expired").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let lease = coordinator
             .begin(workspace, generation(1), "tool", 10, 20)
@@ -1743,7 +1748,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [10; 16],
             &crate::WorkspaceName::new("overlap-expiry").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let expired = coordinator
             .begin(workspace, generation(1), "expired", 10, 20)
@@ -1778,7 +1784,8 @@ mod tests {
         let workspace = WorkspaceId::derive(
             [11; 16],
             &crate::WorkspaceName::new("duplicate-expiry").expect("valid test workspace"),
-        );
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value;
         let coordinator = OperationWindowCoordinator::new(MemoryOperationWindowStore::new());
         let first = coordinator
             .begin(workspace, generation(1), "first", 1, 10)

@@ -115,8 +115,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(verifier.clone());
     let effect_id = EffectId::from_bytes([63; 16]);
@@ -435,10 +434,8 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         complete(&mut aggregate, &registry, &issuer, id, plan(id, false), &fresh, &mut ordinal).await?;
         if matches!(retained, 1 | 100 | 1_000) {
             provider.forbid_writes.store(true, Ordering::SeqCst);
-            let cold = StreamAggregate::open_with_projection_limits(
-                &stream, authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-                acyclic_harness::store::default_projection_read_limits(), 2,
-            ).await?.with_content_verifier(verifier.clone());
+            let cold = StreamAggregate::open(
+                &stream, authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), 2, None, &mut None).await?.with_content_verifier(verifier.clone());
             assert_eq!(cold.reducer().revision(), aggregate.reducer().revision());
             assert_eq!(cold.reducer().resident_terminal_effect_count(), 2);
             assert_eq!(cold.reducer().resident_effect_count(), 5);

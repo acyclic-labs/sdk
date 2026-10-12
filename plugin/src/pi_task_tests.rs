@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::{policy, work};
 use crate::pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use crate::pi_recovery::{
@@ -24,7 +25,7 @@ use std::{collections::BTreeMap, path::Path};
 mod bounded_model;
 
 type OwnedRuntime =
-    PiTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+    PiTaskRuntime<LocalStream>;
 
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
@@ -40,6 +41,10 @@ fn preparation() -> WorkflowCommand {
         )
         .unwrap(),
     }
+}
+
+fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
+    json!({"commands":[{"operation_id":operation,"value":value}]})
 }
 
 fn binding() -> PiTaskBinding {
@@ -231,7 +236,7 @@ async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -314,7 +319,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
     // A retained route, even with valid host credentials, cannot admit itself.
     assert!(observe_pi_session(&owner.runtime, &state, &original_work).await.is_err());
     owner
-        .admit_root_with_native_work(binding.clone(), intent.clone(), preparation(), &original_work)
+        .admit_root(&binding, &intent, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -345,7 +350,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         let changed_intent = PiRootIntent::from_state(&changed).unwrap();
         assert!(
             owner
-                .admit_root_with_native_work(binding.clone(), changed_intent, preparation(), &original_work)
+                .admit_root(&binding, &changed_intent, &preparation(), &original_work)
                 .await
                 .is_err()
         );
@@ -463,7 +468,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -565,7 +570,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         owner
-            .admit_root_with_native_work(foreign, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&foreign, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -574,7 +579,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     let another_task = another_root.task_id;
     assert!(
         owner
-            .admit_root_with_native_work(another_root, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&another_root, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -597,12 +602,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     journal_selection.scratch.volume = journal.clone();
     assert!(
         owner
-            .admit_root_with_native_work(
-                journal_selection,
-                PiRootIntent::ScratchOnly {},
-                preparation(),
-                &original_work,
-            )
+            .admit_root(&journal_selection, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -614,12 +614,11 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
             .await
             .is_err()
     );
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
+    let accepted = owner.admit_root(
+        &binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work,
     ).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     let admission = owner
         .runtime
         .task_host()
@@ -669,12 +668,9 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     ));
     drop(owner);
     let (owner, original_work) = open(directory.path(), &binding, false).await.unwrap();
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
-    ).await.unwrap();
+    let accepted = owner.admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
-    drop(accepted.0);
-    drop(accepted.1);
+    drop(accepted);
     assert!(
         owner
             .runtime
@@ -689,7 +685,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     changed.native_session_id = "different-native-session".to_owned();
     assert!(
         owner
-            .admit_root_with_native_work(changed, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&changed, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -710,7 +706,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -747,7 +743,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     )
-                    .verifier();
+                    .verifier(&mut None).unwrap();
                 }
                 "widening" => {
                     authority.scope = RuntimeScope::new(
@@ -776,7 +772,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed =
                         issuer.issue("pi-owner", authority.signed.capabilities(), None, None, &mut None).expect("scope proof");
                 }
@@ -789,7 +785,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: "not-a-task-identity".to_owned(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed = issuer.issue("pi-owner", authority.signed.capabilities(), Some(binding.agent_id), None, &mut None).expect("scope proof");
                 }
                 _ => unreachable!(),
@@ -922,7 +918,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
     let report = fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
     report.0.validate().unwrap();
@@ -974,7 +970,7 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
     let mut stale = fixture.fence.clone();
     stale.reservation_id = "stale-original-parent-fence".into();
     assert!(fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &stale,
-        &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
+        &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
         acyclic_fs::CancellationToken::new()).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(
         plan.request.child.task_id()).await.is_err());
@@ -1047,7 +1043,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024);
     assert!(!accounting.iter().any(|record| matches!(
-        &record.event, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
+        record, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
     )), "passive native root controls must not charge harness model attempts");
 }
 
@@ -1128,10 +1124,6 @@ mod native_transition {
         workflow::WorkflowJournal,
     };
 
-    fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
-        json!({"commands":[{"operation_id":operation,"value":value}]})
-    }
-
     fn step(
         machine: &PiTaskMachine, state: &Value, input: &Value,
         work: &NativeMaterializationWork,
@@ -1186,8 +1178,7 @@ mod native_transition {
             let actual = step(&machine, &state, &input, &work).unwrap();
             assert_eq!(actual.0, MachineTransition { state: state_next, commands, status });
             assert!(actual.1.work().shares_ledger(&work));
-            drop(actual.0);
-            drop(actual.1);
+            drop(actual);
             assert_eq!(work.live_allocation_bytes(), work_baseline);
         }
         for state in [

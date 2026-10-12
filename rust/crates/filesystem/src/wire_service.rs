@@ -10,7 +10,7 @@ use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
     JoinOutcome, MergeConflict, ObjectId, Sequence, Transaction, TransactionCommit,
-    TransactionConflict, TransactionConflictRegion, TransactionRebase, Workspace, WorkspaceDelete,
+    RebaseConflict, DependencyState, DependencyRegion, TransactionRebase, Workspace, WorkspaceDelete,
     WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
 use bytes::Bytes;
@@ -1625,7 +1625,7 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .set_metadata(&value.path, metadata(value.metadata)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
-        Mutation::Remove(value) => transaction.remove(&value.path).await,
+        Mutation::Remove(value) => transaction.remove(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::Rename(value) => {
             transaction
                 .rename_with_replace(&value.source, &value.destination, value.replace)
@@ -1688,8 +1688,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Mutation::CreateDirectories(value) => transaction.create_dir_all(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::PutFile(value) => {
             transaction
-                .write(&value.path, Bytes::from(value.contents))
-                .await
+                .write(&value.path, Bytes::from(value.contents), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::CopyFile(value) => transaction.copy(&value.source, &value.destination).await,
     }
@@ -1925,8 +1925,7 @@ async fn generation_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reference = generation_ref(generation);
     let workspace = reference.workspace.clone();
     let parents = generation
-        .parents()
-        .await
+        .parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| status(&error))?
         .into_iter()
         .map(|id| wire::GenerationRef {
@@ -2223,19 +2222,19 @@ fn mutation_with_conflicts(
     }
 }
 
-fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
+fn transaction_conflict(value: RebaseConflict) -> wire::Conflict {
     use wire::conflict::Region;
     let region = match value.region {
-        TransactionConflictRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
+        DependencyRegion::FileRecord(file_id) => Region::FileRecord(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
+        DependencyRegion::Metadata(file_id) => Region::Metadata(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
+        DependencyRegion::FileLength(file_id) => Region::FileLength(wire::FileConflict {
             file_id: file_id.into_bytes().to_vec(),
         }),
-        TransactionConflictRegion::ContentRange {
+        DependencyRegion::ContentRange {
             file_id,
             offset,
             length,
@@ -2243,7 +2242,7 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             file_id: file_id.into_bytes().to_vec(),
             range: Some(wire::ByteRange { offset, length }),
         }),
-        TransactionConflictRegion::SparseSeek {
+        DependencyRegion::SparseSeek {
             file_id,
             offset,
             target,
@@ -2252,13 +2251,13 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
             offset,
             target: hosted_contract::sparse_target(target) as i32,
         }),
-        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+        DependencyRegion::DirectoryName { directory_id, name } => {
             Region::DirectoryName(wire::DirectoryNameConflict {
                 directory_id: directory_id.into_bytes().to_vec(),
                 name: Some(logical_name(&name)),
             })
         }
-        TransactionConflictRegion::DirectoryRange {
+        DependencyRegion::DirectoryRange {
             directory_id,
             after,
             maximum_entries,
@@ -2271,12 +2270,8 @@ fn transaction_conflict(value: TransactionConflict) -> wire::Conflict {
     wire::Conflict {
         region: Some(region),
         r#use: hosted_contract::conflict_use(value.usage) as i32,
-        expected_digest: value
-            .expected
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
-        actual_digest: value
-            .actual
-            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+        expected_digest: match value.expected { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
+        actual_digest: match value.actual { DependencyState::Absent => Vec::new(), DependencyState::Present(digest) => digest.as_bytes().to_vec() },
     }
 }
 

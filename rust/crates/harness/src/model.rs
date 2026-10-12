@@ -98,14 +98,14 @@ pub(crate) fn vec_with_capacity<T>(
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
-            .ok_or_else(model_owned_overflow)?)?;
-        return Ok(values);
     }
-    #[cfg(not(feature = "filesystem"))]
     let _ = (io, bytes);
     values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+            .ok_or_else(model_owned_overflow)?)?;
+    }
     Ok(values)
 }
 
@@ -397,6 +397,7 @@ pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&crate::executor::PreparationI
 
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Model {
     /// Provider selected by application code.
     pub provider: String,
@@ -405,6 +406,7 @@ pub struct Model {
     /// Immutable model revision or digest.
     pub revision: String,
     /// Provider-specific options retained as typed JSON.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
     pub options: Value,
 }
 
@@ -443,6 +445,7 @@ impl Model {
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelMessage {
     /// Semantic role (`system`, `user`, `assistant`, or `tool`).
     pub role: ModelRole,
@@ -453,6 +456,7 @@ pub struct ModelMessage {
 /// Closed provider-neutral role set; adapters may reject unsupported combinations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelRole {
     /// Host instruction.
     System,
@@ -484,6 +488,7 @@ impl ModelRole {
     clippy::large_enum_variant,
     reason = "model parts retain their public untagged content shape"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContent {
     /// Plain prompt text or bounded projection produced by a resolver.
     Text(String),
@@ -639,6 +644,7 @@ impl ModelContent {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelContentPart {
     /// Plain text.
     Text {
@@ -648,6 +654,7 @@ pub enum ModelContentPart {
     /// Immutable file reference with an explicit byte-resolution policy.
     File {
         /// Immutable file identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Resolution and rendering policy.
         policy: FileProjectionPolicy,
@@ -660,6 +667,7 @@ pub enum ModelContentPart {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Tool result with matching call identity.
@@ -677,6 +685,7 @@ pub enum ModelContentPart {
 /// File handling policy selected before provider dispatch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum FileProjectionPolicy {
     /// Metadata-only file reference, with no byte read.
     Reference,
@@ -692,6 +701,7 @@ pub enum FileProjectionPolicy {
     clippy::large_enum_variant,
     reason = "keep immutable FileRef inline; the larger optional native policy payload is boxed"
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelDataPart {
     /// Exact text.
     Text {
@@ -701,6 +711,7 @@ pub enum ModelDataPart {
     /// Immutable data with an explicit resolution policy.
     File {
         /// Immutable media identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         file: FileRef,
         /// Explicit resolution intent.
         policy: FileProjectionPolicy,
@@ -710,10 +721,12 @@ pub enum ModelDataPart {
 /// The complete model-visible projection envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolResultContent {
     /// Explicit JSON projection.
     Json {
         /// Exact schema-defined JSON value.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         value: Value,
     },
     /// Ordered, nonrecursive text and file data.
@@ -726,12 +739,16 @@ pub enum ToolResultContent {
 /// Claim to verify against original task admission and linked implementation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeConfigurationBinding {
     /// Original immutable extension admission event.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmEventReferenceWire"))]
     pub source: crate::core::EventReference,
     /// Exact registered option schema and immutable JSON file.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmExtensionConfigurationWire"))]
     pub configuration: crate::core::ExtensionConfiguration,
     /// Original owner-linked executable implementation.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub implementation_digest: [u8; 32],
 }
 
@@ -809,6 +826,7 @@ impl NativeConfigurationBinding {
 /// Explicit common image quality intent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ImageDetail {
     /// Select adapter image quality.
     Auto,
@@ -821,6 +839,7 @@ pub enum ImageDetail {
 /// Requested modality is independent of the stored file's MIME type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum NativeMediaIntent {
     /// Provider-native image with explicit detail.
     Image {
@@ -830,11 +849,13 @@ pub enum NativeMediaIntent {
     /// Entire audio input with a finite duration ceiling.
     Audio {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
     },
     /// Entire video input with finite duration and frame ceilings.
     Video {
         /// Positive finite maximum source duration.
+        #[cfg_attr(feature = "wasm", tsify(type = "number"))]
         maximum_duration_ms: u64,
         /// Positive finite maximum source frame count.
         maximum_frames: u32,
@@ -849,14 +870,18 @@ pub enum NativeMediaIntent {
 /// Explicit native input contract; no implicit conversion or fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct NativeMediaPolicy {
     /// Common modality and processing intent.
     pub intent: NativeMediaIntent,
     /// Positive finite byte ceiling, also bounded by task content limits.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_bytes: u64,
     /// Positive finite work ceiling interpreted by the selected adapter.
+    #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_work: u64,
     /// Optional immutable registered adapter options; never bearer authority.
+    #[cfg_attr(feature = "wasm", tsify(type = "NativeConfigurationBinding | null"))]
     pub configuration: Option<NativeConfigurationBinding>,
 }
 
@@ -1081,6 +1106,7 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelRequest {
     /// Selected model value.
     pub model: Model,
@@ -1199,7 +1225,7 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+                            let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope.0, "model tool result", Some(io),
                             )?;
@@ -1248,7 +1274,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelRequest>, bytes, crate::wire::ErrorCode::Storage)?),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1475,7 +1501,7 @@ impl PreparedModelRequest {
             _bytes_hold = hold;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelPrefix>, &bytes, crate::wire::ErrorCode::Storage)?),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1563,6 +1589,7 @@ fn model_hasher_update(
 /// Ordered event emitted by a model run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ModelEvent {
     /// User-visible content fragment.
     Content {
@@ -1582,11 +1609,13 @@ pub enum ModelEvent {
         /// Registered tool name.
         name: String,
         /// Schema-defined arguments.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         arguments: Value,
     },
     /// Model completed this step.
     Completed {
         /// Provider-owned usage and finish metadata.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonValue"))]
         metadata: Value,
     },
 }
@@ -1594,12 +1623,15 @@ pub enum ModelEvent {
 /// Executor-owned identity supplied separately from canonical model-visible bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelDispatch {
     /// Admitted execution operation identity.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation_id: OperationId,
     /// Zero-based logical executor step.
     pub step: u32,
     /// Digest of the exact canonical request supplied with this dispatch.
+    #[cfg_attr(feature = "wasm", tsify(type = "readonly number[]"))]
     pub request_digest: [u8; 32],
 }
 
@@ -1673,7 +1705,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = crate::filesystem::retain_decoded(io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?);
+        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Storage)?);
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))

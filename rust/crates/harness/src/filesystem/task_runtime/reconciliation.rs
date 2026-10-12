@@ -127,7 +127,7 @@ where
                     return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = crate::filesystem::retain_decoded(io.decode_preparation::<serde_json::Value>(&body, crate::wire::ErrorCode::Storage)?);
+                let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<serde_json::Value>, &body, crate::wire::ErrorCode::Storage)?);
                 drop(body);
                 commands.reconcile_with_native_work(
                     std::sync::Arc::clone(shared), observed::clone_fence(&fence, Some(io))?,
@@ -177,7 +177,7 @@ where
         #[cfg(target_arch = "wasm32")]
         let cancelled = self.host.cancellation_requested(task, None).await?;
         if cancelled {
-            self.settle_observed(task, fence, Outcome::Cancelled, io).await?;
+            self.task_host().settle_task(task, fence, Outcome::Cancelled, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
             Ok(WorkerTurn::Completed { task })
         } else { Ok(WorkerTurn::Reconciling) }
     }

@@ -180,7 +180,7 @@ impl PiTaskMachine {
         )?;
         let mut schema = super::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
-            acyclic_harness::JsonValueSchema::Root, 0, work,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
         identity.1.absorb(&mut schema.1).map_err(native_work_error)?;
         let alignment = std::mem::align_of::<Self>();
@@ -269,13 +269,13 @@ impl PiTaskMachine {
 }}"#, super::MAXIMUM_ADAPTER_ROOTS, super::pi_root::MAXIMUM_ROOT_PATH_BYTES)).map_err(native_work_error)?;
         let mut input = super::pi_root_provider::guarded_pi_decode(
             input_json.0.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
-            acyclic_harness::JsonValueSchema::Root, 0, work,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
         drop(input_json.0);
         drop(input_json.1);
         let mut output = super::pi_root_provider::guarded_pi_decode(
             br#"{"type":"object"}"#, NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
-            acyclic_harness::JsonValueSchema::Root, 0, work,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
         )?;
         input.1.absorb(&mut output.1).map_err(native_work_error)?;
         TaskDefinition::resumable_with_native_work(
@@ -734,7 +734,7 @@ fn native_metadata<T: NativeMetadata>(
         }
     };
     let decoded = super::pi_root_provider::guarded_pi_decode::<T>(
-        &bytes, NATIVE_METADATA_MAXIMUM, quota, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
+        &bytes, NATIVE_METADATA_MAXIMUM, quota, acyclic_harness::wire::ErrorCode::Invalid, T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
     );
     drop(bytes);
     drop(bytes_custody);

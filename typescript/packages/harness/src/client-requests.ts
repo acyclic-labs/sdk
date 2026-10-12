@@ -48,8 +48,7 @@ export class RequestScheduler {
     return { requests: this.#jobs.size, running: this.#running, bytes: this.#bytes };
   }
 
-  /** capture runs synchronously after reservation, before queued work can start.
-   * Use it to own caller inputs without allocating copies for rejected work. */
+  /** Capture caller inputs synchronously after reservation and before queued work. */
   schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
     signal?: AbortSignal, capture?: () => void): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("request scheduler disposed"));

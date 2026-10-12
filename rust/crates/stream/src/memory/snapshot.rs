@@ -277,7 +277,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         return None;
     }
     validate_inventory(&state)?;
-    recount(&mut state, &super::MemoryObserver::default()).expect("unmetered recount cannot fail");
+    recount(&mut state, None).expect("unmetered recount cannot fail");
     Some(state)
 }
 
@@ -528,7 +528,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             if replay_commit_id(state, &cached.result)? != commit { return None; }
             if state.replays.insert(key.clone(), cached).is_some() { return None; }
         }
-        state.retained.push_back(Retained {
+        state.retained.push(Retained {
             replay, commit, _allocation: super::Allocation::default(),
         });
     }

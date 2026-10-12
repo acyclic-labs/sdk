@@ -182,6 +182,7 @@ impl crate::filesystem::PreparationRecord for ToolResult {
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolDefinition {
     /// Stable bounded tool name; local names and explicit namespaces are both valid.
     pub name: String,
@@ -190,10 +191,13 @@ pub struct ToolDefinition {
     /// Model-visible description.
     pub description: String,
     /// JSON Schema for invocation arguments.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub projection_schema: Value,
 }
 
@@ -226,11 +230,11 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+            input_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
                 input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
-            output_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+            output_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
                 output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
-            projection_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+            projection_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
                 projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
         };
         crate::executor::with_history_io(Some(&io), |work| definition.validate_schemas(work))?;
@@ -719,23 +723,13 @@ impl PreparedToolRegistration {
 }
 
 impl ToolRegistry {
-    /// Creates an empty registry.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            versions: BTreeMap::new(),
-            selected: BTreeMap::new(),
-            catalog_revisions: BTreeMap::new(),
-        }
-    }
-
-    /// Creates the same empty registry with paid logical Self metadata.
+    /// Creates an empty registry with funded metadata.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
+    pub fn new(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        Ok((Self::new(), custody))
+        Ok((Self::default(), custody))
     }
 
     /// Registers a tool, rejecting ambiguous replacement.
@@ -1090,66 +1084,25 @@ impl ToolRegistry {
         Ok((copied, custody))
     }
 
-    /// Returns the same canonical model selection with funded DTO copies.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn definitions_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<ToolDefinition>, acyclic_fs::NativeAllocation)> {
-        let bytes = self.selected.len().checked_mul(std::mem::size_of::<ToolDefinition>())
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool definitions capacity overflow" })? as u64;
-        let metadata = std::mem::size_of::<Vec<ToolDefinition>>() as u64;
-        let mut custody = work.retain_owned(metadata)?;
-        let mut backing = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
-        custody.absorb(&mut backing)?;
-        let mut definitions = Vec::with_capacity(self.selected.len());
-        let actual = (definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64;
-        custody.reconcile_capacity(actual.checked_add(metadata).ok_or(
-            Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool definitions ownership overflow" })?)?;
-        for (name, selection) in &self.selected {
-            let revision = match selection {
-                ModelSelection::Revision(revision) => revision,
-                ModelSelection::Hidden => continue,
-                ModelSelection::Ambiguous => return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "tool requires an explicit model revision",
-                }),
-            };
-            let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let tool = self.get_version(name, revision, Some(&io))?.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "selected tool revision is not registered",
-            })?;
-            let mut hold;
-            let (definition, owned) =
-                clone_definition_with_native_work(&tool.definition, work)?;
-            hold = owned;
-            hold.substitute(hold.bytes() - std::mem::size_of::<ToolDefinition>() as u64)?;
-            custody.absorb(&mut hold)?;
-            definitions.push(definition);
-        }
-        Ok((definitions, custody))
-    }
-
     /// Returns the unambiguous model-visible selection in canonical order.
-    pub fn definitions(&self) -> Result<Vec<ToolDefinition>> {
-        let mut definitions = Vec::with_capacity(self.selected.len());
+    pub fn definitions(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<ToolDefinition>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?; }
+        let mut definitions = crate::model::vec_with_capacity(self.selected.len(), io)?;
         for (name, selection) in &self.selected {
             let revision = match selection {
                 ModelSelection::Revision(revision) => revision,
                 ModelSelection::Hidden => continue,
                 ModelSelection::Ambiguous => {
-                    return Err(Error::Conflict(format!(
-                        "tool {name} requires an explicit model revision"
-                    )));
+                    return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Conflict,
+                        "tool requires an explicit model revision"));
                 }
             };
             let tool = self
-                .get_version(name, revision, None)?
-                .ok_or_else(|| Error::Storage("selected tool revision is not registered".into()))?;
-            definitions.push(tool.definition.clone());
+                .get_version(name, revision, io)?
+                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Storage,
+                    "selected tool revision is not registered"))?;
+            definitions.push(crate::model::clone_tool_definition(&tool.definition, io)?);
         }
         Ok(definitions)
     }
@@ -1208,7 +1161,7 @@ mod tests {
 
     #[test]
     fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         for revision in ["1", "2"] {
             tools.register(Tool {
                 definition: ToolDefinition {
@@ -1224,10 +1177,10 @@ mod tests {
             })?;
         }
         assert!(tools.get("example.echo", None)?.is_none());
-        assert!(matches!(tools.definitions(), Err(Error::Conflict(_))));
+        assert!(matches!(tools.definitions(None), Err(Error::Conflict(_))));
         assert!(tools.get_version("example.echo", "1", None)?.is_some());
         tools.select_model_version("example.echo", "2")?;
-        assert_eq!(tools.definitions()?[0].revision, "2");
+        assert_eq!(tools.definitions(None)?[0].revision, "2");
         assert_eq!(
             tools
                 .get("example.echo", None)?
@@ -1235,7 +1188,7 @@ mod tests {
             Some("2")
         );
         tools.remove_from_model("example.echo")?;
-        assert!(tools.definitions()?.is_empty());
+        assert!(tools.definitions(None)?.is_empty());
         assert!(tools.get("example.echo", None)?.is_none());
         assert!(tools.get_version("example.echo", "1", None)?.is_some());
         assert!(tools.get_version("example.echo", "2", None)?.is_some());
@@ -1246,14 +1199,14 @@ mod tests {
             .clone();
         replacement.definition.revision = "3".into();
         tools.register(replacement)?;
-        assert!(tools.definitions()?.is_empty());
+        assert!(tools.definitions(None)?.is_empty());
         assert!(tools.get_version("example.echo", "3", None)?.is_some());
         assert!(matches!(
             tools.remove_from_model("missing"),
             Err(Error::NotFound(_))
         ));
         tools.select_model_version("example.echo", "1")?;
-        assert_eq!(tools.definitions()?[0].revision, "1");
+        assert_eq!(tools.definitions(None)?[0].revision, "1");
         Ok(())
     }
 
@@ -1371,7 +1324,7 @@ mod tests {
             executor: Arc::new(Executor),
             projection: Arc::new(Projection),
         };
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         assert!(
             registry
                 .install_scoped(

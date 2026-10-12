@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private binary configuration and composition, not a public SDK contract")]
 
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,
     conversation::{ContentPublisher as _, Limits, VolumeRef},
@@ -130,7 +131,7 @@ impl WorkflowContext {
             pipeline = pipeline.with(Arc::new(discovered.clone().stage(ContextPlacement::Prepend)?));
         }
         for attribute in &self.attributes {
-            attribute.validate()?;
+            attribute.validate(&mut None)?;
             let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
             let text = serde_json::to_string(attribute).map_err(|error| Error::Invalid(error.to_string()))?;
             pipeline = pipeline.with(Arc::new(SourceStage::new(
@@ -232,7 +233,7 @@ impl NativeSession {
         machines.register(preparation, &mut None)?;
         machines.register(mailbox, &mut None)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
-            .with_run_limits(config.run_limits)?;
+            .with_run_limits(config.run_limits, &mut None)?;
         let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
         let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,
@@ -446,18 +447,16 @@ impl NativeSession {
             self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
             MAX_FRAME_BYTES as u64, None,
         )?);
-        let mut parent = StreamAggregate::open_with_read_limits(
+        let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?.with_content_verifier(content)
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
-        let mut child = StreamAggregate::open_with_read_limits(
+        let mut child = StreamAggregate::open(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?;
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let seed = child.spawn_from_report(&mut parent, report,
             parent_binding.owner.scope.clone(), child_binding.scope.clone()).await?;
         let operation = input.child.operation_id;
@@ -533,7 +532,7 @@ impl HarnessWireApi for NativeSession {
             let reader = Arc::new(FilesystemContentVerifier::new(
                 self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
-            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
+            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                     Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
