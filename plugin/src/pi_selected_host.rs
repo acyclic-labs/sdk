@@ -340,7 +340,7 @@ fn encode_cursor<T: Serialize>(value: &T, cancellation: &CancellationToken,
     let (encoded, encoded_custody) = crate::pi_root_provider::guarded_pi_bytes(value, maximum, work)?;
     let result = (|| {
         let hex_length = (encoded.len() as u64).checked_mul(2).ok_or_else(|| invalid("cursor hex length overflow"))?;
-        let hex_custody = work.claim(hex_length).map_err(native_error)?;
+        let hex_custody = work.claim(hex_length, u64::from((hex_length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(WorkCounters { bytes_copied: hex_length, allocation_operations: u64::from(hex_length != 0),
             ..WorkCounters::default() }).map_err(native_error)?;
         cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -357,7 +357,7 @@ fn decode_cursor<T: serde::de::DeserializeOwned>(value: &str, cancellation: &Can
     }
     cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
     let length = value.len() as u64 / 2;
-    let bytes_custody = work.claim(length).map_err(native_error)?;
+    let bytes_custody = work.claim(length, u64::from((length) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { bytes_copied: length, allocation_operations: u64::from(length != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
     let bytes = hex::decode(value).map_err(|_| invalid("selected cursor is not canonical hexadecimal"))?;
@@ -769,7 +769,7 @@ pub(crate) async fn read_imported_selected_files(
         .ok_or_else(|| invalid("selected evidence path count overflow"))?;
     let path_slots = path_capacity.checked_mul(std::mem::size_of::<&str>())
         .ok_or_else(|| invalid("selected evidence path allocation overflow"))?;
-    let path_custody = work.claim(path_slots as u64).map_err(native_error)?;
+    let path_custody = work.claim(path_slots as u64, u64::from((path_slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { allocation_operations: u64::from(path_capacity != 0),
         items_examined: (descriptor.command.paths.len() + descriptor.journal.plan.edits.len()) as u64,
         ..WorkCounters::default() }).map_err(native_error)?;
@@ -802,7 +802,7 @@ pub(crate) async fn read_imported_selected_files(
     let capacity = paths.0.len();
     let slots = capacity.checked_mul(std::mem::size_of::<(&str, Option<String>)>())
         .ok_or_else(|| invalid("selected evidence payload allocation overflow"))?;
-    let payload_custody = work.claim(slots as u64).map_err(native_error)?;
+    let payload_custody = work.claim(slots as u64, u64::from((slots as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     work.charge(WorkCounters { allocation_operations: u64::from(capacity != 0),
         ..WorkCounters::default() }).map_err(native_error)?;
     let mut payload = (Vec::<(&str, Option<String>)>::with_capacity(capacity), None, payload_custody);
