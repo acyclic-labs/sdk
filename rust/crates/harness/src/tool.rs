@@ -54,23 +54,6 @@ pub(crate) fn clone_value(
     Ok((copied, custody))
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_definition_with_native_work(
-    value: &ToolDefinition,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(ToolDefinition, acyclic_fs::NativeAllocation)> {
-    use crate::filesystem::UploadRecord as _;
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
-    let copied = crate::model::clone_tool_definition(value, Some(&io))?;
-    let retained = (std::mem::size_of::<ToolDefinition>() as u64)
-        .checked_add(copied.logical_owned_bytes()?)
-        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "tool definition ownership overflow" })?;
-    let custody = io.into_native_custody(retained)?;
-    Ok((copied, custody))
-}
-
 /// Builds the canonical result tree through the existing bounded SDK codec.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn value<T: Serialize>(
@@ -201,7 +184,7 @@ impl ToolDefinition {
     /// Constructs a definition from borrowed schema literals on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "the complete pinned tool definition")]
-    pub fn new_with_native_work(
+    pub fn new(
         name: &str,
         revision: &str,
         description: &str,
@@ -1018,13 +1001,18 @@ impl ToolRegistry {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::filesystem::UploadRecord as _;
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
-            let mut definition_hold;
-            let (definition, hold) =
-                clone_definition_with_native_work(&tool.definition, work)?;
-            definition_hold = hold;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
+            let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
+            let retained = (std::mem::size_of::<ToolDefinition>() as u64)
+                .checked_add(definition.logical_owned_bytes()?)
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool definition ownership overflow" })?;
+            let mut definition_hold = io.into_native_custody(retained)?;
             let mut name_hold;
             let (name, hold) = work.display(name)?;
             name_hold = hold;

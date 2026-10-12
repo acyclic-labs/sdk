@@ -12,7 +12,7 @@ pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 pub(crate) fn builtin_tool_definition_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
-    acyclic_harness::tool::ToolDefinition::new_with_native_work(
+    acyclic_harness::tool::ToolDefinition::new(
         PI_BUILTIN_COMMAND_KIND, PI_BUILTIN_TOOL_REVISION,
         "Pi builtin IO through the original task's declared SOURCE, PROJECT or SCRATCH",
         r#"{
