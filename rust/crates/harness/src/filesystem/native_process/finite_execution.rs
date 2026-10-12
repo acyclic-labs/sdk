@@ -30,19 +30,6 @@ impl NativePublicationSlot {
 }
 
 #[inline(never)]
-fn spawn_capture<F, T>(
-    callback: F, original: &NativeMaterializationWork,
-) -> Result<tokio::task::JoinHandle<T>>
-where F: FnOnce() -> T + Send + 'static, T: Send + 'static {
-    let custody = original.claim(std::mem::size_of::<(F, NativeAllocation)>() as u64)?;
-    let task = (callback, custody);
-    Ok(tokio::task::spawn_blocking(move || {
-        let (callback, _custody) = task;
-        callback()
-    }))
-}
-
-#[inline(never)]
 pub(super) fn execute<'a, P: StreamProvider + 'static>(
     owner: &'a Arc<TaskJournalOwner<P>>, view: &'a dyn NativeProcessView<P>,
     authority: &'a NativeProcessAuthority, request: &'a Arc<NativeProcessRequest>,
@@ -175,13 +162,12 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
 
     }
             }
-            let work = original.receipt();
             Ok(if cleanup_completed {
                 NativeExecution { status: EffectStatus::Succeeded { result }, diagnostic: None,
-                    published, work }
+                    published }
             } else {
                 NativeExecution { status: EffectStatus::Indeterminate, diagnostic: Some(result),
-                    published, work }
+                    published }
             })
         }.await;
         match result {
@@ -247,7 +233,7 @@ async fn capture<P: StreamProvider + 'static>(
     let cancellation = cancellation.clone();
     let runtime = tokio::runtime::Handle::current();
     let inputs = (buffers, scopes, custody);
-    let (output, original_failure, custody) = spawn_capture(move || {
+    let capture = move || {
         let (buffers, scopes, custody) = inputs;
         let mut custody = custody;
         let mut scopes = scopes;
@@ -292,7 +278,7 @@ async fn capture<P: StreamProvider + 'static>(
                 .stdin(if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() { Stdio::piped() } else { Stdio::null() })
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
-            capture_supervisor.record_capture(NativeCapturePhase::Spawning)?;
+            capture_supervisor.record_quiescence(false)?;
             let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error)))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
@@ -309,7 +295,7 @@ async fn capture<P: StreamProvider + 'static>(
                 return Err(error);
             }
             let mut process = process.expect("actual canonical spawn installed custody");
-            if let Err(error) = capture_supervisor.record_capture(NativeCapturePhase::Running) {
+            if let Err(error) = capture_supervisor.record_quiescence(false) {
                 {
                     let retained = NativeRetainedProcess { process,
                         _scopes: scopes.take(),
@@ -373,12 +359,19 @@ async fn capture<P: StreamProvider + 'static>(
             *failure.lock().expect("capture failure custody") = Some(Error::from(error));
         }
         (output, failure.into_inner().expect("capture failure custody"), custody)
-    }, &invocation_work)?.await.map_err(|source| Error::NativeSupervisor { source, custody: None })?;
+    };
+    let mut task = (capture, invocation_work.retain_owned(0)?);
+    let bytes = std::mem::size_of_val(&task) as u64;
+    task.1.grow(bytes)?;
+    let (output, original_failure, custody) = tokio::task::spawn_blocking(move || {
+        let (capture, _custody) = task;
+        capture()
+    }).await.map_err(|source| Error::NativeSupervisor { source, custody: None })?;
     let mut custody = custody;
-    supervisor.record_capture(match &output {
-        Ok(Ok(_)) => NativeCapturePhase::Drained,
-        Ok(Err(failure)) if failure.cleanup_completed => NativeCapturePhase::Drained,
-        _ => NativeCapturePhase::Uncertain,
+    supervisor.record_quiescence(match &output {
+        Ok(Ok(_)) => true,
+        Ok(Err(failure)) => failure.cleanup_completed,
+        Err(_) => false,
     }).map_err(|error| Error::from(invocation_work.runtime_error(error)))?;
     if let Some(error) = original_failure {
         drop(output);
@@ -441,11 +434,11 @@ mod supervisor_tests {
     use super::*;
 
     #[test]
-    fn missing_owned_tree_cannot_promote_uncertain_collection_to_drained() {
+    fn missing_owned_tree_cannot_report_quiescence() {
         let supervisor = NativeSupervisorControl::new();
         let attempt = crate::EffectAttemptId::from_bytes([41; 16]);
         supervisor.begin(attempt).unwrap();
-        supervisor.record_capture(NativeCapturePhase::Uncertain).unwrap();
+        supervisor.record_quiescence(false).unwrap();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget {
             allocation_operations: 1,
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
@@ -453,7 +446,7 @@ mod supervisor_tests {
         }, &acyclic_fs::CancellationToken::new()).unwrap();
         let before = work.receipt();
         supervisor.settle_process(&work, &work).unwrap();
-        assert!(matches!(supervisor.snapshot(attempt).unwrap().1, NativeCapturePhase::Uncertain));
+        assert!(!supervisor.snapshot(attempt).unwrap().1);
         assert_eq!(work.receipt(), before);
     }
 }
