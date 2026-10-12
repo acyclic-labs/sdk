@@ -281,7 +281,7 @@ impl PiOwnerConfig {
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
-            task, agent, grants, &format_args!("pi:conversation:{task}"), work,
+            task, agent, grants, format_args!("pi:conversation:{task}"), work,
         )
     }
 
@@ -291,12 +291,12 @@ impl PiOwnerConfig {
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         self.conversation_authority_parts_with_native_work(
             self.policy.root_task, self.policy.agent, &self.policy.grants,
-            &self.policy.root_task, work,
+            format_args!("{}", self.policy.root_task), work,
         )
     }
 
-    fn conversation_authority_parts_with_native_work<D: std::fmt::Display + ?Sized>(
-        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: &D,
+    fn conversation_authority_parts_with_native_work(
+        &self, task: TaskId, agent: AgentId, grants: &Capabilities, scope_id: std::fmt::Arguments<'_>,
         work: &NativeMaterializationWork,
     ) -> Result<((Authority, AuthorityIssuer, acyclic_harness::core::Scope), NativeAllocation)> {
         let original = self.authority_with_native_work(work)?;
@@ -304,18 +304,8 @@ impl PiOwnerConfig {
         drop(original.1);
         let audience_id = work.display(&task).map_err(native_work_error)?;
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
-        let issuer_audience_id = work.display(&audience.0.id).map_err(native_work_error)?;
-        let issuer_audience = (Authority {
-            kind: AggregateKind::Conversation, id: issuer_audience_id.0,
-        }, issuer_audience_id.1);
-        let issuer_id = work.display(ISSUER).map_err(native_work_error)?;
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_copied: self.key.len() as u64, ..acyclic_fs::WorkCounters::UNCHARGED
-        }).map_err(native_work_error)?;
-        let issuer = combine_native_metadata((AuthorityIssuer::new(
-            issuer_id.0, self.key, issuer_audience.0,
-        ), issuer_id.1, [issuer_audience.1]))?;
-        let scope_id = work.display(scope_id).map_err(native_work_error)?;
+        let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
+        let scope_id = work.display(&scope_id).map_err(native_work_error)?;
         let scope = issuer.0.root_for_agent_with_native_work(agent, &scope_id.0, grants, work)?;
         drop(scope_id.0);
         drop(scope_id.1);
