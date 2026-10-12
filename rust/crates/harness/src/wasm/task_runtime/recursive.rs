@@ -98,7 +98,7 @@ impl WasmRecursiveForkSource {
         #[wasm_bindgen(unchecked_param_type = "WasmForkPreparationLimits")] limits: JsValue,
         #[wasm_bindgen(unchecked_param_type = "readonly WasmFileRefWire[]")] input_files: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?).map_err(js_error)?;
+        let child = TaskAdmissionRecord::from_canonical_value(from_js(child)?, &mut None).map_err(js_error)?.0;
         if child.parent != Some(self.caller) {
             return Err(js_error(Error::Unauthorized("fork child has a different original caller".into())));
         }
