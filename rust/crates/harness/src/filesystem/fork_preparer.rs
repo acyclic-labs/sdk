@@ -560,9 +560,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             self.require_native_projection_work(work)?;
         }
         let reject = |code, reason| bounded_io::failure(io, code, reason);
-        let read_granted = |volume: &VolumeRef| match io {
-            Some(io) => io.contains_capability(self.scope.capabilities(), volume, "volume:read:"),
-            None => Ok(self.scope.capabilities().contains(&volume.capability(VolumeOperation::Read)?)),
+        let read_granted = |volume: &VolumeRef| -> Result<bool> {
+            let parent = match io {
+                Some(io) => io.contains_capability(self.scope.capabilities(), volume, "volume:read:")?,
+                None => self.scope.capabilities().contains(&volume.capability(VolumeOperation::Read)?),
+            };
+            if !parent { return Ok(false); }
+            match task {
+                Some(task) => io.ok_or_else(|| reject(crate::wire::ErrorCode::Invalid, "task preparation lacks its IO ledger"))?
+                    .contains_capability(task.grants(), volume, "volume:read:"),
+                None => Ok(true),
+            }
         };
         let mut history = io.map(PreparationIo::history_io);
         let mut observer = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
@@ -700,21 +708,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 (None, None) => {}
                 _ => return Err(reject(crate::wire::ErrorCode::Unauthorized,
                     "fork preparation lacks its original owner's project source")),
-            }
-            for selection in &request.selections {
-                match &selection.revision {
-                    ResourceRevision::Project { volume, .. } if request.authorized_source.is_none() => {
-                        if !io.contains_capability(task.grants(), volume, "volume:read:")? {
-                            return Err(reject(crate::wire::ErrorCode::Unauthorized, "preparation lacks its selected project source-read grant"));
-                        }
-                    }
-                    ResourceRevision::PrivateVolume { volume, .. } => {
-                        if !io.contains_capability(task.grants(), volume, "volume:read:")? {
-                            return Err(reject(crate::wire::ErrorCode::Unauthorized, "preparation lacks its selected scratch source-read grant"));
-                        }
-                    }
-                    _ => {}
-                }
             }
         }
         if let Some(history) = &self.history {
