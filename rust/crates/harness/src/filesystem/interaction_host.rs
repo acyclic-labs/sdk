@@ -309,8 +309,7 @@ where
                 None => aggregate.reducer().revision(),
             };
             let scope = scope.copy(&mut work)?;
-            let command_ticket = crate::core::native_interaction_ticket_clone_with_custody(
-                &ticket, &mut work)?.0;
+            let command_ticket = crate::wire_codec::CodecQuota::produce(&mut work, |copy_quota| crate::core::copy_ticket(&ticket, copy_quota))?.0;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
             attempt_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -499,9 +498,9 @@ where
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let value = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .map(|(ticket, resolution)| -> Result<_> {
-                let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
+                let ticket = crate::wire_codec::CodecQuota::produce(&mut work, |copy_quota| crate::core::copy_ticket(ticket, copy_quota))?.0;
                 let resolution = resolution.as_ref().map(|value|
-                    crate::core::native_interaction_resolution_clone_with_custody(value, &mut work)
+                    crate::wire_codec::CodecQuota::produce(&mut work, |copy_quota| crate::core::copy_resolution(value, copy_quota))
                         .map(|(value, _)| value)).transpose()?;
                 Ok((ticket, resolution))
             }).transpose()?;
@@ -523,8 +522,7 @@ where
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
-            .map(|resolution| crate::core::native_interaction_outcome_clone_with_custody(
-                &resolution.outcome, &mut work).map(|(value, _)| value))
+            .map(|resolution| crate::wire_codec::CodecQuota::produce(&mut work, |copy_quota| crate::core::copy_interaction_outcome(&resolution.outcome, copy_quota)).map(|(value, _)| value))
             .transpose()?;
         drop(aggregate);
         drop(aggregate_hold);

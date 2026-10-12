@@ -887,7 +887,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
                 .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            let (cloned, clone_owned) = crate::core::native_event_clone_with_custody(&event, work)?;
+            let (cloned, clone_owned) = crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_event(&event, copy_quota))?;
             drop(reducer.apply_committed(cloned, work)?);
             if let Some(work) = work.as_deref_mut() { work.release_owned(clone_owned)?; }
             if indexed {
@@ -944,7 +944,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(state) = self.reducer.effect(effect) {
             crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
-            return crate::core::native_effect_clone_with_custody(state, work).map(Some);
+            return crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_effect(state, copy_quota)).map(Some);
         }
         let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
@@ -1093,7 +1093,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
             let indexed = effects::retirement_proof_for_event_with_work(
                 &self.client, self.reducer.authority(), &event, owned.work()).await?;
-            let (cloned, returned_owned) = crate::core::native_event_clone_with_custody(&event, owned.work())?;
+            let (cloned, returned_owned) = crate::wire_codec::CodecQuota::produce(owned.work(), |copy_quota| crate::core::copy_event(&event, copy_quota))?;
             owned.adopt(returned_owned)?;
             let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed { self.reducer.mark_indexed_terminal_effect_with_work(&event, owned.work())?; }

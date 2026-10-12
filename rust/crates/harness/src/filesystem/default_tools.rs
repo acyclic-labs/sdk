@@ -1570,7 +1570,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         let command = WorkflowCommand { operation_id: command.operation_id,
                             kind: history.clone_text(&command.kind)?,
                             payload: command.payload.copy(&mut Some(&mut *history))? };
-                        let payload = crate::core::native_value_clone_with_custody(&payload, &mut Some(&mut *history))?.0;
+                        let payload = crate::wire_codec::CodecQuota::produce(&mut Some(&mut *history), |copy_quota| crate::core::copy_value(&payload, copy_quota))?.0;
                         break 'progress owner.runtime.commands().execute_with_native_work(
                             Arc::clone(context), fence, command, payload, work)?.await?;
                     }
