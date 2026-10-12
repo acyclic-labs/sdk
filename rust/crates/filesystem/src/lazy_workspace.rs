@@ -16656,7 +16656,7 @@ mod tests {
                 move |work| {
                     if work.receipt().source_bytes_read != 0 {
                         if mode == 0 {
-                            guard_source.invalidate_with_native_work(work).expect("actual source epoch change");
+                            guard_source.invalidate(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).expect("actual source epoch change");
                         } else {
                             guard_cancellation.cancel();
                         }
@@ -19681,7 +19681,7 @@ mod tests {
         let before = root.snapshot().await.expect("snapshot before change");
 
         std::fs::write(&path, b"after").expect("external write");
-        source.invalidate();
+        source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source invalidation");
         root.rebind_source().await.expect("rebind source");
 
         assert_eq!((root.read("/file.txt", 64).await.expect("refreshed read")).as_ref(), b"after");
