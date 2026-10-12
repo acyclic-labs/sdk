@@ -327,13 +327,6 @@ impl NativeReadMeter for Meter {
 
         Ok(())
     }
-    fn admit_operations(&self, _: u64) -> std::io::Result<()> {
-        self.check()
-    }
-    fn record_operations(&self, count: u64) -> std::io::Result<()> {
-        self.read_operations.fetch_add(count, Ordering::SeqCst);
-        self.recorded()
-    }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
         let completed = self.read.fetch_add(bytes as u64, Ordering::SeqCst) + bytes as u64;
         if completed >= self.cancel_after_read {
@@ -353,13 +346,6 @@ impl NativeReadMeter for Meter {
         }
         self.recorded()
     }
-    fn admit_write_operations(&self, _: u64) -> std::io::Result<()> {
-        self.check()
-    }
-    fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-        self.write_operations.fetch_add(count, Ordering::SeqCst);
-        self.recorded()
-    }
     fn admit_durability(&self) -> std::io::Result<()> {
         self.check()?;
         self.durability_operations.fetch_add(1, Ordering::SeqCst);
@@ -375,6 +361,7 @@ impl NativeReadMeter for Meter {
     }
     fn record_cleanup_write(&self, token: u64) -> std::io::Result<()> {
         self.cancel_cleanup_write(token);
-        self.record_write_operations(1)
+        self.write_operations.fetch_add(1, Ordering::SeqCst);
+        self.recorded()
     }
 }

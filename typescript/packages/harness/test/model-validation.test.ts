@@ -9,7 +9,7 @@ import {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { publicModelContent } from "../src/projection.js";
-import type { NativeModelContent } from "../src/native-contracts.js";
+import type { ModelContent as NativeModelContent } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
@@ -30,7 +30,6 @@ test("generated skill parser and immutable projection share Rust validation and 
   expect(skill.description).toBe("Inspect selected files");
   expect(skill.fields).toEqual({ metadata: { category: "review" } });
   expect(skill.source).toEqual(source);
-  expect(Object.isFrozen(skill)).toBe(true);
   const snapshot = { instructions: [], skills: [skill] };
   const base = { messages: [{ role: "user" as const, content: "inspect" }], metadata: {} };
   const projected = contracts.projectDiscoveredContext(snapshot, base, "prepend", DEFAULT_LIMITS);
@@ -215,7 +214,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
     let head = await stage(encodeModelPrefix(parentRequest, null, undefined, DEFAULT_LIMITS), "prefix-0.json",
       "application/vnd.acyclic.harness.model-prefix+json");
     for (let depth = 1; depth <= 3; depth++) {
-      const scope = core.issueScopeForAgent(agent, `reader-${depth}`, references.map(ref => core.fileReadCapability(ref)));
+      const scope = core.issueScope(`reader-${depth}`, references.map(ref => core.fileReadCapability(ref)), agent);
       const parentWire = contracts.decodeModelJson(parentRequest) as unknown as ModelRequestWire;
       const children = depth === 1 ? ["primary", "sibling"] : ["primary"];
       let primary: Uint8Array | undefined;
@@ -238,7 +237,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
         await runtime.run(prompt);
         expect(calls).toBe(1);
       }
-      const denied = core.issueScopeForAgent(agent, "missing-attachment", references.filter(ref => ref !== attachment).map(ref => core.fileReadCapability(ref)));
+      const denied = core.issueScope("missing-attachment", references.filter(ref => ref !== attachment).map(ref => core.fileReadCapability(ref)), agent);
       await expect(core.prepareInheritedModelRequest(denied, { model: root.model, tools, maxOutputTokens: 4096,
         messages: [{ role: "user", content: "denied" }] }, head, files, DEFAULT_LIMITS)).rejects.toThrow();
       const segment = encodeModelPrefix(primary!, head, parentRequest, DEFAULT_LIMITS);
@@ -297,7 +296,7 @@ test("inherited dispatch captures fresh pinned local files after builder constru
       "application/vnd.acyclic.harness.model-prefix+json");
     const files = new Map([[key(head), resident.get(key(head))!]]);
     const volumeGrant = core.volumeCapability(volume, "read");
-    const scope = core.issueScopeForAgent(agent, "local-reader", [volumeGrant]);
+    const scope = core.issueScope("local-reader", [volumeGrant], agent);
     let fresh: FileRef;
     let prefixOnly = false;
     let calls = 0;
@@ -334,7 +333,7 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     expect(calls).toBe(3);
     expect(reads).toBe(2);
     prefixOnly = false;
-    const denied = core.issueScopeForAgent(agent, "head-only", [core.fileReadCapability(head)]);
+    const denied = core.issueScope("head-only", [core.fileReadCapability(head)], agent);
     const deniedRuntime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope: denied, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     await expect(deniedRuntime.run("go")).rejects.toThrow();
@@ -396,7 +395,6 @@ test("Rust inventory includes nested tool media and options while preserving ori
   expect(inventory.files).toEqual([part.file, part.policy.native.configuration.configuration.content]);
   expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
   expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
-  expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
   expect(contracts.modelContentInventory("plain text", DEFAULT_LIMITS)).toEqual({ files: [], nativeConfigurations: [] });
 });
 

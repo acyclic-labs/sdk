@@ -1,26 +1,13 @@
 use super::*;
 
-pub(crate) fn flush_session_callbacks(
+pub(crate) fn with_session_work(
     session: &Mutex<Option<NativeMountSession>>,
+    operation: fn(&NativeMountSession, &NativeMaterializationWork) -> Result<(), NativeMountError>,
 ) -> Result<(), MountLifecycleError> {
     with_live_session(session, |session| {
-        session.flush_callbacks(
-            &crate::NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .map_err(|(error, _)| NativeMountError::from(error))?,
-        )
-    })
-}
-
-/// Waits until the kernel caches nothing a change to the source superseded.
-pub(crate) fn revalidate_session(
-    session: &Mutex<Option<NativeMountSession>>,
-) -> Result<(), MountLifecycleError> {
-    with_live_session(session, |session| {
-        session.revalidate(
-            &crate::NativeMaterializationWork::new(
+        operation(
+            session,
+            &NativeMaterializationWork::new(
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
@@ -58,30 +45,15 @@ pub enum MountLifecycleError {
     /// Native callback publication failed.
     #[error(transparent)]
     Source(#[from] MountSourceError),
-    /// Combined exactification and materialization exceeded its work budget.
-    #[error(transparent)]
-    Work(#[from] crate::WorkError),
     /// Original physical preparation failure.
     #[error(transparent)]
     Materialization(#[from] crate::NativeTreeMaterializationError),
     /// Original canonical materialization failure.
     #[error(transparent)]
     Materialize(#[from] crate::MaterializeError),
-    /// Original bounded demand failure.
-    #[error(transparent)]
-    Demand(#[from] crate::DemandError),
     /// Fixed native-view policy refusal.
     #[error("{0}")]
     NativePolicy(&'static str),
-    /// Lazy-query cause drops before its original allocation.
-    #[error("{source}")]
-    NativeLazy {
-        /// Original lazy-query failure.
-        #[source]
-        source: LazyWorkspaceError,
-        /// Original retained capacity.
-        custody: Option<NativeAllocation>,
-    },
     /// Physical retirement retained an authored capture and cleanup failure.
     #[error("native capture or namespace cleanup failed: {source}")]
     NativeCaptureFailure {
@@ -93,9 +65,9 @@ pub enum MountLifecycleError {
     },
 }
 
-impl From<(LazyWorkspaceError, Option<NativeAllocation>)> for MountLifecycleError {
-    fn from((source, custody): (LazyWorkspaceError, Option<NativeAllocation>)) -> Self {
-        Self::NativeLazy { source, custody }
+impl From<crate::FsError> for MountLifecycleError {
+    fn from(error: crate::FsError) -> Self {
+        Self::Source(error.into())
     }
 }
 

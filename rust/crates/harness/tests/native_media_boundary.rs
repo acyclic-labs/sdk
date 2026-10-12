@@ -45,7 +45,7 @@ use acyclic_harness::{
         AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry,
         ToolContext,
     },
-    scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
+    scheduler::{LeaseFence, ResourceRequest, SessionLimits},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
@@ -546,7 +546,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 
 async fn exercise_live_native_boundary() -> Result<()> {
     let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -1423,7 +1423,7 @@ where
             ));
             let worker = Worker {
                 id: "native-replay".into(),
-                available: ResourceSnapshot::default(),
+                available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
             };
             let lease = match runtime.task_host().pull_work(&worker).await? {
@@ -1438,37 +1438,42 @@ where
         assert_eq!(original.extensions.as_ref(), scope.extensions());
         let context = runtime.harness().durable_context(task, admission).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
-        let writable = AgentHarness::with_policy(
-            tasks.clone(),
-            conversion_tools.clone(),
-            scope.clone(),
-            1,
-            Some(runtime.task_host().clone()),
-            None,
-            Some(ContentBindings {
+        let writable = acyclic_harness::runtime::Bindings {
+            tasks: tasks.clone(),
+            tools: conversion_tools.clone(),
+            scope: scope.clone(),
+            concurrency: 1,
+            durable_host: Some(runtime.task_host().clone()),
+            interactions: None,
+            content: Some(ContentBindings {
                 reader: adapter.reader.clone(),
                 writer: Some(FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?),
             }),
-            None,
-            None,
+            artifacts: None,
+            policy: None,
+            ..acyclic_harness::runtime::Bindings::local()
+        }
+        .build(None,
         )?
         .durable_context(task, admission)
         .await?;
         let arguments = serde_json::to_value(&conversion_input)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let outcome = converter
-            .run_with_context(
+            .run(
                 task,
-                conversion_operation,
-                conversion.definition.clone(),
-                arguments,
-                ToolContext::new(
-                    writable.clone(),
-                    conversion_operation,
-                    conversion_operation.to_string(),
-                )?,
-            )
-            .await?;
+                &conversion.definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: conversion_operation,
+                    call_id: conversion_operation.to_string(),
+                    name: conversion.definition.name.clone(),
+                    arguments: arguments,
+                },
+                &ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
         let Outcome::Succeeded(value) = outcome else {
             return Err(Error::Invalid(format!(
                 "explicit conversion did not succeed: {outcome:?}"
@@ -1493,19 +1498,21 @@ where
         changed.mask = 1;
         assert!(
             converter
-                .run_with_context(
+                .run(
                     task,
-                    conversion_operation,
-                    conversion.definition.clone(),
-                    serde_json::to_value(changed)
+                    &conversion.definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: conversion_operation,
+                        call_id: conversion_operation.to_string(),
+                        name: conversion.definition.name.clone(),
+                        arguments: serde_json::to_value(changed)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
-                    ToolContext::new(
-                        writable.clone(),
-                        conversion_operation,
-                        conversion_operation.to_string()
-                    )?,
-                )
-                .await
+                    },
+                    &ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0)
                 .is_err()
         );
         let invocation = ToolInvocation {
@@ -1785,7 +1792,7 @@ where
         ),
     };
     executor.execute(input.clone(), &journal).await?;
-    let records = journal.replay(input.operation_id, 0, 64).await?;
+    let records = journal.replay(input.operation_id, 0, 64, None)?.await?;
     assert_eq!(
         records
             .iter()
@@ -1818,7 +1825,7 @@ where
         })
         .ok_or_else(|| Error::NotFound("compacted native response".into()))?;
     let admitted =
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?;
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?;
     assert!(
         admitted
             .request()
@@ -1827,12 +1834,11 @@ where
             .any(|messages| messages == exchange)
     );
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
-    let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
-        ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
-    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(&[
+    let prefix = journal.stage(OperationId::new(), "fork/media-prefix", &ModelPrefix::select(&admitted, None)?.canonical_bytes()?, ModelPrefix::MEDIA_TYPE, None)?.await?;
+    let forks = acyclic_harness::fork::CompositeForkVerifier::new(&[
         acyclic_harness::filesystem::FilesystemForkVerifier::new(host.clone(), 65_536, None, None)?,
-        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
@@ -1904,7 +1910,7 @@ where
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         Reducer::restore(aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
-            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())?,
+            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None)?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
@@ -2067,7 +2073,7 @@ where
         captures
     );
     assert_eq!(
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?
             .bytes(),
         admitted.bytes()
     );

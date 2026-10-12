@@ -1,40 +1,19 @@
 //! Optional observation at the original finite worker's provider boundaries.
 
 use super::*;
-use crate::filesystem::{PreparationIo, fork_preparer_io::clone_text};
-
-pub(in crate::filesystem) fn clone_fence(fence: &LeaseFence, io: Option<&PreparationIo>) -> Result<LeaseFence> {
-    Ok(LeaseFence {
-        reservation_id: clone_text(&fence.reservation_id, io)?,
-        placement: clone_text(&fence.placement, io)?,
-    })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::filesystem) fn clone_fence_with_custody(
-    original: &LeaseFence, io: &PreparationIo,
-) -> Result<(LeaseFence, acyclic_fs::NativeAllocation)> {
-    io.retain_owned(std::mem::size_of::<LeaseFence>() as u64)?;
-    let fence = clone_fence(original, Some(io))?;
-    let bytes = (std::mem::size_of::<LeaseFence>() as u64)
-        .checked_add(fence.reservation_id.capacity() as u64)
-        .and_then(|bytes| bytes.checked_add(fence.placement.capacity() as u64))
-        .ok_or_else(|| boundary(Some(io), crate::wire::ErrorCode::Invalid, "owned fence metadata overflow"))?;
-    let custody = io.take_native_custody(bytes)?;
-    Ok((fence, custody))
-}
+use crate::filesystem::PreparationIo;
 
 pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
-        reservation_id: clone_text(&lease.reservation.id, io)?,
-        placement: clone_text(&lease.reservation.placement, io)?,
+        reservation_id: stock_string_copy(&lease.reservation.id, io)?,
+        placement: stock_string_copy(&lease.reservation.placement, io)?,
     })
 }
 
 pub(super) fn clone_command(command: &WorkflowCommand, io: Option<&PreparationIo>) -> Result<WorkflowCommand> {
     Ok(WorkflowCommand {
         operation_id: command.operation_id,
-        kind: clone_text(&command.kind, io)?,
+        kind: stock_string_copy(&command.kind, io)?,
         payload: crate::executor::with_history_io(io, |work| command.payload.copy(work))?,
     })
 }
@@ -61,26 +40,13 @@ pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::w
     }
 }
 
-pub(in crate::filesystem) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>, maximum_bytes: u64) -> Result<[u8; 32]> {
-    let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
-    let hold;
-    let bytes = io.encode(value, maximum_bytes, true)?;
-    hold = io.guard_bytes(&bytes)?;
-    let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-    io.preflight(hash)?;
-    let digest = *blake3::hash(&bytes).as_bytes();
-    io.charge(hash)?;
-    drop(bytes);
-    drop(hold);
-    Ok(digest)
-}
-
 pub(super) fn history<'a>(io: Option<&'a PreparationIo>) -> Result<Option<impl crate::store::HistoryIo + 'a>> {
     #[cfg(not(target_arch = "wasm32"))]
     let history = io.map(|io| {
         let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
             crate::wire::ErrorCode::Unsupported, "worker observation requires original native work"))?;
-        crate::store::native_work_io(work).map_err(Error::from)
+        crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)
     }).transpose()?;
     #[cfg(target_arch = "wasm32")]
     let history = { let _ = io; None::<&PreparationIo> };
@@ -129,10 +95,14 @@ where
                 reason: "worker owner requires original native work",
             })?;
             let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-            return owner.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
+            return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await;
         }
         if settlement { self.host.verify_execution_owner(task, fence.clone()).await }
         else { self.host.verify_dispatch_owner(task, fence.clone()).await }
     }
 
 }
+
+use crate::executor::{stock_string_copy};

@@ -1,5 +1,5 @@
 import { HydrationCache, type Hydrated } from "./cache.js";
-import { RequestScheduler, RequestCapacityError, requestAborted, requestBound } from "./client-requests.js";
+import { RequestScheduler, RequestCapacityError, requestBound } from "./client-requests.js";
 
 /** Loads authenticated immutable references within a byte reservation. */
 export interface DemandSource<Key, Value> {
@@ -9,20 +9,18 @@ export interface DemandSource<Key, Value> {
 
 interface Pending<Value> {
   readonly controller: AbortController;
-  readonly readers: Set<(result: ReadResult<Value>) => void>;
+  readonly readers: Set<(result: PromiseSettledResult<Value>) => void>;
 }
-
-type ReadResult<Value> = Readonly<{ ok: true; value: Value }> | Readonly<{ ok: false; error: unknown }>;
 
 /** Bounds shared demand and retained immutable values without caching failures. */
 export class DemandLoader<Key, Value> {
   readonly #cache: HydrationCache<Key, Value>;
   readonly #pending = new Map<Key, Pending<Value>>();
-  readonly maximumDemand: number;
+  private readonly maximumDemand: number;
   #users = 0;
   #disposed = false;
 
-  constructor(readonly source: DemandSource<Key, Value>, readonly scheduler: RequestScheduler,
+  constructor(private readonly source: DemandSource<Key, Value>, private readonly scheduler: RequestScheduler,
     maximumDemand: number, maximumEntries: number, maximumBytes: number) {
     this.maximumDemand = requestBound(maximumDemand, "maximumDemand");
     this.#cache = new HydrationCache(maximumEntries, maximumBytes);
@@ -36,7 +34,7 @@ export class DemandLoader<Key, Value> {
 
   read(key: Key, signal?: AbortSignal): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("demand loader disposed"));
-    if (signal?.aborted) return Promise.reject(requestAborted());
+    if (signal?.aborted) return Promise.reject(new DOMException("Request cancelled", "AbortError"));
     const cached = this.#cache.get(key);
     if (cached !== undefined) return Promise.resolve(cached.value);
     if (this.#users >= this.maximumDemand) return Promise.reject(new RequestCapacityError("demand capacity exhausted"));
@@ -49,9 +47,9 @@ export class DemandLoader<Key, Value> {
         return Promise.reject(new RangeError("hydration byte reservation"));
       }
       const controller = new AbortController();
-      const promise = this.scheduler.schedule(bytes, async (abort, reservation) => {
-        const loaded = await this.source.load(key, abort, reservation);
-        if (!Number.isSafeInteger(loaded.bytes) || loaded.bytes < 0 || loaded.bytes > reservation) {
+      const promise = this.scheduler.schedule(bytes, async abort => {
+        const loaded = await this.source.load(key, abort, bytes);
+        if (!Number.isSafeInteger(loaded.bytes) || loaded.bytes < 0 || loaded.bytes > bytes) {
           throw new RangeError("hydration exceeded reserved bytes");
         }
         if (loaded.bytes > this.#cache.maxBytes) throw new RangeError("hydration exceeded retained byte budget");
@@ -65,13 +63,13 @@ export class DemandLoader<Key, Value> {
         if (!controller.signal.aborted && this.#pending.get(key) === selected) {
           this.#cache.set(key, loaded.value, loaded.bytes);
         }
-        this.#complete(key, selected, { ok: true, value: loaded.value });
-      }, error => this.#complete(key, selected, { ok: false, error }));
+        this.#complete(key, selected, { status: "fulfilled", value: loaded.value });
+      }, error => this.#complete(key, selected, { status: "rejected", reason: error }));
     }
     const selected = pending;
     this.#users++;
     return new Promise<Value>((resolve, reject) => {
-      const finish = (result: ReadResult<Value>): void => {
+      const finish = (result: PromiseSettledResult<Value>): void => {
         if (!selected.readers.delete(finish)) return;
         signal?.removeEventListener("abort", cancel);
         this.#users--;
@@ -79,16 +77,16 @@ export class DemandLoader<Key, Value> {
           this.#pending.delete(key);
           selected.controller.abort();
         }
-        if (result.ok) resolve(result.value);
-        else reject(result.error);
+        if (result.status === "fulfilled") resolve(result.value);
+        else reject(result.reason);
       };
-      const cancel = (): void => finish({ ok: false, error: requestAborted() });
+      const cancel = (): void => finish({ status: "rejected", reason: new DOMException("Request cancelled", "AbortError") });
       selected.readers.add(finish);
       signal?.addEventListener("abort", cancel, { once: true });
     });
   }
 
-  #complete(key: Key, pending: Pending<Value>, result: ReadResult<Value>): void {
+  #complete(key: Key, pending: Pending<Value>, result: PromiseSettledResult<Value>): void {
     if (this.#pending.get(key) === pending) this.#pending.delete(key);
     for (const finish of pending.readers) finish(result);
   }
@@ -100,7 +98,7 @@ export class DemandLoader<Key, Value> {
     if (pending === undefined) return;
     pending.controller.abort();
     // Cancel readers even when their scheduler promise has settled.
-    this.#complete(key, pending, { ok: false, error: requestAborted() });
+    this.#complete(key, pending, { status: "rejected", reason: new DOMException("Request cancelled", "AbortError") });
   }
 
   dispose(): void {
@@ -108,7 +106,7 @@ export class DemandLoader<Key, Value> {
     this.#disposed = true;
     for (const [key, pending] of this.#pending) {
       pending.controller.abort();
-      this.#complete(key, pending, { ok: false, error: requestAborted() });
+      this.#complete(key, pending, { status: "rejected", reason: new DOMException("Request cancelled", "AbortError") });
     }
     this.#cache.clear();
   }

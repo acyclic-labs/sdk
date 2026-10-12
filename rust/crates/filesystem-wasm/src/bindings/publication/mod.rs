@@ -124,7 +124,7 @@ impl BrowserCheckout {
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &cancellation,
                 |_| async {
-                    acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt {
+                    acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
                         value: (),
                         work: acyclic_fs::WorkCounters::default(),
                     })
@@ -147,11 +147,7 @@ impl BrowserCheckout {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
         let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
-        let authored = decode_authored_transactions(
-            operations,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let authored = decode_authored_transactions(operations, self.engine.volume_config())?;
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let cancellation = CancellationToken::default();
         let receipt = self
@@ -251,7 +247,7 @@ pub(in crate::bindings) fn mutation_value(
 }
 
 pub(in crate::bindings) fn mutation_created(
-    receipt: &acyclic_fs::FsReceipt<FileId>,
+    receipt: &acyclic_fs::OperationReceipt<FileId>,
 ) -> Result<Ts<BrowserMutationResult>, JsValue> {
     ts(BrowserMutationResult {
         file_id: Some(receipt.value.into_bytes().to_vec().into()),
@@ -260,11 +256,11 @@ pub(in crate::bindings) fn mutation_created(
 }
 
 pub(in crate::bindings) fn commit_value(
-    outcome: CheckoutCommitOutcome,
+    outcome: LivePublicationObservation,
     work: acyclic_fs::WorkCounters,
 ) -> Result<Ts<BrowserCommitResult>, JsValue> {
     let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
-        CheckoutCommitOutcome::Committed {
+        LivePublicationObservation::Committed {
             generation_id,
             head,
         } => (
@@ -274,7 +270,7 @@ pub(in crate::bindings) fn commit_value(
             Some(head.sequence.get()),
             None,
         ),
-        CheckoutCommitOutcome::AlreadyCommitted {
+        LivePublicationObservation::AlreadyCommitted {
             generation_id,
             head,
         } => (
@@ -284,17 +280,17 @@ pub(in crate::bindings) fn commit_value(
             Some(head.sequence.get()),
             None,
         ),
-        CheckoutCommitOutcome::Conflict { actual } => (
+        LivePublicationObservation::Conflict { actual } => (
             "conflict",
             None,
             Some(actual.epoch.get()),
             Some(actual.sequence.get()),
             None,
         ),
-        CheckoutCommitOutcome::Fenced { actual_epoch } => {
+        LivePublicationObservation::Fenced { actual_epoch } => {
             ("fenced", None, Some(actual_epoch.get()), None, None)
         }
-        CheckoutCommitOutcome::IdempotencyConflict {
+        LivePublicationObservation::IdempotencyConflict {
             committed_fingerprint,
         } => (
             "idempotency-conflict",
@@ -396,4 +392,14 @@ pub(in crate::bindings) fn live_mutation_value(
         committed_fingerprint: fingerprint.map(Into::into),
         work: browser_work(work),
     })
+}
+
+/// No-work callback for publication.
+pub(in crate::bindings) fn publication_ready<E>(
+    _: acyclic_fs::WorkBudget,
+) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
+    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+        value: (),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+    }))
 }

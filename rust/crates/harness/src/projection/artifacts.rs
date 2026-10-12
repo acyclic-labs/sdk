@@ -89,9 +89,9 @@ fn validate_numbers(value: &Value, io: Option<&PreparationIo>) -> Result<()> {
 
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ProjectedToolInvocation {
-    fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::ProjectedToolInvocation }
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema { crate::executor::json::JsonValueSchema::ProjectedToolInvocation }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
+        let arguments = crate::executor::json::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(arguments)).ok_or_else(|| {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -103,13 +103,13 @@ impl crate::filesystem::UploadRecord for ProjectedToolInvocation {
 }
 
 #[cfg(feature = "filesystem")]
-fn conversion_allowance<T: crate::filesystem::UploadRecord>(shape: crate::contract::JsonValueShape, io: &PreparationIo) -> Result<u64> {
+fn conversion_allowance<T: crate::filesystem::UploadRecord>(shape: crate::executor::json::JsonValueShape, io: &PreparationIo) -> Result<u64> {
     use serde::__private229::de::Content;
     use std::mem::size_of;
     let overflow = || stock_boundary(Some(io), Invalid, "tool projection conversion allowance overflows");
     let nodes = shape.lexical_items().checked_add(shape.virtual_items()).ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
-    let (content, typed, boxes, strings) = if T::json_value_schema() == crate::contract::JsonValueSchema::ToolResultContent {
+    let (content, typed, boxes, strings) = if T::json_value_schema() == crate::executor::json::JsonValueSchema::ToolResultContent {
         let content_slot = size_of::<Content<'static>>().max(size_of::<(Content<'static>, Content<'static>)>()) as u64;
         let typed_slot = [size_of::<crate::model::ModelDataPart>(), size_of::<FileRef>(), size_of::<String>(),
             size_of::<u8>(), size_of::<(String, Value)>()].into_iter().max().expect("closed projection slots") as u64;
@@ -134,8 +134,8 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(shape: crate::contra
         "resource key is empty", "resource version is invalid", "typed resource kind mismatch",
         "file or volume label is invalid", "content path is invalid", "file media type is invalid",
     ].iter().map(|label| label.len() as u64 + 4).sum();
-    let diagnostics = crate::contract::audited_serde_diagnostic_bytes(shape.input_bytes(), labels)?;
-    [content, typed, boxes, strings, crate::contract::json_owned_value_conversion_additional_bytes(shape)?, diagnostics, size_of::<T>() as u64]
+    let diagnostics = crate::executor::json::audited_serde_diagnostic_bytes(shape.input_bytes(), labels)?;
+    [content, typed, boxes, strings, crate::executor::json::json_owned_value_conversion_additional_bytes(shape)?, diagnostics, size_of::<T>() as u64]
         .into_iter().try_fold(0_u64, |bytes, next| bytes.checked_add(next).ok_or_else(overflow))
 }
 
@@ -147,10 +147,10 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     #[cfg(not(target_arch = "wasm32"))]
     let mut native = None;
     let input = source.0;
-    let shape = crate::contract::json_owned_value_shape_bounded(&input,
-        crate::contract::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined, maximum_depth: 128 },
+    let shape = crate::executor::json::json_owned_value_shape_bounded(&input,
+        crate::executor::json::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined, maximum_depth: 128 },
         T::json_value_schema(), &mut |charge| match charge {
-            crate::contract::JsonCodecCharge::Inspect { items } => crate::model::charge_items(Some(io), items),
+            crate::executor::json::JsonCodecCharge::Inspect { items } => crate::model::charge_items(Some(io), items),
             _ => Err(stock_boundary(Some(io), Invalid, "owned projection inspection reported nonresident work")),
         })?;
     let mut additional = Some(io.reserve_decode(conversion_allowance::<T>(shape, io)?)?);
@@ -167,7 +167,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
         Ok(value) => value,
         Err(error) => {
             #[cfg(not(target_arch = "wasm32"))]
-            if native.is_some() { return Err(Error::NativeDecode { code: Invalid, source: error, custody: native }); }
+            if native.is_some() { return Err(Error::NativeJson { code: Invalid, source: error, custody: native }); }
             let message = error.to_string();
             additional.take().expect("ordinary conversion ownership").into_retained();
             return Err(Error::Invalid(message));
@@ -176,7 +176,10 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let retained = value.logical_owned_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut custody) = native.take() {
-        if let Err(cause) = custody.substitute(retained) {
+        if let Err(cause) = custody.bytes().checked_sub(retained)
+            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+            .and_then(|bytes| custody.release(bytes))
+        {
             drop(value);
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }

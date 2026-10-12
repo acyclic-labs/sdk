@@ -76,14 +76,10 @@ impl BrowserChangeSet {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
-
-        let engine = {
-            let (value, next) = (&self.engine, &next.engine);
-            value
-                .compose(next, maximum_changes)
-                .await
-                .map_err(js_error)?
-        };
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            compose(&next.engine, maximum_changes)
+        ))?;
         Ok(BrowserChangeSet { engine })
     }
 }
@@ -123,7 +119,11 @@ impl BrowserJoinPlan {
         };
         let result = browser_join_result(
             self.engine
-                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(
+                    options,
+                    std::collections::BTreeMap::new(),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )
                 .await
                 .map_err(js_error)?,
         );
@@ -148,15 +148,10 @@ impl BrowserGeneration {
     /// Reads one complete file from this exact immutable state.
     #[wasm_bindgen]
     pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
-        let bytes = Box::pin(self.engine.read(
-            &path,
-            maximum_bytes,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))?;
+        let bytes = sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            read(&path, maximum_bytes)
+        )))?;
         Ok(bytes.to_vec())
     }
 
@@ -167,33 +162,17 @@ impl BrowserGeneration {
         offset: u64,
         length: u64,
     ) -> Result<Vec<u8>, JsValue> {
-        let bytes = self
-            .engine
-            .read_range(
-                &path,
-                offset,
-                length,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| js_error(failure.error))?;
+        let bytes = sdk_value!(unbounded_future!(
+            self.engine,
+            read_range(&path, offset, length)
+        ))
+        .map(|value| value.bytes)?;
         Ok(bytes.to_vec())
     }
 
     #[wasm_bindgen]
     pub async fn stat(&self, path: String) -> Result<Ts<BrowserWorkspaceStat>, JsValue> {
-        let value = self
-            .engine
-            .stat(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))?;
+        let value = sdk_value!(unbounded_future!(self.engine, stat(&path)))?;
         ts(browser_workspace_stat(value))
     }
 
@@ -207,33 +186,18 @@ impl BrowserGeneration {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
         let after = after.map(browser_workspace_name).transpose()?;
-        let value = self
-            .engine
-            .list_directory(
-                &path,
-                after.as_ref(),
-                maximum_entries,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.0)
-            .map_err(|failure| js_error(failure.error))?;
+        let value = sdk_value!(unbounded_future!(
+            self.engine,
+            list_directory(&path, after.as_ref(), maximum_entries)
+        ))
+        .map(|value| value.0)?;
         ts(browser_workspace_directory_page(value))
     }
 
     #[wasm_bindgen(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Vec<u8>, JsValue> {
-        let value = self
-            .engine
-            .read_symbolic_link(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| js_error(failure.error))?;
+        let value = sdk_value!(unbounded_future!(self.engine, read_symbolic_link(&path)))
+            .map(|value| value.bytes)?;
         Ok(value.to_vec())
     }
 
@@ -258,14 +222,8 @@ impl BrowserGeneration {
     /// Retains this exact generation under one opaque identity.
     #[wasm_bindgen]
     pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
-        let engine = Box::pin(self.engine.pin(
-            identity,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value.1)
-        .map_err(|failure| js_error(failure.error))?;
+        let engine = sdk_value!(Box::pin(unbounded_future!(self.engine, pin(identity))))
+            .map(|value| value.1)?;
         Ok(BrowserGeneration { engine })
     }
 }
@@ -316,39 +274,29 @@ pub(in crate::bindings) fn browser_join_history(value: &str) -> Result<JoinHisto
 pub(in crate::bindings) fn browser_join_result<A, O>(
     outcome: JoinOutcome<A, O>,
 ) -> BrowserJoinResult {
-    let generation = |status, generation: Generation<A, O>| BrowserJoinResult {
-        status,
-        generation_id: Some(serde_bytes::ByteBuf::from(
-            generation.id().digest().into_bytes().to_vec(),
-        )),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
-    match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.generation),
-        JoinOutcome::AlreadyApplied(value) => generation("already-applied", value.generation),
-        JoinOutcome::NoChanges(value) => generation("no-changes", value),
-        JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+    let (status, generation) = match outcome {
+        JoinOutcome::Applied(value) => ("applied", Some(value.generation)),
+        JoinOutcome::AlreadyApplied(value) => ("already-applied", Some(value.generation)),
+        JoinOutcome::NoChanges(value) => ("no-changes", Some(value)),
+        JoinOutcome::StaleTarget(value) => ("stale-target", Some(value)),
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
-        } => BrowserJoinResult {
-            status: "conflicted",
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        JoinOutcome::Fenced => BrowserJoinResult {
-            status: "fenced",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        JoinOutcome::IdempotencyConflict => BrowserJoinResult {
-            status: "idempotency-conflict",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return BrowserJoinResult {
+                status: "conflicted",
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        JoinOutcome::Fenced => ("fenced", None),
+        JoinOutcome::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    BrowserJoinResult {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

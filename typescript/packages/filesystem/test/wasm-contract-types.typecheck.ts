@@ -1,26 +1,5 @@
-import type {
-  WasmRawChangeSet,
-  WasmRawCheckout,
-  WasmRawFs,
-  WasmRawGeneration,
-  WasmRawJoinPlan,
-  WasmRawResolvedFile,
-  WasmRawResolvedFiles,
-  WasmRawSpeculation,
-  WasmRawTransaction,
-  WasmRawVolume,
-  WasmRawWorkspace,
-  VolumeLimits,
-  VolumeOptions,
-  CheckoutOptions,
-  JoinOptions,
-  WorkspaceCommit,
-  TreeEntrySnapshot,
-  FileRecordSnapshot,
-  WasmBindings,
-  TransactionConflict,
-  TransactionRebaseResult,
-} from "../src/contracts.js";
+import type { VolumeLimits, VolumeOptions, CheckoutOptions, JoinOptions, WorkspaceCommit, TreeEntrySnapshot, FileRecordSnapshot, TransactionConflict, TransactionRebaseResult } from "../src/contracts.js";
+import type { WasmRawChangeSet, WasmRawCheckout, WasmRawFs, WasmRawGeneration, WasmRawSpeculation, WasmRawVolume, WasmRawWorkspace, WasmBindings } from "../src/binding-types.js";
 import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 
 declare const generatedTransaction: GeneratedWasm.BrowserTransaction;
@@ -110,48 +89,48 @@ export type _FsResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawFs>>;
 export type _WorkspaceResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawWorkspace>>;
 export type _GenerationResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawGeneration>>;
 export type _ChangeSetResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawChangeSet>>;
-export type _JoinResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawJoinPlan>>;
-export type _TransactionResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawTransaction>>;
+export type _JoinResultsAreTyped = AssertNoAny<AnyMethodNames<GeneratedWasm.BrowserJoinPlan>>;
+export type _TransactionResultsAreTyped = AssertNoAny<AnyMethodNames<GeneratedWasm.BrowserTransaction>>;
 export type _SpeculationResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawSpeculation>>;
 export type _VolumeResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawVolume>>;
 export type _CheckoutResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawCheckout>>;
-export type _ResolvedFileResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawResolvedFile>>;
-export type _ResolvedFilesResultsAreTyped = AssertNoAny<AnyMethodNames<WasmRawResolvedFiles>>;
+export type _ResolvedFileResultsAreTyped = AssertNoAny<AnyMethodNames<GeneratedWasm.BrowserResolvedFile>>;
+export type _ResolvedFilesResultsAreTyped = AssertNoAny<AnyMethodNames<GeneratedWasm.BrowserResolvedFiles>>;
 export type _FsMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawFs>>;
 export type _WorkspaceMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawWorkspace>>;
 export type _GenerationMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawGeneration>>;
 export type _ChangeSetMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawChangeSet>>;
-export type _JoinMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawJoinPlan>>;
-export type _TransactionMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawTransaction>>;
+export type _JoinMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<GeneratedWasm.BrowserJoinPlan>>;
+export type _TransactionMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<GeneratedWasm.BrowserTransaction>>;
 export type _SpeculationMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawSpeculation>>;
 export type _VolumeMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawVolume>>;
 export type _CheckoutMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawCheckout>>;
-export type _ResolvedFileMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawResolvedFile>>;
-export type _ResolvedFilesMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<WasmRawResolvedFiles>>;
+export type _ResolvedFileMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<GeneratedWasm.BrowserResolvedFile>>;
+export type _ResolvedFilesMethodsHaveKnownResults = AssertNoAny<AnyOrUnknownMethodResults<GeneratedWasm.BrowserResolvedFiles>>;
 
 export type _FsMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawFs>>;
 export type _WorkspaceMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawWorkspace>>;
 export type _GenerationMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawGeneration>>;
 export type _ChangeSetMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawChangeSet>>;
-export type _JoinMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawJoinPlan>>;
-export type _TransactionMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawTransaction>>;
+export type _JoinMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<GeneratedWasm.BrowserJoinPlan>>;
+export type _TransactionMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<GeneratedWasm.BrowserTransaction>>;
 export type _SpeculationMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawSpeculation>>;
 export type _VolumeMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawVolume>>;
 export type _CheckoutMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawCheckout>>;
-export type _ResolvedFileMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawResolvedFile>>;
-export type _ResolvedFilesMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<WasmRawResolvedFiles>>;
+export type _ResolvedFileMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<GeneratedWasm.BrowserResolvedFile>>;
+export type _ResolvedFilesMethodsHaveKnownParameters = AssertNoAny<AnyOrUnknownMethodParameters<GeneratedWasm.BrowserResolvedFiles>>;
 
 export type _FsPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawFs>>;
 export type _WorkspacePropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawWorkspace>>;
 export type _GenerationPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawGeneration>>;
 export type _ChangeSetPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawChangeSet>>;
-export type _JoinPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawJoinPlan>>;
-export type _TransactionPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawTransaction>>;
+export type _JoinPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<GeneratedWasm.BrowserJoinPlan>>;
+export type _TransactionPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<GeneratedWasm.BrowserTransaction>>;
 export type _SpeculationPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawSpeculation>>;
 export type _VolumePropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawVolume>>;
 export type _CheckoutPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawCheckout>>;
-export type _ResolvedFilePropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawResolvedFile>>;
-export type _ResolvedFilesPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<WasmRawResolvedFiles>>;
+export type _ResolvedFilePropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<GeneratedWasm.BrowserResolvedFile>>;
+export type _ResolvedFilesPropertiesAreKnown = AssertNoAny<AnyOrUnknownPropertyNames<GeneratedWasm.BrowserResolvedFiles>>;
 
 export type _WorkspaceJoinParameters = AssertExtends<
   Parameters<WasmRawWorkspace["joinInto"]>,
@@ -198,7 +177,7 @@ export type _GenerationExtentUsesGeneratedDto = AssertExtends<
   GeneratedWasm.BrowserWorkspaceExtentPlan
 >;
 export type _JoinUsesGeneratedDto = AssertExtends<
-  Awaited<ReturnType<WasmRawJoinPlan["apply"]>>,
+  Awaited<ReturnType<GeneratedWasm.BrowserJoinPlan["apply"]>>,
   GeneratedWasm.BrowserJoinResult
 >;
 export type _WorkspaceRebaseUsesGeneratedDto = AssertExtends<

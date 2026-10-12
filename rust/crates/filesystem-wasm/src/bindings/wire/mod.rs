@@ -216,19 +216,18 @@ pub(in crate::bindings) fn browser_error(name: &str, message: &str) -> JsValue {
 
 pub(in crate::bindings) fn browser_path(
     path: &str,
-    profile: FilesystemProfile,
-    limits: VolumeLimits,
+    config: VolumeConfig,
 ) -> Result<NamespacePath, JsValue> {
-    let portable = PortablePath::parse(path, limits).map_err(js_error)?;
-    NamespacePath::from_portable_in_profile(&portable, profile, limits).map_err(js_error)
+    let portable = PortablePath::parse(path, config.limits).map_err(js_error)?;
+    NamespacePath::from_portable_in_profile(&portable, config.profile, config.limits)
+        .map_err(js_error)
 }
 
 pub(in crate::bindings) fn browser_name(
     name: &str,
-    profile: FilesystemProfile,
-    limits: VolumeLimits,
+    config: VolumeConfig,
 ) -> Result<LogicalName, JsValue> {
-    let path = browser_path(&format!("/{name}"), profile, limits)?;
+    let path = browser_path(&format!("/{name}"), config)?;
     match path.components() {
         [name] => Ok(name.clone()),
         _ => Err(js_error("invalid directory cursor")),
@@ -283,7 +282,7 @@ pub(in crate::bindings) fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Js
 }
 
 pub(in crate::bindings) fn encode_checkpoint_result(
-    receipt: &acyclic_fs::FsReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
     ts(BrowserCheckpointResult {
         generation_id: receipt.value.digest().into_bytes().to_vec(),

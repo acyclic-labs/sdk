@@ -1,13 +1,10 @@
-import type {
-  JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,
-  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus,
-  WasmRawMergeConflict,
-} from "./contracts.js";
+import type { JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters, WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus } from "./contracts.js";
+import type { MergeConflictResult } from "../generated/wasm/acyclic_fs_wasm.js";
 import { copyFixedBytes, copyName } from "./binding-values.js";
 
 export function decodeMergeConflict(raw: unknown): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new TypeError("binding returned a malformed conflict");
-  const conflict = raw as Partial<WasmRawMergeConflict>;
+  const conflict = raw as Partial<MergeConflictResult>;
   const { fileId, directoryId, name } = conflict;
   if (conflict.kind === "file" && fileId instanceof Uint8Array && fileId.byteLength === 16 &&
       directoryId === undefined && name === undefined) {

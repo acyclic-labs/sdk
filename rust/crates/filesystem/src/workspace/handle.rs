@@ -22,8 +22,12 @@ impl<A, O> Clone for Workspace<A, O> {
 }
 
 impl<A, O> Workspace<A, O> {
+    /// Authenticated immutable volume configuration.
+    pub const fn volume_config(&self) -> crate::model::VolumeConfig {
+        self.volume.config
+    }
+
     /// Stable opaque workspace identity.
-    #[must_use]
     pub const fn id(&self) -> WorkspaceId {
         self.id
     }
@@ -33,23 +37,38 @@ impl<A, O> Workspace<A, O> {
     }
 
     /// Immutable canonical workspace name.
-    #[must_use]
     pub fn name(&self) -> &WorkspaceName {
         &self.name
     }
 
     /// Exact immutable filesystem profile selected when this workspace was created.
-    #[must_use]
     pub const fn profile(&self) -> crate::model::FilesystemProfile {
         self.volume.config.profile
     }
 
     /// Exact immutable bounds selected for this workspace volume.
-    #[must_use]
     pub const fn limits(&self) -> crate::model::VolumeLimits {
         self.volume.config.limits
     }
-    /// Authenticated immutable volume configuration.
-    #[must_use]
-    pub const fn volume_config(&self) -> crate::model::VolumeConfig { self.volume.config }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
+    /// Returns the attached native source.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    pub fn source(&self) -> Option<&crate::Source<A, O>> {
+        self.source.as_ref()
+    }
+
+    /// Captures the attached source and returns its exact generation.
+    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+    pub async fn seal(&self) -> Result<Generation<A, O>, crate::SourceError> {
+        match &self.source {
+            Some(source) => source.seal().await,
+            None => self
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| crate::SourceError::Engine(failure.error.to_string())),
+        }
+    }
 }

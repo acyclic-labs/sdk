@@ -7,15 +7,15 @@ use crate::foundation::{
 };
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
-#[cfg(test)]
-use crate::performance::OperationFailure;
 use crate::storage::{
-    AppendOutcome as FsAppendOutcome, AuthorityStoreError,
-    CreateAuthorityOutcome, FenceOutcome, ObjectId, PublicationPermit, PublicationReservation,
-    ReplayLimit, ReservationOutcome,
+    AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
+    ObjectId, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use crate::streams_record::StreamsDurableRecord;
-use crate::{AsyncAuthorityStore, AuthorityWork, AuthorityGuard, AuthorityError, AuthorityAllocation, WorkspaceForkCommit, WorkspaceForkOutcome};
+use crate::{
+    AsyncAuthorityStore, AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork,
+    WorkspaceForkCommit, WorkspaceForkOutcome,
+};
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -45,7 +45,9 @@ impl<P> StreamAuthorityStore<P> {
 
     /// Returns the shared public Stream provider.
     #[must_use]
-    pub fn provider(&self) -> Arc<P> { Arc::clone(&self.provider) }
+    pub fn provider(&self) -> Arc<P> {
+        Arc::clone(&self.provider)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,20 +60,23 @@ struct AuthoritySnapshot {
 // Private read-only capability: retirement bypass is available only to accounting.
 struct AccountingAuthority<'a, P>(&'a StreamAuthorityStore<P>);
 
-
-mod work;
-use work::*;
-mod accounting;
-mod read;
-use read::*;
-mod publication;
-use publication::*;
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath};
+mod io;
+use io::*;
+mod native;
+use native::*;
+mod append;
+mod authority;
+mod bindings;
+mod lineage;
+mod replay;
+use append::seal;
 mod records;
-use records::*;
-pub(crate) use records::object_key;
+mod reservations;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
-mod reservation;
-
+pub(crate) use records::object_key;
+use records::*;
+mod accounting;
 #[cfg(test)]
 mod tests;

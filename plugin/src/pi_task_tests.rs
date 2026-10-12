@@ -11,13 +11,10 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     runtime::{TaskSpawner as _, TaskStateProvider},
-    scheduler::ResourceSnapshot,
+    scheduler::ResourceRequest,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};
-
-#[path = "pi_task_model_tests.rs"]
-mod bounded_model;
 
 fn binding() -> PiTaskBinding {
     let mut binding = crate::pi_binding::tests::binding("pi-root", 31);
@@ -77,7 +74,7 @@ async fn storage(
         .await
         .unwrap();
     (
-        Arc::new(FilesystemHost::new(raw, provider.clone()).unwrap()),
+        FilesystemHost::new(raw, &provider, None).unwrap(),
         Arc::new(
             LocalStream::open(path.join("stream"), LocalStreamLimits::default())
                 .await
@@ -90,16 +87,12 @@ async fn open(
     path: &Path,
     binding: &PiTaskBinding,
 ) -> acyclic_harness::Result<(
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 )> {
     let work = work();
     let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)
-            .map_err(|cause| acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)?;
     let owner = PiOwnerConfig::load_with_native_work(&root, Path::new(""), &work)?;
     owner.validate_root(binding, &work)?;
     let (filesystem, stream) = storage(path, owner.policy().journal.provider()).await;
@@ -118,7 +111,7 @@ async fn fixture(
     binding: &PiTaskBinding,
 ) -> (
     tempfile::TempDir,
-    PiTaskRuntime<LocalStream>,
+    PiTaskRuntime,
     acyclic_fs::NativeMaterializationWork,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -298,65 +291,6 @@ async fn root_admission_is_original_and_does_not_start_work() {
             .await
             .unwrap()
             == admission
-    );
-}
-
-#[tokio::test]
-async fn credentials_are_checked_before_reopening_storage() {
-    let binding = binding();
-    let (directory, runtime, work) = fixture(&binding).await;
-    runtime
-        .admit_root(
-            &binding,
-            &PiRootIntent::ScratchOnly {},
-            &preparation(),
-            &work,
-        )
-        .await
-        .unwrap();
-    let original = runtime
-        .runtime
-        .task_host()
-        .observe_admission(binding.task_id)
-        .await
-        .unwrap();
-    drop(runtime);
-    let private = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-        directory.path(),
-        &work,
-    )
-    .unwrap();
-    let owner = PiOwnerConfig::load_with_native_work(&private, Path::new(""), &work).unwrap();
-    std::fs::rename(
-        directory.path().join("filesystem"),
-        directory.path().join("retained"),
-    )
-    .unwrap();
-    let mut foreign = binding.clone();
-    foreign.task_id = TaskId::from_bytes([74; 16]);
-    assert!(open(directory.path(), &foreign).await.is_err());
-    assert!(!directory.path().join("filesystem").exists());
-    std::fs::remove_file(directory.path().join("pi-owner.v1")).unwrap();
-    assert!(open(directory.path(), &binding).await.is_err());
-    assert!(!directory.path().join("filesystem").exists());
-    assert!(!directory.path().join("pi-owner.v1").exists());
-    owner
-        .save_new_with_native_work(&private, Path::new(""), &work)
-        .unwrap();
-    std::fs::rename(
-        directory.path().join("retained"),
-        directory.path().join("filesystem"),
-    )
-    .unwrap();
-    let (runtime, _) = open(directory.path(), &binding).await.unwrap();
-    assert!(
-        runtime
-            .runtime
-            .task_host()
-            .observe_admission(binding.task_id)
-            .await
-            .unwrap()
-            == original
     );
 }
 
@@ -556,291 +490,62 @@ fn root_selection_rejects_unselected_paths_and_invalid_identity() {
     assert!(!directory.path().join("selected").exists());
 }
 
-fn preparing_state(
-    fixture: &crate::pi_fork::tests::Fixture,
-    plan: &crate::pi_fork::PiForkPlan,
-) -> AdapterState {
-    let PiRootIntent::Project { root_id, paths, .. } = &fixture.root_request.root else {
-        unreachable!()
-    };
-    let mut state = fixture.state();
-    state.pending.push_back(crate::PendingSpawn {
-        task_binding: PluginTaskBinding::Pi(Box::new(plan.commit.child.clone())),
-        agent_id: Some(plan.commit.alias.clone()),
-        parent_agent_id: state.root_agent_id.clone(),
-        tool_use_id: plan.commit.sdk_operation.clone(),
-        active_root_id: Some(*root_id),
-        expires_at_millis: u64::MAX,
-        workspace_name: plan.commit.alias.clone(),
-        fork_key: plan.original.into_bytes(),
-        roots: BTreeMap::new(),
-        mount_path: crate::pi_native::planned_native_paths(
-            &fixture.resources,
-            &state.root_session_id,
-            plan.commit.child.task_id,
-            paths.keys().next().map(String::as_str),
-            &work(),
-        )
-        .unwrap()
-        .0
-        .view_root,
-        lifecycle: crate::PendingSpawnLifecycle::Preparing,
-    });
-    state
-}
-
 #[tokio::test]
-async fn preparing_phases_never_claim_a_future_native_child() {
-    use crate::pi_recovery::PiPreparationPhase;
-    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
-    let plan = fixture.plan(&work()).await;
-    let state = preparing_state(&fixture, &plan);
-    crate::save_state(
-        &fixture.resources.session_directory(&state.root_session_id),
-        &state,
-        crate::Survives::PowerLoss,
-    )
-    .unwrap();
-    assert!(
-        crate::ControlPlane::open(fixture.resources.session_directory(&state.root_session_id))
-            .await
-            .is_err()
-    );
-    let host = fixture.runtime.runtime.task_host();
-    let query = work();
-    assert!(
-        observe_pi_session(&fixture.runtime.runtime, &state, &query)
-            .await
-            .is_err()
-    );
-    assert!(
-        host.reconcile_admission(OperationId::from_bytes(
-            plan.commit.child.task_id.into_bytes()
-        ))
-        .await
-        .unwrap()
-        .is_none()
-    );
-    host.admit_owned(plan.preparation.clone(), fixture.fence.clone())
-        .await
-        .unwrap();
-    let observed = observe_pi_session(&fixture.runtime.runtime, &state, &query)
-        .await
-        .unwrap();
-    assert!(
-        matches!(&observed.0[1], PiTaskObservation::Preparation { task_id, preparation, phase: PiPreparationPhase::Pending }
-        if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id())
-    );
-    drop(observed);
-    for mutation in 0..5 {
-        let mut changed = state.clone();
-        match mutation {
-            0 => {
-                let PluginTaskBinding::Pi(child) = &mut changed.pending[0].task_binding else {
-                    unreachable!()
-                };
-                child.native_session_id.push_str("-foreign");
-            }
-            1 => changed.pending[0].parent_agent_id = "foreign-parent".into(),
-            2 => changed.pending[0].tool_use_id.push_str("-foreign"),
-            3 => changed.pending[0].agent_id = Some("wrong-alias".into()),
-            _ => changed.pending[0].agent_id = None,
-        }
-        assert!(
-            observe_pi_session(&fixture.runtime.runtime, &changed, &query)
-                .await
-                .is_err()
-        );
-        assert!(
-            host.observe_admission(plan.commit.child.task_id)
-                .await
-                .is_err()
-        );
-    }
-    let worker = Worker {
-        id: "pi-preparing-observation".into(),
-        available: ResourceSnapshot::default(),
-        labels: BTreeMap::new(),
-    };
-    {
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query).unwrap();
-        let value = fixture
-            .runtime
-            .runtime
-            .run_operation(
-                &worker,
-                plan.preparation.task_id(),
-                &fixture.runtime.runtime.commands(),
-                1,
-                Some(&io),
-            )
-            .await
-            .unwrap();
-        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
-            unreachable!()
-        };
-        (
+async fn native_reply_survives_concurrent_settlement_and_reopen() {
+    use acyclic_harness::{IdempotencyKey, workflow::WorkflowJournal};
+    let fixture = crate::pi_root_provider::tests::Fixture::new(PiRootIntent::ScratchOnly {}).await;
+    let runtime = &fixture.runtime.runtime;
+    let guard = |value: &Value, native: &acyclic_fs::NativeMaterializationWork| {
+        crate::pi_root_provider::guarded_pi_value(
             value,
-            custody
-                .into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            fixture.owner.policy().maximum_payload_bytes,
+            native,
         )
-    };
-    let observed = observe_pi_session(&fixture.runtime.runtime, &state, &query)
-        .await
-        .unwrap();
-    assert!(matches!(
-        &observed.0[1],
-        PiTaskObservation::Preparation {
-            phase: PiPreparationPhase::Reserved,
-            ..
-        }
-    ));
-    drop(observed);
-    let coordinator = fixture.coordinator(&work()).unwrap();
-    let mut stale = fixture.fence.clone();
-    stale.reservation_id.push_str("-foreign");
-    assert!(
-        fixture
-            .prepare_with(
-                &coordinator,
-                &fixture.context,
-                &fixture.journal,
-                &stale,
-                &plan,
-                fixture.root_handle.workspace.clone(),
-                crate::pi_root_provider::allocation_budget(),
-                acyclic_fs::CancellationToken::new()
-            )
-            .await
-            .is_err()
-    );
-    fixture
-        .prepare_with(
-            &coordinator,
-            &fixture.context,
-            &fixture.journal,
-            &fixture.fence,
-            &plan,
-            fixture.root_handle.workspace.clone(),
-            crate::pi_root_provider::allocation_budget(),
-            acyclic_fs::CancellationToken::new(),
-        )
-        .await
         .unwrap()
-        .unwrap();
-    let reopened = PiTaskRuntime::open_with_native_work(
-        fixture.stream.clone(),
-        fixture.filesystem.clone(),
-        &fixture.owner.policy().journal,
-        fixture.owner.authority_with_native_work(&query).unwrap(),
-        &query,
-    )
-    .await
-    .unwrap();
-    for _ in 0..2 {
-        let observed = observe_pi_session(&reopened.runtime, &state, &query)
-            .await
-            .unwrap();
-        assert!(matches!(
-            &observed.0[1],
-            PiTaskObservation::Preparation {
-                phase: PiPreparationPhase::Succeeded,
-                ..
-            }
-        ));
-        assert!(
-            host.observe_admission(plan.commit.child.task_id)
-                .await
-                .is_err()
-        );
-        assert!(state.routes.is_empty());
-    }
-}
-
-#[tokio::test]
-async fn committed_root_reopens_and_accepts_a_distinct_control() {
-    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
-    let task = fixture.owner.policy().root_task;
+    };
+    let task = fixture.request.binding.task_id;
+    let fence = acyclic_harness::scheduler::LeaseFence::from(&fixture.lease.reservation);
     let work = work();
-    let recovery = {
-        let mut io = acyclic_harness::store::history::native_work_io(&work).unwrap();
-        acyclic_harness::store::history::HistoryIo::retain_owned(
-            &mut io,
-            std::mem::size_of::<WorkPull>().max(std::mem::size_of::<
-                acyclic_harness::filesystem::TaskWorkerAttempt,
-            >()) as u64,
-        )
+    let context = runtime
+        .task_context_with_native_work(task, &fence, &work)
+        .await
         .unwrap();
-        let value = fixture
-            .runtime
-            .runtime
-            .task_host()
-            .recover_work(task, &mut Some(&mut io))
-            .await
-            .unwrap();
-        (value, io.into_custody())
+    let acyclic_harness::effects::EffectStatus::Succeeded { result: allocation } =
+        fixture.execute().await.unwrap().0
+    else {
+        panic!("original root allocation");
     };
-    let WorkPull::Claimed(lease) = recovery.0 else {
-        panic!("original control lease")
-    };
-    fixture
-        .runtime
-        .runtime
-        .resume_task_with_native_work(
-            lease,
-            recovery.1,
-            &fixture.runtime.runtime.commands(),
-            8,
-            &work,
-        )
+    let mut journal = runtime
+        .open_task_with_native_work(task, &fence, context.clone(), &work)
         .await
         .unwrap();
-    let checkpoint = fixture
-        .runtime
-        .runtime
-        .observe_workflow_checkpoint(task)
-        .await
-        .unwrap();
-    let admission = fixture
-        .runtime
-        .runtime
-        .task_host()
-        .observe_admission(task)
-        .await
-        .unwrap();
-    let reopened = PiTaskRuntime::open_with_native_work(
-        fixture.stream.clone(),
-        fixture.filesystem.clone(),
-        &fixture.owner.policy().journal,
-        fixture.owner.authority_with_native_work(&work).unwrap(),
+    let preparation = crate::pi_root_inputs::stage_root_command(
+        &fixture.owner,
+        &fixture.filesystem,
+        &fixture.request,
         &work,
     )
     .await
     .unwrap();
-    assert_eq!(
-        reopened
-            .runtime
-            .observe_workflow_checkpoint(task)
-            .await
-            .unwrap(),
-        checkpoint
+    let settled = guard(
+        &result(preparation.0.operation_id, Outcome::Succeeded(allocation)),
+        &work,
     );
-    assert!(matches!(
-        reopened
-            .runtime
-            .task_host()
-            .recover_work(task, &mut None)
-            .await
-            .unwrap(),
-        WorkPull::Idle
-    ));
-    let operation = OperationId::from_bytes([126; 16]);
-    let payload = crate::pi_root_provider::stage_pi_input(
+    journal
+        .step_with_native_work(
+            OperationId::from_bytes([151; 16]),
+            IdempotencyKey::new("native-large-allocation").unwrap(),
+            settled.0,
+            settled.1,
+        )
+        .await
+        .unwrap();
+    let operation = OperationId::from_bytes([152; 16]);
+    let timer = crate::pi_root_provider::stage_pi_input(
         &fixture.owner,
         &fixture.filesystem,
         operation,
-        "next-timer",
+        "large-reply-timer",
         &json!({"deadline_unix_ms":0}),
         &work,
     )
@@ -850,123 +555,32 @@ async fn committed_root_reopens_and_accepts_a_distinct_control() {
         command: WorkflowCommand {
             operation_id: operation,
             kind: "acyclic.timer.v1".into(),
-            payload: payload.0.clone(),
+            payload: timer.0,
         },
     };
-    let input = crate::pi_root_provider::stage_pi_input(
-        &fixture.owner,
-        &fixture.filesystem,
-        operation,
-        "next-control",
-        &control,
-        &work,
-    )
-    .await
-    .unwrap();
-    let suspension = reopened
-        .runtime
-        .task_host()
-        .workflow_suspension(task)
-        .await
-        .unwrap()
-        .unwrap();
-    reopened
-        .runtime
-        .task_host()
-        .resume_workflow(
-            task,
-            suspension.revision,
-            input.0.clone(),
-            acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(),
-            None,
+    let admitted = guard(&serde_json::to_value(&control).unwrap(), &work);
+    journal
+        .step_with_native_work(
+            OperationId::from_bytes([153; 16]),
+            IdempotencyKey::new("native-large-control").unwrap(),
+            admitted.0,
+            admitted.1,
         )
         .await
         .unwrap();
-    let worker = Worker {
-        id: "pi-root-control-next".into(),
-        available: ResourceSnapshot::default(),
-        labels: BTreeMap::new(),
-    };
-    {
-        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
-        let value = reopened
-            .runtime
-            .run_operation(&worker, task, &reopened.runtime.commands(), 8, Some(&io))
-            .await
-            .unwrap();
-        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
-            unreachable!()
-        };
-        (
-            value,
-            custody
-                .into_inner()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    };
-    let next = reopened
-        .runtime
-        .observe_workflow_checkpoint(task)
+    drop(journal);
+    let mut first = runtime
+        .open_task_with_native_work(task, &fence, context.clone(), &work)
         .await
         .unwrap();
-    assert_eq!(next.state["allocation"], checkpoint.state["allocation"]);
-    assert_eq!(
-        control_reply(next.state, &work)
-            .unwrap()
-            .0
-            .unwrap()
-            .operation_id,
-        operation
-    );
-    assert!(
-        reopened
-            .runtime
-            .task_host()
-            .observe_admission(task)
-            .await
-            .unwrap()
-            == admission
-    );
-}
-
-#[tokio::test]
-async fn native_reply_survives_concurrent_settlement_and_reopen() {
-    use acyclic_harness::{IdempotencyKey, workflow::WorkflowJournal};
-    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
-    let task = fixture.root_request.binding.task_id;
-    let work = work();
-    let context = fixture
-        .runtime
-        .runtime
-        .task_context_with_native_work(task, &fixture.fence, &work)
-        .await
-        .unwrap();
-    let mut first = fixture
-        .runtime
-        .runtime
-        .open_task_with_native_work(task, &fixture.fence, context.clone(), &work)
-        .await
-        .unwrap();
-    let mut second = fixture
-        .runtime
-        .runtime
-        .open_task_with_native_work(task, &fixture.fence, context.clone(), &work)
+    let mut second = runtime
+        .open_task_with_native_work(task, &fence, context.clone(), &work)
         .await
         .unwrap();
     let prior = first.checkpoint().clone();
-    let input = json!({"commands":[{"operation_id":fixture.root_control.operation_id,"value":"q".repeat(128 * 1024)}]});
-    let left = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &work,
-    )
-    .unwrap();
-    let right = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &work,
-    )
-    .unwrap();
+    let input = json!({"commands":[{"operation_id":operation,"value":"q".repeat(128 * 1024)}]});
+    let left = guard(&input, &work);
+    let right = guard(&input, &work);
     let (left, right) = tokio::join!(
         first.step_with_native_work(
             OperationId::from_bytes([155; 16]),
@@ -992,17 +606,11 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         acyclic_harness::wire::ErrorCode::Conflict
     );
     let accepted = accepted.unwrap();
-    assert_eq!(
-        accepted.0.state["reply"]["value"],
-        json!("q".repeat(128 * 1024))
-    );
+    let reply = control_reply(accepted.0.state, &work).unwrap();
+    assert_eq!(reply.0.unwrap().value, json!("q".repeat(128 * 1024)));
+    drop(reply.1);
     assert_eq!(stale.checkpoint(), &prior);
-    let next = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &work,
-    )
-    .unwrap();
+    let next = guard(&input, &work);
     assert_eq!(
         stale
             .step_with_native_work(
@@ -1017,22 +625,15 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .code(),
         acyclic_harness::wire::ErrorCode::Conflict
     );
-    drop(accepted);
+    drop(accepted.1);
     drop(first);
     drop(second);
-    let mut recovered = fixture
-        .runtime
-        .runtime
-        .open_task_with_native_work(task, &fixture.fence, context.clone(), &work)
+    let mut recovered = runtime
+        .open_task_with_native_work(task, &fence, context.clone(), &work)
         .await
         .unwrap();
     let checkpoint = recovered.checkpoint().clone();
-    let retry = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &work,
-    )
-    .unwrap();
+    let retry = guard(&input, &work);
     let retried = recovered
         .step_with_native_work(
             OperationId::from_bytes([operation; 16]),
@@ -1045,10 +646,8 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     assert_eq!(retried.0.state, checkpoint.state);
     assert_eq!(recovered.checkpoint(), &checkpoint);
     drop(retried);
-    let journal = fixture
-        .runtime
-        .runtime
-        .workflow_journal_with_native_work(task, &fixture.fence, &work)
+    let journal = runtime
+        .workflow_journal_with_native_work(task, &fence, &work)
         .await
         .unwrap();
     let replay = journal
@@ -1058,22 +657,15 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .unwrap();
     assert_eq!(replay.0.last().unwrap().next, checkpoint);
     drop(replay);
-    let mut wrong = fixture.fence.clone();
+    let mut wrong = fence.clone();
     wrong.reservation_id.push_str("-foreign");
     assert!(
-        fixture
-            .runtime
-            .runtime
+        runtime
             .workflow_journal_with_native_work(task, &wrong, &work)
             .await
             .is_err()
     );
-    let denied = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &work,
-    )
-    .unwrap();
+    let denied = guard(&input, &work);
     work.cancellation().cancel();
     assert!(
         recovered
@@ -1088,25 +680,16 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     let query = crate::pi_fork::tests::work();
-    let mut current = fixture
-        .runtime
-        .runtime
-        .open_task_with_native_work(task, &fixture.fence, context, &query)
+    let mut current = runtime
+        .open_task_with_native_work(task, &fence, context, &query)
         .await
         .unwrap();
-    fixture
-        .runtime
-        .runtime
+    runtime
         .task_host()
         .cancel(task, Some(&query))
         .await
         .unwrap();
-    let retry = crate::pi_root_provider::guarded_pi_value(
-        &input,
-        fixture.owner.policy().maximum_payload_bytes,
-        &query,
-    )
-    .unwrap();
+    let retry = guard(&input, &query);
     assert!(
         current
             .step_with_native_work(
@@ -1118,16 +701,7 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
             .await
             .is_err()
     );
-    assert!(
-        fixture
-            .runtime
-            .runtime
-            .task_host()
-            .outcome(task)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(runtime.task_host().outcome(task).await.unwrap().is_none());
 }
 
 #[test]

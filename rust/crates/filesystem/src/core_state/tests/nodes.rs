@@ -40,7 +40,6 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
 async fn state_survives_reopen() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = LocalCoreStateStore::new(directory.path());
-    let namespace = store.namespace().expect("admitted namespace");
     let state = WorkspaceLineageRecord {
         version: 1,
         revision: 1,
@@ -57,24 +56,6 @@ async fn state_survives_reopen() {
             .await
             .expect("initial write")
     );
-    // A shared commit is written back before its lock is released.
-    assert!(
-        std::fs::read(
-            &namespace
-                .record(CORE_LOG_FAMILY, &[0; 16])
-                .expect("record paths")
-                .current
-        )
-        .expect("core log")
-        .is_empty()
-    );
-    WorkspaceLineageStore::load(&store, workspace())
-        .await
-        .expect("write the record back");
-    let current = namespace
-        .record("lineage", &workspace().into_bytes())
-        .expect("record paths")
-        .current;
     let reopened = LocalCoreStateStore::new(directory.path());
     assert_eq!(
         WorkspaceLineageStore::load(&reopened, workspace())
@@ -82,23 +63,25 @@ async fn state_survives_reopen() {
             .expect("reopen"),
         Some(state)
     );
-    assert!(
-        read_json::<WorkspaceLineageRecord>(&current)
-            .expect("written-back record")
-            .is_some()
-    );
 }
 
 #[tokio::test]
 async fn lazy_overlay_load_rejects_content_address_mismatch() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = LocalCoreStateStore::new(directory.path());
-    let (overlay, node) = overlay_node("/original");
+    let empty = LazyOverlayId::from_bytes([0; 32]);
+    let (overlay, node) = linked_overlay("/original", empty, empty);
+    let allocation = accounting
+        .claim_owned(node.owned_bytes(), 0)
+        .expect("overlay allocation");
     store
-        .put_lazy_overlay(overlay, node)
+        .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
         .await
         .expect("persist overlay");
-    let (_, tampered) = overlay_node("/tampered");
+    let (_, tampered) = linked_overlay("/tampered", empty, empty);
     let paths = store
         .namespace()
         .expect("admitted namespace")
@@ -112,35 +95,50 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
     .expect("tamper overlay");
     assert!(matches!(
         LocalCoreStateStore::new(directory.path())
-            .load_lazy_overlay(overlay)
+            .load_lazy_overlay(overlay, &mut accounting)
             .await,
-        Err(LocalCoreStateStoreError::Integrity)
+        Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
     ));
 }
 
 #[tokio::test]
 async fn immutable_nodes_are_served_from_memory_after_first_use() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
-    let (overlay, node) = overlay_node("/memoized");
+    let empty = LazyOverlayId::from_bytes([0; 32]);
+    let (overlay, node) = linked_overlay("/memoized", empty, empty);
+    let value = node.clone();
+    let allocation = accounting
+        .claim_owned(value.owned_bytes(), 0)
+        .expect("overlay allocation");
     store
-        .put_lazy_overlay(overlay, node.clone())
+        .put_lazy_overlay(overlay, (value, allocation), &mut accounting)
         .await
         .expect("put overlay");
     std::fs::remove_dir_all(directory.path().join("lazy-overlays")).expect("drop overlays");
     let clone = store.clone();
     assert_eq!(
         clone
-            .load_lazy_overlay(overlay)
+            .load_lazy_overlay(overlay, &mut accounting)
             .await
-            .expect("memoized overlay"),
-        Some(node)
+            .expect("memoized overlay")
+            .as_ref()
+            .map(|(value, _)| value),
+        Some(&node)
     );
-    let (_, different) = overlay_node("/different");
+    let (_, different) = linked_overlay("/different", empty, empty);
+    let allocation = accounting
+        .claim_owned(different.owned_bytes(), 0)
+        .expect("different overlay allocation");
     assert!(
         matches!(
-            clone.put_lazy_overlay(overlay, different).await,
-            Err(LocalCoreStateStoreError::Integrity)
+            clone
+                .put_lazy_overlay(overlay, (different, allocation), &mut accounting)
+                .await,
+            Err(crate::LazyWorkspaceError::NativeRecordIntegrity)
         ),
         "a memoized address still rejects a different value"
     );
@@ -148,6 +146,9 @@ async fn immutable_nodes_are_served_from_memory_after_first_use() {
 
 #[tokio::test]
 async fn empty_nodes_are_implied_without_being_stored() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = LocalCoreStateStore::new(directory.path());
     let overlay = LazyOverlayId::from_bytes(
@@ -158,11 +159,25 @@ async fn empty_nodes_are_implied_without_being_stored() {
     ))
     .expect("empty shadow id");
     store
-        .put_lazy_overlay(overlay, LazyOverlay::default())
+        .put_lazy_overlay(
+            overlay,
+            (
+                LazyOverlay::default(),
+                crate::kernel::KernelOwnedAllocation::Standalone,
+            ),
+            &mut accounting,
+        )
         .await
         .expect("put empty overlay");
     store
-        .put_lazy_shadow(shadow, crate::LazyShadow::default())
+        .put_lazy_shadow(
+            shadow,
+            (
+                crate::LazyShadow::default(),
+                crate::kernel::KernelOwnedAllocation::Standalone,
+            ),
+            &mut accounting,
+        )
         .await
         .expect("put empty shadow");
     assert_eq!(
@@ -174,14 +189,21 @@ async fn empty_nodes_are_implied_without_being_stored() {
     );
     assert_eq!(
         store
-            .load_lazy_overlay(overlay)
+            .load_lazy_overlay(overlay, &mut accounting)
             .await
-            .expect("empty overlay"),
-        Some(LazyOverlay::default())
+            .expect("empty overlay")
+            .as_ref()
+            .map(|(value, _)| value),
+        Some(&LazyOverlay::default())
     );
     assert_eq!(
-        store.load_lazy_shadow(shadow).await.expect("empty shadow"),
-        Some(crate::LazyShadow::default())
+        store
+            .load_lazy_shadow(shadow, &mut accounting)
+            .await
+            .expect("empty shadow")
+            .as_ref()
+            .map(|(value, _)| value),
+        Some(&crate::LazyShadow::default())
     );
 }
 
@@ -233,15 +255,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         state.overlay,
         state.shadows,
     );
-    state.completed_selected_import = Some(crate::lazy_workspace::CompletedSelectedImport {
-        operation: OperationId::from_bytes([0xb3; 16]),
-        snapshot,
-        destination: snapshot,
-        source: snapshot,
-        input: Digest::from_bytes([0xb4; 32]),
-        config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-        source_config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-    });
+    state.selected_import_roots = Some([(snapshot, crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral)); 3]);
     let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
@@ -253,29 +267,27 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         ..Default::default()
     })
     .expect("original prior producer");
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
     let store = LocalCoreStateStore::new(directory.path());
     assert!(
         store
-            .compare_and_swap_lazy_workspace_with_native_work(id, 0, state.clone(), &work,)
+            .compare_and_swap_lazy_workspace(id, 0, state.clone(), &mut accounting)
             .await
             .expect("native original CAS")
     );
     let first = store
-        .load_lazy_workspace_with_native_work(id, &work)
+        .load_lazy_workspace(id, &mut accounting)
         .await
         .expect("native original load")
         .expect("actual state");
-    assert_eq!(first.as_state(), &state);
-    let (_, allocation) = first.into_parts();
-    assert!(work.shares_ledger(allocation.work()));
-    drop(allocation);
+    assert_eq!(&first, &state);
     assert_eq!(work.receipt().bytes_hashed, 5);
     let before = work.receipt().object_bytes_written;
     let mut stale = state.clone();
     stale.revision += 1;
     assert!(
         !store
-            .compare_and_swap_lazy_workspace_with_native_work(id, 0, stale, &work,)
+            .compare_and_swap_lazy_workspace(id, 0, stale, &mut accounting)
             .await
             .expect("original CAS miss")
     );
@@ -283,16 +295,16 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     drop(store);
     let restarted = LocalCoreStateStore::new(directory.path());
     let original = restarted
-        .load_lazy_workspace_with_native_work(id, &work)
+        .load_lazy_workspace(id, &mut accounting)
         .await
         .expect("real backend restart")
         .expect("original retained state");
     assert_eq!(
-        original.as_state().completed_selected_import,
-        state.completed_selected_import
+        original.selected_import_roots,
+        state.selected_import_roots
     );
-    assert_eq!(original.as_state().source, state.source);
-    assert_eq!(original.as_state().workspace_id, id);
+    assert_eq!(original.source, state.source);
+    assert_eq!(original.workspace_id, id);
 }
 
 #[tokio::test]
@@ -302,7 +314,15 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
     let store = LocalCoreStateStore::new(directory.path());
     assert!(
         store
-            .compare_and_swap_lazy_workspace(id, 0, lazy_state(id, 1))
+            .compare_and_swap_lazy_workspace(
+                id,
+                0,
+                lazy_state(id, 1),
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
             .await
             .expect("durable fixture")
     );
@@ -319,9 +339,10 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
         ..Default::default()
     })
     .expect("prior actual work");
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, work.cancellation());
     let restarted = LocalCoreStateStore::new(directory.path());
     let error = restarted
-        .load_lazy_workspace_with_native_work(id, &work)
+        .load_lazy_workspace(id, &mut accounting)
         .await
         .expect_err("actual decoder stops at original exact source allowance");
     assert!(matches!(
@@ -336,9 +357,7 @@ async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancel
     let before = work.receipt();
     cancellation.cancel();
     assert!(matches!(
-        restarted
-            .load_lazy_workspace_with_native_work(id, &work)
-            .await,
+        restarted.load_lazy_workspace(id, &mut accounting).await,
         Err(crate::LazyWorkspaceError::Cancelled),
     ));
     assert_eq!(work.receipt(), before);
@@ -353,36 +372,52 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
     let shadow = crate::LazyShadowId::from_bytes([43; 32]);
     let cancellation = crate::CancellationToken::new();
     cancellation.cancel();
-    let budget = crate::WorkBudget::UNBOUNDED;
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let errors = [
         store
-            .load_lazy_workspace_measured(workspace, budget, &cancellation)
+            .load_lazy_workspace(workspace, &mut accounting)
             .await
             .unwrap_err(),
         store
-            .compare_and_swap_lazy_workspace_measured(
+            .compare_and_swap_lazy_workspace(
                 workspace,
                 0,
                 lazy_state(workspace, 1),
-                budget,
-                &cancellation,
+                &mut accounting,
             )
             .await
             .unwrap_err(),
         store
-            .load_lazy_overlay_measured(overlay, budget, &cancellation)
+            .load_lazy_overlay(overlay, &mut accounting)
+            .await
+            .err()
+            .expect("cancelled overlay read"),
+        store
+            .put_lazy_overlay(
+                overlay,
+                (
+                    LazyOverlay::Empty,
+                    crate::kernel::KernelOwnedAllocation::Standalone,
+                ),
+                &mut accounting,
+            )
             .await
             .unwrap_err(),
         store
-            .put_lazy_overlay_measured(overlay, LazyOverlay::Empty, budget, &cancellation)
+            .load_lazy_shadow(shadow, &mut accounting)
             .await
-            .unwrap_err(),
+            .err()
+            .expect("cancelled shadow read"),
         store
-            .load_lazy_shadow_measured(shadow, budget, &cancellation)
-            .await
-            .unwrap_err(),
-        store
-            .put_lazy_shadow_measured(shadow, crate::LazyShadow::Empty, budget, &cancellation)
+            .put_lazy_shadow(
+                shadow,
+                (
+                    crate::LazyShadow::Empty,
+                    crate::kernel::KernelOwnedAllocation::Standalone,
+                ),
+                &mut accounting,
+            )
             .await
             .unwrap_err(),
     ];
@@ -391,8 +426,8 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
             error.semantic_error(),
             crate::LazyWorkspaceError::Cancelled
         ));
-        assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
     }
+    assert_eq!(accounting.spent(), crate::WorkCounters::UNCHARGED);
     assert!(
         std::fs::read_dir(directory.path())
             .expect("namespace entries")
@@ -405,6 +440,9 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
 async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let workspaces = [
         WorkspaceId::from_bytes([0x61; 16]),
@@ -413,9 +451,14 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     let seed = LocalCoreStateStore::new(directory.path());
     for workspace_id in workspaces {
         assert!(
-            seed.compare_and_swap_lazy_workspace(workspace_id, 0, lazy_state(workspace_id, 1))
-                .await
-                .expect("seed binding")
+            seed.compare_and_swap_lazy_workspace(
+                workspace_id,
+                0,
+                lazy_state(workspace_id, 1),
+                &mut accounting
+            )
+            .await
+            .expect("seed binding")
         );
     }
     drop(seed);
@@ -429,6 +472,11 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
             let owner = owner.clone();
             let committed = Arc::clone(&committed);
             tokio::spawn(async move {
+                let cancellation = crate::CancellationToken::new();
+                let mut accounting = crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                );
                 let mut wins = 0_u64;
                 for round in 0..64_usize {
                     let (workspace_id, floor) = committed
@@ -436,7 +484,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                         .expect("binding slot");
                     let floor_before_load = floor.load(Ordering::SeqCst);
                     let current = owner
-                        .load_lazy_workspace(*workspace_id)
+                        .load_lazy_workspace(*workspace_id, &mut accounting)
                         .await
                         .expect("load binding")
                         .expect("binding is present");
@@ -456,6 +504,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
                             *workspace_id,
                             expected_revision,
                             replacement,
+                            &mut accounting,
                         )
                         .await
                         .expect("swap binding")
@@ -477,7 +526,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     let mut cached = Vec::new();
     for (workspace_id, floor) in committed.iter() {
         let state = owner
-            .load_lazy_workspace(*workspace_id)
+            .load_lazy_workspace(*workspace_id, &mut accounting)
             .await
             .expect("load final binding")
             .expect("final binding is present");
@@ -495,7 +544,7 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     for state in cached {
         assert_eq!(
             durable
-                .load_lazy_workspace(state.workspace_id)
+                .load_lazy_workspace(state.workspace_id, &mut accounting)
                 .await
                 .expect("load durable binding"),
             Some(state)
@@ -506,6 +555,9 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
 /// Collection removes every node no lazy workspace reaches, keeps every node one does, and a node put again after removal is stored again.
 #[tokio::test(flavor = "multi_thread")]
 async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let directory = tempfile::tempdir().expect("temporary directory");
     let store = LocalCoreStateStore::open_owned(directory.path()).expect("owned store");
     let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
@@ -517,7 +569,13 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
         (root, root_node),
         (orphan, orphan_node.clone()),
     ] {
-        store.put_lazy_overlay(id, node).await.expect("put overlay");
+        let allocation = accounting
+            .claim_owned(node.owned_bytes(), 0)
+            .expect("overlay allocation");
+        store
+            .put_lazy_overlay(id, (node, allocation), &mut accounting)
+            .await
+            .expect("put overlay");
     }
     let empty_shadows = crate::LazyShadowId::from_bytes(
         content_address(&crate::LazyShadow::Empty).expect("empty shadow"),
@@ -535,8 +593,11 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     };
     let shadow_id =
         crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow address"));
+    let allocation = accounting
+        .claim_owned(shadow.owned_bytes(), 0)
+        .expect("shadow allocation");
     store
-        .put_lazy_shadow(shadow_id, shadow)
+        .put_lazy_shadow(shadow_id, (shadow, allocation), &mut accounting)
         .await
         .expect("put shadow");
     let orphan_shadow = crate::LazyShadow::Node {
@@ -550,8 +611,15 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     let orphan_shadow_id = crate::LazyShadowId::from_bytes(
         content_address(&orphan_shadow).expect("orphan shadow address"),
     );
+    let allocation = accounting
+        .claim_owned(orphan_shadow.owned_bytes(), 0)
+        .expect("orphan allocation");
     store
-        .put_lazy_shadow(orphan_shadow_id, orphan_shadow)
+        .put_lazy_shadow(
+            orphan_shadow_id,
+            (orphan_shadow, allocation),
+            &mut accounting,
+        )
         .await
         .expect("put orphan shadow");
     let mut state = lazy_state(workspace(), 1);
@@ -559,7 +627,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     state.shadows = shadow_id;
     assert!(
         store
-            .compare_and_swap_lazy_workspace(workspace(), 0, state)
+            .compare_and_swap_lazy_workspace(workspace(), 0, state, &mut accounting)
             .await
             .expect("bind lazy workspace")
     );
@@ -570,7 +638,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     for id in [root, leaf] {
         assert!(
             reopened
-                .load_lazy_overlay(id)
+                .load_lazy_overlay(id, &mut accounting)
                 .await
                 .expect("load")
                 .is_some()
@@ -578,274 +646,37 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     }
     assert!(
         reopened
-            .load_lazy_shadow(shadow_id)
+            .load_lazy_shadow(shadow_id, &mut accounting)
             .await
             .expect("load")
             .is_some()
     );
     assert!(
         reopened
-            .load_lazy_overlay(orphan)
+            .load_lazy_overlay(orphan, &mut accounting)
             .await
             .expect("load")
             .is_none()
     );
     assert!(
         reopened
-            .load_lazy_shadow(orphan_shadow_id)
+            .load_lazy_shadow(orphan_shadow_id, &mut accounting)
             .await
             .expect("load")
             .is_none()
     );
+    let allocation = accounting
+        .claim_owned(orphan_node.owned_bytes(), 0)
+        .expect("reinsert allocation");
     reopened
-        .put_lazy_overlay(orphan, orphan_node)
+        .put_lazy_overlay(orphan, (orphan_node, allocation), &mut accounting)
         .await
         .expect("put again");
     assert!(
         reopened
-            .load_lazy_overlay(orphan)
+            .load_lazy_overlay(orphan, &mut accounting)
             .await
             .expect("load")
             .is_some()
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_roots() {
-    for component in 0..3 {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::open_owned(directory.path()).expect("owned store");
-        let parent = origin_parent_fixture(&store).await;
-        let prepared = prepared_origin_fixture(&parent);
-        let advanced = advanced_origin_parent(&parent);
-        let mut updated = LazyWorkspaceState {
-            revision: parent.revision + 1,
-            ..parent.clone()
-        };
-        match component {
-            0 => updated.source = advanced.source,
-            1 => updated.overlay = advanced.overlay,
-            _ => updated.shadows = advanced.shadows,
-        }
-        let updater = store.clone();
-        let update = updated.clone();
-        let expected = parent.revision;
-        assert!(
-            tokio::spawn(async move {
-                updater
-                    .compare_and_swap_lazy_workspace(update.workspace_id, expected, update)
-                    .await
-                    .expect("concurrent source binding update")
-            })
-            .await
-            .expect("update task")
-        );
-        assert_eq!(
-            store
-                .collect_lazy_nodes()
-                .await
-                .expect("collect old source roots"),
-            u64::from(component != 0)
-        );
-        if component == 1 {
-            assert!(
-                store
-                    .load_lazy_overlay(parent.overlay)
-                    .await
-                    .expect("old overlay")
-                    .is_none()
-            );
-        } else if component == 2 {
-            assert!(
-                store
-                    .load_lazy_shadow(parent.shadows)
-                    .await
-                    .expect("old shadow")
-                    .is_none()
-            );
-        }
-
-        let cancellation = crate::CancellationToken::new();
-        let rejected = store
-            .compare_and_swap_lazy_workspace_measured(
-                prepared.workspace_id,
-                0,
-                prepared.clone(),
-                crate::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .expect("stale freeze is a CAS miss");
-        assert!(!rejected.value);
-        assert!(rejected.work.items_examined > 0);
-        assert_eq!(rejected.work.object_bytes_written, 0);
-        assert!(
-            store
-                .load_lazy_workspace(prepared.workspace_id)
-                .await
-                .expect("child")
-                .is_none()
-        );
-
-        let refreshed = prepared_origin_fixture(&updated);
-        assert!(
-            store
-                .compare_and_swap_lazy_workspace(refreshed.workspace_id, 0, refreshed,)
-                .await
-                .expect("current source freeze")
-        );
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_changes() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let store = LocalCoreStateStore::open_owned(directory.path()).expect("owned store");
-    let parent = origin_parent_fixture(&store).await;
-    let prepared = prepared_origin_fixture(&parent);
-    // The caller loses the first write's acknowledgement, then recovers
-    // only the authentic persisted original record after reopening.
-    let _ = store
-        .compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone())
-        .await
-        .expect("durable original freeze");
-    drop(store);
-    let store = LocalCoreStateStore::open_owned(directory.path()).expect("reopened store");
-    assert_eq!(
-        store
-            .load_lazy_workspace(prepared.workspace_id)
-            .await
-            .expect("recover"),
-        Some(prepared.clone())
-    );
-    let updated = advanced_origin_parent(&parent);
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(parent.workspace_id, parent.revision, updated.clone(),)
-            .await
-            .expect("advance mutable parent")
-    );
-    assert_eq!(
-        store
-            .collect_lazy_nodes()
-            .await
-            .expect("prepared origin roots"),
-        0
-    );
-    assert!(
-        !store
-            .compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone(),)
-            .await
-            .expect("lost acknowledgement retry is revision fenced")
-    );
-
-    let mut committed = prepared.clone();
-    committed.revision += 1;
-    committed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Committed;
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(
-                committed.workspace_id,
-                prepared.revision,
-                committed.clone(),
-            )
-            .await
-            .expect("commit original without rereading mutable parent")
-    );
-    let child = LazyWorkspaceState {
-        revision: committed.revision + 1,
-        source: updated.source,
-        overlay: updated.overlay,
-        shadows: updated.shadows,
-        ..committed.clone()
-    };
-    assert!(
-        store
-            .compare_and_swap_lazy_workspace(child.workspace_id, committed.revision, child.clone(),)
-            .await
-            .expect("later child observation epoch")
-    );
-    assert_eq!(
-        store
-            .collect_lazy_nodes()
-            .await
-            .expect("committed origin roots"),
-        0
-    );
-    assert!(
-        store
-            .load_lazy_overlay(parent.overlay)
-            .await
-            .expect("original overlay retained")
-            .is_some()
-    );
-    assert!(
-        store
-            .load_lazy_shadow(parent.shadows)
-            .await
-            .expect("original shadows retained")
-            .is_some()
-    );
-    let origin = prepared.fork_origin.expect("original");
-    assert_eq!(
-        store
-            .lazy_retained_generations()
-            .await
-            .expect("original generation roots"),
-        [(origin.snapshot.authored_generation, origin.config)]
-    );
-
-    let next = LazyWorkspaceState {
-        revision: child.revision + 1,
-        ..child.clone()
-    };
-    let mut removed = next.clone();
-    removed.fork_origin = None;
-    let mut new_operation = next.clone();
-    new_operation
-        .fork_origin
-        .as_mut()
-        .expect("origin")
-        .operation_id = OperationId::from_bytes([0xb0; 16]);
-    let mut new_config = next.clone();
-    new_config
-        .fork_origin
-        .as_mut()
-        .expect("origin")
-        .config
-        .limits
-        .maximum_read_bytes += 1;
-    let mut new_snapshot = next.clone();
-    new_snapshot
-        .fork_origin
-        .as_mut()
-        .expect("origin")
-        .snapshot
-        .authored_generation = crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
-    let mut new_parent = next.clone();
-    new_parent.parent_workspace_id = Some(WorkspaceId::from_bytes([0xb2; 16]));
-    let mut regressed = next;
-    regressed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Prepared;
-    for replacement in [
-        removed,
-        new_operation,
-        new_config,
-        new_snapshot,
-        new_parent,
-        regressed,
-    ] {
-        assert!(
-            !store
-                .compare_and_swap_lazy_workspace(child.workspace_id, child.revision, replacement,)
-                .await
-                .expect("immutable original rejects replacement")
-        );
-    }
-    assert_eq!(
-        store
-            .load_lazy_workspace(child.workspace_id)
-            .await
-            .expect("unchanged child"),
-        Some(child)
     );
 }

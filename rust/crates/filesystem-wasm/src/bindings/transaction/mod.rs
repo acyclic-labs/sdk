@@ -54,28 +54,16 @@ impl BrowserTransaction {
     /// Creates every absent directory on one canonical path.
     #[wasm_bindgen(js_name = createDirAll)]
     pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
-        Box::pin(self.engine.create_dir_all(
-            &path,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            create_dir_all(&path)
+        )))
     }
 
     /// Creates exactly one empty directory.
     #[wasm_bindgen(js_name = createDirectory)]
     pub async fn create_directory(&mut self, path: String) -> Result<(), JsValue> {
-        self.engine
-            .create_directory(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))
+        sdk_value!(unbounded_future!(self.engine, create_directory(&path)))
     }
 
     /// Creates one symbolic link with an opaque target.
@@ -86,83 +74,53 @@ impl BrowserTransaction {
         target: Vec<u8>,
     ) -> Result<(), JsValue> {
         let target = bytes::Bytes::from(target);
-        self.engine
-            .create_symbolic_link(
-                &path,
-                target,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.engine,
+            create_symbolic_link(&path, target)
+        ))
     }
 
     /// Creates or replaces one complete file inside this transaction.
     #[wasm_bindgen]
     pub async fn write(&mut self, path: String, bytes: Vec<u8>) -> Result<(), JsValue> {
         let bytes = bytes::Bytes::from(bytes);
-        Box::pin(self.engine.write(
-            &path,
-            bytes,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            write(&path, bytes)
+        )))
     }
 
     /// Removes one existing namespace binding inside this transaction.
     #[wasm_bindgen]
     pub async fn remove(&mut self, path: String) -> Result<(), JsValue> {
-        self.engine
-            .remove(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))
+        sdk_value!(unbounded_future!(self.engine, remove(&path)))
     }
 
     /// Clones one complete regular file without copying its body.
     #[wasm_bindgen]
     pub async fn copy(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-        Box::pin(self.engine.copy(&source, &destination))
-            .await
-            .map_err(js_error)
+        sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            copy(&source, &destination)
+        )))
     }
 
     /// Atomically renames one namespace binding inside this transaction.
     #[wasm_bindgen]
     pub async fn rename(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-        Box::pin(self.engine.rename(
-            &source,
-            &destination,
-            true,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            rename(&source, &destination, true)
+        )))
     }
 
     /// Creates one same-workspace hard link.
     #[wasm_bindgen(js_name = hardLink)]
     pub async fn hard_link(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-        self.engine
-            .hard_link(
-                &source,
-                &destination,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.engine,
+            hard_link(&source, &destination)
+        ))
     }
 
     /// Replaces one sparse regular-file range.
@@ -174,25 +132,15 @@ impl BrowserTransaction {
         bytes: Vec<u8>,
     ) -> Result<(), JsValue> {
         let bytes = bytes::Bytes::from(bytes);
-        self.engine
-            .write_range(
-                &path,
-                offset,
-                bytes,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.engine,
+            write_range(&path, offset, bytes)
+        ))
     }
 
     /// Changes one regular file's logical length.
     pub async fn resize(&mut self, path: String, logical_bytes: u64) -> Result<(), JsValue> {
-        self.engine
-            .resize(&path, logical_bytes)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(self.engine, resize(&path, logical_bytes)))
     }
 
     /// Punches a hole or installs allocated zeros over one exact range.
@@ -206,10 +154,10 @@ impl BrowserTransaction {
         extend: bool,
     ) -> Result<(), JsValue> {
         let range = ByteRange { offset, length };
-        self.engine
-            .zero_range(&path, range, allocated, extend)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(
+            self.engine,
+            zero_range(&path, range, allocated, extend)
+        ))
     }
 
     /// Preallocates one sparse range without replacing content.
@@ -221,10 +169,10 @@ impl BrowserTransaction {
         keep_size: bool,
     ) -> Result<(), JsValue> {
         let range = ByteRange { offset, length };
-        self.engine
-            .preallocate(&path, range, keep_size)
-            .await
-            .map_err(js_error)
+        sdk_value!(unbounded_future!(
+            self.engine,
+            preallocate(&path, range, keep_size)
+        ))
     }
 
     /// Clones one immutable range without reading file bytes.
@@ -237,16 +185,16 @@ impl BrowserTransaction {
         destination_offset: u64,
         length: u64,
     ) -> Result<(), JsValue> {
-        self.engine
-            .clone_range(
+        sdk_value!(unbounded_future!(
+            self.engine,
+            clone_range(
                 &source,
                 source_offset,
                 &destination,
                 destination_offset,
-                length,
+                length
             )
-            .await
-            .map_err(js_error)
+        ))
     }
 
     /// Publishes the complete candidate through one idempotent head CAS.
@@ -262,15 +210,7 @@ impl BrowserTransaction {
             permit,
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<
-                    _,
-                    acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>,
-                >(acyclic_fs::OperationReceipt {
-                    value: (),
-                    work: acyclic_fs::WorkCounters::default(),
-                }))
-            },
+            publication_ready::<acyclic_fs::WorkspaceError>,
         ))
         .await
         .map(|receipt| browser_workspace_commit(receipt.value))
@@ -285,40 +225,25 @@ impl BrowserTransaction {
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let outcome = self
-            .engine
-            .rebase(maximum_conflicts)
-            .await
-            .map(browser_transaction_rebase)
-            .map_err(js_error)?;
-        ts(outcome)
+        let outcome = sdk_value!(unbounded_future!(self.engine, rebase(maximum_conflicts)))?;
+        ts(browser_transaction_rebase(outcome))
     }
 }
 
 pub(in crate::bindings) fn browser_workspace_commit<A, O>(
     outcome: TransactionCommit<A, O>,
 ) -> BrowserWorkspaceCommit {
-    match outcome {
-        TransactionCommit::Committed(value) => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Committed,
-            generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::AlreadyCommitted(value) => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::AlreadyCommitted,
-            generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::Conflict { actual } => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Conflict,
-            generation_id: Some(actual.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::Fenced => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Fenced,
-            generation_id: None,
-        },
-        TransactionCommit::IdempotencyConflict => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::IdempotencyConflict,
-            generation_id: None,
-        },
+    use BrowserWorkspaceCommitStatus::*;
+    let (status, generation) = match outcome {
+        TransactionCommit::Committed(value) => (Committed, Some(value)),
+        TransactionCommit::AlreadyCommitted(value) => (AlreadyCommitted, Some(value)),
+        TransactionCommit::Conflict { actual } => (Conflict, Some(actual)),
+        TransactionCommit::Fenced => (Fenced, None),
+        TransactionCommit::IdempotencyConflict => (IdempotencyConflict, None),
+    };
+    BrowserWorkspaceCommit {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
     }
 }
 

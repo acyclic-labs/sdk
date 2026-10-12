@@ -7,19 +7,17 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
     let cancellation = CancellationToken::new();
     let mut posix = config();
     posix.profile = FilesystemProfile::Posix;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([115; 16]),
-        posix,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([115; 16]), posix, B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let receipt = (checkout.apply_authored_transaction(
         vec![
@@ -53,9 +51,10 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
                 metadata: FileMetadata::default(),
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(receipt.value.created_file_ids.iter().all(Option::is_some));
 
     for (mutation, sentinel) in [
@@ -78,14 +77,11 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
             path("invalid-device")?,
         ),
     ] {
-        let failure = (checkout.apply_authored_transaction(
-            vec![mutation],
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await;
+        let failure = (checkout.apply_authored_transaction(vec![mutation], B, &cancellation)).await;
         assert!(failure.is_err());
         assert!(
-            (checkout.lookup_no_follow(&sentinel, WorkBudget::UNBOUNDED, &cancellation,)).await?
+            (checkout.lookup_no_follow(&sentinel, B, &cancellation,))
+                .await?
                 .value
                 .record
                 .is_none()
@@ -94,19 +90,17 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
 
     let mut windows = config();
     windows.profile = FilesystemProfile::Windows;
-    let windows_volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([116; 16]),
-        windows,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let windows_volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([116; 16]), windows, B, &cancellation))
+            .await?
+            .value;
     let mut windows_checkout = (windows_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let reparse = path("reparse")?;
     let reparse_payload = OwnedBytes::from_static(b"opaque-reparse-data");
@@ -116,18 +110,16 @@ async fn authored_special_operations_are_profile_exact_and_fail_atomically()
             payload: reparse_payload.clone(),
             metadata: FileMetadata::default(),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(receipt.value.created_file_ids[0].is_some());
     assert_eq!(
-        (windows_checkout.read_reparse_point(
-            &reparse,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value.as_ref(),
-        reparse_payload.as_ref()
+        (windows_checkout.read_reparse_point(&reparse, B, &cancellation,))
+            .await?
+            .value,
+        reparse_payload
     );
     Ok(())
 }
@@ -139,42 +131,59 @@ async fn windows_reparse_payload_round_trips_without_interpretation()
     let cancellation = CancellationToken::new();
     let mut windows = config();
     windows.profile = FilesystemProfile::Windows;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([98; 16]),
-        windows,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([98; 16]), windows, B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
-    let payload = bytes::Bytes::from_static(b"opaque-reparse\0payload");
-    (checkout.create(crate::AuthoredMutation::CreateReparsePoint { path: path("junction")?, payload: (payload.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let read = (checkout.read_reparse_point(
-        &path("junction")?,
-        WorkBudget::UNBOUNDED,
+    let payload = OwnedBytes::from_static(b"opaque-reparse\0payload");
+    (checkout.create(
+        AuthoredMutation::CreateReparsePoint {
+            path: path("junction")?,
+            payload: payload.clone(),
+            metadata: FileMetadata::default(),
+        },
+        B,
         &cancellation,
-    )).await?;
-    assert_eq!(read.value.as_ref(), payload.as_ref());
+    ))
+    .await?;
+    let read = (checkout.read_reparse_point(&path("junction")?, B, &cancellation)).await?;
+    assert_eq!(read.value, payload);
 
     let empty_reparse = path("empty-reparse")?;
-    (checkout.create(crate::AuthoredMutation::CreateReparsePoint { path: empty_reparse.clone(), payload: (bytes::Bytes::new()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let empty_reparse_read = (checkout.read_reparse_point(
-        &empty_reparse,
-        WorkBudget::UNBOUNDED,
+    (checkout.create(
+        AuthoredMutation::CreateReparsePoint {
+            path: empty_reparse.clone(),
+            payload: OwnedBytes::new(),
+            metadata: FileMetadata::default(),
+        },
+        B,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
+    let empty_reparse_read =
+        (checkout.read_reparse_point(&empty_reparse, B, &cancellation)).await?;
     assert!(empty_reparse_read.value.is_empty());
 
     let empty_link = path("empty-link")?;
-    (checkout.create(crate::AuthoredMutation::CreateSymbolicLink { path: empty_link.clone(), target: (bytes::Bytes::new()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let empty_link_read =
-        (checkout.read_symbolic_link(&empty_link, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (checkout.create(
+        AuthoredMutation::CreateSymbolicLink {
+            path: empty_link.clone(),
+            target: OwnedBytes::new(),
+            metadata: FileMetadata::default(),
+        },
+        B,
+        &cancellation,
+    ))
+    .await?;
+    let empty_link_read = (checkout.read_symbolic_link(&empty_link, B, &cancellation)).await?;
     assert!(empty_link_read.value.bytes.is_empty());
     Ok(())
 }

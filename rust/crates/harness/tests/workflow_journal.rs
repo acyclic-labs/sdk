@@ -15,7 +15,7 @@ use acyclic_harness::{
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
         MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowCommand,
-        WorkflowCommitOutcome, WorkflowJournal,
+        WorkflowJournal,
     },
 };
 use acyclic_stream::{MemoryStream};
@@ -65,7 +65,7 @@ impl ResumableMachine for Counter {
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("workflow-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         "counter-private".into(),
@@ -181,16 +181,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     );
     let committed = journal.replay(0, 64).await?;
     assert_eq!(committed.len(), 2);
-    assert!(matches!(
-        journal
-            .commit(
-                0,
-                IdempotencyKey::new("counter-step-1")?,
-                committed[0].clone()
-            )
-            .await?,
-        WorkflowCommitOutcome::Replayed(_)
-    ));
+    assert_eq!(journal.commit(0, IdempotencyKey::new("counter-step-1")?, committed[0].clone()).await?, committed[0]);
     let mut reused_command = committed[1].clone();
     reused_command.operation_id = OperationId::from_bytes([12; 16]);
     reused_command.idempotency_key = IdempotencyKey::new("reused-command")?;
@@ -292,10 +283,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         first_transition
     );
     let first_record = fresh_paged.replay(0, 1).await?.remove(0);
-    assert!(matches!(
-        fresh_paged.commit(0, first_key, first_record).await?,
-        WorkflowCommitOutcome::Replayed(_)
-    ));
+    assert_eq!(fresh_paged.commit(0, first_key, first_record.clone()).await?, first_record);
     fresh_host
         .step(
             OperationId::new(),
@@ -331,8 +319,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         other.commit(2, second.idempotency_key.clone(), second.clone()),
     );
     assert!(
-        matches!(&first_result, Ok(WorkflowCommitOutcome::Applied(_)))
-            ^ matches!(&second_result, Ok(WorkflowCommitOutcome::Applied(_)))
+        first_result.is_ok() ^ second_result.is_ok()
     );
     assert!(
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))

@@ -1,5 +1,5 @@
+use crate::{contract::ActorsFile, wire};
 use std::{num::NonZeroU64, path::Path};
-use crate::{wire, contract::ActorsFile};
 use ts_rs::{Config, ExportError, TS, TypeVisitor};
 
 mod identity;
@@ -12,12 +12,16 @@ mod mutations;
 pub use mutations::*;
 mod invocation;
 pub use invocation::*;
-mod export;
-pub use export::*;
+/// TypeScript declaration exports.
+pub mod export;
 
 #[cfg(kani)]
 mod formal_proofs;
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::too_many_lines, reason = "grouped boundary cases")]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "grouped boundary cases"
+)]
 mod tests;

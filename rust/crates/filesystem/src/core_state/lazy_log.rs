@@ -1,49 +1,6 @@
 use super::*;
 
-pub(super) fn clone_native_lazy_state(
-    state: &LazyWorkspaceState,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<LazyWorkspaceState, LocalCoreStateStoreError> {
-    work.charge(crate::WorkCounters::UNCHARGED)?;
-    // This schema contains only inline identifiers, scalars and fixed metadata.
-    Ok(state.clone())
-}
-
 impl LocalCoreStateStore {
-    pub(super) async fn load_lazy_logged(
-        &self,
-        id: WorkspaceId,
-        work: crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
-        work.charge(crate::WorkCounters::default())?;
-        if let Ownership::Owned(owner) = &self.ownership {
-            let residents = owner
-                .residents
-                .read()
-                .unwrap_or_else(PoisonError::into_inner);
-            for record in &residents.0 {
-                work.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                if record.key == RecordKey::LazyWorkspace(id) {
-                    return record
-                        .value
-                        .as_ref()
-                        .and_then(LazyWorkspaceState::from_value)
-                        .map(|state| clone_native_lazy_state(state, &work))
-                        .transpose();
-                }
-            }
-        }
-        self.materialization(work)
-            .transaction(move |root| {
-                let work = root._allocation.as_ref().expect("bound native work").work();
-                root.with_log(|log| log.get_lazy_measured(&root, id, work))
-            })
-            .await
-    }
-
     pub(super) async fn swap_lazy_logged(
         &self,
         id: WorkspaceId,
@@ -55,7 +12,7 @@ impl LocalCoreStateStore {
             .transaction(move |root| {
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
-                    let current = log.get_lazy_measured(&root, id, work)?;
+                    let current = log.get::<LazyWorkspaceState>(&root, id)?;
                     if current.as_ref().map_or(0, |state| state.revision) != expected {
                         return Ok(false);
                     }
@@ -108,7 +65,7 @@ impl LocalCoreStateStore {
                             // Authenticate only the first freeze while companion collection
                             // and source binding updates share this same log transaction.
                             let Some(parent) =
-                                log.get_lazy_measured(&root, origin.snapshot.workspace_id, work)?
+                                log.get::<LazyWorkspaceState>(&root, origin.snapshot.workspace_id)?
                             else {
                                 return Ok(false);
                             };
@@ -126,10 +83,12 @@ impl LocalCoreStateStore {
                         }
                     }
                     let mut change = Change::new(work)?;
-                    change.put_scalar(
-                        RecordKey::LazyWorkspace(id),
-                        Some(RecordValue::LazyWorkspace(replacement)),
-                        work,
+                    change.put(
+                        (
+                            RecordKey::LazyWorkspace(id),
+                            Some(RecordValue::LazyWorkspace(replacement)),
+                        )
+                            .into(),
                     )?;
                     log.commit(&root, change)?;
                     Ok(true)

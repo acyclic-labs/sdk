@@ -1,5 +1,11 @@
 use super::*;
+use super::collection::content_address;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId};
+
+const CRASH_PARENT: WorkspaceContextId = WorkspaceContextId::from_bytes([0x41; 16]);
+const CRASH_CHILD: WorkspaceContextId = WorkspaceContextId::from_bytes([0x42; 16]);
+const CRASH_WORKSPACE: WorkspaceId = WorkspaceId::from_bytes([0x43; 16]);
+const CRASH_GROUPS: [std::ops::Range<usize>; 6] = [0..1, 1..2, 2..5, 5..6, 6..7, 7..8];
 
 pub(super) fn context_paths(namespace: &Namespace, id: WorkspaceContextId) -> RecordPaths<'_> {
     RecordKey::Context(id)
@@ -65,22 +71,6 @@ pub(super) fn workspace_context(
     }
 }
 
-/// One non-empty overlay node and its address.
-pub(super) fn overlay_node(path: &str) -> (LazyOverlayId, LazyOverlay) {
-    let node: LazyOverlay = serde_json::from_value(serde_json::json!({
-        "Node": {
-            "path": path,
-            "priority": 0,
-            "change": {"Tombstone": {"removed": null}},
-            "left": vec![0_u8; 32],
-            "right": vec![0_u8; 32]
-        }
-    }))
-    .expect("overlay node");
-    let id = LazyOverlayId::from_bytes(content_address(&node).expect("overlay address"));
-    (id, node)
-}
-
 pub(super) fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
     MaterializationJournal {
         #[cfg(not(target_arch = "wasm32"))]
@@ -115,9 +105,7 @@ pub(super) fn lazy_state(workspace_id: WorkspaceId, revision: u64) -> LazyWorksp
         "workspace_id": workspace_id,
         "parent_workspace_id": null,
         "fork_origin": null,
-        "completed_selected_import": null,
-        "pending_write": null,
-        "completed_write": null,
+        "selected_import_roots": null,
         "source": crate::demand::SourceReference { identity: [1; 16], epoch: 0 },
         "overlay": LazyOverlayId::from_bytes([2; 32]),
         "shadows": shadows,
@@ -258,15 +246,18 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                 WorkspaceLineageStore::compare_and_swap(store, CRASH_WORKSPACE, 0, crash_lineage())
                     .await
             }
-            4 => {
-                store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        0,
-                        lazy_state(CRASH_WORKSPACE, 1),
-                    )
-                    .await
-            }
+            4 => store
+                .compare_and_swap_lazy_workspace(
+                    CRASH_WORKSPACE,
+                    0,
+                    lazy_state(CRASH_WORKSPACE, 1),
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    ),
+                )
+                .await
+                .map_err(LocalCoreStateStoreError::LazyWork),
             5 => {
                 child.revision = 2;
                 child.state = WorkspaceContextState::Frozen;
@@ -274,15 +265,18 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                     .compare_and_swap_many(BTreeMap::from([(CRASH_CHILD, 1)]), vec![child], false)
                     .await
             }
-            6 => {
-                store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        1,
-                        lazy_state(CRASH_WORKSPACE, 2),
-                    )
-                    .await
-            }
+            6 => store
+                .compare_and_swap_lazy_workspace(
+                    CRASH_WORKSPACE,
+                    1,
+                    lazy_state(CRASH_WORKSPACE, 2),
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    ),
+                )
+                .await
+                .map_err(LocalCoreStateStoreError::LazyWork),
             _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
                 .await
                 .map(|outcome| matches!(outcome, WorkspaceContextDiscardOutcome::Discarded(_))),
@@ -458,10 +452,16 @@ pub(super) fn linked_overlay(
 }
 
 pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWorkspaceState {
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let empty = LazyOverlayId::from_bytes(content_address(&LazyOverlay::Empty).expect("empty"));
     let (overlay, node) = linked_overlay("/original", empty, empty);
+    let allocation = accounting
+        .claim_owned(node.owned_bytes(), 0)
+        .expect("overlay allocation");
     store
-        .put_lazy_overlay(overlay, node)
+        .put_lazy_overlay(overlay, (node, allocation), &mut accounting)
         .await
         .expect("original overlay");
     let empty_shadows = crate::LazyShadowId::from_bytes(
@@ -478,8 +478,11 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
         right: empty_shadows,
     };
     let shadows = crate::LazyShadowId::from_bytes(content_address(&shadow).expect("shadow"));
+    let allocation = accounting
+        .claim_owned(shadow.owned_bytes(), 0)
+        .expect("shadow allocation");
     store
-        .put_lazy_shadow(shadows, shadow)
+        .put_lazy_shadow(shadows, (shadow, allocation), &mut accounting)
         .await
         .expect("original shadows");
     let parent = LazyWorkspaceState {
@@ -489,7 +492,12 @@ pub(super) async fn origin_parent_fixture(store: &LocalCoreStateStore) -> LazyWo
     };
     assert!(
         store
-            .compare_and_swap_lazy_workspace(parent.workspace_id, 0, parent.clone(),)
+            .compare_and_swap_lazy_workspace(
+                parent.workspace_id,
+                0,
+                parent.clone(),
+                &mut accounting,
+            )
             .await
             .expect("parent binding")
     );
@@ -535,6 +543,7 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
 }
 
 mod contexts;
+mod freeze;
 mod journal;
 mod log;
 mod native;

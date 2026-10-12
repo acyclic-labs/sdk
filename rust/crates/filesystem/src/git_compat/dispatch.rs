@@ -1,28 +1,18 @@
 use super::*;
 
-pub(super) fn action_operation_id(
-    workspace_id: WorkspaceId,
-    workspace_tree: GitTreeRef,
-    action: &GitFilesystemAction,
-) -> Result<OperationId, serde_json::Error> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(ACTION_DOMAIN);
-    hasher.update(&workspace_id.into_bytes());
-    hash_tree_ref(&mut hasher, workspace_tree);
-    let encoded = serde_json::to_vec(action)?;
-    hash_bytes(&mut hasher, &encoded);
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    Ok(OperationId::from_bytes(operation))
-}
-
-#[allow(clippy::too_many_lines, reason = "one exhaustive dispatch over every supported Git command")]
-pub(super) fn execute_command(
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive dispatch over every supported Git command"
+)]
+pub(super) fn execute_command<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     command: GitCommand,
     workspace: GitTreeRef,
-) -> Result<GitCommandOutput, GitCompatStateError> {
-    let current = state.current()?.clone();
+) -> Result<GitCommandOutput, GitCompatError<E>> {
+    let current = state
+        .current()
+        .map_err(|()| GitCompatError::InvalidState)?
+        .clone();
     if state.bisect.is_some()
         && !matches!(
             &command,
@@ -38,14 +28,21 @@ pub(super) fn execute_command(
                 | GitCommand::Bisect { .. }
         )
     {
-        return Err(GitCompatStateError::Bisect("finish with 'git bisect reset' before changing history".to_owned()));
+        return Err(GitCompatError::InvalidCommand(
+            "finish with 'git bisect reset' before changing history".to_owned(),
+        ));
     }
-    let visible_head = state.bisect.as_ref().and_then(|bisect| bisect.current).or(current.head);
-    let head_workspace_tree = visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.workspace_tree));
+    let visible_head = state
+        .bisect
+        .as_ref()
+        .and_then(|bisect| bisect.current)
+        .or(current.head);
+    let head_workspace_tree =
+        visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.workspace_tree));
     let head_tree = visible_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
     Ok(match command {
         GitCommand::MergeContinue | GitCommand::MergeAbort => {
-            return Err(GitCompatStateError::Invalid);
+            return Err(GitCompatError::InvalidState);
         }
         GitCommand::Status => GitCommandOutput::Status(GitStatus {
             branch: current.name,
@@ -53,7 +50,9 @@ pub(super) fn execute_command(
             workspace,
             dirty: match head_workspace_tree {
                 Some(head) if head == workspace => GitDirtyState::Clean,
-                Some(GitTreeRef::Lazy(_)) | None if matches!(workspace, GitTreeRef::Lazy(_)) => GitDirtyState::Unknown,
+                Some(GitTreeRef::Lazy(_)) | None if matches!(workspace, GitTreeRef::Lazy(_)) => {
+                    GitDirtyState::Unknown
+                }
                 _ => GitDirtyState::Dirty,
             },
             all_changes_staged: true,
@@ -63,15 +62,27 @@ pub(super) fn execute_command(
             to: workspace,
             tracked_paths: current.tracked_paths,
         }),
-        GitCommand::Log { maximum } => GitCommandOutput::Commits(walk_commits(state, current.head, maximum)),
+        GitCommand::Log { maximum } => {
+            GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
+        }
         GitCommand::Show { object } => {
-            let id = resolve_object(state, object.as_ref())?;
-            GitCommandOutput::Commits(vec![state.commits.get(&id).cloned().ok_or(GitCompatStateError::Invalid)?])
+            let id = resolve_object::<E>(state, object.as_deref())?;
+            GitCommandOutput::Commits(vec![
+                state
+                    .commits
+                    .get(&id)
+                    .cloned()
+                    .ok_or(GitCompatError::InvalidState)?,
+            ])
         }
         GitCommand::Add { .. } => GitCommandOutput::NoOp,
-        GitCommand::Commit { message, author, authored_at_seconds } => {
+        GitCommand::Commit {
+            message,
+            author,
+            authored_at_seconds,
+        } => {
             if head_workspace_tree == Some(workspace) {
-                return Err(GitCompatStateError::NothingToCommit);
+                return Err(GitCompatError::NothingToCommit);
             }
             let action = GitFilesystemAction::CaptureCommit {
                 workspace_tree: workspace,
@@ -98,7 +109,7 @@ pub(super) fn execute_command(
         GitCommand::Branch { create } => {
             if let Some(name) = create {
                 if state.branches.contains_key(&name) {
-                    return Err(GitCompatStateError::BranchExists(name));
+                    return Err(GitCompatError::BranchExists(name));
                 }
                 let action = GitFilesystemAction::ForkBranch {
                     branch: name.clone(),
@@ -109,7 +120,11 @@ pub(super) fn execute_command(
                 return Ok(prepare_transition(
                     state,
                     action,
-                    GitPendingMutation::ForkBranch { branch: name, head: current.head, switch: false },
+                    GitPendingMutation::ForkBranch {
+                        branch: name,
+                        head: current.head,
+                        switch: false,
+                    },
                 ));
             }
             GitCommandOutput::Branches {
@@ -128,33 +143,44 @@ pub(super) fn execute_command(
                 return Ok(prepare_transition(
                     state,
                     action,
-                    GitPendingMutation::ForkBranch { branch, head: current.head, switch: true },
+                    GitPendingMutation::ForkBranch {
+                        branch,
+                        head: current.head,
+                        switch: true,
+                    },
                 ));
             }
-            let target = state.branches.get(&branch).ok_or_else(|| GitCompatStateError::Unknown(branch.clone()))?;
+            let target = state
+                .branches
+                .get(&branch)
+                .ok_or_else(|| GitCompatError::UnknownObject(branch.clone()))?;
             prepare_transition(
                 state,
-                GitFilesystemAction::SwitchWorkspace { workspace_id: target.workspace_id },
+                GitFilesystemAction::SwitchWorkspace {
+                    workspace_id: target.workspace_id,
+                },
                 GitPendingMutation::Switch { branch },
             )
         }
         GitCommand::Restore { source, paths } => {
-            let id = resolve_object(state, source.as_ref())?;
-            let commit = state.commits.get(&id).ok_or(GitCompatStateError::Invalid)?;
+            let id = resolve_object::<E>(state, source.as_deref())?;
+            let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
             GitCommandOutput::Action(GitFilesystemAction::RestorePaths {
                 tree: commit.tree,
                 paths: expand_pathspecs(&paths, &commit.tracked_paths),
             })
         }
         GitCommand::Reset { target, mode } => {
-            let id = resolve_object(state, Some(&target))?;
-            let commit = state.commits.get(&id).ok_or(GitCompatStateError::Invalid)?;
+            let id = resolve_object::<E>(state, Some(&target))?;
+            let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
             let tree = commit.tree;
             let target_tracked_paths = commit.tracked_paths.clone();
             match mode {
                 GitResetMode::Soft | GitResetMode::Mixed => {
                     state.reflog.insert(0, current.head);
-                    let branch = state.current_mut()?;
+                    let branch = state
+                        .current_mut()
+                        .map_err(|()| GitCompatError::InvalidState)?;
                     branch.head = Some(id);
                     branch.tracked_paths = target_tracked_paths;
                     GitCommandOutput::NoOp
@@ -163,15 +189,28 @@ pub(super) fn execute_command(
                     state,
                     GitFilesystemAction::RestoreGeneration {
                         tree,
-                        paths: Some(current.tracked_paths.union(&target_tracked_paths).cloned().collect()),
+                        paths: Some(
+                            current
+                                .tracked_paths
+                                .union(&target_tracked_paths)
+                                .cloned()
+                                .collect(),
+                        ),
                     },
                     GitPendingMutation::Reset { head: id },
                 ),
             }
         }
         GitCommand::Merge { branch } => {
-            let source = state.branches.get(&branch).ok_or_else(|| GitCompatStateError::Unknown(branch.clone()))?;
-            let tracked_paths = current.tracked_paths.union(&source.tracked_paths).cloned().collect();
+            let source = state
+                .branches
+                .get(&branch)
+                .ok_or_else(|| GitCompatError::UnknownObject(branch.clone()))?;
+            let tracked_paths = current
+                .tracked_paths
+                .union(&source.tracked_paths)
+                .cloned()
+                .collect();
             prepare_transition(
                 state,
                 GitFilesystemAction::Join {
@@ -180,12 +219,23 @@ pub(super) fn execute_command(
                     rebase: false,
                     tracked_paths,
                 },
-                GitPendingMutation::Join { source_head: source.head, source_branch: branch, rebase: false },
+                GitPendingMutation::Join {
+                    source_head: source.head,
+                    source_branch: branch,
+                    rebase: false,
+                },
             )
         }
         GitCommand::Rebase { branch } => {
-            let source = state.branches.get(&branch).ok_or_else(|| GitCompatStateError::Unknown(branch.clone()))?;
-            let tracked_paths = current.tracked_paths.union(&source.tracked_paths).cloned().collect();
+            let source = state
+                .branches
+                .get(&branch)
+                .ok_or_else(|| GitCompatError::UnknownObject(branch.clone()))?;
+            let tracked_paths = current
+                .tracked_paths
+                .union(&source.tracked_paths)
+                .cloned()
+                .collect();
             prepare_transition(
                 state,
                 GitFilesystemAction::Join {
@@ -194,11 +244,15 @@ pub(super) fn execute_command(
                     rebase: true,
                     tracked_paths,
                 },
-                GitPendingMutation::Join { source_head: source.head, source_branch: branch, rebase: true },
+                GitPendingMutation::Join {
+                    source_head: source.head,
+                    source_branch: branch,
+                    rebase: true,
+                },
             )
         }
         GitCommand::StashPush => {
-            let tree = head_workspace_tree.ok_or(GitCompatStateError::UnbornHead)?;
+            let tree = head_workspace_tree.ok_or(GitCompatError::UnbornHead)?;
             prepare_transition(
                 state,
                 GitFilesystemAction::RestoreGeneration { tree, paths: None },
@@ -206,7 +260,11 @@ pub(super) fn execute_command(
             )
         }
         GitCommand::StashPop => {
-            let tree = state.stash.last().copied().ok_or(GitCompatStateError::EmptyStash)?;
+            let tree = state
+                .stash
+                .last()
+                .copied()
+                .ok_or(GitCompatError::UnknownObject("stash@{0}".to_owned()))?;
             prepare_transition(
                 state,
                 GitFilesystemAction::RestoreGeneration { tree, paths: None },
@@ -214,45 +272,93 @@ pub(super) fn execute_command(
             )
         }
         GitCommand::CherryPick { object } => {
-            let commit = resolve_object(state, Some(&object))?;
-            let record = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?;
-            let parent = record.parents.first().and_then(|parent| state.commits.get(parent));
+            let commit = resolve_object::<E>(state, Some(&object))?;
+            let record = state
+                .commits
+                .get(&commit)
+                .ok_or(GitCompatError::InvalidState)?;
+            let parent = record
+                .parents
+                .first()
+                .and_then(|parent| state.commits.get(parent));
             let base = parent.map(|commit| commit.tree);
             let source = Some(record.tree);
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
-                |parent| parent.tracked_paths.union(&record.tracked_paths).cloned().collect(),
+                |parent| {
+                    parent
+                        .tracked_paths
+                        .union(&record.tracked_paths)
+                        .cloned()
+                        .collect()
+                },
             );
             let tracked_paths = current.tracked_paths.union(&paths).cloned().collect();
             prepare_transition(
                 state,
-                GitFilesystemAction::ApplyCommit { commit, reverse: false, base, source, paths, tracked_paths },
-                GitPendingMutation::ApplyCommit { commit, reverse: false },
+                GitFilesystemAction::ApplyCommit {
+                    commit,
+                    reverse: false,
+                    base,
+                    source,
+                    paths,
+                    tracked_paths,
+                },
+                GitPendingMutation::ApplyCommit {
+                    commit,
+                    reverse: false,
+                },
             )
         }
         GitCommand::Revert { object } => {
-            let commit = resolve_object(state, Some(&object))?;
-            let record = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?;
-            let parent = record.parents.first().and_then(|parent| state.commits.get(parent));
+            let commit = resolve_object::<E>(state, Some(&object))?;
+            let record = state
+                .commits
+                .get(&commit)
+                .ok_or(GitCompatError::InvalidState)?;
+            let parent = record
+                .parents
+                .first()
+                .and_then(|parent| state.commits.get(parent));
             let base = Some(record.tree);
             let source = parent.map(|commit| commit.tree);
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
-                |parent| parent.tracked_paths.union(&record.tracked_paths).cloned().collect(),
+                |parent| {
+                    parent
+                        .tracked_paths
+                        .union(&record.tracked_paths)
+                        .cloned()
+                        .collect()
+                },
             );
             let tracked_paths = current.tracked_paths.union(&paths).cloned().collect();
             prepare_transition(
                 state,
-                GitFilesystemAction::ApplyCommit { commit, reverse: true, base, source, paths, tracked_paths },
-                GitPendingMutation::ApplyCommit { commit, reverse: true },
+                GitFilesystemAction::ApplyCommit {
+                    commit,
+                    reverse: true,
+                    base,
+                    source,
+                    paths,
+                    tracked_paths,
+                },
+                GitPendingMutation::ApplyCommit {
+                    commit,
+                    reverse: true,
+                },
             )
         }
-        GitCommand::Tag { name, target, delete } => {
+        GitCommand::Tag {
+            name,
+            target,
+            delete,
+        } => {
             if let Some(name) = name {
                 if delete {
                     state.tags.remove(&name);
                 } else {
-                    let id = resolve_object(state, target.as_ref())?;
+                    let id = resolve_object::<E>(state, target.as_deref())?;
                     state.tags.insert(name, id);
                 }
             }
@@ -262,9 +368,11 @@ pub(super) fn execute_command(
             path,
             commits: walk_commits(state, current.head, u32::MAX),
         }),
-        GitCommand::Grep { pattern, path } => {
-            GitCommandOutput::Action(GitFilesystemAction::Grep { pattern, path, tree: workspace })
-        }
+        GitCommand::Grep { pattern, path } => GitCommandOutput::Action(GitFilesystemAction::Grep {
+            pattern,
+            path,
+            tree: workspace,
+        }),
         GitCommand::Clean { dry_run } => GitCommandOutput::Action(GitFilesystemAction::Clean {
             dry_run,
             tree: workspace,
@@ -273,38 +381,47 @@ pub(super) fn execute_command(
         GitCommand::Archive { object } => {
             let snapshot = match object {
                 Some(object) => {
-                    let id = resolve_object(state, Some(&object))?;
-                    let commit = state.commits.get(&id).ok_or(GitCompatStateError::Invalid)?;
+                    let id = resolve_object::<E>(state, Some(&object))?;
+                    let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
                     commit.tree
                 }
                 None => workspace,
             };
             GitCommandOutput::Action(GitFilesystemAction::Archive { tree: snapshot })
         }
-        GitCommand::Apply { patch } => GitCommandOutput::Action(GitFilesystemAction::ApplyPatch { patch }),
-        GitCommand::Bisect { arguments } => execute_bisect(state, &current, workspace, &arguments)?,
+        GitCommand::Apply { patch } => {
+            GitCommandOutput::Action(GitFilesystemAction::ApplyPatch { patch })
+        }
+        GitCommand::Bisect { arguments } => {
+            execute_bisect::<E>(state, &current, workspace, &arguments)?
+        }
         GitCommand::RevParse { argument } => {
             let value = match argument.as_str() {
                 "--is-inside-work-tree" => "true".to_owned(),
                 "--abbrev-ref HEAD" => current.name,
                 "--symbolic-full-name HEAD" => format!("refs/heads/{}", current.name),
-                _ => resolve_object(state, Some(&GitObjectName(argument)))?.to_hex(),
+                _ => resolve_object::<E>(state, Some(&argument))?.to_hex(),
             };
             GitCommandOutput::Text(value)
         }
-        GitCommand::SymbolicRef { short } => {
-            GitCommandOutput::Text(if short { current.name } else { format!("refs/heads/{}", current.name) })
-        }
+        GitCommand::SymbolicRef { short } => GitCommandOutput::Text(if short {
+            current.name
+        } else {
+            format!("refs/heads/{}", current.name)
+        }),
         GitCommand::MergeBase { left, right } => {
-            let left = resolve_object(state, Some(&left))?;
-            let right = resolve_object(state, Some(&right))?;
+            let left = resolve_object::<E>(state, Some(&left))?;
+            let right = resolve_object::<E>(state, Some(&right))?;
             let common = nearest_common_ancestor(state, left, right)
-                .ok_or_else(|| GitCompatStateError::Unknown("merge base".to_owned()))?;
+                .ok_or_else(|| GitCompatError::UnknownObject("merge base".to_owned()))?;
             GitCommandOutput::Text(common.to_hex())
         }
         GitCommand::LsFiles => GitCommandOutput::Paths(current.tracked_paths.into_iter().collect()),
         GitCommand::CheckIgnore { paths } => {
-            GitCommandOutput::Action(GitFilesystemAction::CheckIgnore { paths, tree: workspace })
+            GitCommandOutput::Action(GitFilesystemAction::CheckIgnore {
+                paths,
+                tree: workspace,
+            })
         }
     })
 }

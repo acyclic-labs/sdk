@@ -7,39 +7,40 @@ pub(super) struct MaterializationDecode<'a> {
 }
 
 impl MaterializationDecode<'_> {
-    pub(super) fn charge(&self, delta: crate::WorkCounters) -> Result<(), &'static str> {
-        self.work.charge(delta).map_err(|error| {
-            *self.failure.borrow_mut() = Some(error);
-            "materialization decode work boundary"
-        })
+    fn error(&self, error: crate::NativeTreeMaterializationError) -> &'static str {
+        *self.failure.borrow_mut() = Some(error);
+        "materialization decode failed"
     }
 
-    pub(super) fn admit(&self, delta: crate::WorkCounters) -> Result<(), &'static str> {
-        self.work.admit(delta).map_err(|error| {
-            *self.failure.borrow_mut() = Some(error);
-            "decode work admission failed"
-        })
-    }
-
-    pub(super) fn spent(&self, delta: crate::WorkCounters) -> Result<(), &'static str> {
-        self.work.spent(delta).map_err(|error| {
-            *self.failure.borrow_mut() = Some(error);
-            "decode work accounting failed"
-        })
-    }
-
-    pub(super) fn grow(&self, bytes: u64) -> Result<(), &'static str> {
-        self.allocation.borrow_mut().grow(bytes).map_err(|error| {
-            *self.failure.borrow_mut() = Some(error);
-            "materialization decode allocation boundary"
-        })
+    fn grow_sequence(&self, width: usize, capacity: &mut usize) -> Result<(), &'static str> {
+        let minimum = match width {
+            1 => 8,
+            2..=1024 => 4,
+            _ => 1,
+        };
+        let next = if *capacity == 0 {
+            minimum
+        } else {
+            capacity
+                .checked_mul(2)
+                .ok_or("sequence capacity overflow")?
+        };
+        let bytes = (next - *capacity)
+            .checked_mul(width)
+            .ok_or("sequence allocation overflow")?;
+        self.allocation
+            .borrow_mut()
+            .grow(bytes as u64)
+            .map_err(|error| self.error(error))?;
+        *capacity = next;
+        Ok(())
     }
 }
 
 pub(super) struct MaterializationDeserializer<'a, 'b, D> {
     pub(super) inner: D,
     pub(super) decode: &'a MaterializationDecode<'b>,
-    pub(super) flat_map: bool,
+    pub(super) tree_set: bool,
 }
 
 pub(super) struct MaterializationVisitor<'a, 'b, V> {
@@ -47,15 +48,20 @@ pub(super) struct MaterializationVisitor<'a, 'b, V> {
     pub(super) decode: &'a MaterializationDecode<'b>,
     pub(super) owned_string: bool,
     pub(super) owned_sequence: bool,
-    pub(super) owned_map: bool,
+    pub(super) tree: bool,
 }
 
 macro_rules! materialization_deserialize {
+    ($method:ident) => {
+        fn $method<V: serde::de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+            self.inner.$method(visitor)
+        }
+    };
     ($method:ident, $string:expr, $sequence:expr $(, $argument:ident : $type:ty)*) => {
         fn $method<V: serde::de::Visitor<'de>>(self, $($argument: $type,)* visitor: V) -> Result<V::Value, Self::Error> {
             self.inner.$method($($argument,)* MaterializationVisitor {
                 inner: visitor, decode: self.decode,
-                owned_string: $string, owned_sequence: $sequence, owned_map: false,
+                owned_string: $string, owned_sequence: $sequence, tree: self.tree_set && $sequence,
             })
         }
     };
@@ -66,26 +72,26 @@ impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de>
 {
     type Error = D::Error;
     materialization_deserialize!(deserialize_any, false, false);
-    materialization_deserialize!(deserialize_bool, false, false);
-    materialization_deserialize!(deserialize_i8, false, false);
-    materialization_deserialize!(deserialize_i16, false, false);
-    materialization_deserialize!(deserialize_i32, false, false);
-    materialization_deserialize!(deserialize_i64, false, false);
-    materialization_deserialize!(deserialize_i128, false, false);
-    materialization_deserialize!(deserialize_u8, false, false);
-    materialization_deserialize!(deserialize_u16, false, false);
-    materialization_deserialize!(deserialize_u32, false, false);
-    materialization_deserialize!(deserialize_u64, false, false);
-    materialization_deserialize!(deserialize_u128, false, false);
-    materialization_deserialize!(deserialize_f32, false, false);
-    materialization_deserialize!(deserialize_f64, false, false);
-    materialization_deserialize!(deserialize_char, false, false);
-    materialization_deserialize!(deserialize_str, false, false);
+    materialization_deserialize!(deserialize_bool);
+    materialization_deserialize!(deserialize_i8);
+    materialization_deserialize!(deserialize_i16);
+    materialization_deserialize!(deserialize_i32);
+    materialization_deserialize!(deserialize_i64);
+    materialization_deserialize!(deserialize_i128);
+    materialization_deserialize!(deserialize_u8);
+    materialization_deserialize!(deserialize_u16);
+    materialization_deserialize!(deserialize_u32);
+    materialization_deserialize!(deserialize_u64);
+    materialization_deserialize!(deserialize_u128);
+    materialization_deserialize!(deserialize_f32);
+    materialization_deserialize!(deserialize_f64);
+    materialization_deserialize!(deserialize_char);
+    materialization_deserialize!(deserialize_str);
     materialization_deserialize!(deserialize_string, true, false);
-    materialization_deserialize!(deserialize_bytes, false, false);
+    materialization_deserialize!(deserialize_bytes);
     materialization_deserialize!(deserialize_byte_buf, true, false);
     materialization_deserialize!(deserialize_option, false, false);
-    materialization_deserialize!(deserialize_unit, false, false);
+    materialization_deserialize!(deserialize_unit);
     materialization_deserialize!(deserialize_unit_struct, false, false, name: &'static str);
     fn deserialize_newtype_struct<V: serde::de::Visitor<'de>>(
         self,
@@ -99,7 +105,7 @@ impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de>
                 decode: self.decode,
                 owned_string: false,
                 owned_sequence: false,
-                owned_map: name == "CoreStateFlatMap",
+                tree: name == "CoreStateChildSet",
             },
         )
     }
@@ -115,12 +121,12 @@ impl<'de, D: serde::Deserializer<'de>> serde::Deserializer<'de>
             decode: self.decode,
             owned_string: false,
             owned_sequence: false,
-            owned_map: self.flat_map,
+            tree: true,
         })
     }
     materialization_deserialize!(deserialize_struct, false, false, name: &'static str, fields: &'static [&'static str]);
     materialization_deserialize!(deserialize_enum, false, false, name: &'static str, variants: &'static [&'static str]);
-    materialization_deserialize!(deserialize_identifier, false, false);
+    materialization_deserialize!(deserialize_identifier);
     fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
         self,
         visitor: V,
@@ -148,19 +154,9 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
         self.inner.expecting(formatter)
     }
     materialization_visit!(visit_bool, bool);
-    materialization_visit!(visit_i8, i8);
-    materialization_visit!(visit_i16, i16);
-    materialization_visit!(visit_i32, i32);
     materialization_visit!(visit_i64, i64);
-    materialization_visit!(visit_i128, i128);
-    materialization_visit!(visit_u8, u8);
-    materialization_visit!(visit_u16, u16);
-    materialization_visit!(visit_u32, u32);
     materialization_visit!(visit_u64, u64);
-    materialization_visit!(visit_u128, u128);
-    materialization_visit!(visit_f32, f32);
     materialization_visit!(visit_f64, f64);
-    materialization_visit!(visit_char, char);
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
         let copy = crate::WorkCounters {
@@ -168,12 +164,22 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
             ..crate::WorkCounters::default()
         };
         if self.owned_string {
-            self.decode.admit(copy).map_err(E::custom)?;
-            self.decode.grow(value.len() as u64).map_err(E::custom)?;
+            self.decode
+                .work
+                .admit(copy)
+                .map_err(|error| E::custom(self.decode.error(error)))?;
+            self.decode
+                .allocation
+                .borrow_mut()
+                .grow(value.len() as u64)
+                .map_err(|error| E::custom(self.decode.error(error)))?;
         }
         let output = self.inner.visit_str(value)?;
         if self.owned_string {
-            self.decode.spent(copy).map_err(E::custom)?;
+            self.decode
+                .work
+                .spent(copy)
+                .map_err(|error| E::custom(self.decode.error(error)))?;
         }
         Ok(output)
     }
@@ -184,8 +190,10 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
         self.decode
+            .allocation
+            .borrow_mut()
             .grow(value.capacity() as u64)
-            .map_err(E::custom)?;
+            .map_err(|error| E::custom(self.decode.error(error)))?;
         self.inner.visit_string(value)
     }
 
@@ -211,7 +219,7 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
         self.inner.visit_some(MaterializationDeserializer {
             inner: deserializer,
             decode: self.decode,
-            flat_map: false,
+            tree_set: false,
         })
     }
     fn visit_newtype_struct<D: serde::Deserializer<'de>>(
@@ -222,7 +230,7 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
             .visit_newtype_struct(MaterializationDeserializer {
                 inner: deserializer,
                 decode: self.decode,
-                flat_map: self.owned_map,
+                tree_set: self.tree,
             })
     }
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
@@ -230,6 +238,7 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
             inner: access,
             decode: self.decode,
             owned: self.owned_sequence,
+            tree: self.tree,
             length: 0,
             capacity: 0,
         })
@@ -238,14 +247,12 @@ impl<'de, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
         self.inner.visit_map(MaterializationMap {
             inner: access,
             decode: self.decode,
-            owned: self.owned_map,
+            owned: self.tree,
             key_layout: std::alloc::Layout::new::<()>(),
-            length: 0,
-            capacity: 0,
         })
     }
     fn visit_enum<A: serde::de::EnumAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
-        self.inner.visit_enum(MaterializationEnum {
+        self.inner.visit_enum(MaterializationVariant {
             inner: access,
             decode: self.decode,
         })
@@ -268,16 +275,17 @@ impl<'de, S: serde::de::DeserializeSeed<'de>> serde::de::DeserializeSeed<'de>
         use serde::de::Error as _;
         if self.item {
             self.decode
+                .work
                 .charge(crate::WorkCounters {
                     items_examined: 1,
                     ..crate::WorkCounters::default()
                 })
-                .map_err(D::Error::custom)?;
+                .map_err(|error| D::Error::custom(self.decode.error(error)))?;
         }
         self.inner.deserialize(MaterializationDeserializer {
             inner: deserializer,
             decode: self.decode,
-            flat_map: false,
+            tree_set: false,
         })
     }
 }
@@ -286,6 +294,7 @@ pub(super) struct MaterializationSequence<'a, 'b, A> {
     pub(super) inner: A,
     pub(super) decode: &'a MaterializationDecode<'b>,
     pub(super) owned: bool,
+    pub(super) tree: bool,
     pub(super) length: usize,
     pub(super) capacity: usize,
 }
@@ -306,31 +315,21 @@ impl<'de, A: serde::de::SeqAccess<'de>> serde::de::SeqAccess<'de>
         })?;
         if value.is_some() {
             let width = std::mem::size_of::<S::Value>();
-            if self.owned && width != 0 && self.length == self.capacity {
-                // With no size hint serde's Vec visitor starts at zero; these
-                // are Vec's actual minimum and amortized growth capacities.
-                let minimum = if width == 1 {
-                    8
-                } else if width <= 1024 {
-                    4
-                } else {
-                    1
-                };
-                let next = if self.capacity == 0 {
-                    minimum
-                } else {
-                    self.capacity
-                        .checked_mul(2)
-                        .ok_or_else(|| Self::Error::custom("journal sequence capacity overflow"))?
-                };
-                let bytes = next
-                    .checked_sub(self.capacity)
-                    .and_then(|count| count.checked_mul(width))
-                    .ok_or_else(|| Self::Error::custom("journal sequence allocation overflow"))?;
+            if self.owned && self.tree {
+                let mut entry = self
+                    .decode
+                    .work
+                    .claim(width as u64, 0, crate::WorkCounters::UNCHARGED)
+                    .map_err(|error| Self::Error::custom(self.decode.error(error)))?;
                 self.decode
-                    .grow(bytes as u64)
+                    .allocation
+                    .borrow_mut()
+                    .absorb(&mut entry)
+                    .map_err(|error| Self::Error::custom(self.decode.error(error)))?;
+            } else if self.owned && width != 0 && self.length == self.capacity {
+                self.decode
+                    .grow_sequence(width, &mut self.capacity)
                     .map_err(Self::Error::custom)?;
-                self.capacity = next;
             }
             self.length += 1;
         }
@@ -346,8 +345,6 @@ pub(super) struct MaterializationMap<'a, 'b, A> {
     pub(super) decode: &'a MaterializationDecode<'b>,
     pub(super) owned: bool,
     pub(super) key_layout: std::alloc::Layout,
-    pub(super) length: usize,
-    pub(super) capacity: usize,
 }
 impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de>
     for MaterializationMap<'_, '_, A>
@@ -376,38 +373,24 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de>
         })?;
         if self.owned {
             let value_layout = std::alloc::Layout::new::<S::Value>();
-            let alignment = self.key_layout.align().max(value_layout.align());
-            let size = self
+            let (layout, _) = self
                 .key_layout
-                .size()
-                .checked_add(value_layout.size())
-                .and_then(|bytes| bytes.checked_add(alignment - 1))
-                .map(|bytes| bytes & !(alignment - 1))
-                .ok_or_else(|| Self::Error::custom("flat map entry layout overflow"))?;
-            if size != 0 && self.length == self.capacity {
-                let minimum = if size == 1 {
-                    8
-                } else if size <= 1024 {
-                    4
-                } else {
-                    1
-                };
-                let next = if self.capacity == 0 {
-                    minimum
-                } else {
-                    self.capacity
-                        .checked_mul(2)
-                        .ok_or_else(|| Self::Error::custom("flat map capacity overflow"))?
-                };
-                let bytes = (next - self.capacity)
-                    .checked_mul(size)
-                    .ok_or_else(|| Self::Error::custom("flat map allocation overflow"))?;
-                self.decode
-                    .grow(bytes as u64)
-                    .map_err(Self::Error::custom)?;
-                self.capacity = next;
-            }
-            self.length += 1;
+                .extend(value_layout)
+                .map_err(|_| Self::Error::custom("map entry layout overflow"))?;
+            let mut entry = self
+                .decode
+                .work
+                .claim(
+                    layout.pad_to_align().size() as u64,
+                    0,
+                    crate::WorkCounters::UNCHARGED,
+                )
+                .map_err(|error| Self::Error::custom(self.decode.error(error)))?;
+            self.decode
+                .allocation
+                .borrow_mut()
+                .absorb(&mut entry)
+                .map_err(|error| Self::Error::custom(self.decode.error(error)))?;
         }
         Ok(value)
     }
@@ -416,12 +399,8 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de>
     }
 }
 
-pub(super) struct MaterializationEnum<'a, 'b, A> {
-    inner: A,
-    decode: &'a MaterializationDecode<'b>,
-}
 impl<'de, 'a, 'b, A: serde::de::EnumAccess<'de>> serde::de::EnumAccess<'de>
-    for MaterializationEnum<'a, 'b, A>
+    for MaterializationVariant<'a, 'b, A>
 {
     type Error = A::Error;
     type Variant = MaterializationVariant<'a, 'b, A::Variant>;
@@ -478,7 +457,7 @@ impl<'de, A: serde::de::VariantAccess<'de>> serde::de::VariantAccess<'de>
                 decode: self.decode,
                 owned_string: false,
                 owned_sequence: false,
-                owned_map: false,
+                tree: false,
             },
         )
     }
@@ -494,7 +473,7 @@ impl<'de, A: serde::de::VariantAccess<'de>> serde::de::VariantAccess<'de>
                 decode: self.decode,
                 owned_string: false,
                 owned_sequence: false,
-                owned_map: false,
+                tree: false,
             },
         )
     }

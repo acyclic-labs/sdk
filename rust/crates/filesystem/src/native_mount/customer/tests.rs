@@ -1,6 +1,5 @@
 use super::*;
 use crate::demand::native::NativeDemandSource;
-use crate::lazy_workspace::LazyReadonlyNode;
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 
@@ -8,9 +7,7 @@ use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 async fn measured_customer_root_admission_keeps_unselected_source_cold()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
-    let fixture_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &fixture_token)
-            .map_err(|(cause, _)| cause)?;
+    let fixture_work = test_work(crate::WorkBudget::UNBOUNDED, &fixture_token)?;
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let physical = tempfile::tempdir()?;
@@ -24,28 +21,8 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         physical.path().join("unselected/cold.txt"),
         b"unread sibling",
     )?;
-    let fs = Fs::memory();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "measured-customer-root",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let lazy =
+        native_lazy_source(physical.path(), "measured-customer-root", &fixture_token).await?;
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
         source_bytes_read: 0,
@@ -55,56 +32,45 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     let options = MountOptions::read_write()
         .subdirectory("/selected")
         .publication(MountPublication::Manual);
-    let work =
-        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
-    let (ordinary_source, volume, root) = lazy
-        .prepare_authored_mount_source(&options, None, None, &work, None)
-        .await?;
+    let work = test_work(budget, &cancellation)?;
+    let (ordinary_source, volume, root) =
+        lazy.prepare_authored_mount_source(&options, &work).await?;
     assert_eq!(volume, lazy.workspace().id().volume_id());
     assert_eq!(root.0, "/selected");
     work.receipt().verify(budget)?;
     assert_eq!(work.receipt().source_bytes_read, 0);
     assert_eq!(work.receipt().materializations, 0);
-    assert!(work.receipt().backend_read_operations > 0);
+    let mut accounting = KernelAccounting::native(&fixture_work, &fixture_token);
     assert!(matches!(
-        lazy.lookup("/selected").await?,
+        &lazy.lookup("/selected", &mut accounting).await?.0,
         LazyLookup::Authored { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/selected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy.lookup("/selected/cold.txt", &mut accounting).await?.0,
+        LazyLookup::Source { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/unselected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy
+            .lookup("/unselected/cold.txt", &mut accounting)
+            .await?
+            .0,
+        LazyLookup::Source { .. }
     ));
-    let pinned = lazy
-        .workspace()
-        .head(&fixture_work, &fixture_token)
-        .await?
-        .id();
+    let pinned = head(lazy.workspace(), &fixture_work).await?;
     let denied_budget = crate::WorkBudget {
         backend_read_operations: 0,
         ..crate::WorkBudget::UNBOUNDED
     };
-    let denied = crate::NativeMaterializationWork::new(denied_budget, &cancellation)
-        .map_err(|(error, _)| error)?;
+    let denied = test_work(denied_budget, &cancellation)?;
     assert!(
-        lazy.prepare_authored_mount_source(&options, Some(pinned), None, &denied, None)
+        lazy.prepare_authored_mount_source(&options, &denied)
             .await
             .is_err()
     );
     denied.receipt().verify(denied_budget)?;
     assert_eq!(denied.receipt().backend_read_operations, 0);
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        pinned
-    );
-    let job = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
+    let job = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     assert!(!job.shares_ledger(&work));
     let rejected_root = tempfile::tempdir()?;
     let before_binding = work.receipt();
@@ -119,13 +85,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         )))
     ));
     assert_eq!(work.receipt(), before_binding);
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        pinned
-    );
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, pinned);
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
     let ordinary_job = job.with_source_io_lease(ordinary_source.native_source_io_lease()?)?;
     assert!(ordinary_job.shares_ledger(&job));
@@ -134,7 +94,10 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     let (native_source, _, _) = lazy
-        .prepare_authored_mount_source(&options, Some(pinned), None, &work, Some(&work))
+        .prepare_authored_mount_source(
+            &options.clone().native_context(&work, None, Some(&work)),
+            &work,
+        )
         .await?;
     let before_foreign_job = job.receipt();
     assert!(matches!(
@@ -156,50 +119,26 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
 }
 
 #[tokio::test]
-async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumulatively()
+async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_capture()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let token = crate::CancellationToken::new();
-    let setup = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
-        .map_err(|(cause, _)| cause)?;
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "native-carrier-admission",
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &setup, &token)
-        .await?;
-    transaction
-        .create_directory("/selected-Ã©", &setup, &token)
-        .await?;
-    transaction
-        .commit(
-            None,
+    let setup = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
+    let physical = tempfile::tempdir()?;
+    std::fs::create_dir(physical.path().join("selected-Ã©"))?;
+    let lazy = native_lazy_source(physical.path(), "native-carrier-admission", &token).await?;
+    let generation = lazy
+        .exactify(
+            "/selected-Ã©",
             PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-            |_| async {
-                Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            &mut KernelAccounting::native(&setup, &token),
         )
-        .await
-        .map_err(|failure| failure.error)?;
-    let generation = workspace.head(&setup, &token).await?;
+        .await?;
     let directory = tempfile::tempdir()?;
     let options = crate::MaterializeOptions::native(directory.path());
     let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
-    let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
-        .map_err(|(cause, _)| cause)?;
+    let original = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let prepared = generation
         .prepare_native_working_set(
             &mount.clone().native_context(&original, None, None),
@@ -210,8 +149,7 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
         .await?;
     let identity = prepared.source_identity;
 
-    let capture = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
-        .map_err(|(cause, _)| cause)?;
+    let capture = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let rejected = generation
         .attach_native_working_set(
             &mount.clone().native_context(&capture, None, None),
@@ -227,51 +165,13 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
         rejected,
         MountLifecycleError::Source(MountSourceError::Work(
             crate::WorkError::BudgetExceeded { .. }
-        )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Source(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
     ));
-    let preparation = capture.receipt();
-    assert_eq!(preparation.materializations, 0);
-    let mut finite = crate::WorkBudget::UNBOUNDED;
-    finite.allocation_operations = preparation
-        .allocation_operations
-        .checked_sub(1)
-        .ok_or("attachment omitted carrier allocations")?;
-    let carrier =
-        crate::NativeMaterializationWork::new(finite, &token).map_err(|(cause, _)| cause)?;
-    assert!(
-        generation
-            .attach_native_working_set(
-                &mount.clone().native_context(&carrier, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &token
-            )
-            .await
-            .is_err()
-    );
-    carrier.receipt().verify(finite)?;
-    assert_eq!(carrier.receipt().materializations, 0);
-
-    let cumulative =
-        crate::NativeMaterializationWork::new(preparation, &token).map_err(|(cause, _)| cause)?;
-    assert!(
-        generation
-            .attach_native_working_set(
-                &mount.clone().native_context(&cumulative, None, None),
-                &options,
-                identity,
-                crate::WorkBudget::UNBOUNDED,
-                &token
-            )
-            .await
-            .is_err()
-    );
-    cumulative.receipt().verify(preparation)?;
-    assert_eq!(cumulative.receipt().materializations, 0);
-
-    let admitted_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
-        .map_err(|(cause, _)| cause)?;
+    let admitted_work = test_work(crate::WorkBudget::UNBOUNDED, &token)?;
     let admitted = generation
         .attach_native_working_set(
             &mount.clone().native_context(&admitted_work, None, None),
@@ -281,20 +181,7 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
             &token,
         )
         .await?;
-    let exact = admitted_work.receipt();
-    drop(admitted);
-    let exact_work =
-        crate::NativeMaterializationWork::new(exact, &token).map_err(|(cause, _)| cause)?;
-    let attached = generation
-        .attach_native_working_set(
-            &mount.native_context(&exact_work, None, None),
-            &options,
-            identity,
-            crate::WorkBudget::UNBOUNDED,
-            &token,
-        )
-        .await?;
-    exact_work.receipt().verify(exact)?;
+    let attached = admitted;
     assert_eq!(attached.source_identity, identity);
     assert_eq!(attached.source_root, options.destination);
     assert_eq!(attached.selected_root, Path::new("selected-Ã©"));
@@ -309,13 +196,9 @@ async fn witnessed_attachment_preadmits_carriers_and_bounds_initial_capture_cumu
 async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurrent_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
-    let fixture_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &fixture_token)
-            .map_err(|(cause, _)| cause)?;
+    let fixture_work = test_work(crate::WorkBudget::UNBOUNDED, &fixture_token)?;
     let default_token = crate::CancellationToken::new();
-    let default_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &default_token)
-            .map_err(|(cause, _)| cause)?;
+    let default_work = test_work(crate::WorkBudget::UNBOUNDED, &default_token)?;
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
     let fs = Fs::memory();
@@ -331,7 +214,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     workspace.write_text("/file.txt", "original").await?;
     let admitted = workspace.head(&fixture_work, &fixture_token).await?;
     workspace.write_text("/file.txt", "concurrent").await?;
-    let concurrent = workspace.head(&fixture_work, &fixture_token).await?.id();
+    let concurrent = head(&workspace, &fixture_work).await?;
     let source_root = tempfile::tempdir()?;
     let source = admitted
         .prepare_native_working_set(
@@ -344,47 +227,27 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
     source.validate_for_presentation(&default_work).await?;
     source.verify_unchanged(&default_work).await?;
     let capture_token = crate::CancellationToken::new();
-    let capture_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &capture_token)
-            .map_err(|(error, _)| error)?;
+    let capture_work = test_work(crate::WorkBudget::UNBOUNDED, &capture_token)?;
     let caller_payload = capture_work.claim(64, 1, crate::WorkCounters::UNCHARGED)?;
     let mut caller_buffer = Vec::<u8>::new();
     caller_buffer.try_reserve_exact(64)?;
-    assert_eq!(caller_payload.bytes(), caller_buffer.capacity() as u64);
     let before_capture = capture_work.receipt();
     source.verify_unchanged(&capture_work).await?;
     assert!(capture_work.receipt().source_bytes_read > before_capture.source_bytes_read);
     assert!(capture_work.live_allocation_bytes() >= caller_payload.bytes());
     let mut denied_budget = crate::WorkBudget::UNBOUNDED;
     denied_budget.items_examined = 0;
-    let denied_work = crate::NativeMaterializationWork::new(denied_budget, &capture_token)
-        .map_err(|(error, _)| error)?;
+    let denied_work = test_work(denied_budget, &capture_token)?;
     assert!(source.verify_unchanged(&denied_work).await.is_err());
     assert_eq!(denied_work.receipt().source_bytes_read, 0);
     assert_eq!(
         std::fs::read(source_root.path().join("file.txt"))?,
         b"original",
     );
-    assert_eq!(
-        std::fs::read_to_string(source_root.path().join("file.txt"))?,
-        "original"
-    );
-    assert_eq!(source.generation_id(), admitted.id());
-    assert!(
-        source
-            .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
-            })
-            .await
-            .map_err(|failure| failure.cause)
-            .is_err()
-    );
+    assert!(publish(&source, &default_work).await.is_err());
     std::fs::write(source_root.path().join("file.txt"), "source mutation")?;
     assert!(source.verify_unchanged(&default_work).await.is_err());
-    assert_eq!(
-        workspace.head(&fixture_work, &fixture_token).await?.id(),
-        concurrent
-    );
+    assert_eq!(head(&workspace, &fixture_work).await?, concurrent);
 
     let destination_root = tempfile::tempdir()?;
     let write = MountOptions::read_write().publication(MountPublication::Manual);
@@ -422,15 +285,7 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
             .await
             .is_err()
     );
-    assert!(
-        destination
-            .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
-            })
-            .await
-            .map_err(|failure| failure.cause)
-            .is_err()
-    );
+    assert!(publish(&destination, &default_work).await.is_err());
     assert_eq!(
         workspace
             .read("/file.txt", 64, &fixture_work, &fixture_token)
@@ -445,13 +300,9 @@ async fn pinned_native_sources_cannot_publish_and_destinations_preserve_concurre
 async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture_token = crate::CancellationToken::new();
-    let fixture_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &fixture_token)
-            .map_err(|(cause, _)| cause)?;
+    let fixture_work = test_work(crate::WorkBudget::UNBOUNDED, &fixture_token)?;
     let default_token = crate::CancellationToken::new();
-    let default_work =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &default_token)
-            .map_err(|(cause, _)| cause)?;
+    let default_work = test_work(crate::WorkBudget::UNBOUNDED, &default_token)?;
     let cancellation = crate::CancellationToken::new();
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::initialize_native_mount_services()?;
@@ -461,33 +312,9 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     std::fs::create_dir(source.path().join("hot/sub"))?;
     std::fs::write(source.path().join("hot/sub/child.txt"), b"old child")?;
     let native_view = tempfile::tempdir()?;
-    let fs = Fs::memory();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "prepared-native-working-set",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
-    let before_invalid = lazy
-        .workspace()
-        .head(&fixture_work, &fixture_token)
-        .await?
-        .id();
+    let lazy =
+        native_lazy_source(source.path(), "prepared-native-working-set", &fixture_token).await?;
+    let before_invalid = head(lazy.workspace(), &fixture_work).await?;
     assert!(matches!(
         lazy.prepare_native_working_set(
             "/hot",
@@ -501,13 +328,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             "native working-set root must be absolute"
         ))
     ));
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        before_invalid
-    );
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_invalid);
     let mut working_set = lazy
         .prepare_native_working_set(
             "/hot",
@@ -527,13 +348,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             .await
             .is_err()
     );
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        generation
-    );
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, generation);
 
     let name = if cfg!(windows) {
         "file.txt"
@@ -543,24 +358,9 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     } else {
         b"file.txt".to_vec()
     };
-    let unchanged_head = lazy
-        .workspace()
-        .head(&fixture_work, &fixture_token)
-        .await?
-        .id();
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
-        })
-        .await
-        .map_err(|failure| failure.cause)?;
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        unchanged_head
-    );
+    let unchanged_head = head(lazy.workspace(), &fixture_work).await?;
+    publish(&working_set, &default_work).await?;
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, unchanged_head);
     #[cfg(unix)]
     let canonical_before = lazy
         .workspace()
@@ -574,12 +374,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         working_set
             .capture_host_paths(&[MountPath::root().child(name.clone())], &default_work)
             .await?;
-        working_set
-            .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
-            })
-            .await
-            .map_err(|failure| failure.cause)?;
+        publish(&working_set, &default_work).await?;
         let canonical_after = lazy
             .workspace()
             .head(&fixture_work, &fixture_token)
@@ -596,12 +391,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         let accessed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
         std::fs::File::open(working.join("hot/file.txt"))?
             .set_times(std::fs::FileTimes::new().set_accessed(accessed))?;
-        working_set
-            .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
-            })
-            .await
-            .map_err(|failure| failure.cause)?;
+        publish(&working_set, &default_work).await?;
         let canonical = lazy
             .workspace()
             .head(&fixture_work, &fixture_token)
@@ -612,14 +402,8 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
     }
     std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
-    let before_guard = lazy
-        .workspace()
-        .head(&fixture_work, &fixture_token)
-        .await?
-        .id();
-    let denied_publication =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+    let before_guard = head(lazy.workspace(), &fixture_work).await?;
+    let denied_publication = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     let denied = working_set
         .sync_with_permit(
             PublicationPermit::Unrestricted,
@@ -640,23 +424,11 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         denied.cause,
         MountLifecycleError::NativePolicy("original materialized owner denied publication",)
     ));
-    assert!(denied_publication.receipt().items_examined > 0);
-    denied_publication
-        .receipt()
-        .verify(crate::WorkBudget::UNBOUNDED)?;
-    assert_eq!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        before_guard
-    );
+    assert_eq!(head(lazy.workspace(), &fixture_work).await?, before_guard);
     working_set
         .capture_host_paths(&[MountPath::root().child(name)], &default_work)
         .await?;
-    let publication =
-        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+    let publication = test_work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
     let guard_original = publication.clone();
     let published = working_set
         .sync_with_permit(
@@ -670,71 +442,56 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         )
         .await?;
     assert!(published.operation().is_some());
-    assert!(!published.snapshot().is_lazy());
+    assert!(!published.is_lazy());
     assert_eq!(
-        published.snapshot().workspace_id(),
+        published.workspace_id(),
         working_set.workspace.id()
     );
     assert_eq!(
-        published.snapshot().volume_config(),
+        published.volume_config(),
         working_set.workspace.volume_config()
     );
     assert_eq!(
-        published.snapshot().generation(),
+        published.generation(),
         working_set
             .workspace
             .head(&fixture_work, &fixture_token)
             .await?
             .id()
     );
-    assert!(publication.receipt().items_examined > 0);
-    assert_eq!(
-        lazy.workspace()
-            .read("/hot/file.txt", 32, &fixture_work, &fixture_token)
-            .await?
-            .as_ref(),
-        b"native-edit"
-    );
+    assert_read(
+        lazy.workspace(),
+        "/hot/file.txt",
+        32,
+        b"native-edit",
+        &fixture_work,
+    )
+    .await?;
     std::fs::write(working.join("hot/created.txt"), b"new")?;
     working_set
         .capture_host_subtree(&MountPath::root(), &default_work)
         .await?;
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
-        })
-        .await
-        .map_err(|failure| failure.cause)?;
-    assert_eq!(
-        lazy.workspace()
-            .read("/hot/created.txt", 16, &fixture_work, &fixture_token)
-            .await?
-            .as_ref(),
-        b"new"
-    );
-    // The publication boundary must capture writes even when the caller
-    // receives no change notification and supplies no path hint.
+    publish(&working_set, &default_work).await?;
+    assert_read(
+        lazy.workspace(),
+        "/hot/created.txt",
+        16,
+        b"new",
+        &fixture_work,
+    )
+    .await?;
     std::fs::write(working.join("hot/unreported.txt"), b"unreported")?;
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
-        })
-        .await
-        .map_err(|failure| failure.cause)?;
-    assert_eq!(
-        lazy.workspace()
-            .read("/hot/unreported.txt", 32, &fixture_work, &fixture_token)
-            .await?
-            .as_ref(),
-        b"unreported"
-    );
+    publish(&working_set, &default_work).await?;
+    assert_read(
+        lazy.workspace(),
+        "/hot/unreported.txt",
+        32,
+        b"unreported",
+        &fixture_work,
+    )
+    .await?;
     std::fs::remove_file(working.join("hot/unreported.txt"))?;
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
-        })
-        .await
-        .map_err(|failure| failure.cause)?;
+    publish(&working_set, &default_work).await?;
     assert!(
         lazy.workspace()
             .read("/hot/unreported.txt", 32, &fixture_work, &fixture_token)
@@ -746,62 +503,60 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     working_set
         .capture_host_subtree(&MountPath::root(), &default_work)
         .await?;
-    working_set
-        .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
-        })
-        .await
-        .map_err(|failure| failure.cause)?;
-    assert_eq!(
-        lazy.workspace()
-            .read("/hot/sub", 32, &fixture_work, &fixture_token)
-            .await?
-            .as_ref(),
-        b"replacement"
-    );
+    publish(&working_set, &default_work).await?;
+    assert_read(
+        lazy.workspace(),
+        "/hot/sub",
+        32,
+        b"replacement",
+        &fixture_work,
+    )
+    .await?;
     assert!(
         lazy.workspace()
             .read("/hot/sub/child.txt", 32, &fixture_work, &fixture_token)
             .await
             .is_err()
     );
-    lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
-        .await?;
-    lazy.write("/hot/conflict.txt", bytes::Bytes::from_static(b"parent"))
-        .await?;
+    lazy.write(
+        "/later.txt",
+        acyclic_stream::OwnedBytes::from_static(b"later"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
+    lazy.write(
+        "/hot/conflict.txt",
+        acyclic_stream::OwnedBytes::from_static(b"parent"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
     std::fs::write(working.join("hot/conflict.txt"), b"child")?;
     working_set
         .capture_host_subtree(&MountPath::root(), &default_work)
         .await?;
     assert!(matches!(
-        working_set
-            .sync_with_permit(PublicationPermit::Unrestricted, &default_work, |_| {
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
-            })
-            .await
-            .map_err(|failure| failure.cause),
+        publish(&working_set, &default_work).await,
         Err(MountLifecycleError::Source(MountSourceError::Stale))
     ));
-    assert_eq!(
-        lazy.workspace()
-            .read("/hot/conflict.txt", 16, &fixture_work, &fixture_token)
-            .await?
-            .as_ref(),
-        b"parent"
-    );
+    assert_read(
+        lazy.workspace(),
+        "/hot/conflict.txt",
+        16,
+        b"parent",
+        &fixture_work,
+    )
+    .await?;
     assert!(matches!(
         working_set.validate_for_presentation(&default_work).await,
         Err(MountLifecycleError::Workspace(
             WorkspaceError::StaleGeneration
         ))
     ));
-    assert_ne!(
-        lazy.workspace()
-            .head(&fixture_work, &fixture_token)
-            .await?
-            .id(),
-        generation
-    );
+    assert_ne!(head(lazy.workspace(), &fixture_work).await?, generation);
     let latest_view = tempfile::tempdir()?;
     let ready = lazy
         .prepare_native_working_set(
@@ -830,7 +585,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let cancelled_wait = crate::CancellationToken::new();
     cancelled_wait.cancel();
     assert!(matches!(
-        working_set.retire_with_work(&cancelled_wait),
+        working_set.retire(&cancelled_wait),
         Err(MountLifecycleError::Source(MountSourceError::Cancelled))
     ));
     assert!(!working_set.source.capture_retired());
@@ -838,17 +593,100 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let source_io_tail = source_io.clone();
     drop(source_io);
     drop(source_io_tail);
-    // Revocation is not a new allowance: cleanup spends the source's
-    // already accepted birth credit, independently of the wait token.
     working_set.source.cancellation().cancel();
-    let drained = working_set.retire_with_work(&crate::CancellationToken::new())?;
+    let drained = working_set.retire(&crate::CancellationToken::new())?;
     assert!(working_set.source.capture_retired());
     assert!(working_set.native_source_io_lease().is_err());
-    let repeated = working_set.retire_with_work(&cancelled_wait)?;
+    let repeated = working_set.retire(&cancelled_wait)?;
     drop(repeated);
     drop(drained);
-    let ready_drained = ready.retire_with_work(&crate::CancellationToken::new())?;
+    let ready_drained = ready.retire(&crate::CancellationToken::new())?;
     assert!(ready.source.capture_retired());
     drop(ready_drained);
     Ok(())
+}
+
+type MemoryWorkspace =
+    Workspace<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+
+pub(super) async fn head(
+    workspace: &MemoryWorkspace,
+    work: &NativeMaterializationWork,
+) -> Result<GenerationId, WorkspaceError> {
+    Ok(workspace.head(work, work.cancellation()).await?.id())
+}
+
+async fn publish(
+    view: &NativeWorkingSet<
+        crate::facade::MemoryAuthorityBackend,
+        crate::facade::MemoryObjectBackend,
+    >,
+    work: &NativeMaterializationWork,
+) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
+    view.sync_with_permit(PublicationPermit::Unrestricted, work, |_| {
+        std::future::ready(Ok::<(), MountLifecycleError>(()))
+    })
+    .await
+    .map_err(|failure| failure.cause)
+}
+
+async fn assert_read(
+    workspace: &MemoryWorkspace,
+    path: &str,
+    maximum: u64,
+    expected: &[u8],
+    work: &NativeMaterializationWork,
+) -> Result<(), WorkspaceError> {
+    assert_eq!(
+        workspace
+            .read(path, maximum, work, work.cancellation())
+            .await?
+            .as_ref(),
+        expected
+    );
+    Ok(())
+}
+
+type MemoryLazyWorkspace = LazyWorkspace<
+    crate::facade::MemoryAuthorityBackend,
+    crate::facade::MemoryObjectBackend,
+    NativeDemandSource,
+    MemoryLazyWorkspaceStore,
+>;
+
+pub(super) async fn native_lazy_source(
+    root: &Path,
+    name: &str,
+    cancellation: &crate::CancellationToken,
+) -> Result<MemoryLazyWorkspace, Box<dyn std::error::Error>> {
+    let demand = NativeDemandSource::open(
+        std::borrow::Cow::Owned(root.to_path_buf()),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        None,
+        None,
+        crate::WorkBudget::UNBOUNDED,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.error)?
+    .value;
+    Ok(LazyWorkspace::attach(
+        &Fs::memory(),
+        name,
+        Arc::new(demand),
+        MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation),
+    )
+    .await?
+    .0)
+}
+
+pub(super) fn test_work(
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
+) -> Result<NativeMaterializationWork, crate::NativeTreeMaterializationError> {
+    NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
 }

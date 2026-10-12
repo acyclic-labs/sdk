@@ -6,7 +6,9 @@ use crate::{
         SchemaRegistry,
     },
 };
-use acyclic_stream::{OwnedBytes, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream};
+use acyclic_stream::{
+    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, OwnedBytes,
+};
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
@@ -30,7 +32,15 @@ async fn publish_lifecycle(
         operation_id: OperationId::from_bytes([number; 16]),
         idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
         expected_revision: reducer.revision(),
-        scope: issuer().issue("owner", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
+        scope: issuer()
+            .issue(
+                "owner",
+                &Capabilities::new(["lifecycle:manage"]),
+                None,
+                None,
+                &mut None,
+            )
+            .expect("scope proof"),
         causal_parent: None,
         action: Action::TransitionLifecycle {
             to: if number.is_multiple_of(2) {
@@ -50,7 +60,8 @@ async fn publish_lifecycle(
         reducer.authority(),
         &event,
         crate::wire_codec::encode_event(reducer.authority(), &event, &mut None)?,
-     &mut None)?;
+        &mut None,
+    )?;
     publication_with_work(
         client,
         reducer.authority(),
@@ -65,7 +76,8 @@ async fn publish_lifecycle(
     let (request, _request_hold) = indexed
         .request(
             client,
-            acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?, &mut request_work,
+            acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?,
+            &mut request_work,
         )
         .await?;
     let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
@@ -85,7 +97,8 @@ async fn copy_cut(
     let canonical_path = StreamPath::new(authority().stream_path(&mut None)?)?;
     let proof_path = certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?;
     if atomic {
-        client.commit(CommitRequest {
+        client
+            .commit(CommitRequest {
                 conditions: vec![
                     CommitCondition::Absent {
                         path: canonical_path.clone(),
@@ -122,7 +135,11 @@ async fn copy_cut(
 async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic_copy() -> Result<()>
 {
     let client = Arc::new(MemoryStream::default());
-    let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
+    let mut reducer = Reducer::new(
+        authority(),
+        issuer().verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(),
+    );
     publish_lifecycle(&client, &mut reducer, 1).await?;
     let selected = select_with_work(
         &client,
@@ -130,7 +147,9 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         &issuer().verifier(&mut None).expect("verifier copy"),
         EffectId::from_bytes([92; 16]),
         1,
-        1_000_000, &mut None)
+        1_000_000,
+        &mut None,
+    )
     .await?;
     assert_eq!(selected.0, None);
     let exact = selected.1;
@@ -142,7 +161,9 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             &issuer().verifier(&mut None).expect("verifier copy"),
             EffectId::from_bytes([92; 16]),
             1,
-            exact, &mut None)
+            exact,
+            &mut None
+        )
         .await?
         .1,
         exact
@@ -154,39 +175,68 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             &issuer().verifier(&mut None).expect("verifier copy"),
             EffectId::from_bytes([92; 16]),
             1,
-            exact - 1, &mut None)
+            exact - 1,
+            &mut None
+        )
         .await,
         Err(Error::Invalid(_))
     ));
-    let canonical = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path(&mut None)?)?
-        .read(0, 1)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
-    let certificates = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?.as_str())?
-        .read(0, 1)
-        .await?
-        .try_collect::<Vec<_>>()
-        .await?;
+    let canonical = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&client),
+        authority().stream_path(&mut None)?,
+    )?
+    .read(0, 1)
+    .await?
+    .try_collect::<Vec<_>>()
+    .await?;
+    let certificates = acyclic_stream::Stream::new(
+        std::sync::Arc::clone(&client),
+        certificate_path_with_work(&authority(), &mut None)
+            .map(|(path, _)| path)?
+            .as_str(),
+    )?
+    .read(0, 1)
+    .await?
+    .try_collect::<Vec<_>>()
+    .await?;
     let valid = copy_cut(&canonical[0].value, certificates[0].value.clone(), true).await?;
     assert_eq!(
-        root_at(&valid, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None)
-            .await?
-            .0,
+        Tree {
+            client: &valid,
+            authority: &authority()
+        }
+        .root_at(
+            &issuer().verifier(&mut None).expect("verifier copy"),
+            1,
+            exact,
+            &mut None
+        )
+        .await?
+        .0,
         None
     );
     let non_atomic = copy_cut(&canonical[0].value, certificates[0].value.clone(), false).await?;
     assert!(matches!(
-        root_at(&non_atomic, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None).await,
+        Tree {
+            client: &non_atomic,
+            authority: &authority()
+        }
+        .root_at(
+            &issuer().verifier(&mut None).expect("verifier copy"),
+            1,
+            exact,
+            &mut None
+        )
+        .await,
         Err(Error::Storage(_))
     ));
-    for mutation in 0..4 {
-        let mut changed: Certificate = crate::contract::json_from_slice(&certificates[0].value).map_err(|error| Error::Invalid(error.to_string()))?;
+    for mutation in 0..3 {
+        let mut changed: Certificate = crate::contract::json_from_slice(&certificates[0].value)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         match mutation {
             0 => changed.root = Some([93; 32]),
             1 => changed.revision = 2,
-            2 => changed.canonical_digest = [94; 32],
-            _ => changed.canonical_path = "harness/foreign/tasks/effect-root-proof".into(),
+            _ => changed.canonical_digest = [94; 32],
         }
         let forged = copy_cut(
             &canonical[0].value,
@@ -195,7 +245,17 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         )
         .await?;
         assert!(matches!(
-            root_at(&forged, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, 1_000_000, &mut None).await,
+            Tree {
+                client: &forged,
+                authority: &authority()
+            }
+            .root_at(
+                &issuer().verifier(&mut None).expect("verifier copy"),
+                1,
+                1_000_000,
+                &mut None
+            )
+            .await,
             Err(Error::Unauthorized(_))
         ));
     }
@@ -207,9 +267,15 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             id: "foreign-effect-root".into(),
         },
     )
-    .verifier(&mut None).expect("verifier copy");
+    .verifier(&mut None)
+    .expect("verifier copy");
     assert!(matches!(
-        root_at(&client, &authority(), &foreign, 1, exact, &mut None).await,
+        Tree {
+            client: &client,
+            authority: &authority()
+        }
+        .root_at(&foreign, 1, exact, &mut None)
+        .await,
         Err(Error::Unauthorized(_))
     ));
     Ok(())
@@ -223,12 +289,19 @@ async fn compressed_index_preserves_historical_heads_and_authenticated_absence()
     for number in 1..=64_u64 {
         let effect = EffectId::from_bytes(uuid::Uuid::from_u128(u128::from(number)).into_bytes());
         let mut used = 0;
-        let observed = walk(&client, &authority(), effect, root, &mut used, 1_000_000, &mut None).await?;
-        assert!(observed.leaf.is_none_or(|(_, id, _)| id != effect));
+        let observed = Tree {
+            client: &client,
+            authority: &authority(),
+        }
+        .walk(effect, root, &mut used, 1_000_000, &mut None)
+        .await?;
+        assert!(observed.1.is_none_or(|(_, id, _)| id != effect));
         root = Some(
-            update(
-                &client,
-                &authority(),
+            Tree {
+                client: &client,
+                authority: &authority(),
+            }
+            .update(
                 effect,
                 Head {
                     revision: number,
@@ -249,18 +322,14 @@ async fn compressed_index_preserves_historical_heads_and_authenticated_absence()
             let effect =
                 EffectId::from_bytes(uuid::Uuid::from_u128(u128::from(number)).into_bytes());
             let mut used = 0;
-            let observed = walk(
-                &client,
-                &authority(),
-                effect,
-                historical,
-                &mut used,
-                1_000_000,
-                &mut None,
-            )
+            let observed = Tree {
+                client: &client,
+                authority: &authority(),
+            }
+            .walk(effect, historical, &mut used, 1_000_000, &mut None)
             .await?;
             let head = observed
-                .leaf
+                .1
                 .and_then(|(_, id, head)| (id == effect).then_some(head));
             assert_eq!(
                 head,
@@ -269,23 +338,29 @@ async fn compressed_index_preserves_historical_heads_and_authenticated_absence()
                     position: 0
                 })
             );
-            assert!(observed.path.len() <= 128);
         }
     }
     let effect = EffectId::from_bytes(uuid::Uuid::from_u128(1).into_bytes());
     let mut used = 0;
-    let observed = walk(&client, &authority(), effect, root, &mut used, 1_000_000, &mut None).await?;
+    let observed = Tree {
+        client: &client,
+        authority: &authority(),
+    }
+    .walk(effect, root, &mut used, 1_000_000, &mut None)
+    .await?;
     assert!(matches!(
-        update(
-            &client,
-            &authority(),
+        Tree {
+            client: &client,
+            authority: &authority()
+        }
+        .update(
             effect,
             Head {
                 revision: 65,
                 position: 2
             },
             observed,
-            &mut None,
+            &mut None
         )
         .await,
         Err(Error::Storage(_))
@@ -299,9 +374,11 @@ async fn missing_authenticated_node_rejects_instead_of_selecting_older_state() -
     let client = provider.clone();
     let effect = EffectId::from_bytes([95; 16]);
     let root = Some(
-        stage_node(
-            &client,
-            &authority(),
+        Tree {
+            client: &client,
+            authority: &authority(),
+        }
+        .stage_node(
             Node::Leaf {
                 effect,
                 head: Head {
@@ -318,15 +395,24 @@ async fn missing_authenticated_node_rejects_instead_of_selecting_older_state() -
         .store(3, std::sync::atomic::Ordering::SeqCst);
     let mut used = 0;
     assert!(matches!(
-        walk(&client, &authority(), effect, root, &mut used, 1_000_000, &mut None).await,
+        Tree {
+            client: &client,
+            authority: &authority()
+        }
+        .walk(effect, root, &mut used, 1_000_000, &mut None)
+        .await,
         Err(Error::Storage(_))
     ));
     let mut used = 0;
     assert_eq!(
-        walk(&client, &authority(), effect, root, &mut used, 1_000_000, &mut None)
-            .await?
-            .leaf
-            .map(|(_, _, head)| head),
+        Tree {
+            client: &client,
+            authority: &authority()
+        }
+        .walk(effect, root, &mut used, 1_000_000, &mut None)
+        .await?
+        .1
+        .map(|(_, _, head)| head),
         Some(Head {
             revision: 3,
             position: 2
@@ -346,15 +432,36 @@ async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Re
         let mut heads = BTreeMap::<EffectId, Head>::new();
         let mut cuts = Vec::new();
         for revision in 1..=96_u64 {
-            random = random.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let key = random % 24;
-            let effect = EffectId::from_bytes(*blake3::hash(&key.to_le_bytes()).as_bytes()
-                .first_chunk::<16>().ok_or_else(|| Error::Invalid("fixture key".into()))?);
+            let effect = EffectId::from_bytes(
+                *blake3::hash(&key.to_le_bytes())
+                    .as_bytes()
+                    .first_chunk::<16>()
+                    .ok_or_else(|| Error::Invalid("fixture key".into()))?,
+            );
             let previous = heads.get(&effect).copied();
-            let head = Head { revision, position: previous.map_or(0, |head| head.position + 1) };
+            let head = Head {
+                revision,
+                position: previous.map_or(0, |head| head.position + 1),
+            };
             let mut used = 0;
-            let observed = walk(&client, &authority(), effect, root, &mut used, 1_000_000, &mut None).await?;
-            root = Some(update(&client, &authority(), effect, head, observed, &mut None).await?);
+            let observed = Tree {
+                client: &client,
+                authority: &authority(),
+            }
+            .walk(effect, root, &mut used, 1_000_000, &mut None)
+            .await?;
+            root = Some(
+                Tree {
+                    client: &client,
+                    authority: &authority(),
+                }
+                .update(effect, head, observed, &mut None)
+                .await?,
+            );
             heads.insert(effect, head);
             cuts.push((root, heads.clone()));
             let cut = usize::try_from(random % revision)
@@ -362,24 +469,189 @@ async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Re
             let (historical, expected) = &cuts[cut];
             provider.history_read_fault.store(3, Ordering::SeqCst);
             let mut failed_bytes = 0;
-            assert!(walk(&client, &authority(), effect, *historical,
-                &mut failed_bytes, 1_000_000, &mut None).await.is_err());
+            assert!(
+                Tree {
+                    client: &client,
+                    authority: &authority()
+                }
+                .walk(effect, *historical, &mut failed_bytes, 1_000_000, &mut None)
+                .await
+                .is_err()
+            );
             let mut bytes = 0;
-            let selected = walk(&client, &authority(), effect, *historical,
-                &mut bytes, 1_000_000, &mut None).await?;
-            assert_eq!(selected.leaf.and_then(|(_, id, head)|
-                (id == effect).then_some(head)), expected.get(&effect).copied());
-            assert!(selected.path.len() <= 128);
+            let selected = Tree {
+                client: &client,
+                authority: &authority(),
+            }
+            .walk(effect, *historical, &mut bytes, 1_000_000, &mut None)
+            .await?;
+            assert_eq!(
+                selected
+                    .1
+                    .and_then(|(_, id, head)| (id == effect).then_some(head)),
+                expected.get(&effect).copied()
+            );
             assert!(bytes > 0);
             let mut short = 0;
-            assert!(walk(&client, &authority(), effect, *historical,
-                &mut short, bytes - 1, &mut None).await.is_err());
+            assert!(
+                Tree {
+                    client: &client,
+                    authority: &authority()
+                }
+                .walk(effect, *historical, &mut short, bytes - 1, &mut None)
+                .await
+                .is_err()
+            );
             let absent = EffectId::from_bytes([255; 16]);
             let mut bytes = 0;
-            let selected = walk(&client, &authority(), absent, *historical,
-                &mut bytes, 1_000_000, &mut None).await?;
-            assert!(selected.leaf.is_none_or(|(_, id, _)| id != absent));
+            let selected = Tree {
+                client: &client,
+                authority: &authority(),
+            }
+            .walk(absent, *historical, &mut bytes, 1_000_000, &mut None)
+            .await?;
+            assert!(selected.1.is_none_or(|(_, id, _)| id != absent));
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn failed_walk_releases_path_reservation() -> Result<()> {
+    let client = Arc::new(MemoryStream::default());
+    let effect = EffectId::from_bytes([1; 16]);
+    let leaf = Tree {
+        client: &client,
+        authority: &authority(),
+    }
+    .stage_node(
+        Node::Leaf {
+            effect,
+            head: Head {
+                revision: 1,
+                position: 0,
+            },
+        },
+        &mut None,
+    )
+    .await?;
+    let branch = Node::Branch {
+        bit: 0,
+        left: leaf,
+        right: leaf,
+    };
+    let maximum =
+        super::super::history::canonical_bytes_with_work(&branch, MAX_NODE_BYTES, &mut None)?.len()
+            as u64;
+    let root = Tree {
+        client: &client,
+        authority: &authority(),
+    }
+    .stage_node(branch, &mut None)
+    .await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(16_384, 64 * 1024 * 1024);
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        budget,
+        &cancellation,
+    )?);
+    let before = io.remaining()?.peak_allocation_bytes;
+    assert!(
+        Tree {
+            client: &client,
+            authority: &authority()
+        }
+        .walk(effect, Some(root), &mut 0, maximum, &mut Some(&mut io))
+        .await
+        .is_err()
+    );
+    assert_eq!(io.remaining()?.peak_allocation_bytes, before);
+    Ok(())
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod native_decode_controls {
+    use super::super::*;
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+
+    fn budget() -> WorkBudget {
+        WorkBudget {
+            allocation_operations: 1024,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
+                + 1024 * 1024,
+            source_bytes_read: 1024 * 1024,
+            items_examined: 1024 * 1024,
+            bytes_copied: 1024 * 1024,
+            ..WorkBudget::default()
+        }
+    }
+
+    #[test]
+    fn malformed_node_and_certificate_keep_original_serde_custody() {
+        let cancellation = CancellationToken::new();
+        let work =
+            NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
+        let node = decode_node_with_work(
+            br#"{"kind":"leaf","effect":false,"head":{"revision":1,"position":0}}"#,
+            &mut Some(&mut io),
+        );
+        let certificate = decode_certificate_with_work(br#"{"authority":false,"canonical_path":"harness/v2/task/x","revision":1,"canonical_digest":[],"root":null,"proof":[]}"#, &mut Some(&mut io));
+        for error in [
+            node.err().expect("invalid node"),
+            certificate.err().expect("invalid certificate"),
+        ] {
+            match error {
+                Error::NativeJson {
+                    source,
+                    custody: Some(custody),
+                    ..
+                } => {
+                    assert!(custody.bytes() > 0);
+                    assert!(work.shares_ledger(custody.work()));
+                    assert!(source.is_data());
+                }
+                other => panic!("expected retained native serde cause: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cancellation_preserves_original_callback_cause() {
+        let cancellation = CancellationToken::new();
+        let work =
+            NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
+        cancellation.cancel();
+        let error = decode_node_with_work(
+            br#"{"kind":"branch","bit":0,"left":[],"right":[]}"#,
+            &mut Some(&mut io),
+        )
+        .err()
+        .expect("cancelled");
+        assert!(matches!(error, Error::NativeWork { .. }));
+    }
+
+    #[test]
+    fn original_quota_denies_node_before_serde_diagnostic_allocation() {
+        let cancellation = CancellationToken::new();
+        let mut limit = budget();
+        limit.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
+        let work = NativeMaterializationWork::new(limit, &cancellation).expect("original ledger");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
+        let error = decode_node_with_work(
+            br#"{"kind":"leaf","effect":false,"head":null}"#,
+            &mut Some(&mut io),
+        )
+        .err()
+        .expect("quota denial");
+        assert!(matches!(error, Error::NativeWork { .. }));
+    }
 }

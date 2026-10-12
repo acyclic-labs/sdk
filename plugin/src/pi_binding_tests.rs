@@ -14,7 +14,7 @@ pub(crate) fn binding(session: &str, identity: u8) -> PiTaskBinding {
         .unwrap(),
         allocation: PiScratchAllocation::Created(PiScratchCreation {
             workspace_id: [identity; 16],
-            generation: GenerationRef::new(provider, [3; 32].into(), None).unwrap(),
+            generation: GenerationRef::new(&(provider), &([3; 32]), None, None).unwrap().0,
         }),
     };
     PiTaskBinding {
@@ -49,17 +49,13 @@ fn allocations_and_selected_roles_are_explicit_and_bound() {
                     unreachable!()
                 };
                 if mutation == 1 {
-                    creation.generation = GenerationRef::new(
-                        ProviderRef::new(
+                    creation.generation = GenerationRef::new(&(ProviderRef::new(
                             "other".into(),
                             "filesystem".into(),
                             "1".into(),
                             &mut None,
                         )
-                        .unwrap(),
-                        [3; 32].into(),
-                        None,
-                    )
+                        .unwrap()), &([3; 32]), None, None).map(|(value, _)| value)
                     .unwrap();
                 } else {
                     creation.workspace_id = [0; 16];

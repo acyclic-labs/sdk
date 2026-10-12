@@ -16,25 +16,25 @@ use acyclic_harness::{
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{path::PathBuf, sync::atomic::Ordering};
 
-struct Fixture {
-    directory: tempfile::TempDir,
+pub(crate) struct Fixture {
+    pub(crate) directory: tempfile::TempDir,
     session: PathBuf,
     native: PathBuf,
     resources: ServiceResources,
-    filesystem: Arc<Host>,
+    pub(crate) filesystem: Arc<Host>,
     stream: Arc<LocalStream>,
-    owner: Arc<PiOwnerConfig>,
-    runtime: PiTaskRuntime<LocalStream>,
-    request: PiRootRequest,
-    lease: acyclic_harness::distributed::WorkLease,
-    provider: Arc<PiRootProvider<LocalStream>>,
-    startup: NativeMaterializationWork,
+    pub(crate) owner: Arc<PiOwnerConfig>,
+    pub(crate) runtime: PiTaskRuntime,
+    pub(crate) request: PiRootRequest,
+    pub(crate) lease: acyclic_harness::distributed::WorkLease,
+    pub(crate) provider: Arc<PiRootProvider>,
+    pub(crate) startup: NativeMaterializationWork,
     _lease_custody: NativeAllocation,
-    _lock: crate::service_process::ServiceLock,
+    pub(crate) _lock: crate::service_process::ServiceLock,
 }
 
 impl Fixture {
-    async fn new(root: PiRootIntent) -> Self {
+    pub(crate) async fn new(root: PiRootIntent) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let native = directory.path().join("native-project");
         std::fs::create_dir(&native).unwrap();
@@ -231,11 +231,6 @@ impl Fixture {
             panic!("original root lease")
         };
         let fence = LeaseFence::from(&lease.reservation);
-        let context = runtime
-            .runtime
-            .task_context_with_native_work(task, &fence, &startup)
-            .await
-            .unwrap();
         let preparation = PiRootPreparation::load(
             &resources.private_state_root,
             session.strip_prefix(&resources.data).unwrap(),
@@ -243,7 +238,7 @@ impl Fixture {
             &filesystem,
             &request.binding,
             crate::pi_recovery::PiTaskOrigin::Root(&request.root),
-            Some(context),
+            None,
             &startup,
         )
         .await
@@ -252,10 +247,6 @@ impl Fixture {
             .runtime
             .task_host()
             .journal_owner_with_native_work(task, &fence, &startup)
-            .await
-            .unwrap();
-        journal
-            .verify_with_native_work(false, &startup)
             .await
             .unwrap();
         let provider = root_provider(
@@ -286,7 +277,7 @@ impl Fixture {
         }
     }
 
-    async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
+    pub(crate) async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
         let content = acyclic_harness::runtime::content_residency_verifier(
             Arc::clone(&self.provider.preparation.context),
             self.provider.journal_owner.as_ref().unwrap().clone(),
@@ -335,7 +326,7 @@ impl Fixture {
         }
     }
 
-    async fn reopen(&self) -> Arc<PiRootProvider<LocalStream>> {
+    async fn reopen(&self) -> Arc<PiRootProvider> {
         let owner = PiOwnerConfig::load_with_native_work(
             &self.resources.private_state_root,
             self.session.strip_prefix(&self.resources.data).unwrap(),
@@ -345,12 +336,6 @@ impl Fixture {
         .into_native_shared(&self.startup)
         .unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
-        let context = self
-            .runtime
-            .runtime
-            .task_context_with_native_work(self.request.binding.task_id, &fence, &self.startup)
-            .await
-            .unwrap();
         let preparation = PiRootPreparation::load(
             &self.resources.private_state_root,
             self.session.strip_prefix(&self.resources.data).unwrap(),
@@ -358,7 +343,7 @@ impl Fixture {
             &self.filesystem,
             &self.request.binding,
             crate::pi_recovery::PiTaskOrigin::Root(&self.request.root),
-            Some(context),
+            None,
             &self.startup,
         )
         .await
@@ -368,10 +353,6 @@ impl Fixture {
             .runtime
             .task_host()
             .journal_owner_with_native_work(self.request.binding.task_id, &fence, &self.startup)
-            .await
-            .unwrap();
-        journal
-            .verify_with_native_work(false, &self.startup)
             .await
             .unwrap();
         let (mut resources, _custody) =
@@ -412,7 +393,6 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
             .observe_resources_with_native_work(
                 dispatch.effect_id,
                 dispatch.attempt_id,
-                dispatch.request_digest,
                 &fixture.startup,
             )
             .await
@@ -432,17 +412,6 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 None,
             )
             .unwrap();
-        let authority = acyclic_harness::core::Authority {
-            kind: acyclic_harness::core::AggregateKind::Conversation,
-            id: "schema-test".into(),
-        };
-        let issuer =
-            acyclic_harness::core::AuthorityIssuer::new("schema-test", [1; 32], authority.clone());
-        let reducer = acyclic_harness::core::Reducer::new(
-            authority,
-            issuer.verifier(&mut None).unwrap(),
-            schemas,
-        );
         let validate = |value: &serde_json::Value| {
             let bytes = serde_json::to_vec(value).unwrap();
             let descriptor = acyclic_harness::conversation::FileDescriptor::from_bytes(
@@ -460,9 +429,7 @@ async fn allocation_retains_original_lazy_roots_and_scratch() {
                 &mut None,
             )
             .unwrap();
-            reducer
-                .schemas()
-                .validate_bytes("plugin.test.allocation", 1, &file, &bytes)
+            schemas.validate_bytes("plugin.test.allocation", 1, &file, &bytes)
         };
         let value = serde_json::to_value(&observed.0).unwrap();
         validate(&value).unwrap();
@@ -571,7 +538,6 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                 .observe_resources_with_native_work(
                     dispatch.effect_id,
                     dispatch.attempt_id,
-                    dispatch.request_digest,
                     &fixture.startup,
                 )
                 .await
@@ -856,11 +822,10 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
     let snapshot = handle
         .workspace
         .snapshot(
-            &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                &fixture.startup,
-                fixture.startup.cancellation(),
-            )
-            .unwrap(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &fixture.startup,
+                cancellation: fixture.startup.cancellation(),
+            },
         )
         .await
         .unwrap();
@@ -912,7 +877,6 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
         .observe_resources_with_native_work(
             dispatch.effect_id,
             dispatch.attempt_id,
-            dispatch.request_digest,
             &substituted.startup,
         )
         .await

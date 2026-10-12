@@ -1,13 +1,9 @@
 import type * as NativeBinding from "../generated/native/binding.js";
-import type { OperationWindowLease } from "./compat.js";
+import { type OperationWindowLease } from "./compat.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
-import type { AcyclicObserver } from "@acyclic-labs/actors/observe";
-import {
-  DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS,
-  DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
-} from "../generated/defaults.js";
+import { type AcyclicObserver } from "@acyclic-labs/actors/observe";
+import { DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS } from "../generated/defaults.js";
 
-/** Readonly customer contracts derived from Rust DTOs. */
 type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends Uint8Array
@@ -17,10 +13,8 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
     : T extends object
       ? { readonly [Key in keyof T]: ReadonlyDeep<T[Key]> }
       : T;
-
 export type FsProfile = WasmBinding.BrowserVolumeOptions["profile"];
 export type FilePayloadKind = WasmBinding.FilePayloadKind;
-
 export interface EngineCapabilities {
   readonly version: string;
   readonly platform: string;
@@ -40,15 +34,12 @@ export interface EngineCapabilities {
   readonly nativeWatchRootIdentityFencing: boolean;
   readonly providerProcessIoObservable: boolean;
 }
-
 export interface FsEngine {
   readonly capabilities: EngineCapabilities;
   createWorkspace(name: string): Promise<FsWorkspace>;
   openWorkspace(name: string): Promise<FsWorkspace>;
   close(): void | Promise<void>;
 }
-
-/** Customer-side engine with the complete immutable-object, Volume, Checkout, and speculation surface. */
 export interface FsVolumeEngine extends FsEngine {
   objectCacheStats(): ObjectCacheStats;
   clearObjectCache(): void;
@@ -62,7 +53,6 @@ export interface FsVolumeEngine extends FsEngine {
   importGenerationBatch(manifest: GenerationExportManifest, cursor: bigint, objects: readonly Uint8Array[], maximumObjects: number): Promise<GenerationTransferCursor>;
   restoreVolume(manifest: GenerationExportManifest, operationId: Uint8Array): Promise<FsVolume>;
 }
-
 export interface HostedFsOptions {
   readonly endpoint: string;
   readonly bearerToken: string;
@@ -70,7 +60,6 @@ export interface HostedFsOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
 }
-
 export interface HostedFsCapabilities extends EngineCapabilities {
   readonly profiles: readonly FsProfile[];
   readonly maximumRequestBytes: bigint;
@@ -88,8 +77,6 @@ export type S3Region = string & { readonly [filesystemIdentity]: "S3Region" };
 export type S3AccessKeyId = string & { readonly [filesystemIdentity]: "S3AccessKeyId" };
 export type S3SecretAccessKey = string & { readonly [filesystemIdentity]: "S3SecretAccessKey" };
 export type S3SessionToken = string & { readonly [filesystemIdentity]: "S3SessionToken" };
-
-/** Scoped, expiring coordinates for the workspace's S3-compatible view. */
 export interface S3Access {
   readonly endpoint: string;
   readonly expiresAtUnixSeconds: bigint;
@@ -99,14 +86,8 @@ export interface S3Access {
   readonly secretAccessKey: S3SecretAccessKey;
   readonly sessionToken: S3SessionToken;
 }
-
-/** Hosted capability whose additional operation is backed by the canonical filesystem protocol. */
 export interface HostedFsWorkspace extends FsWorkspace {
-  s3Access(
-    writable: boolean,
-    expiresAfterSeconds: bigint,
-    idempotencyKey?: Uint8Array,
-  ): Promise<S3Access>;
+  s3Access( writable: boolean, expiresAfterSeconds: bigint, idempotencyKey?: Uint8Array, ): Promise<S3Access>;
   fork(destination: string): Promise<HostedFsWorkspace>;
   forkAt(destination: string, generation: FsGeneration, options?: WorkspaceForkOptions): Promise<HostedFsWorkspace>;
   sourceState(): Promise<SourceResult>;
@@ -114,13 +95,11 @@ export interface HostedFsWorkspace extends FsWorkspace {
   rescanSource(idempotencyKey?: Uint8Array): Promise<SourceResult>;
   seal(idempotencyKey?: Uint8Array): Promise<FsGeneration>;
 }
-
 export interface HostedFsEngine extends FsEngine {
   readonly capabilities: HostedFsCapabilities;
   createWorkspace(name: string): Promise<HostedFsWorkspace>;
   openWorkspace(name: string): Promise<HostedFsWorkspace>;
 }
-
 export type WorkspaceCommitStatus = WasmBinding.BrowserWorkspaceCommit["status"];
 export type WorkspaceCommit = ReadonlyDeep<WasmBinding.BrowserWorkspaceCommit>;
 export type WorkspaceFileKind = WasmBinding.BrowserWorkspaceDirectoryEntry["kind"];
@@ -131,8 +110,6 @@ export type WorkspaceStat = ReadonlyDeep<WasmBinding.BrowserWorkspaceStat>;
 export type WorkspaceDirectoryPage = ReadonlyDeep<WasmBinding.BrowserWorkspaceDirectoryPage>;
 export type WorkspaceExtentKind = WasmBinding.BrowserWorkspaceExtentSpan["kind"];
 export type WorkspaceExtentPlan = ReadonlyDeep<WasmBinding.BrowserWorkspaceExtentPlan>;
-
-/** Small customer-facing handle over one independently versioned filesystem. */
 export interface FsWorkspace {
   readonly name: string;
   readonly id: Uint8Array;
@@ -158,14 +135,11 @@ export interface FsWorkspace {
   diff(from: FsGeneration, to: FsGeneration, maximumChanges: number): Promise<FsChangeSet>;
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<FsJoinPlan>;
 }
-
 export type WorkspaceDeleteStatus =
   | "deleted"
   | "already-deleted"
   | "conflict"
   | "idempotency-conflict";
-
-/** One exact immutable complete filesystem state. */
 export interface FsGeneration {
   readonly id: Uint8Array;
   readonly workspaceId: Uint8Array;
@@ -177,71 +151,49 @@ export interface FsGeneration {
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<WorkspaceExtentPlan>;
   pin(identity: string): Promise<FsGeneration>;
 }
-
-/** One immutable semantic delta between exact generations. */
 export interface FsChangeSet {
   readonly from: FsGeneration;
   readonly to: FsGeneration;
   changes(): GenerationDiff;
   compose(next: FsChangeSet, maximumChanges: number): Promise<FsChangeSet>;
 }
-
 export type JoinHistory = "merge" | "rebase" | "squash" | "cherry-pick";
-
-/** Rust-owned immutable fork selection and creation retry identity. */
 export type WorkspaceForkOptions = ReadonlyDeep<WasmBinding.BrowserForkOptions>;
 export type JoinOptions = ReadonlyDeep<Omit<WasmBinding.BrowserJoinOptions, "history">> & { readonly history: JoinHistory };
-
 export type JoinStatus = WasmBinding.BrowserJoinResult["status"];
-
 export interface JoinResult {
   readonly status: JoinStatus;
   readonly generationId: Uint8Array | undefined;
   readonly conflicts: readonly MergeConflict[];
   readonly truncated: boolean;
 }
-
 export interface WorkspaceRebaseOptions {
   readonly maximumGenerations: number;
   readonly maximumChanges: number;
   readonly maximumConflicts: number;
 }
-
 export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["status"];
-
 export type ResidencyAdmissionStatus = WasmBinding.BrowserAdmissionResult["status"] | NativeBinding.NativeResidencyStatus;
 export type PromotionAdmissionStatus = WasmBinding.BrowserPromotionAdmission["status"] | NativeBinding.NativePromotionStatus;
-
 export interface WorkspaceRebaseResult {
   readonly status: WorkspaceRebaseStatus;
   readonly generationId: Uint8Array | undefined;
   readonly conflicts: readonly MergeConflict[];
   readonly truncated: boolean;
 }
-
-/** Immutable side-effect-free plan; only apply may publish one target generation. */
 export interface FsJoinPlan {
   readonly targetHead: Uint8Array;
   readonly commonAncestor: Uint8Array;
   apply(ifTarget: Uint8Array, idempotencyKey?: Uint8Array): Promise<JoinResult>;
   close(): Promise<void>;
 }
-
-/** Native join plan with declarative, generation-fenced conflict selection. */
 export interface ResolvableFsJoinPlan extends FsJoinPlan {
-  applySides(
-    ifTarget: Uint8Array,
-    selections: readonly MergeConflictSelection[],
-    idempotencyKey?: Uint8Array,
-  ): Promise<JoinResult>;
+  applySides( ifTarget: Uint8Array, selections: readonly MergeConflictSelection[], idempotencyKey?: Uint8Array, ): Promise<JoinResult>;
 }
-
 export type TransactionConflictRegionKind = WasmBinding.BrowserTransactionConflictRegion;
 export type TransactionDependencyUse = WasmBinding.BrowserTransactionDependencyUse;
 export type TransactionConflict = ReadonlyDeep<WasmBinding.BrowserTransactionConflict>;
 export type TransactionRebaseResult = ReadonlyDeep<WasmBinding.BrowserTransactionRebase>;
-
-/** One sparse candidate published atomically as a single immutable generation. */
 export interface FsTransaction {
   createDirAll(path: string): Promise<void>;
   createDirectory(path: string): Promise<void>;
@@ -253,33 +205,19 @@ export interface FsTransaction {
   hardLink(source: string, destination: string): Promise<void>;
   writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
   resize(path: string, logicalBytes: bigint): Promise<void>;
-  zeroRange(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    allocated: boolean,
-    extend: boolean,
-  ): Promise<void>;
+  zeroRange( path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean, ): Promise<void>;
   preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
-  cloneRange(
-    source: string,
-    sourceOffset: bigint,
-    destination: string,
-    destinationOffset: bigint,
-    length: bigint,
-  ): Promise<void>;
+  cloneRange( source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint, ): Promise<void>;
   rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
   commit(lease?: OperationWindowLease): Promise<WorkspaceCommit>;
   close(): Promise<void>;
 }
-
 export type StorageTier = "process-memory" | "node-local" | "shared-cache" | "durable-origin";
 export type ResidencyReason =
   | "directory-successor"
   | "sequential-range"
   | "metadata-successor"
   | "consumer-hint";
-
 export interface SpeculationOptions {
   readonly residency: {
     readonly maximumActiveOperations: number;
@@ -302,7 +240,6 @@ export interface SpeculationOptions {
     readonly minimumUsefulnessBasisPoints: number;
   };
 }
-
 export interface ResidencyObservation {
   readonly operationId: Uint8Array;
   readonly volumeId: Uint8Array;
@@ -312,14 +249,12 @@ export interface ResidencyObservation {
   readonly maximumBytes: bigint;
   readonly reason: ResidencyReason;
 }
-
 export interface ObjectResidency {
   readonly objectId: Uint8Array;
   readonly locationId: Uint8Array;
   readonly tier: StorageTier;
   readonly sourcePriority: number;
 }
-
 export interface PromotionDestination {
   readonly locationId: Uint8Array;
   readonly tier: StorageTier;
@@ -328,48 +263,32 @@ export interface PromotionDestination {
   readonly priority: number;
   readonly costUnitsPerByte: bigint;
 }
-
 export interface PromotionRequest {
   readonly operationId: Uint8Array;
   readonly acceptedTiers: readonly StorageTier[];
   readonly residency: readonly ObjectResidency[];
   readonly destinations: readonly PromotionDestination[];
 }
-
 export interface SpeculationPreemption {
   readonly residencyOperationIds: readonly Uint8Array[];
   readonly promotionOperationIds: readonly Uint8Array[];
 }
-
 export interface SpeculationMetrics {
   readonly residency: Readonly<Record<string, bigint>>;
   readonly promotion: Readonly<Record<string, bigint>>;
 }
-
 export interface Speculation {
   observe(observation: ResidencyObservation): Promise<{ readonly status: ResidencyAdmissionStatus; readonly rejection?: string }>;
   executeResidency(operationId: Uint8Array): Promise<{ readonly objectBytes: bigint; readonly work: WorkCounters }>;
   finishResidency(operationId: Uint8Array, useful: boolean): Promise<void>;
-  planPromotion(request: PromotionRequest): Promise<{
-    readonly status: PromotionAdmissionStatus;
-    readonly rejection?: string;
-    readonly operationId?: Uint8Array;
-    readonly objectId?: Uint8Array;
-    readonly sourceLocationId?: Uint8Array;
-    readonly destinationLocationId?: Uint8Array;
-    readonly estimatedCostUnits?: bigint;
-  }>;
+  planPromotion(request: PromotionRequest): Promise<{ readonly status: PromotionAdmissionStatus; readonly rejection?: string; readonly operationId?: Uint8Array; readonly objectId?: Uint8Array; readonly sourceLocationId?: Uint8Array; readonly destinationLocationId?: Uint8Array; readonly estimatedCostUnits?: bigint; }>;
   finishPromotion(operationId: Uint8Array, useful: boolean): Promise<void>;
   preemptForForeground(bytes: bigint): Promise<SpeculationPreemption>;
   replaceGeneration(generationId: Uint8Array): Promise<SpeculationPreemption>;
   metrics(): Promise<SpeculationMetrics>;
   cancel(): void;
 }
-
-/** Volume configuration emitted from the Rust WASM input boundary. */
 export type VolumeOptions = ReadonlyDeep<WasmBinding.BrowserVolumeOptions>;
-
-/** Resource limits emitted from the Rust WASM input boundary. */
 export type VolumeLimits = ReadonlyDeep<WasmBinding.BrowserVolumeLimits>;
 
 export const DEFAULT_VOLUME_LIMITS: VolumeLimits = GENERATED_VOLUME_LIMITS;
@@ -389,18 +308,10 @@ export function portableVolumeOptions(
     limits: DEFAULT_VOLUME_LIMITS,
   };
 }
-
-/** Checkout mode emitted from the Rust WASM input boundary. */
 export type CheckoutOptions = ReadonlyDeep<WasmBinding.BrowserCheckoutOptions>;
-
-/** Exact customer-side counters projected from the generated Rust DTO. */
 export type WorkCounters = ReadonlyDeep<WasmBinding.BrowserWorkCounters>;
-
 export type LookupResult = ReadonlyDeep<WasmBinding.BrowserLookupResult>;
-
 export type FileReadResult = ReadonlyDeep<WasmBinding.BrowserFileReadResult>;
-
-/** One immutable file handle resolved against a pinned checkout generation. */
 export interface ResolvedFile {
   readonly kind: WorkspaceFileKind;
   readonly logicalBytes: bigint;
@@ -408,20 +319,15 @@ export interface ResolvedFile {
   readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
   readSymbolicLink(): Promise<FileReadResult>;
 }
-
-/** Original-order handles and the shared namespace-resolution work receipt. */
 export interface ResolvedFilesResult {
   readonly files: readonly (ResolvedFile | undefined)[];
   readonly work: WorkCounters;
 }
-
 export type ExtentSeekTarget = "data" | "hole";
-
 export interface ExtentSeekResult {
   readonly offset: bigint | undefined;
   readonly work: WorkCounters;
 }
-
 export type FileExtentSpan =
   | {
       readonly kind: "hole" | "allocated-zero";
@@ -437,8 +343,6 @@ export type FileExtentSpan =
       readonly objectId: Uint8Array;
       readonly objectOffset: bigint;
     };
-
-/** Exact sparse representation without reading file bodies. */
 export type FileExtentPlan =
   | { readonly kind: "inline"; readonly work: WorkCounters }
   | {
@@ -447,23 +351,16 @@ export type FileExtentPlan =
       readonly retainedAllocationBytes: bigint;
       readonly work: WorkCounters;
     };
-
 export type DirectoryEntry = ReadonlyDeep<WasmBinding.BrowserDirectoryEntryResult>;
-
 export type DirectoryPage = ReadonlyDeep<WasmBinding.BrowserDirectoryPageResult>;
-
 export type MutationResult = ReadonlyDeep<WasmBinding.BrowserMutationResult>;
-
-/** Immutable content-addressed candidate built without publishing authority. */
 export type CheckpointResult = ReadonlyDeep<WasmBinding.BrowserCheckpointResult>;
-
 export interface MaterializeOptions {
   readonly destination: string;
   readonly maximumDirectoryEntries: number;
   readonly maximumExtentSpans: number;
   readonly transferBytes: bigint;
 }
-
 export interface MaterializationResult {
   readonly files: bigint;
   readonly directories: bigint;
@@ -473,36 +370,28 @@ export interface MaterializationResult {
   readonly writtenBytes: bigint;
   readonly work: WorkCounters;
 }
-
 export interface CaptureResult {
   readonly examinedPaths: bigint;
   readonly changedPaths: bigint;
   readonly stagedFileBytes: bigint;
   readonly work: WorkCounters;
 }
-
-/** Capture result whose watcher interval is now safe to acknowledge durably. */
 export interface WatchCaptureResult extends CaptureResult {
   readonly epoch: bigint;
   readonly firstSequence: bigint;
   readonly nextSequence: bigint;
 }
-
-/** Watcher-bound authenticated baseline and concurrent post-baseline interval. */
 export interface WatchReconcileResult {
   readonly epoch: bigint;
   readonly baseline: CaptureResult;
   readonly postBaseline: NativeWatchBatch;
 }
-
 export interface NativeNamespacePath {
   readonly components: readonly WorkspaceName[];
 }
-
 export type NativeWatchChange =
   | { readonly kind: "created" | "modified" | "arrived" | "metadata" | "removed"; readonly path: NativeNamespacePath }
   | { readonly kind: "renamed"; readonly from: NativeNamespacePath; readonly to: NativeNamespacePath };
-
 export type NativeWatchBatch =
   | {
       readonly status: "changes";
@@ -525,50 +414,25 @@ export type NativeWatchBatch =
         | "root-changed";
       readonly work: WorkCounters;
     };
-
 export interface NativeWatcher {
   reconcile(maximumPaths: number, maximumExtentSpans: number): Promise<WatchReconcileResult>;
-  pollCapture(
-    maximumChanges: number,
-    maximumPaths: number,
-    maximumExtentSpans: number,
-  ): Promise<WatchCaptureResult>;
+  pollCapture( maximumChanges: number, maximumPaths: number, maximumExtentSpans: number, ): Promise<WatchCaptureResult>;
 }
-
-/** Complete authenticated closure descriptor. Object identities are kind-tag + digest. */
 export type GenerationExportManifest = ReadonlyDeep<WasmBinding.BrowserExportManifestResult>;
-
-/** One manifest-ordered, resumable immutable-object transfer page. */
 export type GenerationTransferBatch = ReadonlyDeep<WasmBinding.GenerationTransferBatchResult>;
-
-/** Cursor after an idempotently imported manifest-aligned page. */
 export type GenerationTransferCursor = ReadonlyDeep<WasmBinding.GenerationTransferCursorResult>;
-
 export type CommitResult = ReadonlyDeep<WasmBinding.BrowserCommitResult>;
-
 export type RebaseResult = ReadonlyDeep<WasmBinding.BrowserRebaseResult>;
-
-/** Complete path-independent file record in a generation diff. */
 export type FileRecordSnapshot = ReadonlyDeep<WasmBinding.BrowserFileRecordResult>;
-
 export type FileRecordReadResult = ReadonlyDeep<WasmBinding.BrowserFileRecordReadResult>;
-
 export type BatchLookupEntry = ReadonlyDeep<WasmBinding.BrowserBatchLookupEntryResult>;
-
 export type BatchLookupResult = ReadonlyDeep<WasmBinding.BrowserBatchLookupResult>;
-
 export type DirectoryRecordEntry = ReadonlyDeep<WasmBinding.BrowserDirectoryRecordEntryResult>;
-
 export type DirectoryRecordPage = ReadonlyDeep<WasmBinding.BrowserDirectoryRecordPageResult>;
-
 export type FileRecordChange = ReadonlyDeep<WasmBinding.BrowserFileRecordChangeResult>;
-
 export type TreeEntrySnapshot = ReadonlyDeep<WasmBinding.BrowserTreeEntryResult>;
-
 export type DirectoryBindingChange = ReadonlyDeep<WasmBinding.BrowserBindingChangeResult>;
-
 export type GenerationDiff = ReadonlyDeep<WasmBinding.BrowserGenerationDiffResult>;
-
 export type MergeConflict =
   | { readonly kind: "file"; readonly fileId: Uint8Array }
   | {
@@ -576,11 +440,9 @@ export type MergeConflict =
       readonly directoryId: Uint8Array;
       readonly name: WorkspaceName;
     };
-
 export type MergeConflictSelection = MergeConflict & {
   readonly side: "base" | "ours" | "theirs";
 };
-
 export type MergePreparationResult =
   | {
       readonly status: "prepared";
@@ -596,31 +458,19 @@ export type MergePreparationResult =
       readonly truncated: boolean;
       readonly work: WorkCounters;
     };
-
 export type LiveMutationResult = ReadonlyDeep<WasmBinding.BrowserLiveMutationResult>;
-
 export type LiveTransactionResult = ReadonlyDeep<WasmBinding.BrowserLiveTransactionResult>;
-
 export type NamedAttributeClass = WasmBinding.BrowserNamedAttributeNameResult["attributeClass"];
-
 export type MetadataResult = ReadonlyDeep<WasmBinding.BrowserMetadataResult>;
-
 export type StatResult = ReadonlyDeep<WasmBinding.BrowserStatResult>;
-
 export type NamedAttributeResult = ReadonlyDeep<WasmBinding.BrowserNamedAttributeResult>;
-
 export type NamedAttributePage = ReadonlyDeep<WasmBinding.BrowserNamedAttributePageResult>;
-
 export type NamedAttributeName = ReadonlyDeep<WasmBinding.BrowserNamedAttributeNameResult>;
-
 export type NamedAttributeWriteMode = "upsert" | "create" | "replace";
 export type EmptySpecialKind = Extract<WasmBinding.TransactionOperation, { kind: "create-special" }>["fileKind"];
 export type DeviceKind = Extract<WasmBinding.TransactionOperation, { kind: "create-device" }>["fileKind"];
-
 export type TransactionOperation = ReadonlyDeep<WasmBinding.TransactionOperation>;
-
 export type TransactionResult = ReadonlyDeep<WasmBinding.BrowserTransactionResult>;
-
 export interface FsCheckout {
   /** Exact bounded work used to acquire this checkout handle. */
   readonly acquisitionWork: WorkCounters;
@@ -633,11 +483,7 @@ export interface FsCheckout {
   refreshHead(): Promise<CheckpointResult>;
   refreshLive(): Promise<CheckpointResult>;
   exportManifest(): Promise<GenerationExportManifest>;
-  prepareMerge(
-    theirs: Uint8Array,
-    maximumChanges: number,
-    maximumConflicts: number,
-  ): Promise<MergePreparationResult>;
+  prepareMerge( theirs: Uint8Array, maximumChanges: number, maximumConflicts: number, ): Promise<MergePreparationResult>;
   lookupNoFollow(path: string): Promise<LookupResult>;
   lookupBatchNoFollow(paths: readonly string[]): Promise<BatchLookupResult>;
   statNoFollow(path: string): Promise<StatResult>;
@@ -648,57 +494,21 @@ export interface FsCheckout {
   setMetadataById(fileId: Uint8Array, canonicalBytes: Uint8Array): Promise<MutationResult>;
   setAttributes(path: string, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined): Promise<MutationResult>;
   setAttributesById(fileId: Uint8Array, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined): Promise<MutationResult>;
-  readNamedAttribute(
-    path: string,
-    attributeClass: NamedAttributeClass,
-    name: Uint8Array,
-  ): Promise<NamedAttributeResult>;
-  listNamedAttributes(
-    path: string,
-    after: NamedAttributeName | undefined,
-    maximumEntries: number,
-  ): Promise<NamedAttributePage>;
-  writeNamedAttribute(
-    path: string,
-    attributeClass: NamedAttributeClass,
-    name: Uint8Array,
-    bytes: Uint8Array,
-    mode: NamedAttributeWriteMode,
-  ): Promise<MutationResult>;
-  removeNamedAttribute(
-    path: string,
-    attributeClass: NamedAttributeClass,
-    name: Uint8Array,
-  ): Promise<MutationResult>;
+  readNamedAttribute( path: string, attributeClass: NamedAttributeClass, name: Uint8Array, ): Promise<NamedAttributeResult>;
+  listNamedAttributes( path: string, after: NamedAttributeName | undefined, maximumEntries: number, ): Promise<NamedAttributePage>;
+  writeNamedAttribute( path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode, ): Promise<MutationResult>;
+  removeNamedAttribute( path: string, attributeClass: NamedAttributeClass, name: Uint8Array, ): Promise<MutationResult>;
   resolveFiles(paths: readonly string[]): Promise<ResolvedFilesResult>;
   readFileRange(path: string, offset: bigint, length: bigint): Promise<FileReadResult>;
   readFileRangeById(fileId: Uint8Array, offset: bigint, length: bigint): Promise<FileReadResult>;
-  planFileExtents(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    maximumSpans: number,
-  ): Promise<FileExtentPlan>;
-  planFileExtentsById(
-    fileId: Uint8Array,
-    offset: bigint,
-    length: bigint,
-    maximumSpans: number,
-  ): Promise<FileExtentPlan>;
+  planFileExtents( path: string, offset: bigint, length: bigint, maximumSpans: number, ): Promise<FileExtentPlan>;
+  planFileExtentsById( fileId: Uint8Array, offset: bigint, length: bigint, maximumSpans: number, ): Promise<FileExtentPlan>;
   seekFileExtent(path: string, offset: bigint, target: ExtentSeekTarget): Promise<ExtentSeekResult>;
   seekFileExtentById(fileId: Uint8Array, offset: bigint, target: ExtentSeekTarget): Promise<ExtentSeekResult>;
   readSymbolicLink(path: string): Promise<FileReadResult>;
   readReparsePoint(path: string): Promise<FileReadResult>;
-  listDirectory(
-    path: string,
-    after: string | undefined,
-    maximumEntries: number,
-  ): Promise<DirectoryPage>;
-  listDirectoryRecords(
-    path: string,
-    after: string | undefined,
-    maximumEntries: number,
-  ): Promise<DirectoryRecordPage>;
+  listDirectory( path: string, after: string | undefined, maximumEntries: number, ): Promise<DirectoryPage>;
+  listDirectoryRecords( path: string, after: string | undefined, maximumEntries: number, ): Promise<DirectoryRecordPage>;
   createFile(path: string, bytes: Uint8Array): Promise<MutationResult>;
   createDirectory(path: string): Promise<MutationResult>;
   createSymbolicLink(path: string, target: Uint8Array): Promise<MutationResult>;
@@ -712,81 +522,24 @@ export interface FsCheckout {
   hardLink(source: string, destination: string): Promise<MutationResult>;
   resizeFile(path: string, logicalBytes: bigint): Promise<MutationResult>;
   resizeFileById(fileId: Uint8Array, logicalBytes: bigint): Promise<MutationResult>;
-  zeroFileRange(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    allocated: boolean,
-    extend: boolean,
-  ): Promise<MutationResult>;
-  zeroFileRangeById(
-    fileId: Uint8Array,
-    offset: bigint,
-    length: bigint,
-    allocated: boolean,
-    extend: boolean,
-  ): Promise<MutationResult>;
-  preallocateFile(
-    path: string,
-    offset: bigint,
-    length: bigint,
-    keepSize: boolean,
-  ): Promise<MutationResult>;
-  preallocateFileById(
-    fileId: Uint8Array,
-    offset: bigint,
-    length: bigint,
-    keepSize: boolean,
-  ): Promise<MutationResult>;
-  cloneFileRange(
-    source: string,
-    sourceOffset: bigint,
-    destination: string,
-    destinationOffset: bigint,
-    length: bigint,
-  ): Promise<MutationResult>;
-  cloneFileRangeById(
-    sourceFileId: Uint8Array,
-    sourceOffset: bigint,
-    destinationFileId: Uint8Array,
-    destinationOffset: bigint,
-    length: bigint,
-  ): Promise<MutationResult>;
+  zeroFileRange( path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean, ): Promise<MutationResult>;
+  zeroFileRangeById( fileId: Uint8Array, offset: bigint, length: bigint, allocated: boolean, extend: boolean, ): Promise<MutationResult>;
+  preallocateFile( path: string, offset: bigint, length: bigint, keepSize: boolean, ): Promise<MutationResult>;
+  preallocateFileById( fileId: Uint8Array, offset: bigint, length: bigint, keepSize: boolean, ): Promise<MutationResult>;
+  cloneFileRange( source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
+  cloneFileRangeById( sourceFileId: Uint8Array, sourceOffset: bigint, destinationFileId: Uint8Array, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
   commit(operationId: Uint8Array, lease?: OperationWindowLease): Promise<CommitResult>;
-  mutateLive(
-    operations: readonly TransactionOperation[],
-    operationId: Uint8Array,
-    maximumAttempts: number,
-    maximumConflicts: number,
-  ): Promise<LiveTransactionResult>;
-  resumeLive(
-    operationId: Uint8Array,
-    maximumAttempts: number,
-    maximumConflicts: number,
-  ): Promise<LiveMutationResult>;
+  mutateLive( operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveTransactionResult>;
+  resumeLive( operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveMutationResult>;
   rebaseHead(maximumConflicts: number): Promise<RebaseResult>;
   discard(): Promise<MutationResult>;
   mount?(destination: string, writable: boolean): NativeMount;
   materialize?(options: MaterializeOptions): Promise<MaterializationResult>;
-  capture?(
-    sourceRoot: string,
-    paths: readonly string[],
-    maximumPaths: number,
-    maximumExtentSpans: number,
-  ): Promise<CaptureResult>;
-  captureBaseline?(
-    sourceRoot: string,
-    maximumPaths: number,
-    maximumExtentSpans: number,
-  ): Promise<CaptureResult>;
-  watch?(
-    sourceRoot: string,
-    maximumQueuedChanges: number,
-    recursive: boolean,
-  ): NativeWatcher;
+  capture?( sourceRoot: string, paths: readonly string[], maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
+  captureBaseline?( sourceRoot: string, maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
+  watch?( sourceRoot: string, maximumQueuedChanges: number, recursive: boolean, ): NativeWatcher;
   cancel?(): void;
 }
-
 export interface NativeMount {
   readonly id: Uint8Array;
   readonly destination: string;
@@ -794,19 +547,13 @@ export interface NativeMount {
   revalidate(): void;
   stop(): boolean;
 }
-
 export interface FsVolume {
   readonly id: Uint8Array;
   /** Exact bounded work used to create, restore, or open this volume handle. */
   readonly acquisitionWork: WorkCounters;
-  diffGenerations(
-    before: Uint8Array,
-    after: Uint8Array,
-    maximumChanges: number,
-  ): Promise<GenerationDiff>;
+  diffGenerations( before: Uint8Array, after: Uint8Array, maximumChanges: number, ): Promise<GenerationDiff>;
   checkout(options: CheckoutOptions): Promise<FsCheckout>;
 }
-
 export interface BrowserFsOptions {
   readonly databaseName: string;
   readonly maximumObjectBytes: number;
@@ -815,7 +562,6 @@ export interface BrowserFsOptions {
   /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
   readonly observer?: AcyclicObserver;
 }
-
 export interface MemoryFsOptions {
   readonly maximumObjectBytes: number;
   readonly maximumMemoryBytes: number;
@@ -823,57 +569,32 @@ export interface MemoryFsOptions {
   /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
   readonly observer?: AcyclicObserver;
 }
-
 export interface NativeFsOptions {
   readonly root: string;
   readonly objectCache: ObjectCacheOptions;
 }
-
 export type ObjectCacheOptions = Readonly<NativeBinding.NativeObjectCacheOptions>;
 
 export const DEFAULT_OBJECT_CACHE_OPTIONS: ObjectCacheOptions = GENERATED_OBJECT_CACHE_OPTIONS;
-
-export interface ObjectCacheStats {
-  readonly hits: bigint;
-  readonly decodedHits: bigint;
-  readonly misses: bigint;
-  readonly coalescedReads: bigint;
-  readonly evictions: bigint;
-  readonly residentEntries: bigint;
-  readonly residentBytes: bigint;
-  readonly residentCanonicalObjects: bigint;
-  readonly residentCanonicalBytes: bigint;
-  readonly residentDecodedPages: bigint;
-  readonly residentDecodedBytes: bigint;
-  readonly inFlight: bigint;
-}
-
+export type ObjectCacheStats = Readonly<NativeBinding.NativeObjectCacheStats>;
 export interface NativeFsEngine extends FsVolumeEngine {
   createWorkspace(name: string): Promise<NativeFsWorkspace>;
   openWorkspace(name: string): Promise<NativeFsWorkspace>;
-  attachDirectory(
-    name: string,
-    path: string,
-    options: NativeSourceOptions,
-  ): Promise<NativeFsWorkspace>;
+  attachDirectory( name: string, path: string, options: NativeSourceOptions, ): Promise<NativeFsWorkspace>;
   cancel(): void;
   readonly cancelled: boolean;
 }
-
 export type NativeWorkspaceMountPublication = "close-and-sync" | "per-mutation" | "manual";
-
 export interface NativeWorkspaceMountOptions {
   readonly writable: boolean;
   readonly subdirectory: string;
   readonly publication: NativeWorkspaceMountPublication;
 }
-
 export interface NativeWorkspaceMount {
   readonly path: string;
   sync(): Promise<void>;
   unmount(): Promise<boolean>;
 }
-
 export interface NativeFsWorkspace extends FsWorkspace {
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<ResolvableFsJoinPlan>;
   mount(destination: string, options: NativeWorkspaceMountOptions): Promise<NativeWorkspaceMount>;
@@ -882,7 +603,6 @@ export interface NativeFsWorkspace extends FsWorkspace {
   rescanSource(): Promise<SourceResult>;
   seal(): Promise<FsGeneration>;
 }
-
 export interface NativeSourceOptions {
   readonly mode: "pinned" | "tracking";
   readonly maximumPaths: number;
@@ -891,7 +611,6 @@ export interface NativeSourceOptions {
   /** Canonical absolute prefixes omitted from capture and deletion inference. */
   readonly excludedPaths?: readonly string[];
 }
-
 export type SourceStatus =
   | "none"
   | "clean"
@@ -899,7 +618,6 @@ export type SourceStatus =
   | "needs-rescan"
   | "conflict"
   | "sealed";
-
 export type SourceInvalidationReason =
   | "initial-snapshot-required"
   | "queue-overflow"
@@ -908,199 +626,8 @@ export type SourceInvalidationReason =
   | "unrepresentable-path"
   | "ambiguous-rename"
   | "root-changed";
-
 export interface SourceResult {
   readonly status: SourceStatus;
   readonly reason: SourceInvalidationReason | undefined;
   readonly generationId: Uint8Array | undefined;
 }
-
-// Refine only serde values validated at the adapter boundary.
-type GeneratedWasmFactories = Pick<
-  typeof WasmBinding,
-  | "default"
-  | "encodeMergePlanJson"
-  | "decodeMergePlanJson"
-  | "encodeMergeCandidateJson"
-  | "decodeMergeCandidateJson"
-  | "encodeMultiRootPlanJson"
-  | "decodeMultiRootPlanJson"
-  | "encodeMultiRootCandidateJson"
-  | "decodeMultiRootCandidateJson"
-  | "encodePublicationJson"
-  | "decodePublicationJson"
->;
-
-export type WasmBindings = GeneratedWasmFactories & {
-  openBrowserFs(options: BrowserFsOptions): Promise<WasmRawFs>;
-  openMemoryFs(options: MemoryFsOptions): WasmRawFs;
-  readonly BrowserWorkspaceContextRegistry: typeof WasmBinding.BrowserWorkspaceContextRegistry;
-};
-
-export interface RawWorkspaceContextRegistry {
-  registerRoot(contextId: Uint8Array, rootsWire: Uint8Array): Promise<Uint8Array>;
-  registerChild(
-    contextId: Uint8Array,
-    parentContextId: Uint8Array,
-    rootsWire: Uint8Array,
-  ): Promise<Uint8Array>;
-  adoptRoot(contextId: Uint8Array, rootWire: Uint8Array): Promise<Uint8Array>;
-  removeRoot(contextId: Uint8Array, rootId: Uint8Array): Promise<Uint8Array>;
-  resolve(contextId: Uint8Array): Promise<Uint8Array>;
-  setActive(contextId: Uint8Array, active: boolean): Promise<Uint8Array>;
-  setWorkspace(
-    contextId: Uint8Array,
-    rootId: Uint8Array,
-    workspaceId: Uint8Array,
-    workspaceName: string,
-    parentWorkspaceId?: Uint8Array,
-  ): Promise<Uint8Array>;
-  discardSubtree(
-    parentContextId: Uint8Array,
-    childContextId: Uint8Array,
-    maximum: number,
-  ): Promise<Uint8Array>;
-}
-
-export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
-
-// Inherit generated methods; refine remaining erased serde values.
-type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
-  [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
-    ? (...args: Args[Key] extends readonly unknown[] ? Args[Key] : never) => Result
-    : never;
-};
-type WasmWithAsyncResults<Base, Results extends object> = Omit<Base, keyof Results> & {
-  [Key in keyof Results & keyof Base]: Base[Key] extends (...args: infer Args) => unknown
-    ? (...args: Args) => Promise<Results[Key]>
-    : never;
-};
-type WasmWithSyncResults<Base, Results extends object> = Omit<Base, keyof Results> & {
-  [Key in keyof Results & keyof Base]: Base[Key] extends (...args: infer Args) => unknown
-    ? (...args: Args) => Results[Key]
-    : never;
-};
-type WasmAssertKnownKeys<Base, Keys extends PropertyKey> =
-  Exclude<Keys, keyof Base> extends never
-    ? unknown
-    : { readonly __unknownGeneratedWasmKeys__: Exclude<Keys, keyof Base> };
-type WasmTypedClass<
-  Base,
-  Args extends object = {},
-  AsyncResults extends object = {},
-  SyncResults extends object = {},
-  Properties extends object = {},
-> = Omit<
-  WasmWithSyncResults<WasmWithAsyncResults<WasmWithArgs<Base, Args>, AsyncResults>, SyncResults>,
-  keyof Properties
-> & Properties & WasmAssertKnownKeys<Base, keyof Args | keyof AsyncResults | keyof SyncResults | keyof Properties>;
-
-export type WasmRawMergeConflict = WasmBinding.MergeConflictResult;
-export type WasmRawObjectCacheStats = { readonly [Key in keyof ObjectCacheStats]: string };
-export type WasmImportManifest = Pick<GenerationExportManifest, "manifestBytes" | "objects">;
-
-export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
-
-export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
-  listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
-}, {
-  pin: WasmRawGeneration;
-}>;
-
-export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, {
-  compose: WasmRawChangeSet;
-}, {}, {
-  readonly from: WasmRawGeneration;
-  readonly to: WasmRawGeneration;
-}>;
-
-export type WasmRawJoinPlan = WasmBinding.BrowserJoinPlan;
-
-export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
-  joinInto: [target: WasmRawWorkspace, options: JoinOptions];
-}, {
-  checkpoint: WasmRawGeneration;
-  generation: WasmRawGeneration;
-  diff: WasmRawChangeSet;
-  fork: WasmRawWorkspace;
-  forkAt: WasmRawWorkspace;
-  pin: WasmRawGeneration;
-  sync: WasmRawGeneration;
-}>;
-
-export type WasmRawTransaction = WasmBinding.BrowserTransaction;
-
-export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, {
-  observe: [observation: ResidencyObservation];
-  planPromotion: [request: PromotionRequest];
-}>;
-
-export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
-  checkout: [options: CheckoutOptions];
-}, {
-  checkout: WasmRawCheckout;
-}>;
-
-export type WasmRawCheckout = WasmTypedClass<
-  WasmBinding.BrowserCheckout,
-  {
-    createDevice: [path: string, kind: DeviceKind, major: number, minor: number];
-    createSpecial: [path: string, kind: EmptySpecialKind];
-    listDirectory: [path: string, after: string | undefined, maximumEntries: number];
-    listDirectoryRecords: [path: string, after: string | undefined, maximumEntries: number];
-    listNamedAttributes: [path: string, afterClass: NamedAttributeClass | undefined, afterName: Uint8Array | undefined, maximumEntries: number];
-    remove: [path: string, expectedFileId: Uint8Array | undefined];
-    seekFileExtent: [path: string, offset: bigint, target: ExtentSeekTarget];
-    seekFileExtentById: [fileId: Uint8Array, offset: bigint, target: ExtentSeekTarget];
-    setAttributes: [path: string, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
-    setAttributesById: [fileId: Uint8Array, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
-    writeNamedAttribute: [path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode];
-  }
->;
-
-export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
-  createSpeculation: [volumeId: Uint8Array, generationId: Uint8Array, options: SpeculationOptions];
-  createVolume: [options: VolumeOptions];
-  createVolumeWithId: [volumeId: Uint8Array, options: VolumeOptions];
-  exportGenerationBatch: [manifest: WasmImportManifest, cursor: bigint, maximumObjects: number, maximumObjectBytes: bigint];
-  importGenerationBatch: [manifest: WasmImportManifest, cursor: bigint, objects: readonly Uint8Array[], maximumObjects: number];
-  restoreVolume: [manifest: WasmImportManifest, operationId: Uint8Array];
-}, {
-  createWorkspace: WasmRawWorkspace;
-  openWorkspace: WasmRawWorkspace;
-  createVolume: WasmRawVolume;
-  createVolumeWithId: WasmRawVolume;
-  openVolume: WasmRawVolume;
-  restoreVolume: WasmRawVolume;
-}, {
-  createSpeculation: WasmRawSpeculation;
-  objectCacheStats: WasmRawObjectCacheStats;
-}, {
-  readonly capabilities: EngineCapabilities;
-}>;
-export type WasmRawResolvedFile = WasmBinding.BrowserResolvedFile;
-
-export type WasmRawResolvedFiles = WasmBinding.BrowserResolvedFiles;
-
-// Accept Uint8Array inputs at the generated N-API Buffer boundary.
-type NativeBoundary<T> =
-  T extends Uint8Array ? Uint8Array :
-  T extends Promise<infer Value> ? Promise<NativeBoundary<Value>> :
-  T extends readonly (infer Value)[] ? readonly NativeBoundary<Value>[] :
-  T extends (...args: infer Args) => infer Result
-    ? ((...args: { [Key in keyof Args]: NativeBoundary<Args[Key]> }) => NativeBoundary<Result>) &
-      { [Key in keyof T]: NativeBoundary<T[Key]> } :
-  T extends object ? { [Key in keyof T]: NativeBoundary<T[Key]> } :
-  T;
-
-export type NativeBindings = NativeBoundary<typeof NativeBinding>;
-export type NativeRawWorkspaceLineageRecord = NativeBoundary<NativeBinding.NativeWorkspaceLineageRecord>;
-export type NativeRawWorkspaceGraph = NativeBoundary<NativeBinding.NativeWorkspaceGraph>;
-export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
-export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
-export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
-export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
-export type NativeRawFs = NativeBoundary<NativeBinding.NativeFs>;
-export type NativeRawWorkspace = NativeBoundary<NativeBinding.NativeWorkspace>;
-export type NativeRawJoinPlan = NativeBoundary<NativeBinding.NativeJoinPlan>;
-export type NativeRawSourceResult = NativeBoundary<NativeBinding.NativeSourceResult>;

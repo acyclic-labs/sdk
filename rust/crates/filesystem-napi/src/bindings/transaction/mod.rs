@@ -12,158 +12,92 @@ impl NativeWorkspaceTransaction {
     /// Creates every absent directory on one canonical path.
     #[napi(js_name = createDirAll)]
     pub async fn create_dir_all(&self, path: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .create_dir_all(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            create_dir_all(&path)
+        ))
     }
 
     /// Creates exactly one empty directory.
     #[napi(js_name = createDirectory)]
     pub async fn create_directory(&self, path: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .create_directory(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            create_directory(&path)
+        ))
     }
 
     /// Creates one symbolic link with an opaque target.
     #[napi(js_name = createSymbolicLink)]
     pub async fn create_symbolic_link(&self, path: String, target: Buffer) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .create_symbolic_link(
-                &path,
-                bytes::Bytes::from(target.to_vec()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            create_symbolic_link(&path, bytes::Bytes::from(target.to_vec()))
+        ))
     }
 
     /// Creates or replaces one complete file inside this transaction.
     #[napi]
     pub async fn write(&self, path: String, bytes: Buffer) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .write(
-                &path,
-                bytes::Bytes::from(bytes.to_vec()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            write(&path, bytes::Bytes::from(bytes.to_vec()))
+        ))
     }
 
     /// Removes one existing namespace binding inside this transaction.
     #[napi]
     pub async fn remove(&self, path: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .remove(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner.lock().await, remove(&path)))
     }
 
     /// Clones one complete regular file without copying its body.
     #[napi]
     pub async fn copy(&self, source: String, destination: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .copy(&source, &destination)
-            .await
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            copy(&source, &destination)
+        ))
     }
 
     /// Atomically renames one namespace binding inside this transaction.
     #[napi]
     pub async fn rename(&self, source: String, destination: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .rename(
-                &source,
-                &destination,
-                true,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            rename(&source, &destination, true)
+        ))
     }
 
     /// Creates one same-workspace hard link.
     #[napi(js_name = hardLink)]
     pub async fn hard_link(&self, source: String, destination: String) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .hard_link(
-                &source,
-                &destination,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            hard_link(&source, &destination)
+        ))
     }
 
     /// Replaces one sparse regular-file range.
     #[napi(js_name = writeRange)]
     pub async fn write_range(&self, path: String, offset: BigInt, bytes: Buffer) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .write_range(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            write_range(
                 &path,
                 bigint_u64(&offset, "offset")?,
-                bytes::Bytes::from(bytes.to_vec()),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
+                bytes::Bytes::from(bytes.to_vec())
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))
+        ))
     }
 
     /// Changes one regular file's logical length.
     #[napi]
     pub async fn resize(&self, path: String, logical_bytes: BigInt) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .resize(&path, bigint_u64(&logical_bytes, "logicalBytes")?)
-            .await
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            resize(&path, bigint_u64(&logical_bytes, "logicalBytes")?)
+        ))
     }
 
     /// Punches a hole or installs allocated zeros over one exact range.
@@ -176,20 +110,18 @@ impl NativeWorkspaceTransaction {
         allocated: bool,
         extend: bool,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .zero_range(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            zero_range(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
+                    length: bigint_u64(&length, "length")?
                 },
                 allocated,
                 extend,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Preallocates one sparse range without replacing content.
@@ -201,19 +133,17 @@ impl NativeWorkspaceTransaction {
         length: BigInt,
         keep_size: bool,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .preallocate(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            preallocate(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
+                    length: bigint_u64(&length, "length")?
                 },
                 keep_size,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Clones one immutable range without reading file bytes.
@@ -226,18 +156,16 @@ impl NativeWorkspaceTransaction {
         destination_offset: BigInt,
         length: BigInt,
     ) -> Result<()> {
-        self.inner
-            .lock()
-            .await
-            .clone_range(
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            clone_range(
                 &source,
                 bigint_u64(&source_offset, "sourceOffset")?,
                 &destination,
                 bigint_u64(&destination_offset, "destinationOffset")?,
                 bigint_u64(&length, "length")?,
             )
-            .await
-            .map_err(napi_error)
+        ))
     }
 
     /// Publishes the complete candidate through one idempotent head CAS.
@@ -255,14 +183,7 @@ impl NativeWorkspaceTransaction {
                 permit,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
-                        acyclic_fs::OperationReceipt {
-                            value: (),
-                            work: acyclic_fs::WorkCounters::default(),
-                        },
-                    )
-                },
+                publication_ready::<acyclic_fs::WorkspaceError>,
             )
             .await
             .map(|receipt| workspace_commit(receipt.value))
@@ -276,14 +197,11 @@ impl NativeWorkspaceTransaction {
         maximum_conflicts: NapiU32,
     ) -> Result<NativeTransactionRebaseResult> {
         let maximum_conflicts = maximum_conflicts.into_inner();
-
-        self.inner
-            .lock()
-            .await
-            .rebase(maximum_conflicts)
-            .await
-            .map(native_transaction_rebase)
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner.lock().await,
+            rebase(maximum_conflicts)
+        ))
+        .map(native_transaction_rebase)
     }
 }
 
@@ -400,26 +318,15 @@ pub(in crate::bindings) fn native_transaction_conflict(
 pub(in crate::bindings) fn workspace_commit(
     outcome: TransactionCommit<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceCommit {
-    match outcome {
-        TransactionCommit::Committed(generation) => NativeWorkspaceCommit {
-            status: "committed".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::AlreadyCommitted(generation) => NativeWorkspaceCommit {
-            status: "already-committed".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::Conflict { actual } => NativeWorkspaceCommit {
-            status: "conflict".to_owned(),
-            generation_id: Some(Buffer::from(actual.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::Fenced => NativeWorkspaceCommit {
-            status: "fenced".to_owned(),
-            generation_id: None,
-        },
-        TransactionCommit::IdempotencyConflict => NativeWorkspaceCommit {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-        },
+    let (status, generation) = match outcome {
+        TransactionCommit::Committed(value) => ("committed", Some(value)),
+        TransactionCommit::AlreadyCommitted(value) => ("already-committed", Some(value)),
+        TransactionCommit::Conflict { actual } => ("conflict", Some(actual)),
+        TransactionCommit::Fenced => ("fenced", None),
+        TransactionCommit::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeWorkspaceCommit {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
     }
 }

@@ -38,8 +38,6 @@ mod view_gate;
 pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
-pub(crate) use view_ledger::ViewObserverAdmissions;
-pub(crate) use view_ledger::{ViewLedgerAdmission, ViewLedgerAdmissions};
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -166,7 +164,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
-        MountSourceError::NativeWorkspaceCause(cause) => native_workspace_errno(&cause.source),
+        MountSourceError::NativeWorkspaceCause(cause, _) => native_workspace_errno(cause),
         MountSourceError::NativeCallbackDenied { .. } => libc::EACCES,
         MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
         MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
@@ -180,7 +178,6 @@ fn errno(error: MountSourceError) -> i32 {
         | MountSourceError::MutationFinalization { .. }
         | MountSourceError::OriginalSnapshotUnavailable
         | MountSourceError::Indeterminate
-        | MountSourceError::SelectedPublication(_)
         | MountSourceError::PublicationRetryLimit
         | MountSourceError::NativeRecordJson(_, _)
         | MountSourceError::NativeRecordLockTimeout(_, _)

@@ -1,439 +1,65 @@
-/// Authenticated remote provider.
-#[derive(Clone)]
-pub struct Client {
-    channels: Arc<[Channel]>,
-    authorization: MetadataValue<Ascii>,
-    preferred: Arc<AtomicUsize>,
-}
+use super::*;
+
+const DELIVERY_ACK_TIMEOUT: Duration = Duration::from_millis(500);
+const DELIVERY_ACK_QUEUE: usize = 16;
 
 impl Client {
-    /// Connects to a TLS endpoint with an account-bound bearer credential.
-    pub async fn connect(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints([endpoint], bearer_token).await
+    /// Disables automatic transport receipts for translating clients.
+    #[must_use]
+    pub fn without_delivery_acknowledgements(mut self) -> Self {
+        self.acknowledge_deliveries = false;
+        self
     }
 
-    /// Connects to independently reachable TLS endpoints with transparent failover.
-    pub async fn connect_endpoints<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, None)
-    }
-
-    /// Connects to a TLS endpoint augmented by one caller-pinned private CA certificate.
-    pub async fn connect_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints_with_ca_certificate(
-            [endpoint],
-            bearer_token,
-            certificate_pem.as_ref(),
+    /// Reports a hosted transport receipt.
+    pub async fn acknowledge_delivery(
+        &self,
+        delivery_token: impl AsRef<[u8]>,
+    ) -> Result<(), StreamError> {
+        let delivery_token = delivery_token.as_ref();
+        if delivery_token.len() != 32 {
+            return Err(StreamError::InvalidArgument);
+        }
+        let request = self.request(wire::AcknowledgeDeliveryRequest {
+            delivery_token: Bytes::copy_from_slice(delivery_token),
+        });
+        tokio::time::timeout(
+            DELIVERY_ACK_TIMEOUT,
+            self.service().acknowledge_delivery(request),
         )
         .await
+        .map_err(|_| StreamError::Unavailable)?
+        .map_err(|error| match error.code() {
+            Code::Unimplemented => StreamError::Unsupported,
+            _ => status(&error),
+        })?;
+        Ok(())
     }
 
-    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel
-    pub async fn connect_eager(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, None).await
-    }
-
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
-    pub async fn connect_eager_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
-            .await
-    }
-
-    /// Connects to independently reachable endpoints using one caller-pinned private CA.
-    pub async fn connect_endpoints_with_ca_certificate<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem.as_ref()))
-    }
-
-    fn connect_with_tls<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let channels = Self::channels_with_tls(
-            endpoints,
-            certificate_pem,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
-        Self::from_channels(channels, bearer_token)
-    }
-
-    async fn connect_eager_endpoints<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let authorization = Self::authorization(bearer_token.as_ref())?;
-        let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let endpoints = Self::endpoints_with_tls(
-            endpoints,
-            certificate_pem,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-        )?;
-        let mut channels = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            channels.push(endpoint.connect().await?);
-        }
-        Ok(Self::from_authorization(channels.into(), authorization))
-    }
-
-    fn channels_with_tls<I, S>(
-        endpoints: I,
-        certificate_pem: Option<&[u8]>,
-        connect_timeout: std::time::Duration,
-    ) -> Result<Arc<[Channel]>, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Ok(
-            Self::endpoints_with_tls(endpoints, certificate_pem, connect_timeout)?
-                .into_iter()
-                .map(|endpoint| endpoint.connect_lazy())
-                .collect::<Vec<_>>()
-                .into(),
-        )
-    }
-
-    fn endpoints_with_tls<I, S>(
-        endpoints: I,
-        certificate_pem: Option<&[u8]>,
-        connect_timeout: std::time::Duration,
-    ) -> Result<Vec<Endpoint>, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut configured = Vec::new();
-        for endpoint in endpoints.into_iter().take(MAX_ENDPOINTS + 1) {
-            if configured.len() == MAX_ENDPOINTS {
-                return Err(ConnectError::EndpointLimit);
-            }
-            let endpoint = endpoint.as_ref();
-            if endpoint.len() > MAX_ENDPOINT_URI_BYTES {
-                return Err(ConnectError::EndpointLimit);
-            }
-            // `Endpoint::new` enables the compiled WebPKI roots for HTTPS. The lower-level
-            let mut endpoint = Endpoint::new(endpoint.to_owned())?.connect_timeout(connect_timeout);
-            if endpoint.uri().scheme_str() != Some("https") {
-                return Err(ConnectError::InsecureEndpoint);
-            }
-            if let Some(certificate_pem) = certificate_pem {
-                endpoint = endpoint.tls_config(
-                    ClientTlsConfig::new()
-                        .with_enabled_roots()
-                        .ca_certificate(Certificate::from_pem(certificate_pem)),
-                )?;
-            }
-            configured.push(endpoint);
-        }
-        if configured.is_empty() {
-            return Err(ConnectError::NoEndpoints);
-        }
-        Ok(configured)
-    }
-
-    fn from_channels(
-        channels: Arc<[Channel]>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        let authorization = Self::authorization(bearer_token.as_ref())?;
-        Ok(Self::from_authorization(channels, authorization))
-    }
-
-    fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-        if bearer_token.trim().is_empty()
-            || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
-            || bearer_token
-                .bytes()
-                .any(|byte| matches!(byte, b'\r' | b'\n'))
-        {
-            return Err(ConnectError::InvalidCredential);
-        }
-        let mut authorization = format!("Bearer {bearer_token}")
-            .parse::<MetadataValue<Ascii>>()
-            .map_err(|_| ConnectError::InvalidCredential)?;
-        authorization.set_sensitive(true);
-        Ok(authorization)
-    }
-
-    fn from_authorization(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
-        Self {
-            channels,
-            authorization,
-            preferred: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "callers derive index via `(start + offset) % channels.len()` against this same slice, so it is always in-bounds"
-    )]
-    fn service(
-        channels: &[Channel],
-        index: usize,
-    ) -> wire::stream_service_client::StreamServiceClient<Channel> {
-        wire::stream_service_client::StreamServiceClient::new(channels[index].clone())
-    }
-
-    fn request<T>(&self, body: T) -> Request<T> {
-        let mut request = Request::new(body);
-        request
-            .metadata_mut()
-            .insert("authorization", self.authorization.clone());
-        request
-    }
-
-    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<RpcResponse<U>, StreamError>
-    where
-        T: Clone,
-        F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
-            Request<T>,
-        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
-    {
-        self.unary_on(
-            &self.channels,
-            &self.preferred,
-            body,
-            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-            &mut call,
-        )
-        .await
-        .map(|(body, _, completion)| RpcResponse { body, completion })
-    }
-
-    async fn follow_unary<T, U, F>(
-        &self,
-        body: T,
-        mut call: F,
-    ) -> Result<(U, usize, Completion), StreamError>
-    where
-        T: Clone,
-        F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
-            Request<T>,
-        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
-    {
-        self.unary_on(
-            &self.channels,
-            &self.preferred,
-            body,
-            FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT,
-            &mut call,
-        )
-        .await
-    }
-
-    async fn unary_on<T, U, F>(
-        &self,
-        channels: &[Channel],
-        preferred: &AtomicUsize,
-        body: T,
-        attempt_timeout: std::time::Duration,
-        call: &mut F,
-    ) -> Result<(U, usize, Completion), StreamError>
-    where
-        T: Clone,
-        F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
-            Request<T>,
-        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
-    {
-        let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
-        let mut last = None;
-        let mut attempt = 0_u64;
-        loop {
-            let start = preferred.load(Ordering::Relaxed) % channels.len();
-            for offset in 0..channels.len() {
-                let index = (start + offset) % channels.len();
-                let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
-                attempt += 1;
-                // One span describes one physical RPC attempt; the ordinal is not a logical retry total.
-                let span = tracing::info_span!(
-                    "acyclic.stream.grpc.call",
-                    rpc = std::any::type_name::<T>().rsplit("::").next(),
-                    attempt,
-                    rpc.code = Empty,
-                    outcome = Empty,
-                    error.kind = Empty
-                );
-                let mut completion = Completion::new(span);
-                let result = completion
-                    .span
-                    .scope(tokio::time::timeout_at(
-                        attempt_deadline,
-                        call(Self::service(channels, index), self.request(body.clone())),
-                    ))
-                    .await;
-                let error = match result {
-                    Ok(Ok(response)) => {
-                        preferred.store(index, Ordering::Relaxed);
-                        return Ok((response.into_inner(), index, completion));
-                    }
-                    Ok(Err(error)) => error,
-                    Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
-                };
-                completion.status(&error);
-                if !retryable(&error) {
-                    return Err(status(&error));
-                }
-                completion.span.in_scope(|| {
-                    tracing::warn!(
-                        attempt,
-                        rpc.code = error.code() as u64,
-                        "stream rpc retried"
-                    );
-                });
-                last = Some(error);
-            }
-            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
-                .await;
-            if tokio::time::Instant::now() >= deadline {
-                return Err(last.as_ref().map_or(StreamError::Unavailable, status));
-            }
-        }
-    }
-
-    async fn records(
-        &self,
-        path: StreamPath,
-        from: u64,
-        limit: Option<u32>,
-    ) -> Result<RecordStream, StreamError> {
+    fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
         let span = if limit.is_some() {
-            tracing::info_span!(
-                "acyclic.stream.grpc.read",
-                rev = from,
-                items = limit,
-                outcome = Empty,
-                error.kind = Empty
-            )
+            tracing::info_span!("acyclic.stream.grpc.read", rev = from, items = limit, outcome = Empty, error.kind = Empty)
         } else {
-            tracing::info_span!(
-                "acyclic.stream.grpc.follow",
-                rev = from,
-                outcome = Empty,
-                error.kind = Empty
-            )
+            tracing::info_span!("acyclic.stream.grpc.follow", rev = from, outcome = Empty, error.kind = Empty)
         };
         let completion = Completion::new(span);
         let context = completion.span.clone();
-        Ok(context
-            .scope(stream::unfold(
-                RecordCursor {
-                    client: self.clone(),
-                    path,
-                    next: from,
-                    remaining: limit,
-                    active: None,
-                    buffered: VecDeque::new(),
-                    completion,
-                },
-                |mut cursor| async move {
-                    loop {
-                        if cursor.remaining == Some(0) {
-                            cursor.completion.ok();
-                            return None;
-                        }
-                        if let Some(record) = cursor.buffered.pop_front() {
-                            if record.sequence == cursor.next {
-                                cursor.next = cursor.next.saturating_add(1);
-                                if let Some(remaining) = &mut cursor.remaining {
-                                    *remaining = remaining.saturating_sub(1);
-                                    if *remaining == 0 {
-                                        cursor.completion.ok();
-                                    }
-                                }
-                                return Some((Ok(record), cursor));
-                            }
-                            if record.sequence < cursor.next {
-                                continue;
-                            }
-                            if let Some(active) = cursor.active.as_mut() {
-                                active.completion.invalid_response();
-                            }
-                            cursor.completion.invalid_response();
-                            return cursor.failure(StreamError::Unavailable);
-                        }
-                        if cursor.active.is_none() {
-                            match cursor.completion.span.scope(cursor.open()).await {
-                                Ok(active) => cursor.active = Some(active),
-                                Err(error) => return cursor.failure(error),
-                            }
-                        }
-                        let Some(active) = cursor.active.as_mut() else {
-                            return cursor.failure(StreamError::Unavailable);
-                        };
-                        let active_endpoint = active.endpoint;
-                        let response = active.records.next().await;
-                        match &response {
-                            Some(Err(error)) => active.completion.status(error),
-                            None => active.completion.ok(),
-                            _ => {}
-                        }
-                        match response {
-                            Some(Ok(response)) => match read_response(response) {
-                                Ok(records) => cursor.buffered = records,
-                                Err(error) => {
-                                    active.completion.invalid_response();
-                                    cursor.completion.invalid_response();
-                                    return cursor.failure(error);
-                                }
-                            },
-                            Some(Err(error)) if !retryable(&error) => {
-                                return cursor.failure(status(&error));
-                            }
-                            None if cursor.remaining.is_some() => {
-                                cursor.completion.ok();
-                                return None;
-                            }
-                            Some(Err(_)) | None => {
-                                cursor.advance_follow(active_endpoint);
-                                tokio::time::sleep(RETRY_DELAY).await;
-                                cursor.active = None;
-                            }
-                        }
-                    }
-                },
-            ))
-            .boxed())
+        let cursor = RecordCursor {
+            client: self.clone(),
+            path,
+            next: from,
+            remaining: limit,
+            active: None,
+            buffered: Vec::new().into_iter(),
+            completion,
+            acknowledgements: None,
+        };
+        context
+            .scope(stream::unfold(cursor, |mut cursor| async move {
+                let item = cursor.next().await?;
+                Some((item, cursor))
+            }))
+            .boxed()
     }
 }
 
@@ -443,86 +69,73 @@ impl StreamProvider for Client {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        let body = wire::InspectIdempotencyRequest {
+            idempotency_key: Bytes::copy_from_slice(idempotency_key.as_bytes()),
+        };
         let response = self
-            .unary(
-                wire::InspectIdempotencyRequest {
-                    idempotency_key: bytes::Bytes::copy_from_slice(idempotency_key.as_bytes()),
-                },
-                |mut service, request| {
-                    Box::pin(async move { service.inspect_idempotency(request).await })
-                },
-            )
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.inspect_idempotency(request).await })
+            })
             .await?;
-        response.decode(|response| bind_observation(&idempotency_key, response.observation))
+        decode_response(response, |response| {
+            let observation = response.observation.map(observation_from_wire).transpose()?;
+            // A response for another retry identity is not this request's outcome.
+            if observation
+                .as_ref()
+                .is_some_and(|observation| observation.idempotency_key != idempotency_key)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(observation)
+        })
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.unary(
-            wire::TailRequest {
-                path: path.to_string(),
-            },
-            |mut service, request| Box::pin(async move { service.tail(request).await }),
-        )
-        .await?
-        .decode(|response| Ok(response.tail))
+        let body = wire::TailRequest {
+            path: path.to_string(),
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.tail(request).await })
+            })
+            .await?;
+        decode_response(response, |response| Ok(response.tail))
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        let response = self
-            .unary(
-                wire::TailRequest {
-                    path: path.to_string(),
-                },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        response.decode(|response| {
-            Ok(StreamBounds {
-                tail: response.tail,
-            })
+        Ok(StreamBounds {
+            tail: self.tail(path).await?,
         })
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let idempotency_key = request.idempotency_key.map_or_else(
-            || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-            |key| Bytes::copy_from_slice(key.as_bytes()),
-        );
+        let body = wire::AppendRequest {
+            path: request.path.to_string(),
+            records: request.records.into_iter().map(Bytes::from_owner).collect(),
+            if_tail: request.if_tail,
+            idempotency_key: Some(retry_identity(request.idempotency_key)),
+        };
         let response = self
-            .unary(
-                wire::AppendRequest {
-                    path: request.path.to_string(),
-                    records: request
-                        .records
-                        .iter()
-                        .map(|record| bytes::Bytes::copy_from_slice(record))
-                        .collect(),
-                    if_tail: request.if_tail,
-                    idempotency_key: Some(idempotency_key),
-                },
-                |mut service, request| Box::pin(async move { service.append(request).await }),
-            )
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.append(request).await })
+            })
             .await?;
-        response.decode(append_outcome_from_wire)
+        decode_response(response, append_outcome_from_wire)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let idempotency_key = request.idempotency_key.map_or_else(
-            || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-            |key| Bytes::copy_from_slice(key.as_bytes()),
-        );
-        let receipt = self
-            .unary(
-                wire::ForkRequest {
-                    source: request.source.to_string(),
-                    destination: request.destination.to_string(),
-                    at_tail: request.at_tail,
-                    idempotency_key: Some(idempotency_key),
-                },
-                |mut service, request| Box::pin(async move { service.fork(request).await }),
-            )
+        let body = wire::ForkRequest {
+            source: request.source.to_string(),
+            destination: request.destination.to_string(),
+            at_tail: request.at_tail,
+            idempotency_key: Some(retry_identity(request.idempotency_key)),
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.fork(request).await })
+            })
             .await?;
-        receipt.decode(|receipt| {
+        decode_response(response, |receipt| {
             Ok(ForkReceipt {
                 source: path(receipt.source)?,
                 destination: path(receipt.destination)?,
@@ -534,12 +147,11 @@ impl StreamProvider for Client {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.records(request.path, request.from, Some(request.limit))
-            .await
+        Ok(self.records(request.path, request.from, Some(request.limit)))
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.records(path, from, None).await
+        Ok(self.records(path, from, None))
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -547,79 +159,53 @@ impl StreamProvider for Client {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         };
-        let mut last = None;
-        for _ in 0..self.channels.len() {
-            let response = self
-                .unary(body.clone(), |mut service, request| {
-                    Box::pin(async move { service.children(request).await })
-                })
-                .await?;
-            let RpcResponse {
-                body: response,
-                mut completion,
-            } = response;
-            let mut response = completion.span.scope(response);
-            let result = async {
-                let mut children = Vec::new();
-                while let Some(item) = response.next().await {
-                    let item = item.map_err(|error| {
-                        completion.status(&error);
-                        status(&error)
-                    })?;
-                    let child = item
-                        .child
-                        .ok_or(StreamError::Unavailable)
-                        .and_then(|child| {
-                            Ok(Child {
-                                path: path(child.path)?,
-                            })
-                        })
-                        .inspect_err(|_| completion.invalid_response())?;
-                    children.push(child);
-                }
-                completion.ok();
-                Ok(children)
-            }
-            .await;
-            match result {
-                Ok(children) => return Ok(stream::iter(children.into_iter().map(Ok)).boxed()),
-                Err(error) if error != StreamError::Unavailable => return Err(error),
-                Err(error) => last = Some(error),
-            }
+        let (response, mut completion) = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.children(request).await })
+            })
+            .await?;
+        let mut response = completion.span.scope(response);
+        let mut children = Vec::new();
+        while let Some(item) = response.next().await {
+            let item = item.map_err(|error| {
+                completion.status(&error);
+                status(&error)
+            })?;
+            let child = item
+                .child
+                .ok_or(StreamError::Unavailable)
+                .and_then(|child| Ok(Child { path: path(child.path)? }))
+                .inspect_err(|_| completion.invalid_response())?;
+            children.push(child);
         }
-        Err(last.unwrap_or(StreamError::Unavailable))
+        completion.ok();
+        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
     }
 
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
+        let body = wire::ChildrenPageRequest {
+            parent: request.parent.map(|path| path.to_string()),
+            after: request.after.map(|path| path.to_string()),
+            hierarchy_version: request
+                .hierarchy_version
+                .map(|version| Bytes::copy_from_slice(version.as_bytes())),
+            limit: request.limit,
+        };
         let response = self
-            .unary(
-                wire::ChildrenPageRequest {
-                    parent: request.parent.map(|path| path.to_string()),
-                    after: request.after.map(|path| path.to_string()),
-                    hierarchy_version: request
-                        .hierarchy_version
-                        .map(|version| bytes::Bytes::copy_from_slice(version.as_bytes())),
-                    limit: request.limit,
-                },
-                |mut service, request| {
-                    Box::pin(async move { service.children_page(request).await })
-                },
-            )
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.children_page(request).await })
+            })
             .await?;
-        response.decode(|response| {
+        decode_response(response, |response| {
             Ok(ChildrenPage {
                 hierarchy_version: commit_id(&response.hierarchy_version)?,
                 children: response
                     .children
                     .into_iter()
-                    .map(|child| {
-                        Ok(Child {
-                            path: path(child.path)?,
-                        })
-                    })
+                    .map(|child| Ok(Child { path: path(child.path)? }))
                     .collect::<Result<_, StreamError>>()?,
                 next_after: response.next_after.map(path).transpose()?,
             })
@@ -627,20 +213,7 @@ impl StreamProvider for Client {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let response = self
-            .unary(
-                wire::CommitRequest {
-                    conditions: request.conditions.into_iter().map(condition_wire).collect(),
-                    mutations: request.mutations.into_iter().map(mutation_wire).collect(),
-                    idempotency_key: bytes::Bytes::copy_from_slice(
-                        request.idempotency_key.as_bytes(),
-                    ),
-                    deadline_unix_millis: None,
-                },
-                |mut service, request| Box::pin(async move { service.commit(request).await }),
-            )
-            .await?;
-        response.decode(commit_outcome_from_wire)
+        self.commit_with_deadline(request, None).await
     }
 
     async fn commit_before(
@@ -648,31 +221,224 @@ impl StreamProvider for Client {
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        let response = self
-            .unary(
-                wire::CommitRequest {
-                    conditions: request.conditions.into_iter().map(condition_wire).collect(),
-                    mutations: request.mutations.into_iter().map(mutation_wire).collect(),
-                    idempotency_key: bytes::Bytes::copy_from_slice(
-                        request.idempotency_key.as_bytes(),
-                    ),
-                    deadline_unix_millis: Some(deadline_unix_millis),
-                },
-                |mut service, request| Box::pin(async move { service.commit(request).await }),
-            )
-            .await?;
-        response.decode(commit_outcome_from_wire)
+        self.commit_with_deadline(request, Some(deadline_unix_millis))
+            .await
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        let envelope = self
-            .unary(
-                wire::ReadCommitRequest {
-                    commit_id: bytes::Bytes::copy_from_slice(commit_id.as_bytes()),
-                },
-                |mut service, request| Box::pin(async move { service.read_commit(request).await }),
-            )
+        let body = wire::ReadCommitRequest {
+            commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.read_commit(request).await })
+            })
             .await?;
-        envelope.decode(envelope_from_wire)
+        decode_response(response, envelope_from_wire)
+    }
+}
+
+impl Client {
+    async fn commit_with_deadline(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<CommitOutcome, StreamError> {
+        let body = wire::CommitRequest {
+            conditions: request.conditions.into_iter().map(condition_wire).collect(),
+            mutations: request.mutations.into_iter().map(mutation_wire).collect(),
+            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+            deadline_unix_millis,
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.commit(request).await })
+            })
+            .await?;
+        decode_response(response, commit_outcome_from_wire)
+    }
+}
+
+/// A fixed retry identity keeps transport retries of one append or fork exactly-once.
+fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
+    key.map_or_else(
+        || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
+        |key| Bytes::copy_from_slice(key.as_bytes()),
+    )
+}
+
+/// One logical read or follow; follow reopens after transport loss or a clean EOF.
+struct RecordCursor {
+    client: Client,
+    path: StreamPath,
+    next: u64,
+    remaining: Option<u32>,
+    active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, Completion)>,
+    buffered: std::vec::IntoIter<Record>,
+    completion: Completion,
+    acknowledgements: Option<DeliveryAcknowledgements>,
+}
+
+impl RecordCursor {
+    async fn next(&mut self) -> Option<Result<Record, StreamError>> {
+        loop {
+            if self.remaining == Some(0) {
+                self.completion.ok();
+                return None;
+            }
+            if let Some(record) = self.buffered.next() {
+                if record.sequence < self.next {
+                    continue;
+                }
+                if record.sequence > self.next {
+                    return self.invalid(StreamError::Unavailable);
+                }
+                self.next = self.next.saturating_add(1);
+                if let Some(remaining) = &mut self.remaining {
+                    *remaining -= 1;
+                    if *remaining == 0 {
+                        self.completion.ok();
+                    }
+                }
+                return Some(Ok(record));
+            }
+            if self.active.is_none() {
+                match self.completion.span.scope(self.open()).await {
+                    Ok(active) => self.active = Some(active),
+                    Err(error) => return self.fail(error),
+                }
+            }
+            let (body, rpc) = self.active.as_mut()?;
+            let response = body.next().await;
+            match &response {
+                Some(Err(error)) => rpc.status(error),
+                None => rpc.ok(),
+                Some(Ok(_)) => {}
+            }
+            match response {
+                Some(Ok(mut response)) => {
+                    let token = response.delivery_token.take();
+                    let records = match read_response(response, self.next, self.remaining) {
+                        Ok(records) => records,
+                        Err(error) => return self.invalid(error),
+                    };
+                    if let Some(token) = token {
+                        if token.len() != 32 {
+                            return self.invalid(StreamError::Unavailable);
+                        }
+                        if self.client.acknowledge_deliveries && records.len() != 0 {
+                            let client = &self.client;
+                            let _ = self
+                                .acknowledgements
+                                .get_or_insert_with(|| DeliveryAcknowledgements::new(client.clone()))
+                                .queue
+                                .try_send(token);
+                        }
+                    }
+                    self.buffered = records;
+                }
+                Some(Err(error)) if !retryable(&error) => return self.fail(status(&error)),
+                None if self.remaining.is_some() => {
+                    self.completion.ok();
+                    return None;
+                }
+                Some(Err(_)) | None => {
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    self.active = None;
+                }
+            }
+        }
+    }
+
+    fn invalid(&mut self, error: StreamError) -> Option<Result<Record, StreamError>> {
+        if let Some((_, rpc)) = &mut self.active {
+            rpc.invalid_response();
+        }
+        self.completion.invalid_response();
+        self.fail(error)
+    }
+
+    /// Delivered errors terminate the logical cursor.
+    fn fail(&mut self, error: StreamError) -> Option<Result<Record, StreamError>> {
+        self.completion.finish(Some(error.code()), None);
+        self.active = None;
+        self.buffered = Vec::new().into_iter();
+        self.acknowledgements = None;
+        self.remaining = Some(0);
+        Some(Err(error))
+    }
+
+    async fn open(
+        &self,
+    ) -> Result<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, Completion), StreamError> {
+        let path = self.path.to_string();
+        let (body, completion) = match self.remaining {
+            Some(limit) => {
+                let body = wire::ReadRequest { path, from: self.next, limit };
+                self.client
+                    .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                        Box::pin(async move { service.read(request).await })
+                    })
+                    .await?
+            }
+            None => {
+                let body = wire::FollowRequest { path, from: self.next };
+                self.client
+                    .unary(FOLLOW_ATTEMPT_TIMEOUT, body, |mut service, request| {
+                        Box::pin(async move { service.follow(request).await })
+                    })
+                    .await?
+            }
+        };
+        Ok((completion.span.scope(body), completion))
+    }
+}
+
+/// Decodes one frame, which must be contiguous, not skip ahead, and respect the read limit.
+fn read_response(
+    value: wire::ReadResponse,
+    next: u64,
+    remaining: Option<u32>,
+) -> Result<std::vec::IntoIter<Record>, StreamError> {
+    let records: Vec<Record> = read_response_records(value)?
+        .into_iter()
+        .map(record)
+        .collect::<Result<_, _>>()?;
+    let first = records.first().map_or(next, |record| record.sequence);
+    let contiguous = records
+        .iter()
+        .enumerate()
+        .all(|(offset, record)| Some(record.sequence) == first.checked_add(offset as u64));
+    let fresh = records.iter().filter(|record| record.sequence >= next).count();
+    if first > next
+        || !contiguous
+        || remaining.is_some_and(|remaining| fresh > remaining as usize)
+    {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(records.into_iter())
+}
+
+/// One bounded receipt worker per logical reader, including reconnects.
+struct DeliveryAcknowledgements {
+    queue: tokio::sync::mpsc::Sender<Bytes>,
+    worker: tokio::task::JoinHandle<()>,
+}
+
+impl DeliveryAcknowledgements {
+    fn new(client: Client) -> Self {
+        let (queue, mut pending) = tokio::sync::mpsc::channel::<Bytes>(DELIVERY_ACK_QUEUE);
+        let worker = tokio::spawn(async move {
+            while let Some(token) = pending.recv().await {
+                let _ = client.acknowledge_delivery(token).await;
+            }
+        });
+        Self { queue, worker }
+    }
+}
+
+impl Drop for DeliveryAcknowledgements {
+    fn drop(&mut self) {
+        self.worker.abort();
     }
 }

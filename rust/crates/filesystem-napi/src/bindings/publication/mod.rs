@@ -138,7 +138,7 @@ impl NativeCheckout {
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
                 |_| async {
-                    acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt {
+                    acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
                         value: (),
                         work: acyclic_fs::WorkCounters::UNCHARGED,
                     })
@@ -273,14 +273,7 @@ impl NativeCheckout {
 
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .rebase_head(
-                maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, rebase_head(maximum_conflicts,))?;
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
             RebaseDecision::Safe { generation } => (
                 "safe",
@@ -316,7 +309,7 @@ pub(in crate::bindings) fn commit_id(bytes: &[u8]) -> Result<GitCommitId> {
 }
 
 pub(in crate::bindings) fn encode_created_mutation(
-    receipt: &acyclic_fs::FsReceipt<FileId>,
+    receipt: &acyclic_fs::OperationReceipt<FileId>,
 ) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
@@ -334,11 +327,11 @@ pub(in crate::bindings) fn mutation_result(
 }
 
 pub(in crate::bindings) fn commit_result(
-    outcome: CheckoutCommitOutcome,
+    outcome: LivePublicationObservation,
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeCommitResult> {
     let (status, generation_id, epoch, sequence, fingerprint) = match outcome {
-        CheckoutCommitOutcome::Committed {
+        LivePublicationObservation::Committed {
             generation_id,
             head,
         } => (
@@ -348,7 +341,7 @@ pub(in crate::bindings) fn commit_result(
             Some(bigint(head.sequence.get())),
             None,
         ),
-        CheckoutCommitOutcome::AlreadyCommitted {
+        LivePublicationObservation::AlreadyCommitted {
             generation_id,
             head,
         } => (
@@ -358,17 +351,17 @@ pub(in crate::bindings) fn commit_result(
             Some(bigint(head.sequence.get())),
             None,
         ),
-        CheckoutCommitOutcome::Conflict { actual } => (
+        LivePublicationObservation::Conflict { actual } => (
             "conflict",
             None,
             Some(bigint(actual.epoch.get())),
             Some(bigint(actual.sequence.get())),
             None,
         ),
-        CheckoutCommitOutcome::Fenced { actual_epoch } => {
+        LivePublicationObservation::Fenced { actual_epoch } => {
             ("fenced", None, Some(bigint(actual_epoch.get())), None, None)
         }
-        CheckoutCommitOutcome::IdempotencyConflict {
+        LivePublicationObservation::IdempotencyConflict {
             committed_fingerprint,
         } => (
             "idempotency-conflict",
@@ -470,4 +463,14 @@ pub(in crate::bindings) fn live_mutation_result(
         committed_fingerprint: fingerprint,
         work_json: work_json(&work)?,
     })
+}
+
+/// No-work callback for publication.
+pub(in crate::bindings) fn publication_ready<E>(
+    _: acyclic_fs::WorkBudget,
+) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
+    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+        value: (),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+    }))
 }

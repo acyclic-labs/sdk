@@ -1,6 +1,9 @@
 use super::*;
 
-#[allow(clippy::too_many_lines, reason = "the argv compatibility matrix is intentionally exhaustive and centralized")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
+)]
 #[allow(
     clippy::cognitive_complexity,
     reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
@@ -32,7 +35,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             maximum: parse_log_maximum(args)?,
         }),
         "show" => Ok(GitCommand::Show {
-            object: optional_single_value(command, args)?.map(GitObjectName),
+            object: optional_single_value(command, args)?,
         }),
         "add" => {
             if args.is_empty() {
@@ -131,7 +134,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                     ));
                 }
                 return Ok(GitCommand::Restore {
-                    source: args.first().map(|source| GitObjectName(source.clone())),
+                    source: args.first().cloned(),
                     paths,
                 });
             }
@@ -161,7 +164,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                                     "restore requires an object after --source".to_owned(),
                                 )
                             })?;
-                        if source.replace(GitObjectName(value)).is_some() {
+                        if source.replace(value).is_some() {
                             return Err(GitCompatError::InvalidCommand(
                                 "restore accepts only one --source".to_owned(),
                             ));
@@ -215,7 +218,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
                 )),
             };
             Ok(GitCommand::Reset {
-                target: GitObjectName(target),
+                target: target,
                 mode,
             })
         }
@@ -234,7 +237,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             }
         }
         "cherry-pick" | "revert" => {
-            let object = GitObjectName(exactly_one(command, args)?);
+            let object = exactly_one(command, args)?;
             if command == "cherry-pick" {
                 Ok(GitCommand::CherryPick { object })
             } else {
@@ -263,7 +266,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             }
             Ok(GitCommand::Tag {
                 name: values.first().cloned(),
-                target: values.get(1).cloned().map(GitObjectName),
+                target: values.get(1).cloned(),
                 delete,
             })
         }
@@ -303,7 +306,7 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
             Ok(GitCommand::Clean { dry_run })
         }
         "archive" => Ok(GitCommand::Archive {
-            object: optional_single_value(command, args)?.map(GitObjectName),
+            object: optional_single_value(command, args)?,
         }),
         "apply" => Err(GitCompatError::Unsupported {
             command: command.to_owned(),
@@ -349,8 +352,8 @@ pub(super) fn parse_argv<E: std::error::Error + 'static>(
         }
         "merge-base" => match args {
             [left, right] => Ok(GitCommand::MergeBase {
-                left: GitObjectName(left.clone()),
-                right: GitObjectName(right.clone()),
+                left: left.clone(),
+                right: right.clone(),
             }),
             _ => Err(GitCompatError::InvalidCommand(
                 "merge-base requires exactly two objects".to_owned(),
@@ -403,7 +406,8 @@ pub(super) fn reject_shell_composition<E: std::error::Error + 'static>(
     }) {
         return Err(GitCompatError::Unsupported {
             command: token.clone(),
-            reason: "shell composition is outside the command-level compatibility façade".to_owned(),
+            reason: "shell composition is outside the command-level compatibility façade"
+                .to_owned(),
         });
     }
     Ok(())
@@ -414,8 +418,9 @@ pub(super) fn require_options<E: std::error::Error + 'static>(
     args: &[String],
     allowed: &[&str],
 ) -> Result<(), GitCompatError<E>> {
-    if let Some(argument) =
-        args.iter().find(|argument| argument.starts_with('-') && !allowed.contains(&argument.as_str()))
+    if let Some(argument) = args
+        .iter()
+        .find(|argument| argument.starts_with('-') && !allowed.contains(&argument.as_str()))
     {
         return unsupported_option(command, argument);
     }
@@ -429,7 +434,9 @@ pub(super) fn require_only_options<E: std::error::Error + 'static>(
 ) -> Result<(), GitCompatError<E>> {
     require_options(command, args, allowed)?;
     if args.iter().any(|argument| !argument.starts_with('-')) {
-        return Err(GitCompatError::InvalidCommand(format!("{command} does not accept positional arguments")));
+        return Err(GitCompatError::InvalidCommand(format!(
+            "{command} does not accept positional arguments"
+        )));
     }
     Ok(())
 }
@@ -452,7 +459,9 @@ pub(super) fn optional_single_value<E: std::error::Error + 'static>(
         [] => Ok(None),
         [value] if !value.starts_with('-') => Ok(Some(value.clone())),
         [option] => unsupported_option(command, option),
-        _ => Err(GitCompatError::InvalidCommand(format!("{command} accepts at most one argument"))),
+        _ => Err(GitCompatError::InvalidCommand(format!(
+            "{command} accepts at most one argument"
+        ))),
     }
 }
 
@@ -463,7 +472,9 @@ pub(super) fn exactly_one<E: std::error::Error + 'static>(
     match values {
         [value] if !value.starts_with('-') => Ok(value.clone()),
         [option] => unsupported_option(command, option),
-        _ => Err(GitCompatError::InvalidCommand(format!("{command} requires exactly one argument"))),
+        _ => Err(GitCompatError::InvalidCommand(format!(
+            "{command} requires exactly one argument"
+        ))),
     }
 }
 
@@ -474,27 +485,36 @@ pub(super) fn positional_with_options<E: std::error::Error + 'static>(
 ) -> Result<(bool, Vec<String>), GitCompatError<E>> {
     require_options(command, args, allowed)?;
     Ok((
-        args.iter().any(|argument| allowed.contains(&argument.as_str())),
-        args.iter().filter(|argument| !allowed.contains(&argument.as_str())).cloned().collect(),
+        args.iter()
+            .any(|argument| allowed.contains(&argument.as_str())),
+        args.iter()
+            .filter(|argument| !allowed.contains(&argument.as_str()))
+            .cloned()
+            .collect(),
     ))
 }
 
 pub(super) fn split_long_option(argument: &str) -> (&str, Option<&str>) {
-    argument.split_once('=').map_or((argument, None), |(name, value)| (name, Some(value)))
+    argument
+        .split_once('=')
+        .map_or((argument, None), |(name, value)| (name, Some(value)))
 }
 
-pub(super) fn parse_log_maximum<E: std::error::Error + 'static>(args: &[String]) -> Result<u32, GitCompatError<E>> {
+pub(super) fn parse_log_maximum<E: std::error::Error + 'static>(
+    args: &[String],
+) -> Result<u32, GitCompatError<E>> {
     if args.is_empty() {
         return Ok(100);
     }
     let value = match args {
         [option, value] if option == "-n" || option == "--max-count" => value.as_str(),
-        [option] if option.starts_with("--max-count=") => {
-            option.split_once('=').map(|(_, value)| value).unwrap_or_default()
-        }
-        [option] if option.len() > 1 => {
-            option.strip_prefix('-').ok_or_else(|| GitCompatError::InvalidCommand("invalid log count".to_owned()))?
-        }
+        [option] if option.starts_with("--max-count=") => option
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or_default(),
+        [option] if option.len() > 1 => option
+            .strip_prefix('-')
+            .ok_or_else(|| GitCompatError::InvalidCommand("invalid log count".to_owned()))?,
         [option] => return unsupported_option("log", option),
         _ => {
             return Err(GitCompatError::InvalidCommand(
@@ -502,7 +522,7 @@ pub(super) fn parse_log_maximum<E: std::error::Error + 'static>(args: &[String])
             ));
         }
     };
-    value
-        .parse::<u32>()
-        .map_err(|_| GitCompatError::InvalidCommand("log count must be an unsigned 32-bit integer".to_owned()))
+    value.parse::<u32>().map_err(|_| {
+        GitCompatError::InvalidCommand("log count must be an unsigned 32-bit integer".to_owned())
+    })
 }

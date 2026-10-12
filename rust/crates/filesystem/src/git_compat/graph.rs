@@ -14,7 +14,13 @@ pub(super) fn nearest_common_ancestor(
             }
             result.insert(commit, distance);
             if let Some(record) = state.commits.get(&commit) {
-                pending.extend(record.parents.iter().copied().map(|parent| (parent, distance.saturating_add(1))));
+                pending.extend(
+                    record
+                        .parents
+                        .iter()
+                        .copied()
+                        .map(|parent| (parent, distance.saturating_add(1))),
+                );
             }
         }
         result
@@ -25,32 +31,35 @@ pub(super) fn nearest_common_ancestor(
     left_distances
         .iter()
         .filter_map(|(commit, left_distance)| {
-            right_distances.get(commit).map(|right_distance| (*commit, left_distance + right_distance, *left_distance))
+            right_distances
+                .get(commit)
+                .map(|right_distance| (*commit, left_distance + right_distance, *left_distance))
         })
         .min_by_key(|(commit, total, left_distance)| (*total, *left_distance, *commit))
         .map(|(commit, _, _)| commit)
 }
 
-pub(super) fn resolve_object(
+pub(super) fn resolve_object<E: std::error::Error + 'static>(
     state: &GitCompatState,
-    object: Option<&GitObjectName>,
-) -> Result<GitCommitId, GitCompatStateError> {
-    let Some(object) = object else {
-        return visible_head(state).ok_or(GitCompatStateError::UnbornHead);
-    };
-    if object.0 == "HEAD" {
-        return visible_head(state).ok_or(GitCompatStateError::UnbornHead);
+    object: Option<&str>,
+) -> Result<GitCommitId, GitCompatError<E>> {
+    let object = object.unwrap_or("HEAD");
+    if object == "HEAD" {
+        return visible_head(state).ok_or(GitCompatError::UnbornHead);
     }
-    if let Some(branch) = state.branches.get(&object.0) {
-        return branch.head.ok_or(GitCompatStateError::UnbornHead);
+    if let Some(branch) = state.branches.get(object) {
+        return branch.head.ok_or(GitCompatError::UnbornHead);
     }
-    if let Some(id) = state.tags.get(&object.0) {
+    if let Some(id) = state.tags.get(object) {
         return Ok(*id);
     }
-    let matching: Vec<_> = state.commits.keys().filter(|id| id.to_hex().starts_with(&object.0)).copied().collect();
-    match matching.as_slice() {
-        [id] => Ok(*id),
-        _ => Err(GitCompatStateError::Unknown(object.0.clone())),
+    let mut matching = state
+        .commits
+        .keys()
+        .filter(|id| id.to_hex().starts_with(object));
+    match (matching.next(), matching.next()) {
+        (Some(id), None) => Ok(*id),
+        _ => Err(GitCompatError::UnknownObject(object.to_owned())),
     }
 }
 
@@ -62,28 +71,40 @@ pub(super) fn visible_head(state: &GitCompatState) -> Option<GitCommitId> {
         .or_else(|| state.current().ok().and_then(|branch| branch.head))
 }
 
-pub(super) fn first_parent_range(
+pub(super) fn first_parent_range<E: std::error::Error + 'static>(
     state: &GitCompatState,
     bad: GitCommitId,
     good: GitCommitId,
-) -> Result<Vec<GitCommitId>, GitCompatStateError> {
+) -> Result<Vec<GitCommitId>, GitCompatError<E>> {
     let mut range = Vec::new();
     let mut next = Some(bad);
     let mut seen = BTreeSet::new();
     while let Some(commit) = next {
         if !seen.insert(commit) {
-            return Err(GitCompatStateError::Invalid);
+            return Err(GitCompatError::InvalidState);
         }
         range.push(commit);
         if commit == good {
             return Ok(range);
         }
-        next = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?.parents.first().copied();
+        next = state
+            .commits
+            .get(&commit)
+            .ok_or(GitCompatError::InvalidState)?
+            .parents
+            .first()
+            .copied();
     }
-    Err(GitCompatStateError::Bisect("the good commit is not a first-parent ancestor of the bad commit".to_owned()))
+    Err(GitCompatError::InvalidCommand(
+        "the good commit is not a first-parent ancestor of the bad commit".to_owned(),
+    ))
 }
 
-pub(super) fn walk_commits(state: &GitCompatState, mut next: Option<GitCommitId>, maximum: u32) -> Vec<GitCommit> {
+pub(super) fn walk_commits(
+    state: &GitCompatState,
+    mut next: Option<GitCommitId>,
+    maximum: u32,
+) -> Vec<GitCommit> {
     let mut commits = Vec::new();
     while let Some(id) = next {
         if commits.len() >= usize::try_from(maximum).unwrap_or(usize::MAX) {

@@ -1,9 +1,10 @@
+import type * as NativeModel from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicit, ref-only selection from canonical conversation history into model context. */
 import { DEFAULT_LIMITS,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
-import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef } from "./native-contracts.js";
-import type { ContentBindings } from "./runtime.js";
+import { NativeContracts, type NativeFileRef } from "./native-contracts.js";
+import type { ContentBindings } from "./content.js";
 import {
   HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
   HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES,
@@ -45,8 +46,8 @@ export interface ConversationProjectionOptions {
   /** Owner-mediated exact reads for structured tool artifacts. */
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
   readonly maxRenderBytes?: number;
-  /** Optional additional owning-provider validation; never bypasses Rust. */
-  readonly validateMessage?: (message: ConversationState["messages"][number]) => ConversationState["messages"][number] | Promise<ConversationState["messages"][number]>;
+  /** Additional message bounds from the owning conversation host. */
+  readonly limits?: Limits;
 }
 
 export interface FileProjectionOptions {
@@ -57,10 +58,9 @@ export interface FileProjectionOptions {
 
 /** Adapts an exact-volume content binding into a verified model resolver. */
 export function verifiedContentResolver(
-  content: Pick<ContentBindings, "validate" | "verify" | "read">, limits: Limits,
+  content: Pick<ContentBindings, "validate" | "read">, limits: Limits,
 ): (file: FileRef) => Promise<Uint8Array> {
   const validate = content.validate.bind(content);
-  const verify = content.verify.bind(content);
   const read = content.read.bind(content);
   return async file => {
     const contracts = await NativeContracts.create();
@@ -68,8 +68,7 @@ export function verifiedContentResolver(
     validate(reference, limits);
     const bytes = await read(reference);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content provider returned invalid bytes");
-    verify(reference, bytes);
-    await contracts.verifyFileBytes(reference, bytes);
+    contracts.verifyFileBytes(reference, bytes);
     return Uint8Array.from(bytes);
   };
 }
@@ -98,7 +97,7 @@ export async function projectModelFile(
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
     throw new TypeError("resolved file exceeds projection byte limit");
   }
-  await contracts.verifyFileBytes(file, bytes);
+  contracts.verifyFileBytes(file, bytes);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
@@ -134,9 +133,8 @@ export async function selectModelContext(
     const raw = byId.get(id);
     if (raw === undefined) throw new TypeError("selected conversation message is missing");
     const canonical = contracts.validate("conversation_message", raw, DEFAULT_LIMITS);
-    const owner = options.validateMessage === undefined ? canonical
-      : await options.validateMessage(canonical);
-    validated.set(id, contracts.validate("conversation_message", owner, DEFAULT_LIMITS));
+    validated.set(id, options.limits === undefined ? canonical
+      : contracts.validate("conversation_message", canonical, options.limits));
   }
   const projectedMessages = conversation.messages.map(message => validated.get(message.id) ?? message);
   const nativeConversation = { agent: conversation.agent, messages: projectedMessages };
@@ -192,9 +190,10 @@ async function captureProjectionFiles(
       throw new TypeError(`${label} exceeds JSON byte limit`);
     }
     if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
-    await contracts.verifyFileBytes(reference, bytes);
-    files.set(fileKey(reference), Uint8Array.from(bytes));
-    return bytes;
+    contracts.verifyFileBytes(reference, bytes);
+    const owned = Uint8Array.from(bytes);
+    files.set(fileKey(reference), owned);
+    return owned;
   };
   const manifestResolver = options.resolveManifest ?? options.resolveFile;
   const manifest = async (reference: FileRef, itemCount: number): Promise<readonly Attachment[]> => {
@@ -222,15 +221,15 @@ async function captureProjectionFiles(
   return files;
 }
 
-function publicFile(file: NativeFileRef | Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef {
+function publicFile(file: NativeFileRef | Extract<NativeModel.ModelContentPart, { kind: "file" }>["file"]): FileRef {
   return { ...file,
     descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
   } as FileRef;
 }
 
 /** Convert Rust-admitted content without reinterpreting option/event identities. */
-export function publicModelContent(content: NativeModelContent): ModelContent {
-  const publicFilePart = (part: Extract<NativeModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
+export function publicModelContent(content: NativeModel.ModelContent): ModelContent {
+  const publicFilePart = (part: Extract<NativeModel.ModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
     const file = publicFile(part.file);
     if (typeof part.policy === "string") return { ...part, file, policy: part.policy };
     const native = part.policy.native;
@@ -244,7 +243,7 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
       maximum_bytes: normalizeModelInteger(native.maximum_bytes),
       maximum_work: normalizeModelInteger(native.maximum_work) } } };
   };
-  const mapContentPart = (part: NativeModelContentPart): ModelContentPart => {
+  const mapContentPart = (part: NativeModel.ModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
       return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
     }
@@ -261,8 +260,8 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
     return part;
   };
   if (typeof content === "string") return content;
-  return Array.isArray(content) ? content.map(part => mapContentPart(part as NativeModelContentPart))
-    : mapContentPart(content as NativeModelContentPart);
+  return Array.isArray(content) ? content.map(part => mapContentPart(part as NativeModel.ModelContentPart))
+    : mapContentPart(content as NativeModel.ModelContentPart);
 }
 
 function normalizeModelJson(value: unknown): unknown {

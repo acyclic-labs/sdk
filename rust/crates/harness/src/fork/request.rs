@@ -34,7 +34,6 @@ pub struct ForkRequest {
 }
 
 impl ForkRequest {
-
     /// Resolves the context policy against the exact parent before preparation.
     pub fn with_history_policy(
         mut self,
@@ -47,17 +46,25 @@ impl ForkRequest {
         }
         let policy_error = |code, reason| boundary_error(work, code, reason);
         if &self.parent != parent.authority() || self.parent_revision != parent.revision() {
-            return Err(policy_error(crate::wire::ErrorCode::Conflict,
-                "fork context policy requires the exact requested parent revision"));
+            return Err(policy_error(
+                crate::wire::ErrorCode::Conflict,
+                "fork context policy requires the exact requested parent revision",
+            ));
         }
-        let conversation = parent.conversation().ok_or_else(|| policy_error(
-            crate::wire::ErrorCode::Invalid, "fork context policy requires a parent conversation"))?;
+        let conversation = parent.conversation().ok_or_else(|| {
+            policy_error(
+                crate::wire::ErrorCode::Invalid,
+                "fork context policy requires a parent conversation",
+            )
+        })?;
         if conversation.agent.is_none() {
-            return Err(policy_error(crate::wire::ErrorCode::Invalid,
-                "fork context policy requires a bound parent agent"));
+            return Err(policy_error(
+                crate::wire::ErrorCode::Invalid,
+                "fork context policy requires a bound parent agent",
+            ));
         }
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let full_cut = conversation.logical_revision();
         let (through_sequence, summary) = match policy {
@@ -96,16 +103,21 @@ impl ForkRequest {
         if let Some(source) = &self.authorized_source {
             source.validate(work.work())?;
             if source.operation_id != self.operation_id
-                || !self.selections.iter().any(|selection| matches!(
+                || !self.selections.iter().any(|selection| {
+                    matches!(
                     &selection.revision,
                     ResourceRevision::Project { volume, generation }
-                        if volume == &source.project && generation == &source.generation))
+                        if volume == &source.project && generation == &source.generation)
+                })
                 || (source.source_task != source.caller_task
                     && (self.preparation.inherited_through_sequence != 0
                         || self.preparation.summary.is_some()))
             {
-                return Err(boundary_error(work.work(), crate::wire::ErrorCode::Unauthorized,
-                    "authorized source must select its exact project and history-free cross-task fork"));
+                return Err(boundary_error(
+                    work.work(),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "authorized source must select its exact project and history-free cross-task fork",
+                ));
             }
         }
         work.slots::<AgentId>(self.attached_agents.len())?;
@@ -138,7 +150,9 @@ impl ForkRequest {
                             .and_then(|version| version.parse::<u64>().ok())
                             != Some(self.parent_revision)
                     {
-                        return Err(work.invalid("fork history is not the required exact parent prefix"));
+                        return Err(
+                            work.invalid("fork history is not the required exact parent prefix")
+                        );
                     }
                 }
                 ResourceRevision::Project { volume, .. }
@@ -154,7 +168,9 @@ impl ForkRequest {
                         || volume == destination
                         || volume.provider() != destination.provider()
                     {
-                        return Err(work.invalid("fork selected volume does not match child allocation"));
+                        return Err(
+                            work.invalid("fork selected volume does not match child allocation")
+                        );
                     }
                 }
                 ResourceRevision::Context(_) => contexts += 1,
@@ -172,7 +188,11 @@ impl ForkRequest {
     }
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copy_request(self, quota))
+        CodecQuota::produce(work, |quota| {
+            crate::core::copy_owned(self, quota, |source, work| {
+                source.validate(work)?;
+                crate::core::owned_bytes(source)
+            })
+        })
     }
-
 }

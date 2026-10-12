@@ -37,7 +37,7 @@ use acyclic_harness::runtime::{
     RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
     ToolContext, ToolPolicy, ToolPolicyDecision,
 };
-use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
+use acyclic_harness::scheduler::{LeaseFence, ResourceRequest, SchedulerEvent, SessionLimits};
 use acyclic_harness::tool::{
     Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
 };
@@ -890,7 +890,7 @@ async fn worker_restart_with_options(
     let task = TaskId::from_bytes(operation.into_bytes());
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
@@ -909,7 +909,7 @@ async fn worker_restart_with_options(
         reconciled: AtomicUsize::new(0),
     });
     let mut tools = ToolRegistry::default();
-    tools.register(Tool {
+    tools.register((Tool {
         definition: ToolDefinition {
             name: "test.restore".into(),
             revision: "1".into(),
@@ -922,15 +922,15 @@ async fn worker_restart_with_options(
         },
         executor: tool.clone(),
         projection: tool.clone(),
-    })?;
+    }, None), &mut None, None)?;
     for reopened in [false, true] {
         let (filesystem, stream, payloads, reader, runtime) = boxed_restart_phase(|| async {
-            let filesystem = Arc::new(FilesystemHost::new(
+            let filesystem = FilesystemHost::new(
                 Fs::local(fs_options.clone())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             if !reopened {
                 filesystem.create_volume(&volume).await?;
             }
@@ -1976,7 +1976,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let source_head;
     let target_head;
     {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
         let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
@@ -1999,7 +1999,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
         let state = json!({"policy":"review", "revision":"7", "plan":acyclic_fs::encode_merge_plan(&described)
             .map_err(|e| Error::Invalid(e.to_string()))?});
-        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
+        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state, u64::MAX, &mut None)?,
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
@@ -2013,7 +2013,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
         let state = json!({"candidate":input});
         resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
-            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input)?,
+            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input, u64::MAX, &mut None)?,
             prior: admission.initial.clone(), input,
             transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
             next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
@@ -2022,7 +2022,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let calls = driver.0.load(Ordering::SeqCst);
     assert!(calls > 0);
     for retry in 0..2 {
-        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, &provider, None)?;
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
             .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
@@ -2147,7 +2147,7 @@ async fn stock_restart_with_publication_fault(
     let step = OperationId::from_bytes([4; 16]);
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
@@ -2166,12 +2166,12 @@ async fn stock_restart_with_publication_fault(
         model_steps: if cancel_after_failure { 2 } else { 1 },
     };
     for reopened in [false, true] {
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             Fs::local(fs_options.clone())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            provider.clone(),
-        )?);
+            &provider, None,
+        )?;
         if !reopened {
             filesystem.create_volume(&volume).await?;
         }
@@ -2270,7 +2270,7 @@ async fn stock_restart_with_publication_fault(
         } else {
             if let Some(old) = &previous_lease {
                 coordinator
-                    .release_lease(old, IdempotencyKey::new("release-crashed")?)
+                    .apply(IdempotencyKey::new("release-crashed")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: old.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&old.reservation) }, &mut None)
                     .await?;
             }
             coordinator
@@ -2499,12 +2499,12 @@ async fn stock_restart_with_publication_fault(
                 stale.reservation.id = "stale".into();
                 assert!(
                     coordinator
-                        .release_lease(&stale, IdempotencyKey::new("stale-cancelled-release")?)
+                        .apply(IdempotencyKey::new("stale-cancelled-release")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: stale.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&stale.reservation) }, &mut None)
                         .await
                         .is_err()
                 );
                 coordinator
-                    .release_lease(old, IdempotencyKey::new("cancelled-reconciled-release")?)
+                    .apply(IdempotencyKey::new("cancelled-reconciled-release")?, acyclic_harness::scheduler::SchedulerEvent::LeaseReleased { operation_id: old.operation.operation_id, fence: acyclic_harness::scheduler::LeaseFence::from(&old.reservation) }, &mut None)
                     .await?;
                 let terminal = coordinator
                     .scheduler()
@@ -2536,7 +2536,12 @@ async fn stock_restart_with_publication_fault(
         }
         let journal = runtime.workflow_journal(task, fence.clone()).await?;
         let mut session = harness
-            .open_registered_task(task, fence.clone(), journal.clone())
+            .open_registered_task(task,
+                &fence,
+                journal.clone(),
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                None,
+            )
             .await?;
         assert_eq!(session.task_id(), task);
         if reopened {
@@ -2550,7 +2555,9 @@ async fn stock_restart_with_publication_fault(
             assert!(session.latest_transition().await?.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
-            let (next, transition) = machines.step(&prior, &invalid_input)?;
+            let (next, transition, _, _) = machines.step(
+                &prior, std::borrow::Cow::Borrowed(&invalid_input), None,
+            )?;
             let invalid_record = WorkflowRecord {
                 operation_id: OperationId::from_bytes([8; 16]),
                 idempotency_key: IdempotencyKey::new("direct-invalid-output")?,
@@ -2627,7 +2634,11 @@ async fn stock_restart_with_publication_fault(
             drop(session);
             let recovery_journal = runtime.workflow_journal(task, fence.clone()).await?;
             let mut recovered = harness
-                .open_registered_task(task, fence, recovery_journal.clone())
+                .open_registered_task(task,
+                    &fence, recovery_journal.clone(),
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    None,
+                )
                 .await?;
             assert_eq!(
                 recovered
@@ -2683,13 +2694,13 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         requests: Mutex::new(Vec::new()), approval_tool: false, observed_events: 1,
         output_tokens: AtomicU64::new(0), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let worker = Worker { id: "stock-mail".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let worker = Worker { id: "stock-mail".into(), available: ResourceRequest::default(), labels: BTreeMap::new() };
     let mut retained_lease = None;
     let mut admitted_model = None;
     let mut selected = None;
     for phase in 0..4 {
-        let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
-            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let filesystem = FilesystemHost::new(Fs::local(fs_options.clone()).await
+            .map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),

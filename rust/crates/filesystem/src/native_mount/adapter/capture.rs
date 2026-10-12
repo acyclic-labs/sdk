@@ -1,0 +1,213 @@
+use super::*;
+
+fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
+    match error {
+        crate::CaptureError::Kernel(
+            FsError::Work(error)
+            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error)),
+        ) => MountSourceError::Work(error),
+        crate::CaptureError::Kernel(FsError::NativeKernel(error)) => {
+            MountSourceError::NativeWork(error)
+        }
+        crate::CaptureError::Kernel(FsError::Cancelled(_)) => MountSourceError::Cancelled,
+        crate::CaptureError::Kernel(FsError::SourceSnapshotStale) => MountSourceError::Stale,
+        crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
+        error => engine_error(error),
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMountSource<A, O> {
+    pub(super) fn capture_host_with_identity(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+        identity: NativeRootIdentity,
+        scope: HostCaptureScope,
+    ) -> Result<(), MountSourceError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)?;
+        invoke(&self.runtime, &work, || {
+            self.capture_host(source_root, paths, identity, scope, None, &work)
+        })
+    }
+
+    /// Captures host changes using the caller's work and baseline.
+    pub(in crate::native_mount) async fn capture_host(
+        &self,
+        source_root: &Path,
+        paths: &[MountPath],
+        identity: NativeRootIdentity,
+        scope: HostCaptureScope,
+        baseline: Option<NativeViewBaseline>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        work.with_original_leaf(|leaf| leaf.check())
+            .map_err(super::super::lazy::mount_demand_error)?;
+        self.cancellation
+            .check()
+            .map_err(|_| MountSourceError::Cancelled)?;
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let inputs = self.capture_inputs(source_root, paths, identity, scope, work)?;
+        let paths = &inputs.0;
+        let options = &inputs.1;
+        let baseline = baseline.as_ref();
+        let cancellation = work.cancellation();
+        cancellation
+            .check()
+            .map_err(|_| MountSourceError::Cancelled)?;
+        self.cancellation
+            .check()
+            .map_err(|_| MountSourceError::Cancelled)?;
+        let mut credit = self.reserve_capture_poll()?;
+        let _producer = {
+            let mut gate = self
+                .capture_gate
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if gate.cancelled {
+                return Err(MountSourceError::Stale);
+            }
+            self.accept_capture_poll(&mut credit)?;
+            gate.producers = gate
+                .producers
+                .checked_add(1)
+                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
+            gate.ever_used = true;
+            CaptureProducer {
+                gate: Arc::clone(&self.capture_gate),
+                quiesced: Arc::clone(&self.capture_quiesced),
+                original: None,
+                _owner: None,
+                _allocation: None,
+            }
+        };
+        for _ in 0..3 {
+            let mut carrier = NativeDemandCarrier::Native(work);
+            let (mut candidate, epoch, stamp) = self
+                .checkout
+                .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
+                .await?;
+            match scope {
+                HostCaptureScope::ExactPaths => {
+                    capture_paths_batched(
+                        &mut candidate.checkout,
+                        paths,
+                        options,
+                        64,
+                        cancellation,
+                        baseline,
+                        work,
+                    )
+                    .await
+                }
+                HostCaptureScope::Subtree => {
+                    capture_subtrees_with_native_work(
+                        &mut candidate.checkout,
+                        std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
+                        options,
+                        &crate::CapturePolicy::default(),
+                        cancellation,
+                        baseline,
+                        work,
+                    )
+                    .await
+                }
+            }
+            .map_err(|failure| capture_mount_error(failure.error))?;
+            let scope = match scope {
+                HostCaptureScope::ExactPaths => InstallScope::Paths(paths),
+                HostCaptureScope::Subtree => {
+                    InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?)
+                }
+            };
+            if self
+                .install_capture(candidate, epoch, stamp, scope, &mut carrier, cancellation)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+        Err(MountSourceError::Stale)
+    }
+
+    async fn install_capture(
+        &self,
+        candidate: CheckoutCandidate<A, O>,
+        epoch: u64,
+        stamp: ViewStamp,
+        scope: InstallScope<'_>,
+        carrier: &mut NativeDemandCarrier<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<bool, MountSourceError> {
+        let (effect, _allocation) = installed_changes(
+            &candidate.base,
+            &candidate.checkout,
+            scope,
+            carrier,
+            cancellation,
+        )
+        .await?;
+        let publication = self
+            .checkout
+            .install_candidate(
+                candidate,
+                epoch,
+                stamp,
+                carrier,
+                cancellation,
+                Some(&self.cancellation),
+                |carrier| {
+                    self.with_capture_observer_dispatch(|| {
+                        self.checkout
+                            .ledger
+                            .record(&ViewChange::Effect(&effect), carrier)
+                    })
+                },
+                |checkout, candidate, prepared| {
+                    let gate = self
+                        .capture_gate
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if gate.cancelled {
+                        return Err(MountSourceError::Stale);
+                    }
+                    cancellation
+                        .commit_if_both_live(&self.cancellation, || {
+                            checkout.adopt_prepared_candidate(
+                                &candidate.base,
+                                candidate.checkout,
+                                prepared,
+                            )
+                        })
+                        .map_err(|_| MountSourceError::Cancelled)
+                },
+            )
+            .await?;
+        let Some(publication) = publication else {
+            return Ok(false);
+        };
+        if publication != MountPublication::Manual {
+            let work = carrier
+                .original_native_work()
+                .ok_or(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ))?;
+            self.checkout
+                .publish(
+                    crate::PublicationPermit::Unrestricted,
+                    &work,
+                    cancellation,
+                    Some(&self.cancellation),
+                    &mut source_publication_guard(self.native_callback_guard.clone(), Some(self.cancellation.clone())),
+                    None,
+                    &mut None,
+                )
+                .await.map_err(|(cause, _)| cause)?;
+        }
+        Ok(true)
+    }
+}

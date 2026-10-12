@@ -12,8 +12,9 @@ use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, BoundedContentFuture, ContentGrant, ContentIo, ContentResidencyVerifier, ConversationMessage, ConversationState, FileDescriptor, FileRef,
-        Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
+        Attachment, BoundedContentFuture, ContentGrant, ContentIo, ContentResidencyVerifier,
+        ConversationMessage, ConversationState, FileDescriptor, FileRef, Limits,
+        ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
@@ -26,10 +27,7 @@ use crate::{
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent, ModelMessage},
-    projection::{
-        SelectedModelContext, select_model_context,
-        validate_model_context_selection,
-    },
+    projection::{SelectedModelContext, select_model_context, validate_model_context_selection},
     resources::{ProviderRef, ResourceRef},
     runtime::{
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
@@ -37,14 +35,14 @@ use crate::{
         task_admission_identities, task_definition_digest, validate_children_page,
         validate_children_request, validate_task_requirements,
     },
-    tool::{ToolDefinition, validate_value},
+    tool::ToolDefinition,
     turn::prepare_turn,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
-use tsify::{Ts, Tsify};
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod admission;
@@ -109,5 +107,5 @@ pub struct WasmContentStore {
 }
 
 #[cfg(feature = "browser")]
-#[path = "../wasm/task_runtime.rs"]
+#[path = "../wasm/task_runtime/mod.rs"]
 mod task_runtime;

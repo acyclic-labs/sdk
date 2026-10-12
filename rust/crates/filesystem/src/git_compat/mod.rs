@@ -6,8 +6,9 @@ use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::storage::ByteRange;
 use crate::workspace::customer_path;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId, IdempotencyKey, OperationId,
-    ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit, WorkBudget, Workspace, WorkspaceError, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Generation, GenerationId,
+    IdempotencyKey, OperationId, ResolvedFile, ResolvedFileRangeReadRequest, TransactionCommit,
+    WorkBudget, Workspace, WorkspaceError, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,8 +19,6 @@ use uuid::Uuid;
 pub(super) const STATE_VERSION: u32 = 1;
 
 pub(super) const COMMIT_DOMAIN: &[u8] = b"acyclic-fs-git-compat-commit-v1\0";
-
-pub(super) const ACTION_DOMAIN: &[u8] = b"acyclic-fs-git-compat-action-v1\0";
 
 pub(super) const GREP_READ_CONCURRENCY: usize = 32;
 

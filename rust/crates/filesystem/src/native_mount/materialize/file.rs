@@ -18,12 +18,12 @@ where
     let custody = receipt
         .custody
         .split_off(owned_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let meter = receipt.custody.work().runtime_meter();
     let write = file
         .write_async(offset, bytes, meter, custody)
-        .map_err(materialize_runtime_error)?;
-    write.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    write.await.map_err(MaterializeError::from)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
 }
@@ -42,13 +42,13 @@ where
     let meter = receipt.custody.work().runtime_meter();
     let sync = file
         .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
-        .map_err(materialize_runtime_error)?;
-    sync.await.map_err(materialize_runtime_error)?;
+        .map_err(MaterializeError::from)?;
+    sync.await.map_err(MaterializeError::from)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
 #[cfg(windows)]
-pub(super) fn mark_sparse_measured(
+pub(super) fn mark_sparse(
     file: &File,
     meter: &dyn acyclic_native_runtime::NativeReadMeter,
 ) -> std::io::Result<()> {
@@ -89,7 +89,7 @@ where
     Fut: Future<Output = Result<(), E>>,
 {
     let resolved = read_source!(reader, receipt, remaining, value,
-        reader.resolve_file_ranges_with_native_work(std::slice::from_ref(path), receipt.custody.work(), cancellation)
+        reader.resolve_files(std::slice::from_ref(path), receipt.custody.work(), cancellation)
             => receipt.accept_source(value.0, value.1)?,
         reader.resolve_files(std::slice::from_ref(path), remaining, cancellation) => {
             receipt.adopt(vec_bytes(&value))?;
@@ -105,16 +105,17 @@ where
     receipt
         .custody
         .release(resolved_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     let metadata = resolved.description().metadata;
     let mut offset = 0_u64;
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
         let plan = read_source!(reader, receipt, remaining, value,
-            resolved.plan_extents_with_native_work(
+            resolved.plan_extents(
                 ByteRange { offset, length }, options.maximum_extent_spans, receipt.custody.work(), cancellation,
             ) => {
-                let (plan, custody) = value.ok_or(MaterializeError::InvalidPath)?;
+                let (plan, custody) = value;
+                let plan = plan.ok_or(MaterializeError::InvalidPath)?;
                 receipt.accept_source(plan, custody)?
             },
             resolved.plan_extents(ByteRange { offset, length }, options.maximum_extent_spans, remaining, cancellation) => {
@@ -147,8 +148,8 @@ where
                                 },
                                 Some(meter),
                             )
-                            .map_err(materialize_runtime_error)?;
-                        control.await.map_err(materialize_runtime_error)?;
+                            .map_err(MaterializeError::from)?;
+                        control.await.map_err(MaterializeError::from)?;
                         generation_action(
                             before_effect,
                             NativeMaterializationActionPhase::Completed,
@@ -178,7 +179,7 @@ where
         receipt
             .custody
             .release(plan_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         if !reads.is_empty() {
             read_content_spans(
                 reader,
@@ -206,7 +207,7 @@ where
         receipt
             .custody
             .release(write_bytes as u64)
-            .map_err(materialize_native_error)?;
+            .map_err(MaterializeError::from)?;
         offset += length;
     }
     Ok(metadata)
@@ -222,7 +223,7 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
 ) -> Result<(), MaterializeError> {
     let request_bytes = vec_bytes(&reads);
     let read = read_source!(reader, receipt, remaining, value,
-        reader.read_resolved_ranges_with_native_work(
+        reader.read_resolved_ranges(
             &reads, usize::try_from(maximum_extent_spans).unwrap_or(usize::MAX), receipt.custody.work(), cancellation,
         ) => receipt.accept_source(value.0, value.1)?,
         reader.read_resolved_ranges(
@@ -257,11 +258,11 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
     receipt
         .custody
         .release(request_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     receipt
         .custody
         .release(result_bytes as u64)
-        .map_err(materialize_native_error)?;
+        .map_err(MaterializeError::from)?;
     Ok(())
 }
 

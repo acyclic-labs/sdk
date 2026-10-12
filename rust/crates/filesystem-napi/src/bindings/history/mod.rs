@@ -82,12 +82,11 @@ impl NativeChangeSet {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .compose(&next.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            compose(&next.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 }
 
@@ -124,7 +123,7 @@ impl NativeJoinPlan {
                 ApplyOptions {
                     if_target,
                     idempotency_key,
-                },
+                }, std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await
@@ -204,41 +203,30 @@ impl NativeGeneration {
     /// Reads one complete file from this exact immutable state.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(
-            &path,
-            bigint_u64(&maximum_bytes, "maximumBytes")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?)
+        )))
+        .map(|value| Buffer::from(value.to_vec()))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_range(
+                &path,
+                bigint_u64(&offset, "offset")?,
+                bigint_u64(&length, "length")?
+            )
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(self.inner.stat(
-            &path,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| native_workspace_stat(receipt.value))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
+            .map(|value| native_workspace_stat(value))
     }
 
     #[napi(js_name = listDirectory)]
@@ -251,28 +239,20 @@ impl NativeGeneration {
         let maximum_entries = maximum_entries.into_inner();
 
         let after = after.map(native_workspace_name).transpose()?;
-        Box::pin(self.inner.list_directory(
-            &path,
-            after.as_ref(),
-            maximum_entries,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| native_workspace_directory_page(receipt.value.0))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            list_directory(&path, after.as_ref(), maximum_entries)
+        )))
+        .map(|value| native_workspace_directory_page(value.0))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(self.inner.read_symbolic_link(
-            &path,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_symbolic_link(&path)
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi(js_name = planExtents)]
@@ -299,17 +279,8 @@ impl NativeGeneration {
     /// Retains this exact generation under one opaque identity.
     #[napi]
     pub async fn pin(&self, identity: String) -> Result<NativeGeneration> {
-        self.inner
-            .pin(
-                identity,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| NativeGeneration {
-                inner: receipt.value.1,
-            })
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner, pin(identity)))
+            .map(|value| NativeGeneration { inner: value.1 })
     }
 }
 
@@ -329,40 +300,29 @@ pub(in crate::bindings) fn native_join_history(value: &str) -> Result<JoinHistor
 pub(in crate::bindings) fn native_join_result(
     outcome: JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeJoinResult {
-    let generation =
-        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
-            NativeJoinResult {
-                status: status.to_owned(),
-                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-                conflicts: Vec::new(),
-                truncated: false,
-            }
-        };
-    match outcome {
-        JoinOutcome::Applied(value) => generation("applied", value.generation),
-        JoinOutcome::AlreadyApplied(value) => generation("already-applied", value.generation),
-        JoinOutcome::NoChanges(value) => generation("no-changes", value),
-        JoinOutcome::StaleTarget(value) => generation("stale-target", value),
+    let (status, generation) = match outcome {
+        JoinOutcome::Applied(value) => ("applied", Some(value.generation)),
+        JoinOutcome::AlreadyApplied(value) => ("already-applied", Some(value.generation)),
+        JoinOutcome::NoChanges(value) => ("no-changes", Some(value)),
+        JoinOutcome::StaleTarget(value) => ("stale-target", Some(value)),
         JoinOutcome::Conflicted {
             conflicts,
             truncated,
-        } => NativeJoinResult {
-            status: "conflicted".to_owned(),
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        JoinOutcome::Fenced => NativeJoinResult {
-            status: "fenced".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        JoinOutcome::IdempotencyConflict => NativeJoinResult {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return NativeJoinResult {
+                status: "conflicted".to_owned(),
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        JoinOutcome::Fenced => ("fenced", None),
+        JoinOutcome::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeJoinResult {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

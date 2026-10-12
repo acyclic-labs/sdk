@@ -527,8 +527,10 @@ dependencies = [
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
+ "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "async-trait",
+ "base64 0.23.1",
  "bytes",
  "fs2",
  "futures",
@@ -537,13 +539,14 @@ dependencies = [
  "hyper-util",
  "indexed_db_futures",
  "js-sys",
- "libc",
  "pin-project-lite",
  "proptest",
  "prost",
  "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
+ "rustls",
+ "rustls-platform-verifier",
  "ruzstd",
  "serde",
  "serde-wasm-bindgen",

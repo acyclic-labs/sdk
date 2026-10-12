@@ -1,97 +1,178 @@
 use super::*;
-
+pub(super) type GetRequest = (wire::GetObjectRequest, u64);
 pub(super) type PutRequest = (wire::PutObjectHeader, OwnedBytes);
 
-pub(super) type GetRequest = (wire::GetObjectRequest, u64);
-
-pub(super) fn put_request_bytes(request: &PutRequest) -> u64 {
-    request.0.bucket.as_ref().map_or(0, |bucket| bucket.name.capacity() as u64)
-        + request.0.object_key.capacity() as u64
-        + request.0.metadata.as_ref().map_or(0, |metadata| metadata.content_type.capacity() as u64)
+pub(super) fn read_request(
+    bucket: &wire::BucketRef,
+    id: ObjectId,
+    maximum: u64,
+    work: &mut KernelAccounting<'_>,
+) -> Result<(GetRequest, KernelOwnedAllocation), crate::FsError> {
+    let family = id.kind.canonical_tag();
+    let key_bytes = 7 + family.ilog10() as usize + 1 + 64;
+    let bytes = bucket.name.len() as u64 + key_bytes as u64;
+    let copy = WorkCounters {
+        bytes_copied: bytes,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(copy)?;
+    let mut allocation = work.claim_owned(bytes, 2)?;
+    let mut key = String::new();
+    key.try_reserve_exact(key_bytes)
+        .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+    let mut digest = [0; 64];
+    hex::encode_to_slice(id.digest.as_bytes(), &mut digest)
+        .map_err(|_| ObjectStoreError::Corrupt)?;
+    write!(
+        &mut key,
+        "fs/v1/{family}/{}",
+        std::str::from_utf8(&digest).map_err(|_| ObjectStoreError::Corrupt)?
+    )
+    .map_err(|_| ObjectStoreError::Corrupt)?;
+    let bucket = bucket.clone();
+    work.record_completed(copy)?;
+    work.reconcile_owned(
+        &mut allocation,
+        bytes,
+        key.capacity() as u64 + bucket.name.capacity() as u64,
+    )?;
+    Ok((
+        (
+            wire::GetObjectRequest {
+                bucket: Some(bucket),
+                object_key: key,
+                ..Default::default()
+            },
+            maximum,
+        ),
+        allocation,
+    ))
 }
-
 pub(super) fn put_request(
-    bucket: &wire::BucketRef, object_id: ObjectId, bytes: OwnedBytes,
-    accounting: &mut KernelAccounting<'_>,
+    bucket: &wire::BucketRef,
+    id: ObjectId,
+    body: OwnedBytes,
+    work: &mut KernelAccounting<'_>,
 ) -> Result<(PutRequest, KernelOwnedAllocation), crate::FsError> {
-    let mut request_custody;
-    let ((request, _), custody) = read_request(bucket, object_id, 0, accounting)?;
-    request_custody = custody;
+    let ((request, _), mut allocation) = read_request(bucket, id, 0, work)?;
     let content_type = "application/vnd.acyclic.fs-object-v1";
-    let copy = WorkCounters { bytes_copied: content_type.len() as u64, ..WorkCounters::UNCHARGED };
-    accounting.admit(copy)?;
-    let mut metadata_custody = accounting.claim_owned(content_type.len() as u64, 1)?;
-    let mut owned_type = String::new();
-    owned_type.try_reserve_exact(content_type.len()).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    accounting.reconcile_owned(&mut metadata_custody, content_type.len() as u64, owned_type.capacity() as u64)?;
-    owned_type.push_str(content_type);
-    accounting.record_completed(copy)?;
-    request_custody.absorb(&mut metadata_custody)?;
-    Ok(((wire::PutObjectHeader {
-        bucket: request.bucket, object_key: request.object_key,
-        metadata: Some(wire::ObjectMetadata { content_type: owned_type, ..Default::default() }),
-        preconditions: Some(wire::Preconditions {
-            condition: Some(wire::preconditions::Condition::IfAbsent(true)),
-        }),
-        mutation: None,
-    }, bytes), request_custody))
+    let copy = WorkCounters {
+        bytes_copied: content_type.len() as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(copy)?;
+    let mut metadata = work.claim_owned(content_type.len() as u64, 1)?;
+    let content_type = content_type.to_owned();
+    work.record_completed(copy)?;
+    work.reconcile_owned(
+        &mut metadata,
+        content_type.len() as u64,
+        content_type.capacity() as u64,
+    )?;
+    allocation.absorb(&mut metadata)?;
+    Ok((
+        (
+            wire::PutObjectHeader {
+                bucket: request.bucket,
+                object_key: request.object_key,
+                metadata: Some(wire::ObjectMetadata {
+                    content_type,
+                    ..Default::default()
+                }),
+                preconditions: Some(wire::Preconditions {
+                    condition: Some(wire::preconditions::Condition::IfAbsent(true)),
+                }),
+                mutation: None,
+            },
+            body,
+        ),
+        allocation,
+    ))
 }
-
+pub(super) fn vector<T>(
+    length: usize,
+    work: &mut KernelAccounting<'_>,
+) -> Result<(Vec<T>, KernelOwnedAllocation), crate::FsError> {
+    let bytes = length
+        .checked_mul(size_of::<T>())
+        .ok_or(WorkError::Overflow)? as u64;
+    let mut allocation = work.claim_owned(bytes, 1)?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(length)
+        .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+    work.reconcile_owned(
+        &mut allocation,
+        bytes,
+        (values.capacity() * size_of::<T>()) as u64,
+    )?;
+    Ok((values, allocation))
+}
+pub(super) fn release(
+    work: &mut KernelAccounting<'_>,
+    mut allocation: KernelOwnedAllocation,
+    bytes: u64,
+) -> Result<(), crate::FsError> {
+    work.release_owned(&mut allocation, bytes)
+}
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_request<T>(
-    data: T, custody: KernelOwnedAllocation, work: &crate::NativeMaterializationWork,
+pub(super) fn packet<T>(
+    data: T,
+    allocation: KernelOwnedAllocation,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_objects::v1::ObjectsNativeRequest<T>, crate::FsError> {
-    match (data, custody) {
-        (data, KernelOwnedAllocation::NativeOriginal(custody)) if custody.matches_work(work) =>
-            acyclic_objects::v1::ObjectsNativeRequest::new(data, custody, &work.runtime_meter())
-                .map_err(|error| native_objects_error(error).into()),
-        (data, custody) => {
-            drop(data);
-            drop(custody);
-            Err(ObjectStoreError::Corrupt.into())
+    match allocation {
+        KernelOwnedAllocation::NativeOriginal(allocation) => {
+            acyclic_objects::v1::ObjectsNativeRequest::new(data, allocation, &work.runtime_meter())
+                .map_err(|error| native_error(error).into())
         }
+        _ => Err(ObjectStoreError::Corrupt.into()),
     }
 }
-
-pub(super) fn release_read_custody(
-    accounting: &mut KernelAccounting<'_>, mut custody: KernelOwnedAllocation, bytes: u64,
-) -> Result<(), crate::FsError> {
-    accounting.release_owned(&mut custody, bytes)?;
-    drop(custody);
-    Ok(())
+pub(super) fn info_bytes(info: &wire::ObjectInfo) -> Result<u64, crate::FsError> {
+    let mut bytes = info.etag.capacity() as u64;
+    if let Some(metadata) = &info.metadata {
+        for value in [
+            &metadata.content_type,
+            &metadata.content_encoding,
+            &metadata.cache_control,
+            &metadata.content_disposition,
+            &metadata.content_language,
+        ] {
+            bytes = bytes
+                .checked_add(value.capacity() as u64)
+                .ok_or(WorkError::Overflow)?;
+        }
+        for (key, value) in &metadata.user {
+            bytes = bytes
+                .checked_add(size_of::<(String, String)>() as u64)
+                .and_then(|bytes| bytes.checked_add(key.capacity() as u64))
+                .and_then(|bytes| bytes.checked_add(value.capacity() as u64))
+                .ok_or(WorkError::Overflow)?;
+        }
+    }
+    Ok(bytes)
 }
-
-pub(super) fn read_request(
-    bucket: &wire::BucketRef, object_id: ObjectId, maximum_bytes: u64,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(GetRequest, KernelOwnedAllocation), crate::FsError> {
-    accounting.check()?;
-    let bucket_bytes = bucket.name.len() as u64;
-    let bucket_copy = WorkCounters { bytes_copied: bucket_bytes, ..WorkCounters::UNCHARGED };
-    accounting.admit(bucket_copy)?;
-    let mut custody = accounting.claim_owned(bucket_bytes, u64::from(bucket_bytes != 0))?;
-    let bucket = bucket.clone();
-    let copied = accounting.record_completed(bucket_copy);
-    let reconciled = accounting.reconcile_owned(
-        &mut custody, bucket_bytes, bucket.name.capacity() as u64);
-    copied?;
-    reconciled?;
-    let family = object_id.kind.canonical_tag();
-    let key_bytes = "fs/v1/".len() + family.ilog10() as usize + 1 + "/".len() + 64;
-    let key_copy = WorkCounters { bytes_copied: key_bytes as u64, ..WorkCounters::UNCHARGED };
-    accounting.admit(key_copy)?;
-    let mut key_custody = accounting.claim_owned(key_bytes as u64, 1)?;
-    let mut key = String::new();
-    key.try_reserve_exact(key_bytes).map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    accounting.reconcile_owned(&mut key_custody, key_bytes as u64, key.capacity() as u64)?;
-    let mut digest = [0_u8; 64];
-    hex::encode_to_slice(object_id.digest.as_bytes(), &mut digest).map_err(|_| ObjectStoreError::Corrupt)?;
-    let digest = std::str::from_utf8(&digest).map_err(|_| ObjectStoreError::Corrupt)?;
-    write!(&mut key, "fs/v1/{family}/{digest}")
-        .map_err(|_| ObjectStoreError::Corrupt)?;
-    accounting.record_completed(key_copy)?;
-    custody.absorb(&mut key_custody)?;
-    Ok(((wire::GetObjectRequest {
-        bucket: Some(bucket), object_key: key, ..Default::default()
-    }, maximum_bytes), custody))
+pub(super) fn record_write(
+    work: &mut KernelAccounting<'_>,
+    bytes: u64,
+) -> Result<(), crate::FsError> {
+    let delta = WorkCounters {
+        object_bytes_written: bytes,
+        ..WorkCounters::UNCHARGED
+    };
+    match work {
+        KernelAccounting::Standalone { work, .. } => {
+            *work = work.checked_add(delta)?;
+            Ok(())
+        }
+        KernelAccounting::BorrowedStandalone { work, .. } => {
+            **work = work.checked_add(delta)?;
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { work, .. } => {
+            work.record_admitted(delta).map_err(Into::into)
+        }
+    }
 }

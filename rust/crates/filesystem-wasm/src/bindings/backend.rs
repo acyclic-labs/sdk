@@ -44,19 +44,22 @@ forward!(self, create_first_record(authority, commit, work, guard), IndexedDb, M
 async fn fork_workspace<G: acyclic_fs::AuthorityGuard>(&self, fork: acyclic_fs::WorkspaceForkCommit, permit: acyclic_fs::PublicationPermit, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::WorkspaceForkOutcome, acyclic_fs::AuthorityError<G::Error>> {
 forward!(self, fork_workspace(fork, permit, work, guard), IndexedDb, Memory)
 }
-async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(&self, request: acyclic_fs::GuardedAppend, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<(acyclic_fs::AppendOutcome, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityError<G::Error>> {
+async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(&self, request: acyclic_fs::GuardedAppend, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::AppendOutcome, acyclic_fs::AuthorityError<G::Error>,
+    > {
 forward!(self, compare_and_append(request, work, guard), IndexedDb, Memory)
 }
 async fn head(&self, authority: acyclic_fs::AuthorityId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::Head, acyclic_fs::AuthorityStoreError> {
 forward!(self, head(authority, work), IndexedDb, Memory)
 }
-async fn replay(&self, authority: acyclic_fs::AuthorityId, after: acyclic_fs::Sequence, limit: acyclic_fs::ReplayLimit, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Vec<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError> {
+async fn replay(&self, authority: acyclic_fs::AuthorityId, after: acyclic_fs::Sequence, limit: acyclic_fs::ReplayLimit, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Vec<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError,
+    > {
 forward!(self, replay(authority, after, limit, work), IndexedDb, Memory)
 }
 async fn fence(&self, authority: acyclic_fs::AuthorityId, expected: acyclic_fs::Head, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::FenceOutcome, acyclic_fs::AuthorityStoreError> {
 forward!(self, fence(authority, expected, work), IndexedDb, Memory)
 }
-async fn find_operation(&self, authority: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError> {
+async fn find_operation(&self, authority: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityStoreError,
+    > {
 forward!(self, find_operation(authority, operation, work), IndexedDb, Memory)
 }
 async fn retire_authority(&self, authority: acyclic_fs::AuthorityId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(), acyclic_fs::AuthorityStoreError> {
@@ -76,12 +79,15 @@ impl AsyncObjectStore for BrowserObjects {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put(object_id, bytes, budget, cancellation),
+            put(object_id, bytes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -91,12 +97,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn put_hashed(
         &self,
         object: HashedObject,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put_hashed(object, budget, cancellation),
+            put_hashed(object, context),
             IndexedDb,
             Opfs,
             Memory
@@ -106,12 +115,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put_many(writes, budget, cancellation),
+            put_many(writes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -122,12 +134,15 @@ impl AsyncObjectStore for BrowserObjects {
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            read(object_id, maximum_bytes, budget, cancellation),
+            read(object_id, maximum_bytes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -137,12 +152,18 @@ impl AsyncObjectStore for BrowserObjects {
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<
+        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
+        acyclic_fs::ObjectStoreError,
+    > {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            read_many(requests, budget, cancellation),
+            read_many(requests, context),
             IndexedDb,
             Opfs,
             Memory
@@ -152,12 +173,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<bool, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            contains(object_id, budget, cancellation),
+            contains(object_id, context),
             IndexedDb,
             Opfs,
             Memory

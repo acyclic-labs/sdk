@@ -76,7 +76,7 @@ impl ForkCaptureProvider for LostCaptureReply {
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
     let provider = ProviderRef::new("fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let stream_provider = ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),
@@ -135,10 +135,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+    .with_fork_verifier(CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?));
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?);
     aggregate.set_resident_event_limit(1)?;
     aggregate
         .execute(Command {
@@ -236,7 +236,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let restored_parent = Reducer::restore(
         aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new(), &mut None,
     )?;
     assert!(matches!(
         restored_parent.events_after(0, 2),
@@ -488,9 +488,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);
     let recovered_seed = recovered.clone().into_seed(&mut None)?;
     let readable = recovered_seed.reference_capabilities(attached_reader)?;
-    assert!(readable.contains(&text.read_capability()?));
-    assert!(readable.contains(&attachment.read_capability()?));
-    assert!(readable.contains(&manifest.read_capability()?));
+    assert!(readable.contains(&text.read_capability( &mut None)?));
+    assert!(readable.contains(&attachment.read_capability( &mut None)?));
+    assert!(readable.contains(&manifest.read_capability( &mut None)?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
@@ -597,4 +597,3 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     Ok(())
 }
-

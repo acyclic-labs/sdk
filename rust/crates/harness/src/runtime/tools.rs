@@ -1,7 +1,6 @@
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {
     /// The invocation may proceed under its existing capability grant.
@@ -19,7 +18,6 @@ pub enum ToolPolicyDecision {
 }
 
 /// Replaceable policy evaluated after schema and scope validation, before dispatch.
-
 pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
@@ -42,7 +40,8 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// Returns the owned identity with custody for its inline Self and strings.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn identity_with_native_work(
-        &self, _work: &acyclic_fs::NativeMaterializationWork,
+        &self,
+        _work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ComponentIdentity, acyclic_fs::NativeAllocation)> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
@@ -57,7 +56,8 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
         _invocation: &'a ToolInvocation,
         _scope: &'a RuntimeScope,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (ToolPolicyDecision, acyclic_fs::NativeAllocation)>>
+    {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "policy has no original-ledger evaluator",
@@ -65,12 +65,28 @@ pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     }
 }
 
-pub(crate) fn validate_policy_identity(identity: &ComponentIdentity) -> Result<()> {
-    validate_component_label(&identity.name, "policy name")?;
-    validate_component_label(&identity.version, "policy version")?;
+pub(crate) fn validate_policy_identity(
+    identity: &ComponentIdentity,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    inspect_task_metadata(io, 2)?;
+    for (value, reason) in [
+        (&identity.name, "policy name is invalid"),
+        (&identity.version, "policy version is invalid"),
+    ] {
+        if !crate::contract::is_valid_component_label(value) {
+            return Err(task_workflow_error(
+                task_original_work(io)?,
+                crate::wire::ErrorCode::Invalid,
+                reason,
+            ));
+        }
+    }
     if identity.digest == [0; 32] {
-        return Err(Error::Invalid(
-            "policy implementation digest is empty".into(),
+        return Err(task_workflow_error(
+            task_original_work(io)?,
+            crate::wire::ErrorCode::Invalid,
+            "policy implementation digest is empty",
         ));
     }
     Ok(())
@@ -104,55 +120,61 @@ pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
     }
 }
 
-/// Binds typed and stock tool approvals to the same runtime-owned action.
-
+/// Binds a paid prompt to the canonical tool action.
 pub(crate) fn tool_approval_request(
     task: TaskId,
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
-    prompt: String,
-) -> Result<(OperationId, Interaction)> {
-    let (operation, digest) = tool_approval_binding(task, policy, definition, invocation)?;
+    paid: (String, Option<NativeCustody>),
+    work: Option<&NativeWork>,
+) -> Result<((OperationId, Interaction), Option<NativeCustody>)> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        if !paid.1.as_ref().is_some_and(|custody| {
+            custody.work().shares_ledger(work) && custody.bytes() >= paid.0.capacity() as u64
+        }) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "approval prompt does not retain its original ledger",
+            });
+        }
+        work.remaining()?;
+        if paid.0.trim().is_empty() {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "approval prompt is empty",
+            });
+        }
+    }
+    let (operation, digest) = tool_approval_binding(task, policy, definition, invocation, work)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        if digest == [0; 32] {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "approval action digest is empty",
+            });
+        }
+        return Ok((
+            (
+                operation,
+                Interaction::Approval {
+                    prompt: paid.0,
+                    operation_id: invocation.operation_id,
+                    action_digest: digest,
+                },
+            ),
+            paid.1,
+        ));
+    }
     Ok((
-        operation,
-        Interaction::approval(prompt, invocation.operation_id, digest)?,
+        (
+            operation,
+            Interaction::approval(paid.0, invocation.operation_id, digest)?,
+        ),
+        paid.1,
     ))
-}
-
-/// Moves an already-paid policy prompt into the exact canonical approval action.
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn tool_approval_request_with_native_work(
-    task: TaskId,
-    policy: &ComponentIdentity,
-    definition: &ToolDefinition,
-    invocation: &ToolInvocation,
-    prompt: String,
-    prompt_custody: acyclic_fs::NativeAllocation,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<((OperationId, Interaction), acyclic_fs::NativeAllocation)> {
-    let paid = (prompt, prompt_custody);
-    if !paid.1.work().shares_ledger(work)
-        || paid.1.bytes() < paid.0.capacity() as u64
-    {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-            reason: "approval prompt does not retain its original ledger" });
-    }
-    work.remaining()?;
-    if paid.0.trim().is_empty() {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "approval prompt is empty" });
-    }
-    let (operation, digest) = tool_approval_binding_with_native_work(task, policy, definition, invocation, work)?;
-    if digest == [0; 32] {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "approval action digest is empty" });
-    }
-    let (prompt, custody) = paid;
-    Ok(((operation, Interaction::Approval {
-        prompt, operation_id: invocation.operation_id, action_digest: digest,
-    }), custody))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -163,7 +185,8 @@ pub(super) type NativeWork = ();
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn validate_native_policy_identity(
-    paid: &(ComponentIdentity, Option<NativeCustody>), work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ComponentIdentity, Option<NativeCustody>),
+    work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let custody = paid.1.as_ref().ok_or(Error::NativeBoundary {
         code: crate::wire::ErrorCode::Conflict,
@@ -174,121 +197,84 @@ pub(super) fn validate_native_policy_identity(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn validate_policy_identity_custody_with_native_work(
-    identity: &ComponentIdentity, custody: &acyclic_fs::NativeAllocation,
+    identity: &ComponentIdentity,
+    custody: &acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let bytes = (std::mem::size_of::<ComponentIdentity>() as u64)
         .checked_add(identity.name.capacity() as u64)
         .and_then(|bytes| bytes.checked_add(identity.version.capacity() as u64));
     if !custody.work().shares_ledger(work) || bytes.is_none_or(|bytes| custody.bytes() < bytes) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-            reason: "policy identity does not retain its original ledger" });
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict,
+            reason: "policy identity does not retain its original ledger",
+        });
     }
     work.remaining()?;
     Ok(())
 }
 
 /// Shared SDK startup boundary for already-owned policy metadata.
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_policy_identity_with_native_work(
-    identity: &ComponentIdentity, custody: &acyclic_fs::NativeAllocation,
+    identity: &ComponentIdentity,
+    custody: &acyclic_fs::NativeAllocation,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     validate_policy_identity_custody_with_native_work(identity, custody, work)?;
-    if !crate::contract::is_valid_component_label(&identity.name) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "policy name is invalid" });
-    }
-    if !crate::contract::is_valid_component_label(&identity.version) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "policy version is invalid" });
-    }
-    if identity.digest == [0; 32] {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "policy implementation digest is empty" });
-    }
-    Ok(())
+    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+    validate_policy_identity(identity, Some(&io))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn validate_native_policy_decision(
-    paid: &(ToolPolicyDecision, Option<NativeCustody>), work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ToolPolicyDecision, Option<NativeCustody>),
+    work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let bytes = match &paid.0 {
         ToolPolicyDecision::Allow => 0,
         ToolPolicyDecision::Deny { reason } => reason.capacity() as u64,
         ToolPolicyDecision::RequireApproval { prompt } => prompt.capacity() as u64,
     };
-    if !paid.1.as_ref().is_some_and(|custody| custody.work().shares_ledger(work)
-        && custody.bytes() >= bytes)
+    if !paid
+        .1
+        .as_ref()
+        .is_some_and(|custody| custody.work().shares_ledger(work) && custody.bytes() >= bytes)
     {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-            reason: "policy decision does not retain its original ledger" });
+        return Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict,
+            reason: "policy decision does not retain its original ledger",
+        });
     }
     work.remaining()?;
     Ok(())
 }
-
-/// Derives retained approval authority without evaluating or dispatching a policy.
 
 pub(crate) fn tool_approval_binding(
     task: TaskId,
     policy: &ComponentIdentity,
     definition: &ToolDefinition,
     invocation: &ToolInvocation,
+    work: Option<&NativeWork>,
 ) -> Result<(OperationId, [u8; 32])> {
-    tool_approval_binding_with_work(task, policy, definition, invocation, None)
-}
-
-/// Canonical passive wake identity: no policy evaluation or prompt construction.
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn tool_approval_binding_with_native_work(
-    task: TaskId, policy: &ComponentIdentity, definition: &ToolDefinition,
-    invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(OperationId, [u8; 32])> {
-    tool_approval_binding_with_work(task, policy, definition, invocation, Some(work))
-}
-
-pub(super) fn tool_approval_binding_with_work(
-    task: TaskId, policy: &ComponentIdentity, definition: &ToolDefinition,
-    invocation: &ToolInvocation, work: Option<&NativeWork>,
-) -> Result<(OperationId, [u8; 32])> {
-    let digest = match work {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(work) => {
-            work.remaining()?;
-            if !crate::contract::is_valid_component_label(&policy.name)
-                || !crate::contract::is_valid_component_label(&policy.version)
-                || policy.digest == [0; 32]
-                || !crate::contract::is_valid_component_label(&invocation.name)
-                || invocation.call_id.is_empty()
-                || invocation.call_id.len() > crate::COMPONENT_LABEL_MAX_BYTES
-                || invocation.call_id.chars().any(char::is_control)
-                || invocation.call_id.contains(crate::contract::COMPONENT_LABEL_FORBIDDEN_SEPARATORS)
-                || crate::contract::COMPONENT_LABEL_FORBIDDEN_EXACT.contains(&invocation.call_id.as_str())
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "invalid tool approval identity" });
-            }
-            let mut io = crate::store::history::native_work_io(work)?;
-            let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-            crate::contract::canonical_json_digest_with_work(
-                &(task, policy, definition, invocation), work.remaining()?.bytes_encoded, &mut observed,
-            )?
-        }
-        _ => {
-            validate_policy_identity(policy)?;
-            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-            crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?
-        }
-    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let io = work
+        .map(crate::filesystem::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let io = None;
+    validate_policy_identity(policy, io.as_ref())?;
+    crate::executor::with_history_io(io.as_ref(), |observed| {
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), observed)
+    })?;
+    let digest =
+        crate::executor::preparation_digest(&(task, policy, definition, invocation), io.as_ref())?;
     let prefix = b"harness:tool-approval:v2";
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: (prefix.len() + digest.len()) as u64, ..Default::default()
+            bytes_hashed: (prefix.len() + digest.len()) as u64,
+            ..Default::default()
         })?;
     }
     let mut hash = blake3::Hasher::new();
@@ -299,17 +285,9 @@ pub(super) fn tool_approval_binding_with_work(
     Ok((OperationId::from_bytes(id_bytes), digest))
 }
 
-#[derive(Clone)]
-pub(super) enum ToolTaskContext {
-    Ordinary(TaskContext),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(Arc<NativeTaskContext>),
-}
-
 /// A task context bound to one exact tool call identity.
-
 pub struct ToolContext {
-    pub(super) task: ToolTaskContext,
+    pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -331,7 +309,10 @@ impl Clone for ToolContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            effective_scope: self.effective_scope.as_ref().map(|(scope, _)| (scope.clone(), None)),
+            effective_scope: self
+                .effective_scope
+                .as_ref()
+                .map(|(scope, _)| (scope.clone(), None)),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -343,16 +324,64 @@ impl Clone for ToolContext {
 impl ToolContext {
     /// Creates a tool context with separate runtime and provider call identities.
     pub fn new(
-        task: TaskContext,
+        task: Arc<TaskContext>,
         operation_id: OperationId,
-        call_id: impl Into<String>,
+        call_id: &str,
+        io: Option<&crate::conversation::ContentIo>,
     ) -> Result<Self> {
-        let call_id = call_id.into();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        if io.is_some() {
+            return Err(Error::Unsupported(
+                "native tool context is unavailable".into(),
+            ));
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let (call_id, native_custody) = if let Some(io) = io {
+            let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "tool context requires original native work",
+            })?;
+            if !task.native_metadata_matches(work) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "tool context differs from its original native metadata ledger",
+                });
+            }
+            io.check_cancellation()?;
+            crate::executor::with_history_io(Some(io), |work| {
+                ToolInvocation::validate_identity(call_id, None, work)
+            })?;
+            let mut slot = work
+                .claim(
+                    std::mem::size_of::<Self>() as u64,
+                    0,
+                    acyclic_fs::WorkCounters::UNCHARGED,
+                )
+                .map_err(Error::from)?;
+            let (call_id, mut custody) = work.display(call_id).map_err(Error::from)?;
+            custody
+                .absorb(&mut slot)
+                .map_err(|cause| Error::NativeWork {
+                    cause,
+                    custody: None,
+                })?;
+            (call_id, Some(custody))
+        } else {
+            if task.native_metadata_source.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "native tool context requires its original work",
+                });
+            }
+            (call_id.to_owned(), None)
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let call_id = call_id.to_owned();
         if call_id.trim().is_empty() {
             return Err(Error::Invalid("tool call ID is empty".into()));
         }
         Ok(Self {
-            task: ToolTaskContext::Ordinary(task),
+            task,
             operation_id,
             call_id,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -362,18 +391,14 @@ impl ToolContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             accepted_native_tool: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
+            native_custody,
         })
     }
 
     /// Returns the enclosing scoped task context.
     #[must_use]
     pub fn task(&self) -> &TaskContext {
-        match &self.task {
-            ToolTaskContext::Ordinary(task) => task,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            ToolTaskContext::Native(task) => task.context(),
-        }
+        self.task.as_ref()
     }
 
     /// Borrows this tool's attenuated authority without replacing its task.
@@ -389,19 +414,28 @@ impl ToolContext {
     /// Returns pending approval through this command's protected route.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn authorize_tool(
-        &self, definition: &ToolDefinition, invocation: &ToolInvocation,
+        &self,
+        definition: &ToolDefinition,
+        invocation: &ToolInvocation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<OperationId>> {
         let task = self.task();
         task.require_original_native_work(work)?;
         task.require_native_scope_restriction(self.effective_scope(), work)?;
         if invocation.operation_id != self.operation_id() || invocation.call_id != self.call_id() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                reason: "native policy invocation differs from its original command" });
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "native policy invocation differs from its original command",
+            });
         }
         task.authorize_tool_policies(
-            definition, invocation, Some(work), self.stock_native_interactions(), self.effective_scope(),
-        ).await
+            definition,
+            invocation,
+            Some(work),
+            self.stock_native_interactions(),
+            self.effective_scope(),
+        )
+        .await
     }
 
     /// Returns the exact call identity.
@@ -428,72 +462,203 @@ impl std::ops::Deref for ToolContext {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
     /// Checks effective READ and limits before replay or content IO.
-    pub fn authorize_file_read_with_native_work(&self, file: &FileRef,
+    pub fn authorize_file_read_with_native_work(
+        &self,
+        file: &FileRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        self.task().authorize_native_file_read(file, self.effective_scope(),
-            &crate::filesystem::PreparationIo::from_native_work(work)?)
+        self.task().authorize_file_read(
+            file,
+            self.effective_scope(),
+            Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+        )
     }
 
     /// Checks effective WRITE through the original bound destination.
-    pub fn authorize_content_publication_with_native_work(&self, source: Option<&FileRef>,
+    pub fn authorize_content_publication_with_native_work(
+        &self,
+        source: Option<&FileRef>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        if let Some(source) = source { task.authorize_native_file_read(source, self.effective_scope(), &io)?; }
-        let writer = task.bound_content_writer(task.content_binding(source.map(FileRef::volume)),
-            self.effective_scope(), Some(&io))?;
+        if let Some(source) = source {
+            task.authorize_file_read(source, self.effective_scope(), Some(&io))?;
+        }
+        let writer = task.bound_content_writer(
+            task.content_binding(source.map(FileRef::volume)),
+            self.effective_scope(),
+            Some(&io),
+        )?;
         if source.is_some_and(|source| source.volume() != writer.volume()) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "source differs from the owner-bound destination" });
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "source differs from the owner-bound destination",
+            });
         }
         Ok(())
     }
 
     /// Reads original content under the effective tool scope.
-    pub async fn read_file_with_native_work(&self, file: &FileRef,
+    pub async fn read_file_with_native_work(
+        &self,
+        file: &FileRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        self.task().read_native_file(file, self.effective_scope(), work).await
+        let task = self.task();
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        task.read_bound_file(
+            task.content_binding(Some(file.volume())),
+            file,
+            self.effective_scope(),
+            Some(&io),
+        )
+        .await
     }
 
     /// Publishes once under the effective tool scope.
-    pub async fn stage_file_once_with_native_work(&self, operation_id: OperationId, path: &str,
-        bytes: &[u8], media_type: &str, display_name: &str, work: &acyclic_fs::NativeMaterializationWork,
+    pub async fn stage_file_once_with_native_work(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-        self.task().stage_native_file(operation_id, path, bytes, media_type, display_name, None,
-            self.effective_scope(), work).await
+        self.task()
+            .stage_native_file(
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                None,
+                self.effective_scope(),
+                work,
+            )
+            .await
     }
 
     /// Replaces the pinned source generation under the effective tool scope.
-    pub async fn stage_file_at_with_native_work(&self, operation_id: OperationId, source: &FileRef,
-        bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
+    pub async fn stage_file_at_with_native_work(
+        &self,
+        operation_id: OperationId,
+        source: &FileRef,
+        bytes: &[u8],
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-        self.task().stage_native_file(operation_id, source.path(), bytes, source.descriptor().media_type(),
-            source.display_name(), Some(source), self.effective_scope(), work).await
+        self.task()
+            .stage_native_file(
+                operation_id,
+                source.path(),
+                bytes,
+                source.descriptor().media_type(),
+                source.display_name(),
+                Some(source),
+                self.effective_scope(),
+                work,
+            )
+            .await
     }
 
     /// Observes the original publication under effective WRITE and limits.
-    pub async fn observe_staged_file_once_with_native_work(&self, operation_id: OperationId,
+    pub async fn observe_staged_file_once_with_native_work(
+        &self,
+        operation_id: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<FileRef>, acyclic_fs::NativeAllocation)> {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let scope = self.effective_scope();
         let writer = task.bound_content_writer(task.content_binding(None), scope, Some(&io))?;
-        task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
-        let (file, hold) = writer.observe_staged_once(operation_id, scope.limits.file_bytes, Some(&io))?.await?;
-        task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+        task.scope
+            .verify_created_write(writer.volume(), Some(&io))
+            .await?;
+        let (file, hold) = writer
+            .observe_staged_once(operation_id, scope.limits.file_bytes, Some(&io))?
+            .await?;
+        task.scope
+            .verify_created_write(writer.volume(), Some(&io))
+            .await?;
         if let Some(file) = &file {
-            scope.limits.validate_file(file, &mut Some(&mut io.history_io()))?;
+            scope
+                .limits
+                .validate_file(file, &mut Some(&mut io.history_io()))?;
             if file.volume() != writer.volume() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "content publisher observed another volume" });
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Storage,
+                    reason: "content publisher observed another volume",
+                });
             }
         }
         let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        if let Some(hold) = hold { hold.into_retained(); }
+        if let Some(hold) = hold {
+            hold.into_retained();
+        }
         Ok((file, io.take_native_custody(retained)?))
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl ToolContext {
+    /// Checks the SDK-issued native dispatch context before MCP allocation or IO.
+    pub fn validate_native_mcp_context(&self, work: &NativeWork) -> Result<()> {
+        let context = self.validate_native_bound_context(work)?;
+        if !context
+            .native_metadata_source
+            .as_ref()
+            .is_some_and(|source| source.purpose == IssuedContextPurpose::Dispatch)
+        {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "native context purpose does not permit MCP dispatch",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks a genuine owner-bound native reconciliation context.
+    pub fn validate_native_mcp_reconciliation_context(&self, work: &NativeWork) -> Result<()> {
+        self.validate_native_bound_context(work).map(|_| ())
+    }
+
+    pub(super) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
+        work.charge(acyclic_fs::WorkCounters::default())
+            .map_err(|cause| Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
+        if !self.native_metadata_matches(work) {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "MCP context has no original native tool metadata source",
+            ));
+        }
+        let Some(shared) = self.native_task() else {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "MCP context is not the original shared native task",
+            ));
+        };
+        let context = shared.as_ref();
+        context.require_original_native_work(work)?;
+        let Some((task, fence)) = context
+            .owned_mailbox
+            .as_ref()
+            .map(|owner| owner.task_binding())
+        else {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "MCP context has no borrowed original owner binding",
+            ));
+        };
+        if !context.original_task_binding_matches(task, fence) {
+            return Err(native_context::boundary(
+                crate::wire::ErrorCode::Unauthorized,
+                "MCP context differs from its original task and fence",
+            ));
+        }
+        Ok(context)
     }
 }

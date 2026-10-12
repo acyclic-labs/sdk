@@ -3,15 +3,15 @@ use super::*;
 /// Git-compatible ignore policy used by commit and parent-join capture.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitIgnorePolicy {
-    pub(super) rules: Vec<GitIgnoreRule>,
+    rules: Vec<GitIgnoreRule>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(super) struct GitIgnoreRule {
-    pub(super) pattern: String,
-    pub(super) negated: bool,
-    pub(super) directory_only: bool,
-    pub(super) anchored: bool,
+struct GitIgnoreRule {
+    pattern: String,
+    negated: bool,
+    directory_only: bool,
+    anchored: bool,
 }
 
 impl GitIgnorePolicy {
@@ -30,7 +30,11 @@ impl GitIgnorePolicy {
         let mut nested_policies = BTreeMap::new();
         for change in changes {
             let path = portable_changed_path(&change.path)?;
-            let is_directory = change.after.or(change.before).is_some_and(|record| record.kind == FileKind::Directory);
+            let is_directory = change
+                .after
+                .or(change.before)
+                .is_some_and(|record| record.kind == FileKind::Directory);
+            // Directory bindings can contain tracked descendants.
             if is_directory {
                 continue;
             }
@@ -75,7 +79,12 @@ impl GitIgnorePolicy {
                 if line.is_empty() {
                     return None;
                 }
-                Some(GitIgnoreRule { pattern: line.to_owned(), negated, directory_only, anchored })
+                Some(GitIgnoreRule {
+                    pattern: line.to_owned(),
+                    negated,
+                    directory_only,
+                    anchored,
+                })
             })
             .collect();
         Self { rules }
@@ -93,7 +102,7 @@ impl GitIgnorePolicy {
         !ignored
     }
 
-    pub(super) fn apply(&self, path: &str, is_directory: bool, ignored: &mut bool) {
+    fn apply(&self, path: &str, is_directory: bool, ignored: &mut bool) {
         for rule in &self.rules {
             if ignore_matches(rule, path, is_directory) {
                 *ignored = !rule.negated;
@@ -102,64 +111,14 @@ impl GitIgnorePolicy {
     }
 }
 
-pub(super) fn git_path_eligible(
-    root: &GitIgnorePolicy,
-    nested: &BTreeMap<String, GitIgnorePolicy>,
-    path: &str,
-    is_directory: bool,
-    already_tracked: bool,
-) -> bool {
-    if already_tracked {
-        return true;
-    }
-    let path = path.trim_start_matches('/');
-    let mut ignored = false;
-    root.apply(path, is_directory, &mut ignored);
-    let mut applicable = nested
-        .iter()
-        .filter_map(|(directory, policy)| {
-            path.strip_prefix(directory)
-                .and_then(|suffix| suffix.strip_prefix('/'))
-                .map(|relative| (directory.split('/').count(), relative, policy))
-        })
-        .collect::<Vec<_>>();
-    applicable.sort_by_key(|(depth, _, _)| *depth);
-    for (_, relative, policy) in applicable {
-        policy.apply(relative, is_directory, &mut ignored);
-    }
-    !ignored
-}
-
-pub(super) fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool {
-    if rule.directory_only {
-        let components: Vec<_> = path.split('/').collect();
-        let directory_count = if is_directory { components.len() } else { components.len().saturating_sub(1) };
-        return (1..=directory_count).any(|end| {
-            let prefix = components.get(..end).unwrap_or_default();
-            let directory = prefix.join("/");
-            if rule.anchored || rule.pattern.contains('/') {
-                wildcard_matches(&rule.pattern, &directory)
-            } else {
-                prefix.iter().any(|component| wildcard_matches(&rule.pattern, component))
-            }
-        });
-    }
-    if rule.anchored || rule.pattern.contains('/') {
-        wildcard_matches(&rule.pattern, path)
-    } else {
-        path.split('/').any(|component| wildcard_matches(&rule.pattern, component))
-    }
-}
-
-pub(super) fn wildcard_matches(pattern: &str, value: &str) -> bool {
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     let (mut pattern_index, mut value_index, mut star, mut checkpoint) = (0, 0, None, 0);
     while value_index < value.len() {
-        if pattern
-            .get(pattern_index)
-            .is_some_and(|byte| *byte == b'?' || value.get(value_index).is_some_and(|value| value == byte))
-        {
+        if pattern.get(pattern_index).is_some_and(|byte| {
+            *byte == b'?' || value.get(value_index).is_some_and(|value| value == byte)
+        }) {
             pattern_index += 1;
             value_index += 1;
         } else if pattern.get(pattern_index) == Some(&b'*') {
@@ -178,4 +137,49 @@ pub(super) fn wildcard_matches(pattern: &str, value: &str) -> bool {
         pattern_index += 1;
     }
     pattern_index == pattern.len()
+}
+
+pub(super) fn git_path_eligible(
+    root: &GitIgnorePolicy,
+    nested: &BTreeMap<String, GitIgnorePolicy>,
+    path: &str,
+    is_directory: bool,
+    already_tracked: bool,
+) -> bool {
+    if already_tracked {
+        return true;
+    }
+    let path = path.trim_start_matches('/');
+    let mut ignored = false;
+    root.apply(path, is_directory, &mut ignored);
+    // Matching prefixes are ordered parent before child.
+    for (directory, policy) in nested {
+        if let Some(relative) = path
+            .strip_prefix(directory)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        {
+            policy.apply(relative, is_directory, &mut ignored);
+        }
+    }
+    !ignored
+}
+
+fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool {
+    let matches = |candidate: &str| {
+        if rule.anchored || rule.pattern.contains('/') {
+            wildcard_matches(&rule.pattern, candidate)
+        } else {
+            candidate
+                .split('/')
+                .any(|component| wildcard_matches(&rule.pattern, component))
+        }
+    };
+    if rule.directory_only {
+        path.match_indices('/')
+            .map(|(end, _)| &path[..end])
+            .chain(is_directory.then_some(path))
+            .any(matches)
+    } else {
+        matches(path)
+    }
 }

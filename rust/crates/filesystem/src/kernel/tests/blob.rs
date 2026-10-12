@@ -1,11 +1,11 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::Digest;
 use crate::ObjectFailure;
 use crate::ObjectStoreError;
+use crate::async_storage::AsyncObjectStore;
 use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
-use crate::storage::{ObjectReadRequest, };
+use crate::storage::ObjectReadRequest;
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,18 +21,30 @@ impl AsyncObjectStore for PeakRecordingStore {
         &self,
         _object_id: ObjectId,
         _bytes: OwnedBytes,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        unreachable!()
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = async { unreachable!() }.await;
+        context.accept(result)
     }
 
     async fn put_many(
         &self,
         _writes: &[crate::storage::ObjectWrite],
-        budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = async {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let work = WorkCounters {
             peak_allocation_bytes: self.peak,
@@ -42,33 +54,54 @@ impl AsyncObjectStore for PeakRecordingStore {
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
         Ok(crate::OperationReceipt { value: (), work })
     }
+        .await;
+        context.accept(result)
+    }
 
     async fn read(
         &self,
         _object_id: ObjectId,
         _maximum_bytes: u64,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        unreachable!()
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.read_budget()?;
+        let _cancellation = context.cancellation;
+        let result = async { unreachable!() }.await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         _requests: &[ObjectReadRequest],
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        unreachable!()
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = async { unreachable!() }.await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         _object_id: ObjectId,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<bool> {
-        unreachable!()
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let _budget = context.work.remaining(context.budget)?;
+        let _cancellation = context.cancellation;
+        let result = async { unreachable!() }.await;
+        context.accept(result)
     }
 }
 
@@ -115,7 +148,19 @@ async fn put<S: AsyncObjectStore>(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(id, bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            id,
+            bytes,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -145,7 +190,8 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
         "07070707070707070707070707070707"
     ))?;
     assert_eq!(encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?, expected);
-    assert_eq!(decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, page);
+    assert_eq!(decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(()))?, page);
     let page_id = blob_page_id(&page, 1)?;
     assert_eq!(page_id.kind, ObjectKind::Blob);
     assert_eq!(page_id.digest, object_digest(ObjectKind::Blob, &expected));
@@ -161,7 +207,8 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
     };
     let internal_bytes = encode_blob_page(&internal, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(()))?,
         internal
     );
     assert_eq!(
@@ -257,7 +304,8 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     let mut unknown_tag = encoded.clone();
     unknown_tag[26] = 99;
     assert!(matches!(
-        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
+        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())),
         Err(CanonicalDecodeError::UnknownTag {
             field: "blob_page",
             tag: 99,
@@ -265,14 +313,16 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     ));
     let mut trailing = encoded.clone();
     trailing.push(0);
-    assert!(decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
+    assert!(decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())).is_err());
     assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     let limited = DecodeLimits {
         maximum_page_items: 0,
         ..DecodeLimits::default()
     };
     assert!(matches!(
-        decode_blob_page(&encoded, limited, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
+        decode_blob_page(&encoded, limited, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
@@ -1262,9 +1312,22 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
     assert_eq!(built.logical_bytes, 0);
     assert_eq!(built.work.source_bytes_read, 0);
     assert_eq!(built.work.backend_write_operations, 1);
-    let encoded = AsyncObjectStore::read(&store, built.root, 127, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
+    let encoded = {
+        let __object_args = (
+            built.root,
+            127,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?.value;
     assert_eq!(
-        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
+        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError,
+        >(()))?,
         BlobPage {
             first_offset: 0,
             end_offset: 0,

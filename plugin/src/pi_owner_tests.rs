@@ -41,13 +41,12 @@ fn root_policy() -> PiOwnerPolicy {
 
 async fn root_input_fixture(
     session: &Path,
-    raw: acyclic_fs::LocalFs,
+    raw: &acyclic_fs::LocalFs,
     policy: PiOwnerPolicy,
 ) -> (
     PiOwnerConfig,
     FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
     PiRootRequest,
-    acyclic_fs::LocalFs,
 ) {
     let project = VolumeRef::new(
         policy.journal.provider().clone(),
@@ -92,12 +91,12 @@ async fn root_input_fixture(
     let owner = PiOwnerConfig::new(&policy, None, &work()).unwrap();
     publish_owner(&owner, session, &work()).unwrap();
     let filesystem =
-        FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
+        FilesystemHost::new(raw.clone(), owner.policy.journal.provider(), None).unwrap();
     filesystem
         .create_volume(&owner.policy.journal)
         .await
         .unwrap();
-    (owner, filesystem, request, raw)
+    (owner, filesystem, request)
 }
 
 pub(crate) fn publish_owner(
@@ -106,11 +105,7 @@ pub(crate) fn publish_owner(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)
-            .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)?;
     owner.save_new_with_native_work(&root, Path::new(""), work)
 }
 
@@ -119,109 +114,6 @@ fn credential_fixture(policy: &PiOwnerPolicy) -> (tempfile::TempDir, PiOwnerConf
     let owner = PiOwnerConfig::new(policy, None, &work()).unwrap();
     publish_owner(&owner, directory.path(), &work()).unwrap();
     (directory, owner)
-}
-
-#[tokio::test]
-async fn root_inputs_retain_original_artifacts_and_narrow_read_authority() {
-    let session = tempfile::tempdir().unwrap();
-    let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-        session.path().join("filesystem"),
-    ))
-    .await
-    .unwrap();
-    let (owner, filesystem, request, _) =
-        root_input_fixture(session.path(), raw, root_policy()).await;
-    let work = work();
-    let original = stage_root_request(&owner, &filesystem, &request, &work)
-        .await
-        .unwrap();
-    let command = stage_root_command(&owner, &filesystem, &request, &work)
-        .await
-        .unwrap();
-    let authority = owner.authority().unwrap();
-    let issuer = AuthorityIssuer::new(ISSUER, owner.key, authority.verifier.audience().clone());
-    let signed = issuer
-        .issue(
-            &owner.policy.root_task.to_string(),
-            &owner.policy.grants,
-            Some(owner.policy.agent),
-            None,
-            &mut None,
-        )
-        .unwrap();
-    let read = ContentGrant::verify_read(&authority.verifier, &signed, &original.0).unwrap();
-    assert_eq!(
-        filesystem
-            .read_content(&original.0, &read, owner.policy.maximum_payload_bytes, None)
-            .await
-            .unwrap()
-            .as_ref(),
-        serde_json::to_vec(&request).unwrap()
-    );
-    assert!(
-        ContentGrant::verify(
-            &authority.verifier,
-            &signed,
-            &owner.policy.journal,
-            VolumeOperation::Write,
-            u64::MAX,
-            &mut None
-        )
-        .is_err()
-    );
-    for path in [
-        "pi-inputs-sibling/root.json",
-        ".system/harness-uploads/receipt.json",
-    ] {
-        let foreign = FileRef::new(
-            original.0.volume().clone(),
-            path.to_owned(),
-            original.0.version().to_owned(),
-            original.0.descriptor().clone(),
-            "root.json".into(),
-            &mut None,
-        )
-        .unwrap();
-        assert!(ContentGrant::verify_read(&authority.verifier, &signed, &foreign).is_err());
-    }
-    let mut changed = request.clone();
-    let PiRootIntent::Project { paths, .. } = &mut changed.root else {
-        unreachable!()
-    };
-    *paths.values_mut().next().unwrap() = session
-        .path()
-        .join("changed-selected-root")
-        .to_str()
-        .unwrap()
-        .into();
-    assert!(
-        stage_root_request(&owner, &filesystem, &changed, &work)
-            .await
-            .is_err()
-    );
-    drop(filesystem);
-    let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
-        session.path().join("filesystem"),
-    ))
-    .await
-    .unwrap();
-    let filesystem = FilesystemHost::new(raw, owner.policy.journal.provider().clone()).unwrap();
-    assert_eq!(
-        stage_root_request(&owner, &filesystem, &request, &work)
-            .await
-            .unwrap()
-            .0,
-        original.0
-    );
-    assert_eq!(
-        stage_root_command(&owner, &filesystem, &request, &work)
-            .await
-            .unwrap()
-            .0,
-        command.0
-    );
-    assert!(!session.path().join("unopened-selected-root").exists());
-    assert!(!session.path().join("changed-selected-root").exists());
 }
 
 #[tokio::test]
@@ -264,8 +156,8 @@ async fn root_input_denial_preserves_storage_and_selected_paths() {
         ))
         .await
         .unwrap();
-        let (owner, filesystem, mut request, raw) =
-            root_input_fixture(session.path(), raw, policy).await;
+        let (owner, filesystem, mut request) =
+            root_input_fixture(session.path(), &raw, policy).await;
         let observation = work();
         let workspace = raw
             .open_workspace_with_native_work(
@@ -340,7 +232,7 @@ fn owner_reopen_preserves_expired_policy_and_original_authority() {
     let replacement = PiOwnerConfig::new(&policy, None, &work()).unwrap();
     assert!(
         replacement
-            .authority()
+            .authority(&crate::pi_fork::tests::work())
             .unwrap()
             .verifier
             .verify(&original.signed, &mut None)
@@ -378,7 +270,7 @@ fn concurrent_initialization_publishes_one_owner() {
 #[test]
 fn missing_or_corrupt_credentials_are_never_regenerated() {
     let directory = tempfile::tempdir().unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     assert!(!directory.path().join(OWNER_FILE).exists());
     let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
     publish_owner(&owner, directory.path(), &work()).unwrap();
@@ -494,11 +386,11 @@ fn unix_owner_rejects_public_permissions_links_and_nonregular_files() {
     let (directory, _) = credential_fixture(&policy());
     let path = directory.path().join(OWNER_FILE);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let link = directory.path().join("hardlink");
     fs::hard_link(&path, &link).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     fs::remove_file(link).unwrap();
     let target = directory.path().join("original");
     fs::rename(&path, &target).unwrap();

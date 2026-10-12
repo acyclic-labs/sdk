@@ -1,7 +1,5 @@
-//! reducer transition semantics.
 use super::*;
 impl Reducer {
-
     #[allow(clippy::too_many_lines, reason = "one arm per action")]
     pub(in crate::core) fn transition_with_work(
         &self,
@@ -11,11 +9,14 @@ impl Reducer {
     ) -> Result<EventPayload> {
         match action {
             Action::TransitionLifecycle { to, reason } => {
-                validate_lifecycle(self.lifecycle, *to)?;
+                validate_lifecycle(self.projection.lifecycle, *to)?;
                 Ok(EventPayload::LifecycleTransitioned {
-                    from: self.lifecycle,
+                    from: self.projection.lifecycle,
                     to: *to,
-                    reason: reason.as_deref().map(|text| copying::copy_text(text, quota)).transpose()?,
+                    reason: reason
+                        .as_deref()
+                        .map(|text| copying::copy_text(text, quota))
+                        .transpose()?,
                 })
             }
             Action::AppendCustom {
@@ -24,6 +25,7 @@ impl Reducer {
                 content,
             } => {
                 if self
+                    .projection
                     .extension_states
                     .get(schema)
                     .is_some_and(|(_, current)| current.version != *version)
@@ -36,7 +38,9 @@ impl Reducer {
                 if content.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("extension content must be JSON".into()));
                 }
-                let binding = self.schemas.pinned_binding(schema, *version, None, quota.work())?;
+                let binding = self
+                    .schemas
+                    .pinned_binding(schema, *version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: copying::copy_text(schema, quota)?,
                     version: *version,
@@ -55,6 +59,7 @@ impl Reducer {
                 content,
             } => {
                 let (source, current) = self
+                    .projection
                     .extension_states
                     .get(name)
                     .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
@@ -66,7 +71,9 @@ impl Reducer {
                         "extension migration source or target is not exact".into(),
                     ));
                 }
-                let binding = self.schemas.pinned_binding(name, *to_version, None, quota.work())?;
+                let binding = self
+                    .schemas
+                    .pinned_binding(name, *to_version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: copying::copy_text(name, quota)?,
                     version: *to_version,
@@ -90,7 +97,7 @@ impl Reducer {
                     ));
                 }
                 if !matches!(
-                    self.lifecycle,
+                    self.projection.lifecycle,
                     LifecycleState::Pending | LifecycleState::Waiting
                 ) {
                     return Err(Error::Conflict(
@@ -101,6 +108,7 @@ impl Reducer {
                 quota.adopt(produced)?;
                 for extension in &selected {
                     if self
+                        .projection
                         .extension_states
                         .get(&extension.name)
                         .is_some_and(|(_, state)| state.version != extension.version)
@@ -113,7 +121,11 @@ impl Reducer {
                 }
                 let configurations = self.selected_configurations_in_quota(&selected, quota)?;
                 Ok(EventPayload::ExtensionsSelected {
-                    previous: copying::copy_vector(&self.active_extensions, quota, copying::copy_dependency)?,
+                    previous: copying::copy_vector(
+                        &self.projection.active_extensions,
+                        quota,
+                        copying::copy_dependency,
+                    )?,
                     selected,
                     configurations,
                 })
@@ -125,17 +137,23 @@ impl Reducer {
                     ));
                 }
                 if !matches!(
-                    self.lifecycle,
+                    self.projection.lifecycle,
                     LifecycleState::Pending | LifecycleState::Waiting
                 ) {
                     return Err(Error::Conflict(
                         "extension configuration requires a pending or waiting agent".into(),
                     ));
                 }
-                let record = self.schemas.configuration_record_in_quota(extension, content, quota)?;
+                let record = self
+                    .schemas
+                    .configuration_record(extension, content, quota)?;
                 Ok(EventPayload::ExtensionConfigured {
-                    previous: self.configured_extensions.get(extension).map(|record|
-                        copying::copy_configuration(record, quota)).transpose()?,
+                    previous: self
+                        .projection
+                        .configured_extensions
+                        .get(extension)
+                        .map(|record| copying::copy_configuration(record, quota))
+                        .transpose()?,
                     record,
                 })
             }
@@ -147,7 +165,7 @@ impl Reducer {
                 request,
                 result_schema,
             } => {
-                if self.effects.contains_key(effect_id) {
+                if self.projection.effects.contains_key(effect_id) {
                     return Err(Error::Conflict("effect identity already exists".into()));
                 }
                 if provider.trim().is_empty() || effect_kind.trim().is_empty() {
@@ -159,8 +177,13 @@ impl Reducer {
                 if request.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("effect request must be JSON content".into()));
                 }
-                let request_digest =
-                    effect_request_digest_with_work(provider, *guarantee, effect_kind, request, quota.work())?;
+                let request_digest = effect_request_digest_with_work(
+                    provider,
+                    *guarantee,
+                    effect_kind,
+                    request,
+                    quota.work(),
+                )?;
                 result_schema.validate(quota.work())?;
                 if result_schema.descriptor().media_type() != "application/schema+json" {
                     return Err(Error::Invalid(
@@ -197,7 +220,8 @@ impl Reducer {
                     ));
                 }
                 let effect = self.transition_effect(&observation.effect_id, archived_effect)?;
-                self.authority_verifier.verify_effect(observation, quota.work())?;
+                self.authority_verifier
+                    .verify_effect(observation, quota.work())?;
                 validate_effect_observation(effect, observation)?;
                 Ok(EventPayload::EffectResolved {
                     observation: copying::copy_observation(observation, quota)?,
@@ -213,34 +237,40 @@ impl Reducer {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
                 receipt.validate_shape(quota.work())?;
-                let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
-                if self.published_merges.contains(&key) {
+                let key = Self::merge_key(receipt, quota.work())?;
+                if self.projection.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
                 }
-                drop(key);
-                if let Some(io) = quota.work().as_deref_mut() { io.release_owned(key_owned)?; }
-                self.conversation.validate_append(&receipt.notice, &mut None)?;
+                self.projection
+                    .conversation
+                    .validate_append(&receipt.notice, &mut None)?;
+                copying::retain_entry::<ProjectMergeReceipt>(quota)?;
+                let receipt = receipt.copy(quota)?;
                 Ok(EventPayload::ProjectMergePublished {
-                    receipt: copying::copy_boxed(receipt.as_ref(), quota, copying::copy_receipt)?,
+                    receipt: Box::new(receipt),
                 })
             }
             Action::BindConversation { agent } => {
                 self.require_conversation()?;
-                if self.conversation.agent.is_some() || !self.conversation.messages.is_empty() {
+                if self.projection.conversation.agent.is_some()
+                    || !self.projection.conversation.messages.is_empty()
+                {
                     return Err(Error::Conflict("conversation is already bound".into()));
                 }
                 Ok(EventPayload::ConversationBound { agent: *agent })
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                self.conversation.validate_append(message, &mut None)?;
+                self.projection
+                    .conversation
+                    .validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: copying::copy_boxed(message.as_ref(), quota, copying::copy_message)?,
                 })
             }
             Action::SelectModelContext { selection } => {
                 self.require_conversation()?;
-                selection.validate(&self.conversation)?;
+                selection.validate(&self.projection.conversation)?;
                 Ok(EventPayload::ModelContextSelected {
                     selection: copying::copy_selection(selection, quota)?,
                 })
@@ -248,7 +278,7 @@ impl Reducer {
             Action::OpenInteraction { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
                 ticket.validate(quota.work())?;
-                if self.interactions.contains_key(&ticket.id) {
+                if self.projection.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
                     ));
@@ -259,6 +289,7 @@ impl Reducer {
             }
             Action::ResolveInteraction { resolution } => {
                 let (ticket, prior) = self
+                    .projection
                     .interactions
                     .get(&resolution.id)
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;

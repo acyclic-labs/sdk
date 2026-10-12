@@ -26,9 +26,6 @@ test("verified resolver routes exact owner volumes through one content binding",
   } });
   const binding = (value: string) => ({
     validate: (file: FileRef) => { contracts.validate("file_ref", file); },
-    verify: (_file: FileRef, bytes: Uint8Array) => {
-      if (new TextDecoder().decode(bytes) !== value) throw new TypeError("file digest mismatch");
-    },
     read: async () => new TextEncoder().encode(value),
     fileReadCapability: () => "file:read",
     volumeReadCapability: () => "volume:read",
@@ -43,7 +40,6 @@ test("verified resolver routes exact owner volumes through one content binding",
   const mutable = binding("first");
   const pinned = verifiedContentResolver(mutable, DEFAULT_LIMITS);
   mutable.read = async () => new TextEncoder().encode("replacement");
-  mutable.verify = () => { throw new Error("validator swapped"); };
   expect(new TextDecoder().decode(await pinned(first))).toBe("first");
   const forged = binding("second");
   await expect(verifiedContentResolver(composeContentBindings(contracts, [
@@ -57,14 +53,20 @@ test("verified resolver routes exact owner volumes through one content binding",
     { volume: first.volume, content: binding("first") },
   ]), DEFAULT_LIMITS)(second)).rejects.toThrow();
   await expect(verifiedContentResolver({
-    validate: () => {}, verify: () => {}, read: async () => new TextEncoder().encode("forged"),
+    validate: () => {}, read: async () => new TextEncoder().encode("forged"),
   }, DEFAULT_LIMITS)(first)).rejects.toThrow();
   await expect(projectModelFile({ kind: "file", file: first, policy: "bounded_full" }, {
     resolveFile: async () => new TextEncoder().encode("forged"),
   })).rejects.toThrow();
+  const changingBytes = new TextEncoder().encode("first");
+  const changing = verifiedContentResolver({ validate: () => {}, read: async () => {
+    queueMicrotask(() => queueMicrotask(() => { changingBytes[0] = 0; }));
+    return changingBytes;
+  } }, DEFAULT_LIMITS);
+  expect(await changing(first)).toEqual(new TextEncoder().encode("first"));
   let reads = 0;
   const untrusted = verifiedContentResolver({
-    validate: () => {}, verify: () => {},
+    validate: () => {},
     read: async () => { reads++; return new Uint8Array(); },
   }, DEFAULT_LIMITS);
   await expect(untrusted({ ...first, path: "../escape" })).rejects.toThrow();

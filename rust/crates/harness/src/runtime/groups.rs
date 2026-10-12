@@ -1,7 +1,6 @@
 use super::*;
 
 /// Typed live group whose cancellation is independent of sibling groups.
-
 pub struct RuntimeGroup {
     pub(super) harness: Arc<AgentHarness>,
     pub(super) group: TaskGroup,
@@ -11,7 +10,6 @@ pub struct RuntimeGroup {
 }
 
 /// Ordered immutable batch selection.
-
 pub struct Batch<I> {
     /// Caller-retained identity allocated before dispatch.
     pub id: BatchId,
@@ -28,7 +26,6 @@ impl<I> Batch<I> {
 }
 
 /// One unambiguous slot in an admitted batch.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputKey {
     /// Batch owning this input.
@@ -38,7 +35,6 @@ pub struct InputKey {
 }
 
 /// Group behavior retained with the exact batch identity.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchGroupPolicy {
@@ -49,7 +45,6 @@ pub enum BatchGroupPolicy {
 }
 
 /// Exact immutable batch request presented to a durable owner.
-
 #[derive(Clone)]
 pub struct DurableBatchRequest {
     /// Stable group identity.
@@ -186,22 +181,28 @@ impl DurableBatchRequest {
         }
         let mut resources = BTreeSet::new();
         for proof in &self.scope.resource_proofs {
-            proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
-                return Err(Error::Invalid("batch repeats a created resource proof".into()));
+                return Err(Error::Invalid(
+                    "batch repeats a created resource proof".into(),
+                ));
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, &mut None)?;
         self.scope.limits().validate(&mut None)?;
         self.scope.run_limits().validate(&mut None)?;
         if let Some(policy) = &self.policy {
-            validate_policy_identity(policy)?;
+            validate_policy_identity(policy, None)?;
         }
         if let Some(execution) = &self.execution {
             execution.validate(&mut None)?;
         }
         for input in &self.inputs {
-            validate_value(&self.input_schema, input, "batch input", None)?;
+            crate::executor::validate_json_schema_value(
+                &self.input_schema,
+                input,
+                "batch input",
+                &mut None,
+            )?;
         }
         if crate::contract::canonical_json_bytes(&self.canonical_value())?.len() as u64
             > self.scope.limits().file_bytes
@@ -299,7 +300,6 @@ impl DurableBatchRequest {
 }
 
 /// One canonical operation identity shared by native and WASM batch facades.
-
 #[must_use]
 pub fn batch_member_operation_id(
     group_id: GroupId,
@@ -317,7 +317,6 @@ pub fn batch_member_operation_id(
 }
 
 /// One exact input slot, preserving the admission decision before and after terminal observation without introducing another key-bearing shape.
-
 pub struct BatchEntry<T> {
     /// Stable batch/index key.
     pub key: InputKey,
@@ -326,7 +325,6 @@ pub struct BatchEntry<T> {
 }
 
 /// Ordered admission receipt; every submitted input retains a slot.
-
 pub struct AdmissionBatch<O> {
     /// Owning group identity.
     pub group_id: GroupId,
@@ -340,7 +338,6 @@ pub struct AdmissionBatch<O> {
 }
 
 /// Ordered outcome of all observable batch slots.
-
 pub struct BatchOutcome<O> {
     /// Stable group identity.
     pub group_id: GroupId,
@@ -353,7 +350,6 @@ pub struct BatchOutcome<O> {
 }
 
 /// One cancellation request, never a claim that the task is terminal.
-
 pub enum BatchCancellationStatus {
     /// The owner accepted an idempotent cancellation request; observe outcome separately.
     Requested,
@@ -375,7 +371,6 @@ pub enum BatchCancellationStatus {
 }
 
 /// Per-member request report for a retained batch.
-
 pub struct BatchCancellationReport {
     /// Owning group.
     pub group_id: GroupId,
@@ -425,7 +420,9 @@ pub(super) async fn request_batch_cancellation(
     Ok(report)
 }
 
-pub(super) fn cancellation_unresolved(cancellation: &Option<Result<BatchCancellationReport>>) -> bool {
+pub(super) fn cancellation_unresolved(
+    cancellation: &Option<Result<BatchCancellationReport>>,
+) -> bool {
     cancellation.as_ref().is_some_and(|result| match result {
         Err(_) => true,
         Ok(report) => report.entries.iter().any(|(_, status)| {
@@ -537,7 +534,6 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
 }
 
 /// A typed ordered map cannot silently discard a rejected admission, failed child, or unknown outcome.
-
 pub enum RuntimeMap<O> {
     /// Every input admitted and completed successfully, in input order.
     Complete(Vec<O>),
@@ -660,10 +656,12 @@ impl RuntimeGroup {
             return Ok(Vec::new());
         }
         let concurrency = tasks.len().clamp(1, 64);
-        let completions = stream::iter(tasks).map(|task| async move {
-            let id = task.identity();
-            (id, task.result().await)
-        }).buffer_unordered(concurrency);
+        let completions = stream::iter(tasks)
+            .map(|task| async move {
+                let id = task.identity();
+                (id, task.result().await)
+            })
+            .buffer_unordered(concurrency);
         futures::pin_mut!(completions);
         let mut successes = Vec::new();
         let mut others = Vec::new();
@@ -689,5 +687,4 @@ impl RuntimeGroup {
     pub fn close(&self) {
         self.group.close();
     }
-
 }

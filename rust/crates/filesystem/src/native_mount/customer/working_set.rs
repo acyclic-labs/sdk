@@ -8,7 +8,6 @@ pub struct NativeWorkingSet<A, O> {
     pub(super) source_identity: NativeRootIdentity,
     pub(super) selected_root: PathBuf,
     pub(super) expected_generation: GenerationId,
-    pub(super) baseline: NativeViewBaseline,
     pub(super) writable: bool,
     pub(super) _custody: NativeAllocation,
 }
@@ -18,12 +17,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Exact generation admitted into the physical view.
-    #[must_use]
-    pub const fn generation_id(&self) -> GenerationId {
-        self.expected_generation
-    }
-
     /// Physical volume-root directory owned by this view.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -42,25 +35,27 @@ where
         &self,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        self.check_head(self.expected_generation, work).await?;
+        self.check_head(work).await?;
         validate_native_working_set_root(
             &self.source_root,
             &self.selected_root,
             Some(self.source_identity),
             work,
         )?;
-        self.check_head(self.expected_generation, work).await
+        self.check_head(work).await
     }
 
     async fn check_head(
         &self,
-        expected: GenerationId,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
         work.cancellation()
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        if self.writable && self.workspace.head(work, work.cancellation()).await?.id() != expected {
+        if self.writable
+            && self.workspace.head(work, work.cancellation()).await?.id()
+                != self.expected_generation
+        {
             return Err(WorkspaceError::StaleGeneration.into());
         }
         Ok(())
@@ -101,7 +96,10 @@ where
                 paths,
                 self.source_identity,
                 scope,
-                Some(self.baseline),
+                Some(NativeViewBaseline::new(
+                    self.source_identity,
+                    !self.writable,
+                )),
                 work,
             )
             .await?;
@@ -119,7 +117,7 @@ where
         mut before_publication: F,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where
-        E: From<MountLifecycleError> + From<MountSourceError> + Send + 'static,
+        E: From<MountLifecycleError> + From<MountSourceError> + From<crate::FsError> + Send + 'static,
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
@@ -134,17 +132,15 @@ where
                 ));
             }
             let cancellation = work.cancellation();
-            let current = self
-                .source
-                .shared_checkout()
-                .lock_with_carrier(
-                    &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    cancellation,
-                    Some(self.source.cancellation()),
-                )
-                .await
-                .map_err(|cause| (E::from(cause), None))?
-                .generation_id();
+            let current = super::super::adapter::await_lock(
+                self.source.shared_checkout().lock(),
+                &mut super::super::adapter::NativeDemandCarrier::Native(work),
+                cancellation,
+                Some(self.source.cancellation()),
+            )
+            .await
+            .map_err(|cause| (E::from(cause), None))?
+            .generation_id();
             let head = self
                 .workspace
                 .head(work, cancellation)
@@ -156,18 +152,11 @@ where
             self.capture_host_subtree(&MountPath::root(), work)
                 .await
                 .map_err(|cause| (E::from(cause), None))?;
-            self.source
-                .sync_async_with_permit_carrier_guarded_context_with_ack(
-                    permit,
-                    false,
-                    &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    &mut super::super::view_ledger::ViewLedgerAdmission::default(),
-                    cancellation,
-                    &mut before_publication,
-                    Some(self.snapshot_context()),
-                    &mut acknowledged,
-                )
-                .await
+            self.source.shared_checkout().publish(
+                permit, work, cancellation, Some(self.source.cancellation()),
+                &mut before_publication, Some(self.snapshot_context()), &mut acknowledged,
+            ).await?;
+            acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
         }
         .await;
         result.map_err(
@@ -186,16 +175,14 @@ where
         work: &NativeMaterializationWork,
     ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
         self.capture_host_subtree(&MountPath::root(), work).await?;
-        let pending = self
-            .source
-            .shared_checkout()
-            .lock_with_carrier(
-                &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                work.cancellation(),
-                Some(self.source.cancellation()),
-            )
-            .await?
-            .has_pending_mutations();
+        let pending = super::super::adapter::await_lock(
+            self.source.shared_checkout().lock(),
+            &mut super::super::adapter::NativeDemandCarrier::Native(work),
+            work.cancellation(),
+            Some(self.source.cancellation()),
+        )
+        .await?
+        .has_pending_mutations();
         if pending {
             return Err(MountLifecycleError::NativePolicy(
                 "native source view changed after admission",
@@ -218,7 +205,7 @@ where
     }
 
     /// Retires accepted captures using this source's birth-time credit.
-    pub fn retire_with_work(
+    pub fn retire(
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {

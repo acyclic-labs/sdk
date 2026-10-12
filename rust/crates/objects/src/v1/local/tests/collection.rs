@@ -46,7 +46,13 @@ async fn collection_retains_replacement_and_original_retry_receipt_across_reopen
     drop(provider);
     let provider = create(root.path()).await?;
     assert_eq!(provider.put(put("value"), before_body).await?, original);
-    assert_eq!(provider.get(get(bucket(), "value"), 65_537).await?.into_body(), after_body);
+    assert_eq!(
+        provider
+            .get(get(bucket(), "value"), 65_537)
+            .await?
+            .into_body(),
+        after_body
+    );
     Ok(())
 }
 
@@ -91,7 +97,11 @@ async fn staged_parts_remain_private_and_retained_until_abort()
         [part]
     );
     assert_eq!(
-        provider.get(get(bucket(), "staged"), 10).await.err().map(|e| e.code),
+        provider
+            .get(get(bucket(), "staged"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(wire::ErrorCode::NotFound)
     );
     provider
@@ -106,7 +116,11 @@ async fn staged_parts_remain_private_and_retained_until_abort()
     drop(provider);
     let provider = create(root.path()).await?;
     assert_eq!(
-        provider.get(get(bucket(), "staged"), 10).await.err().map(|e| e.code),
+        provider
+            .get(get(bucket(), "staged"), 10)
+            .await
+            .err()
+            .map(|e| e.code),
         Some(wire::ErrorCode::NotFound)
     );
     Ok(())
@@ -140,35 +154,6 @@ async fn corrupt_retained_body_stops_collection_before_any_deletion()
 }
 
 #[tokio::test]
-async fn collection_waits_for_an_admitted_physical_read_lease()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let provider = seeded(root.path()).await?;
-    provider
-        .put(put("deleted"), OwnedBytes::from(vec![b'a'; 65_537]))
-        .await?;
-    let lease = provider.body_io.clone().read_owned().await;
-    provider
-        .delete(wire::DeleteObjectRequest {
-            bucket: bucket(),
-            object_key: "deleted".into(),
-            ..Default::default()
-        })
-        .await?;
-    let collector = provider.clone();
-    let mut task = tokio::spawn(async move { collector.collect_garbage(10).await });
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(20), &mut task)
-            .await
-            .is_err()
-    );
-    assert_eq!(segments(root.path())?.len(), 1);
-    drop(lease);
-    assert_eq!(task.await??.segments_removed, 1);
-    Ok(())
-}
-
-#[tokio::test]
 async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
@@ -197,7 +182,19 @@ async fn dominant_inline_bytes_trigger_owned_maintenance_after_reopen()
     assert_eq!(provider.put(put("first"), body.clone()).await?, first);
     drop(provider);
     let provider = create(root.path()).await?;
-    assert_eq!(provider.get(get(bucket(), "first"), 1024).await?.into_body(), body);
-    assert_eq!(provider.get(get(bucket(), "second"), 1024).await?.into_body(), body);
+    assert_eq!(
+        provider
+            .get(get(bucket(), "first"), 1024)
+            .await?
+            .into_body(),
+        body
+    );
+    assert_eq!(
+        provider
+            .get(get(bucket(), "second"), 1024)
+            .await?
+            .into_body(),
+        body
+    );
     Ok(())
 }

@@ -6,7 +6,7 @@ use acyclic_harness::{
     durable_tool::DurableToolRunner,
     executor::{ExecutionEvent, ExecutionRecord},
     mcp::{
-        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition, McpToolResult,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure, McpToolDefinition,
         McpToolTransport,
     },
     runtime::{TaskContext, ToolContext},
@@ -57,14 +57,9 @@ impl<P: StreamProvider> Transport<P> {
         Ok(())
     }
 
-    async fn result(&self, status: EffectStatus) -> Result<McpToolResult> {
+    async fn result(&self, status: EffectStatus) -> Result<Value> {
         if let EffectStatus::Failed { message } = status {
-            return Ok(McpToolResult {
-                content: vec![json!({"type":"text","text":message})],
-                structured_content: None,
-                is_error: true,
-                meta: None,
-            });
+            return Ok(json!({"content":[{"type":"text","text":message}], "isError":true}));
         }
         let EffectStatus::Succeeded { result } = status else {
             return Err(Error::Indeterminate(self.descriptor()?.operation));
@@ -72,8 +67,7 @@ impl<P: StreamProvider> Transport<P> {
         let output: NativeProcessResult =
             serde_json::from_slice(&self.approved.recovery.content.read(&result).await?)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-        serde_json::from_value(self.approved.request.mcp_response(&output)?)
-            .map_err(|error| Error::Invalid(error.to_string()))
+        self.approved.request.mcp_response(&output)
     }
 }
 
@@ -84,7 +78,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+    ) -> BoxProviderFuture<'a, Result<Value>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
             if context.operation_id() != operation {
@@ -105,12 +99,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                 binding
                     .recovery
                     .effects
-                    .run_task_effect(
-                        &binding.recovery.owner,
-                        binding.command,
-                        binding.plan.clone(),
-                    )
-                    .await?,
+                    .run_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                    .await.map(|result| result.0)?,
             )
             .await
         })
@@ -119,7 +109,7 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unauthorized("admitted task context required".into()))?;
             if context.operation_id() != operation {
@@ -131,8 +121,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             match binding
                 .recovery
                 .effects
-                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan)
-                .await
+                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                .await.map(|result| result.0)
             {
                 Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => {
                     self.result(status).await.map(Some)
@@ -202,11 +192,11 @@ pub(super) async fn run<P: StreamProvider>(
     let mut tools = ToolRegistry::default();
     catalog().install(&mut tools, None, &bound, &projection, 1, 8192)?;
     let definition = tools
-        .get("mcp.example.echo")
+        .get("mcp.example.echo", None, None)?
         .ok_or_else(|| Error::NotFound("native MCP tool".into()))?
         .definition
         .clone();
-    let context = ToolContext::new(task, operation, operation.to_string())?;
+    let context = ToolContext::new(std::sync::Arc::new(task), operation, &(operation.to_string()), None)?;
     if !replay {
         let mut changed = arguments.clone();
         *changed
@@ -226,14 +216,20 @@ pub(super) async fn run<P: StreamProvider>(
     let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
     for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
-            .run_with_context(
+            .run(
                 task_id,
-                operation,
-                definition.clone(),
-                arguments.clone(),
-                context.clone(),
-            )
-            .await?;
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: arguments.clone(),
+                },
+                &context,
+                None,
+                false,
+            )?
+            .await?.0;
         verify_result(result, &arguments, operation, completed)?;
     }
     verify_journal(journal.as_ref(), operation, completed).await?;
@@ -264,7 +260,7 @@ async fn verify_journal(
         let after = records
             .last()
             .map_or(0, |record: &ExecutionRecord| record.sequence);
-        let batch = journal.replay(operation, after, 4).await?;
+        let batch = journal.replay(operation, after, 4, None)?.await?;
         if batch.is_empty() {
             break;
         }
@@ -316,9 +312,7 @@ fn verify_result(
             "native MCP tool did not succeed: {outcome:?}"
         )));
     };
-    let result: McpToolResult =
-        serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
-    if result.structured_content.as_ref() != Some(arguments) || result.is_error {
+    if value.get("structuredContent") != Some(arguments) || value.get("isError") == Some(&Value::Bool(true)) {
         return Err(Error::Invalid("native MCP tool result changed".into()));
     }
     Ok(())

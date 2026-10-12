@@ -42,35 +42,44 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let exhausted = parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "measured-child",
             ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             WorkBudget::default(),
             &cancellation,
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await;
     assert!(exhausted.is_err());
     assert!(fs.open_workspace("measured-child", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let budget = finite_budget()?;
     let created = parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "measured-child",
             ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await?;
     created.work.verify(budget)?;
     assert!(created.work.backend_write_operations > 0);
     let generation = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "measured-child",
             ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             budget,
             &cancellation,
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await?;
     retried.work.verify(budget)?;
     assert_eq!(retried.value.id(), created.value.id());
@@ -82,12 +91,12 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     assert!(
         parent
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 "measured-child",
                 ForkOptions::from_generation(pinned, key).inherit_paths(Vec::new()), acyclic_fs::PublicationPermit::Unrestricted,
                 budget,
                 &cancellation,
-            |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+            &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
             .await
             .is_err()
     );
@@ -104,12 +113,15 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     cancellation.cancel();
     let key = IdempotencyKey::new();
     let cancelled = match parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "cancel-child",
             ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &cancellation,
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await {
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        ).await {
         Err(failure) => failure,
         Ok(_) => return Err("precancelled fork unexpectedly succeeded".into()),
     };
@@ -119,12 +131,15 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let other = fs.create_workspace("foreign-source", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let foreign = match parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "foreign-child",
             ForkOptions::from_generation(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await {
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        ).await {
         Err(failure) => failure,
         Ok(_) => return Err("foreign fork unexpectedly succeeded".into()),
     };
@@ -153,53 +168,145 @@ impl AsyncObjectStore for CancelAfterPut {
         &self,
         id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        let receipt = self.inner.put(id, bytes, budget, cancellation).await?;
-        self.after_put(cancellation);
-        Ok(receipt)
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            let receipt = {
+                let __object_args = (id, bytes, budget, cancellation);
+                let mut __object_work =
+                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .put(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
+            self.after_put(cancellation);
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        let receipt = self.inner.put_many(writes, budget, cancellation).await?;
-        self.after_put(cancellation);
-        Ok(receipt)
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            let receipt = {
+                let __object_args = (writes, budget, cancellation);
+                let mut __object_work =
+                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .put_many(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }?;
+            self.after_put(cancellation);
+            Ok(receipt)
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
         &self,
         id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
-        self.inner
-            .read(id, maximum_bytes, budget, cancellation)
-            .await
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.read_budget()?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (id, maximum_bytes, budget, cancellation);
+                let mut __object_work =
+                    acyclic_fs::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = self
+                    .inner
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        self.inner.read_many(requests, budget, cancellation).await
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<
+        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
+        acyclic_fs::ObjectStoreError,
+    > {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (requests, budget, cancellation);
+                let mut __object_work =
+                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .read_many(__object_args.0, &mut __object_work)
+                    .await
+                    .map(|(values, _allocation)| values);
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
         &self,
         id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
-        self.inner.contains(id, budget, cancellation).await
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<bool, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (id, budget, cancellation);
+                let mut __object_work =
+                    acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result = self
+                    .inner
+                    .contains(__object_args.0, &mut __object_work)
+                    .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -226,12 +333,12 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     let cancellation = CancellationToken::new();
     assert!(
         parent
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 "inflight-child",
                 ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
                 finite_budget()?,
                 &cancellation,
-            |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+            &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
             .await
             .is_err()
     );
@@ -240,21 +347,27 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     assert!(fs.open_workspace("inflight-child", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     assert_eq!(parent.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), pinned.id());
     let created = parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "inflight-child",
             ForkOptions::from_generation(pinned.clone(), key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await?;
     let initial = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
-        .fork(
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
             "inflight-child",
             ForkOptions::from_generation(pinned, key), acyclic_fs::PublicationPermit::Unrestricted,
             finite_budget()?,
             &CancellationToken::new(),
-        |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
+        &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))
+            },
+        )
         .await?;
     assert_eq!(retried.value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), initial);
     assert_eq!(

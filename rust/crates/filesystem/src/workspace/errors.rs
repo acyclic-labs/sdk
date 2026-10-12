@@ -1,5 +1,25 @@
 use super::*;
 
+/// Canonical workspace-name validation failures.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorkspaceNameError {
+    /// Names must contain at least one scalar.
+    #[error("workspace name is empty")]
+    Empty,
+    /// Dot names are reserved for namespace traversal prevention.
+    #[error("workspace name is reserved")]
+    Reserved,
+    /// Canonical UTF-8 exceeds the stable bound.
+    #[error("workspace name exceeds 255 UTF-8 bytes")]
+    TooLong,
+    /// Names cannot contain separators or control characters.
+    #[error("workspace name contains a path separator or control character")]
+    InvalidCharacter,
+    /// Canonical name storage could not be allocated.
+    #[error("workspace name allocation failed")]
+    Allocation,
+}
+
 /// Customer workspace operation failure.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum WorkspaceError {
@@ -98,17 +118,29 @@ pub enum WorkspaceError {
 }
 
 impl WorkspaceError {
+    pub(crate) fn path(error: impl fmt::Display) -> Self {
+        Self::Path(error.to_string())
+    }
+
     pub(crate) fn engine(error: impl std::error::Error + 'static) -> Self {
-        if let Some(cause) = workspace_bounded_error(&error) { return cause; }
-        if let Some(failure) = (&error as &dyn std::any::Any).downcast_ref::<crate::OperationFailure<FsError>>()
-            && let Some(cause) = workspace_bounded_error(&failure.error) { return cause; }
+        if let Some(cause) = workspace_bounded_error(&error) {
+            return cause;
+        }
+        if let Some(failure) =
+            (&error as &dyn std::any::Any).downcast_ref::<crate::OperationFailure<FsError>>()
+            && let Some(cause) = workspace_bounded_error(&failure.error)
+        {
+            return cause;
+        }
         Self::Engine(error.to_string())
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl From<crate::NativeTreeMaterializationError> for WorkspaceError {
-    fn from(error: crate::NativeTreeMaterializationError) -> Self { FsError::from(error).into() }
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        FsError::from(error).into()
+    }
 }
 
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
@@ -124,15 +156,29 @@ impl From<crate::MaterializeError> for WorkspaceError {
 }
 
 /// Extracts quota and cancellation causes through transparent error wrappers.
-pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static)) -> Option<WorkspaceError> {
-    if let Some(error) = error.downcast_ref::<crate::WorkError>() { return Some(WorkspaceError::Work(*error)); }
-    if error.is::<crate::CancellationError>() { return Some(WorkspaceError::Cancelled(crate::CancellationError)); }
-    if let Some(error) = error.downcast_ref::<Box<FsError>>() { return workspace_bounded_error(error.as_ref()); }
-    if let Some(WorkspaceError::WorkMerge { prior, backend, error }) = error.downcast_ref::<WorkspaceError>() {
-        return Some(WorkspaceError::WorkMerge { prior: *prior, backend: *backend, error: *error });
+pub(crate) fn workspace_bounded_error(
+    error: &(dyn std::error::Error + 'static),
+) -> Option<WorkspaceError> {
+    if let Some(error) = error.downcast_ref::<crate::WorkError>() {
+        return Some(WorkspaceError::Work(*error));
     }
-    if let Some(FsError::RootReadWorkMerge { prior, backend, error }) = error.downcast_ref::<FsError>() {
-        return Some(WorkspaceError::Filesystem(FsError::RootReadWorkMerge { prior: *prior, backend: *backend, error: *error }));
+    if error.is::<crate::CancellationError>() {
+        return Some(WorkspaceError::Cancelled(crate::CancellationError));
+    }
+    if let Some(error) = error.downcast_ref::<Box<FsError>>() {
+        return workspace_bounded_error(error.as_ref());
+    }
+    if let Some(WorkspaceError::WorkMerge {
+        prior,
+        backend,
+        error,
+    }) = error.downcast_ref::<WorkspaceError>()
+    {
+        return Some(WorkspaceError::WorkMerge {
+            prior: *prior,
+            backend: *backend,
+            error: *error,
+        });
     }
     macro_rules! bounded {
         ($kind:ty; [$($nested:ident),*]; [$($cancelled:ident),*]) => {{
@@ -149,11 +195,21 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
     }
     bounded!(WorkspaceError; [Cancelled, Filesystem, NamespacePath]; []);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(FsError::NativeKernel(cause)) = error.downcast_ref::<FsError>() { return workspace_bounded_error(cause); }
+    if let Some(FsError::NativeKernel(cause)) = error.downcast_ref::<FsError>() {
+        return workspace_bounded_error(cause);
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(crate::ObjectStoreError::Native(cause)) = error.downcast_ref::<crate::ObjectStoreError>() { return workspace_bounded_error(cause); }
+    if let Some(crate::ObjectStoreError::Native(cause)) =
+        error.downcast_ref::<crate::ObjectStoreError>()
+    {
+        return workspace_bounded_error(cause);
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(crate::AuthorityStoreError::NativeOriginal(cause)) = error.downcast_ref::<crate::AuthorityStoreError>() { return workspace_bounded_error(cause); }
+    if let Some(crate::AuthorityStoreError::NativeOriginal(cause)) =
+        error.downcast_ref::<crate::AuthorityStoreError>()
+    {
+        return workspace_bounded_error(cause);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     bounded!(crate::NativeTreeMaterializationError; [Io]; [Cancelled]);
     bounded!(FsError;
@@ -185,8 +241,6 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
     bounded!(crate::kernel::CheckpointError; [Storage]; []);
     bounded!(crate::kernel::ClosureError; [Storage]; []);
     bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority]; []);
-    #[cfg(not(target_arch = "wasm32"))]
-    bounded!(crate::materializer::NativeTreeMaterializationError; [Io]; [Cancelled]);
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     bounded!(crate::DemandError; []; [Cancelled]);
     #[cfg(feature = "native-mount")]
@@ -201,21 +255,36 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
             _ => None,
         };
     }
-    if let Some(error) = error.downcast_ref::<std::io::Error>() { return error.get_ref().and_then(|cause| workspace_bounded_error(cause)); }
+    if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        return error
+            .get_ref()
+            .and_then(|cause| workspace_bounded_error(cause));
+    }
     error.source().and_then(workspace_bounded_error)
+}
+
+impl From<crate::AuthorityStoreError> for WorkspaceError {
+    fn from(error: crate::AuthorityStoreError) -> Self {
+        Self::from(FsError::from(error))
+    }
 }
 
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
-        if matches!(&error, FsError::RootReadWorkMerge { .. }) { return Self::Filesystem(error); }
-        if let Some(cause) = workspace_bounded_error(&error) { return cause; }
+        if let Some(cause) = workspace_bounded_error(&error) {
+            return cause;
+        }
         match error {
             FsError::Path(crate::kernel::PathLookupError::NamespacePath(error)) => error.into(),
             FsError::SourceSnapshotStale => Self::StaleSource,
             FsError::NotFound => Self::NotFound,
             FsError::NotDirectory => Self::NotDirectory,
-            FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => Self::NotRegularFile,
-            FsError::Mutation(crate::kernel::GenerationMutationError::FileIdentityConflict) => Self::StaleIdentity,
+            FsError::FileRead(crate::kernel::FileRangeReadError::NotRegular) => {
+                Self::NotRegularFile
+            }
+            FsError::Mutation(crate::kernel::GenerationMutationError::FileIdentityConflict) => {
+                Self::StaleIdentity
+            }
             error => Self::Filesystem(error),
         }
     }
@@ -225,7 +294,9 @@ impl From<crate::kernel::NamespacePathError> for WorkspaceError {
     fn from(error: crate::kernel::NamespacePathError) -> Self {
         match error {
             crate::kernel::NamespacePathError::Work(error) => Self::Work(error),
-            crate::kernel::NamespacePathError::Cancelled => Self::Cancelled(crate::CancellationError),
+            crate::kernel::NamespacePathError::Cancelled => {
+                Self::Cancelled(crate::CancellationError)
+            }
             error => Self::NamespacePath(error),
         }
     }

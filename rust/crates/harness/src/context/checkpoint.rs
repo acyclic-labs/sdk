@@ -38,11 +38,16 @@ impl CompactionRetention {
     /// Rejects ambiguous repeated role declarations.
     pub(crate) fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         #[cfg(feature = "filesystem")]
-        if let Some(io) = io { io.check_cancellation()?; }
+        if let Some(io) = io {
+            io.check_cancellation()?;
+        }
         for (position, role) in self.roles.iter().enumerate() {
             if self.roles[..position].contains(role) {
-                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                    "compaction retention repeats a role"));
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "compaction retention repeats a role",
+                ));
             }
         }
         Ok(())
@@ -84,14 +89,20 @@ pub struct CanonicalContextCheckpoint {
 impl CanonicalContextCheckpoint {
     /// Checks a bounded envelope, sharing the I/O companion's policy and native scratch custody.
     pub fn validate(
-        &self, limits: Limits, io: Option<&crate::executor::PreparationIo>,
+        &self,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         if self.selection.conversation_revision == 0
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
         {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint coverage is invalid"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "canonical checkpoint coverage is invalid",
+            ));
         }
         // Validate immutable references before the bounded scratch set grows.
         for reference in [&self.source, &self.retained, &self.compaction] {
@@ -99,7 +110,11 @@ impl CanonicalContextCheckpoint {
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
             {
-                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint payload scope is invalid"));
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "canonical checkpoint payload scope is invalid",
+                ));
             }
         }
         if let Some(previous) = &self.selection.checkpoint {
@@ -108,26 +123,43 @@ impl CanonicalContextCheckpoint {
         #[cfg(feature = "filesystem")]
         let mut history = io.map(crate::executor::PreparationIo::history_io);
         #[cfg(feature = "filesystem")]
-        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> =
-            history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = history
+            .as_mut()
+            .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         #[cfg(feature = "filesystem")]
         let _unique_guard = {
             // Logical borrowed entry slots only, never opaque allocator nodes.
-            let bytes = self.selection.message_ids.len()
+            let bytes = self
+                .selection
+                .message_ids
+                .len()
                 .checked_mul(std::mem::size_of::<&uuid::Uuid>())
-                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint identity storage overflows"))?;
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "canonical checkpoint identity storage overflows",
+                    )
+                })?;
             crate::wire_codec::CodecQuota::new(&mut observed, bytes as u64)?
         };
         let mut unique = std::collections::BTreeSet::new();
         for id in &self.selection.message_ids {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
             }
             unique.insert(id);
         }
         if unique.len() != self.selection.message_ids.len() {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint repeats source identities"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "canonical checkpoint repeats source identities",
+            ));
         }
         Ok(())
     }
@@ -136,10 +168,7 @@ impl CanonicalContextCheckpoint {
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
         self.validate(limits, None)?;
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
-        crate::contract::validate_json_byte_bound(
-            self,
-            limits.file_bytes.min(limits.render_bytes),
-        )?;
+        crate::executor::json::json_byte_length(self, limits.file_bytes.min(limits.render_bytes), &mut None).map(|_| ())?;
         let bytes = crate::contract::canonical_json_bytes(self)?;
         if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
             return Err(crate::Error::Invalid(
@@ -151,8 +180,12 @@ impl CanonicalContextCheckpoint {
 
     /// Binds resolved payloads to the canonical source and existing summary operation.
     pub fn validate_projection(
-        &self, source: &Context, retained: &Context, compaction: &CompactionReference,
-        limits: Limits, io: Option<&crate::executor::PreparationIo>,
+        &self,
+        source: &Context,
+        retained: &Context,
+        compaction: &CompactionReference,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         self.validate(limits, io)?;
         validate_projected_context(source, limits, io)?;
@@ -163,7 +196,11 @@ impl CanonicalContextCheckpoint {
             .as_ref()
             .is_none_or(|summary| summary.operation_id != self.operation_id)
         {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "canonical checkpoint summary admission differs"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "canonical checkpoint summary admission differs",
+            ));
         }
         Ok(())
     }

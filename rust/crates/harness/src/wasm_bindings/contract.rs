@@ -1,38 +1,17 @@
 use super::*;
 
-
-/// Public Rust projection for the immutable workflow admission envelope.
-///
-/// The validator still consumes the canonical `WorkflowAdmission`; this DTO
-/// only gives the generated TypeScript surface the exact serde shape and
-/// bigint treatment used by the Rust value.
-#[derive(Clone, Debug, Serialize, Tsify)]
-#[tsify(large_number_types_as_bigints)]
-pub struct WasmWorkflowAdmissionWire {
-    #[tsify(type = "string")]
-    operation_id: String,
-    #[tsify(type = "readonly number[]")]
-    request_digest: Vec<u8>,
-    #[tsify(
-        type = "Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>"
-    )]
-    initial: crate::workflow::MachineCheckpoint,
-}
-
-/// Validates and projects one immutable workflow admission through Rust.
-#[wasm_bindgen(js_name = validateWorkflowAdmission)]
+/// Validates the immutable workflow admission through its core serde type.
+#[wasm_bindgen(js_name = validateWorkflowAdmission, unchecked_return_type = "WasmWorkflowAdmissionWire")]
 pub fn validate_workflow_admission(
     #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
-) -> Result<Ts<WasmWorkflowAdmissionWire>, JsValue> {
+) -> Result<JsValue, JsValue> {
     let value: crate::workflow::WorkflowAdmission = from_js(value)?;
     value.validate(None).map_err(js_error)?;
-    WasmWorkflowAdmissionWire {
-        operation_id: value.operation_id.to_string(),
-        request_digest: value.request_digest.to_vec(),
-        initial: value.initial,
-    }
-    .into_ts()
-    .map_err(|error| JsValue::from_str(&error.to_string()))
+    value
+        .serialize(
+            &serde_wasm_bindgen::Serializer::new().serialize_large_number_types_as_bigints(true),
+        )
+        .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Pure v2 contract admission shared by native and JavaScript hosts.
@@ -99,7 +78,9 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "conversation_message" => {
             let value: ConversationMessage = from_js(value)?;
             let limits: Limits = from_js(context)?;
-            limits.validate_message(&value, &mut None).map_err(js_error)?;
+            limits
+                .validate_message(&value, &mut None)
+                .map_err(js_error)?;
             to_js_admitted(&value)
         }
         "task_outcome" => {
@@ -114,8 +95,10 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "task_admission" => {
             let value: serde_json::Value = from_js(value)?;
-            let request = crate::runtime::TaskAdmissionRecord::from_canonical_value(value, &mut None)
-                .map_err(js_error)?.0;
+            let request =
+                crate::runtime::TaskAdmissionRecord::from_canonical_value(value, &mut None)
+                    .map_err(js_error)?
+                    .0;
             to_js_admitted(&request.canonical_value())
         }
         "machine_identity" => {
@@ -256,7 +239,8 @@ pub fn validate_task_children_page(
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
     let schema: serde_json::Value = from_js(schema)?;
     let value: serde_json::Value = from_js(value)?;
-    crate::contract::validate_json_schema_value(&schema, &value, "tool value", None).map_err(js_error)?;
+    crate::executor::validate_json_schema_value(&schema, &value, "tool value", &mut None)
+        .map_err(js_error)?;
     to_js(&value)
 }
 
@@ -265,7 +249,9 @@ pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, J
 pub fn verify_file_bytes(file: JsValue, bytes: Vec<u8>) -> Result<(), JsValue> {
     let file: FileRef = from_js(file)?;
     file.validate(&mut None).map_err(js_error)?;
-    file.descriptor().verify(&bytes, &mut None).map_err(js_error)
+    file.descriptor()
+        .verify(&bytes, &mut None)
+        .map_err(js_error)
 }
 
 /// Stages a descriptor with Rust-owned SHA-256, media-type, and safe byte-length rules, projecting its bounded length as a JS Number.
@@ -290,7 +276,9 @@ pub fn decode_attachment_manifest_bytes(
     item_count: u32,
 ) -> Result<JsValue, JsValue> {
     let manifest: FileRef = from_js(manifest)?;
-    to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, Some(item_count), None).map_err(js_error)?)
+    to_js_admitted(
+        &decode_attachment_manifest(&manifest, &bytes, Some(item_count), None).map_err(js_error)?,
+    )
 }
 
 /// Converts a fully captured report into its canonical publishable child seed.

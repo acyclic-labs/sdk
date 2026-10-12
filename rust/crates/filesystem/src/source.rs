@@ -10,7 +10,7 @@ use crate::model::{CheckoutMode, GenerationSelector};
 use crate::path::PortablePath;
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, CaptureOptions,
-    CapturePolicy, Checkout, CheckoutCommitOutcome, CreateAuthorityOutcome, Fs, Generation,
+    CapturePolicy, Checkout, LivePublicationObservation, CreateAuthorityOutcome, Fs, Generation,
     IdempotencyKey, NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch,
     WatchInvalidationReason, WorkBudget, Workspace,
 };
@@ -420,19 +420,19 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let operation_context = source_volume_operation_context(key, operation);
     let outcome = session
         .checkout
-        .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+        .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
         .await
         .map_err(engine)?
         .value;
     match outcome {
-        CheckoutCommitOutcome::Committed { generation_id, .. }
-        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+        LivePublicationObservation::Committed { generation_id, .. }
+        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
             persist_generation_outcome(session, terminal_state, generation_id, key, operation).await
         }
-        CheckoutCommitOutcome::Conflict { .. } if !had_pending_mutations => {
+        LivePublicationObservation::Conflict { .. } if !had_pending_mutations => {
             persist_state_outcome(session, SourceState::Conflict, key, operation).await
         }
-        CheckoutCommitOutcome::Conflict { actual } => {
+        LivePublicationObservation::Conflict { actual } => {
             if conflict_head_reuses_checkout_base(
                 &session.workspace,
                 session.checkout.generation_id(),
@@ -448,13 +448,13 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             let retried = session
                 .checkout
-                .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+                .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
                 .map_err(engine)?
                 .value;
             match retried {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
                     persist_generation_outcome(
                         session,
                         terminal_state,
@@ -464,18 +464,18 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     )
                     .await
                 }
-                CheckoutCommitOutcome::Conflict { .. } | CheckoutCommitOutcome::Fenced { .. } => {
+                LivePublicationObservation::Conflict { .. } | LivePublicationObservation::Fenced { .. } => {
                     persist_state_outcome(session, SourceState::Conflict, key, operation).await
                 }
-                CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::IdempotencyConflict { .. } => {
                     Err(SourceError::IdempotencyConflict)
                 }
             }
         }
-        CheckoutCommitOutcome::Fenced { .. } => {
+        LivePublicationObservation::Fenced { .. } => {
             persist_state_outcome(session, SourceState::Conflict, key, operation).await
         }
-        CheckoutCommitOutcome::IdempotencyConflict { .. } => Err(SourceError::IdempotencyConflict),
+        LivePublicationObservation::IdempotencyConflict { .. } => Err(SourceError::IdempotencyConflict),
     }
 }
 
@@ -911,7 +911,7 @@ async fn find_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .workspace
         .volume
         .fs
-        .authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+        .authority().find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         .map_err(engine)?
         .value;
     let Some(commit) = recovered else {
@@ -1169,7 +1169,7 @@ async fn append_source_fact_with_identity<A: AsyncAuthorityStore, O: AsyncObject
             }, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = workspace
         .volume
         .fs
-        .authority().compare_and_append(crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+        .authority().compare_and_append(crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .map_err(engine)?
         .value;
     match outcome {
@@ -1397,7 +1397,7 @@ let value = self.inner.fork_authority(source, destination, operation, work, None
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
-async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>) -> Result<crate::AppendOutcome, crate::AuthorityError<G::Error>> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
@@ -1431,7 +1431,7 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 self.inner.fence(authority, expected, work).await
 
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<crate::DurableCommit>, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 
@@ -1494,12 +1494,12 @@ self.inner.find_operation(authority, operation, work).await
         .await?;
         match session
             .checkout
-            .commit_even_if_clean(source_volume_operation_id(key, operation), Some(source_volume_operation_context(key, operation)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+            .commit_even_if_clean(source_volume_operation_id(key, operation), Some(source_volume_operation_context(key, operation)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => Ok(generation_id),
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => Ok(generation_id),
             _ => Err("source publication did not commit".into()),
         }
     }
@@ -1674,15 +1674,15 @@ self.inner.find_operation(authority, operation, work).await
             .await?
             .value;
         let advanced = match unrelated
-            .commit_even_if_clean(IdempotencyKey::from_bytes([62; 16]).operation_id(), Some(Digest::from_bytes([62; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+            .commit_even_if_clean(IdempotencyKey::from_bytes([62; 16]).operation_id(), Some(Digest::from_bytes([62; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-            CheckoutCommitOutcome::Conflict { .. }
-            | CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+            LivePublicationObservation::Conflict { .. }
+            | LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => {
                 return Err("independent workspace authority advance was rejected".into());
             }
         };
@@ -1768,15 +1768,15 @@ self.inner.find_operation(authority, operation, work).await
             .await?
             .value;
         let advanced = match unrelated
-            .commit_even_if_clean(IdempotencyKey::from_bytes([78; 16]).operation_id(), Some(Digest::from_bytes([78; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+            .commit_even_if_clean(IdempotencyKey::from_bytes([78; 16]).operation_id(), Some(Digest::from_bytes([78; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
-            CheckoutCommitOutcome::Committed { generation_id, .. }
-            | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-            CheckoutCommitOutcome::Conflict { .. }
-            | CheckoutCommitOutcome::Fenced { .. }
-            | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+            LivePublicationObservation::Committed { generation_id, .. }
+            | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+            LivePublicationObservation::Conflict { .. }
+            | LivePublicationObservation::Fenced { .. }
+            | LivePublicationObservation::IdempotencyConflict { .. } => {
                 return Err("independent workspace authority advance was rejected".into());
             }
         };
@@ -2029,15 +2029,15 @@ self.inner.find_operation(authority, operation, work).await
             let published_begin_head = session.authority_head;
             let publication = session
                 .checkout
-                .commit_even_if_clean(source_volume_operation_id(published_key, SourceOperation::Reconcile), Some(source_volume_operation_context(published_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+                .commit_even_if_clean(source_volume_operation_id(published_key, SourceOperation::Reconcile), Some(source_volume_operation_context(published_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await?
                 .value;
             let published_generation = match publication {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-                CheckoutCommitOutcome::Conflict { .. }
-                | CheckoutCommitOutcome::Fenced { .. }
-                | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. }
+                | LivePublicationObservation::IdempotencyConflict { .. } => {
                     return Err("source volume publication was rejected".into());
                 }
             };
@@ -2171,15 +2171,15 @@ self.inner.find_operation(authority, operation, work).await
             begin_source_operation(&mut session, completed_key, SourceOperation::Reconcile).await?;
             let publication = session
                 .checkout
-                .commit_even_if_clean(source_volume_operation_id(completed_key, SourceOperation::Reconcile), Some(source_volume_operation_context(completed_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
+                .commit_even_if_clean(source_volume_operation_id(completed_key, SourceOperation::Reconcile), Some(source_volume_operation_context(completed_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await?
                 .value;
             let completed_generation = match publication {
-                CheckoutCommitOutcome::Committed { generation_id, .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => generation_id,
-                CheckoutCommitOutcome::Conflict { .. }
-                | CheckoutCommitOutcome::Fenced { .. }
-                | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::Committed { generation_id, .. }
+                | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => generation_id,
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. }
+                | LivePublicationObservation::IdempotencyConflict { .. } => {
                     return Err("source volume publication was rejected".into());
                 }
             };

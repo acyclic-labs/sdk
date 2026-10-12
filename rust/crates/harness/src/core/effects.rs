@@ -1,4 +1,3 @@
-//! effects semantics.
 use super::*;
 /// Strength advertised by an external effect provider.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -113,16 +112,20 @@ pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
 }
 
 pub(in crate::core) fn effect_request_digest_with_work(
-    provider: &str, guarantee: EffectGuarantee, effect_kind: &str, request: &FileRef,
+    provider: &str,
+    guarantee: EffectGuarantee,
+    effect_kind: &str,
+    request: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest_with_work(
+    crate::executor::json::canonical_json_digest(
         &(provider, guarantee, effect_kind, request),
-        acyclic_stream::MAX_RECORD_BYTES as u64, work,
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+        work,
     )
 }
 
-pub(in crate::core) fn validate_effect_result(status: &EffectStatus) -> Result<()> {
+fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
         result.validate(&mut None)?;
         if result.descriptor().media_type() != "application/json" {
@@ -132,14 +135,19 @@ pub(in crate::core) fn validate_effect_result(status: &EffectStatus) -> Result<(
     Ok(())
 }
 
-pub(in crate::core) fn validate_effect_dispatch(effect: &EffectState, attempt: &EffectAttemptId) -> Result<()> {
+pub(in crate::core) fn validate_effect_dispatch(
+    effect: &EffectState,
+    attempt: &EffectAttemptId,
+) -> Result<()> {
     let may_retry = effect.status == EffectStatus::Indeterminate
         && effect.guarantee == EffectGuarantee::IdempotentRetry;
     if effect.status != EffectStatus::Planned && !may_retry {
         return Err(Error::Conflict("invalid effect dispatch transition".into()));
     }
     if effect.attempts.contains(attempt) {
-        return Err(Error::Conflict("effect attempt identity already exists".into()));
+        return Err(Error::Conflict(
+            "effect attempt identity already exists".into(),
+        ));
     }
     Ok(())
 }
@@ -159,9 +167,14 @@ pub(in crate::core) fn validate_effect_observation(
     }
     if !observation.status.is_terminal()
         || effect.attempts.last() != Some(&observation.attempt_id)
-        || !matches!(effect.status, EffectStatus::Dispatched | EffectStatus::Indeterminate)
+        || !matches!(
+            effect.status,
+            EffectStatus::Dispatched | EffectStatus::Indeterminate
+        )
     {
-        return Err(Error::Conflict("invalid effect resolution transition".into()));
+        return Err(Error::Conflict(
+            "invalid effect resolution transition".into(),
+        ));
     }
     validate_effect_result(&observation.status)
 }

@@ -1,4 +1,4 @@
-//! records semantics.
+//! Main reducer records and their admission metadata.
 use super::*;
 /// Fixed aggregate lifecycle shared by every durable handle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -145,7 +145,7 @@ pub struct EventReference {
     pub revision: u64,
 }
 
-/// Non-bearer admission metadata retained in durable history. Its keyed
+/// Non-bearer admission metadata retained in durable history.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecordedScope {
@@ -158,7 +158,8 @@ pub struct RecordedScope {
 impl RecordedScope {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let capabilities = self.capabilities.logical_owned_bytes()?;
-        (self.id.capacity() as u64).checked_add(self.issuer.capacity() as u64)
+        (self.id.capacity() as u64)
+            .checked_add(self.issuer.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(capabilities))
             .ok_or_else(|| Error::Invalid("recorded scope ownership overflows".into()))
     }
@@ -230,21 +231,17 @@ pub struct Event {
 }
 
 impl Event {
-    pub(in crate::core) fn replay(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(ApplyResult, u64)> {
-        let (event, retained) = if work.as_deref().is_some_and(copying::is_native) {
-            crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_event(self, copy_quota))?
-        } else {
-            let mut retained = 0;
-            if let Some(io) = work.as_deref_mut() {
-                retained = inventory::source_inventory(self)?;
-                if matches!(&self.payload, EventPayload::ForkPublished { .. }) {
-                    io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
-                }
-                io.admit_owned(retained)?;
-                io.retain_owned(retained)?;
-            }
-            (self.clone(), retained)
-        };
+    pub(in crate::core) fn replay(
+        &self,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(ApplyResult, u64)> {
+        if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
+            && matches!(&self.payload, EventPayload::ForkPublished { .. })
+        {
+            io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+        }
+        let (event, retained) =
+            crate::wire_codec::CodecQuota::produce(work, |quota| copying::copy_event(self, quota))?;
         Ok((ApplyResult::Replayed { event }, retained))
     }
 }
@@ -390,6 +387,68 @@ pub enum ApplyResult {
     },
 }
 
+// Keep wire tags and authorization in the same transition table.
+macro_rules! transitions {
+    ($($action:pat => $event:pat => $action_tag:literal, $event_tag:literal,
+        $capability:ident, $subject:expr;)*) => {
+        impl Action {
+            pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
+                match self {
+                    $($action => ($action_tag, capability::$capability, $subject),)*
+                }
+            }
+            /// Serde action tag carried beside canonical JSON.
+            pub(crate) fn tag(&self) -> &'static str {
+                self.admission().0
+            }
+        }
+        impl EventPayload {
+            pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
+                match self {
+                    $($event => ($event_tag, capability::$capability, $subject),)*
+                }
+            }
+            /// Serde payload tag carried beside canonical JSON.
+            pub(crate) fn tag(&self) -> &'static str {
+                self.admission().0
+            }
+        }
+    };
+}
+
+transitions! {
+    Self::TransitionLifecycle { .. } => Self::LifecycleTransitioned { .. } =>
+        "transition_lifecycle", "lifecycle_transitioned", LIFECYCLE_MANAGE, Subject::None;
+    Self::AppendCustom { .. } => Self::Custom { .. } =>
+        "append_custom", "custom", EVENT_APPEND, Subject::None;
+    Self::MigrateExtensionState { .. } => Self::ExtensionStateMigrated { .. } =>
+        "migrate_extension_state", "extension_state_migrated", EXTENSION_MIGRATE, Subject::None;
+    Self::SelectExtensions { .. } => Self::ExtensionsSelected { .. } =>
+        "select_extensions", "extensions_selected", EXTENSION_ACTIVATE, Subject::None;
+    Self::ConfigureExtension { .. } => Self::ExtensionConfigured { .. } =>
+        "configure_extension", "extension_configured", EXTENSION_CONFIGURE, Subject::None;
+    Self::PlanEffect { .. } => Self::EffectPlanned { .. } =>
+        "plan_effect", "effect_planned", EFFECT_RUN, Subject::PlannedEffect;
+    Self::MarkEffectDispatched { effect_id, .. } => Self::EffectDispatched { effect_id, .. } =>
+        "mark_effect_dispatched", "effect_dispatched", EFFECT_RUN, Subject::Effect(effect_id);
+    Self::ResolveEffect { observation } => Self::EffectResolved { observation } =>
+        "resolve_effect", "effect_resolved", EFFECT_RUN, Subject::Effect(&observation.effect_id);
+    Self::PublishFork { seed } => Self::ForkPublished { seed } =>
+        "publish_fork", "fork_published", FORK_PUBLISH, Subject::Fork(seed);
+    Self::PublishProjectMerge { receipt } => Self::ProjectMergePublished { receipt } =>
+        "publish_project_merge", "project_merge_published", PROJECT_MERGE, Subject::Merge(receipt);
+    Self::BindConversation { .. } => Self::ConversationBound { .. } =>
+        "bind_conversation", "conversation_bound", CONVERSATION_BIND, Subject::None;
+    Self::AppendConversationMessage { .. } => Self::ConversationMessageAppended { .. } =>
+        "append_conversation_message", "conversation_message_appended", CONVERSATION_APPEND, Subject::None;
+    Self::SelectModelContext { .. } => Self::ModelContextSelected { .. } =>
+        "select_model_context", "model_context_selected", CONVERSATION_SELECT_CONTEXT, Subject::None;
+    Self::OpenInteraction { .. } => Self::InteractionOpened { .. } =>
+        "open_interaction", "interaction_opened", INTERACTION_OPEN, Subject::None;
+    Self::ResolveInteraction { resolution } => Self::InteractionResolved { resolution } =>
+        "resolve_interaction", "interaction_resolved", INTERACTION_RESOLVE, Subject::Interaction(resolution);
+}
+
 /// Transition input whose authorization depends on reducer state.
 pub(in crate::core) enum Subject<'a> {
     None,
@@ -398,74 +457,6 @@ pub(in crate::core) enum Subject<'a> {
     Interaction(&'a InteractionResolution),
     Fork(&'a ForkSeed),
     Merge(&'a ProjectMergeReceipt),
-}
-
-impl Action {
-    pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
-        match self {
-            Self::TransitionLifecycle { .. } => ("transition_lifecycle", capability::LIFECYCLE_MANAGE, Subject::None),
-            Self::AppendCustom { .. } => ("append_custom", capability::EVENT_APPEND, Subject::None),
-            Self::MigrateExtensionState { .. } => ("migrate_extension_state", capability::EXTENSION_MIGRATE, Subject::None),
-            Self::SelectExtensions { .. } => ("select_extensions", capability::EXTENSION_ACTIVATE, Subject::None),
-            Self::ConfigureExtension { .. } => ("configure_extension", capability::EXTENSION_CONFIGURE, Subject::None),
-            Self::PlanEffect { .. } => ("plan_effect", capability::EFFECT_RUN, Subject::PlannedEffect),
-            Self::MarkEffectDispatched { effect_id, .. } => {
-                ("mark_effect_dispatched", capability::EFFECT_RUN, Subject::Effect(effect_id))
-            }
-            Self::ResolveEffect { observation } => {
-                ("resolve_effect", capability::EFFECT_RUN, Subject::Effect(&observation.effect_id))
-            }
-            Self::PublishFork { seed } => ("publish_fork", capability::FORK_PUBLISH, Subject::Fork(seed)),
-            Self::PublishProjectMerge { receipt } => ("publish_project_merge", capability::PROJECT_MERGE, Subject::Merge(receipt)),
-            Self::BindConversation { .. } => ("bind_conversation", capability::CONVERSATION_BIND, Subject::None),
-            Self::AppendConversationMessage { .. } => ("append_conversation_message", capability::CONVERSATION_APPEND, Subject::None),
-            Self::SelectModelContext { .. } => ("select_model_context", capability::CONVERSATION_SELECT_CONTEXT, Subject::None),
-            Self::OpenInteraction { .. } => ("open_interaction", capability::INTERACTION_OPEN, Subject::None),
-            Self::ResolveInteraction { resolution } => {
-                ("resolve_interaction", capability::INTERACTION_RESOLVE, Subject::Interaction(resolution))
-            }
-        }
-    }
-
-    /// Serde `kind` tag, carried beside canonical action JSON on the wire.
-    pub(crate) fn tag(&self) -> &'static str {
-        self.admission().0
-    }
-}
-
-impl EventPayload {
-    pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
-        match self {
-            Self::LifecycleTransitioned { .. } => ("lifecycle_transitioned", capability::LIFECYCLE_MANAGE, Subject::None),
-            Self::Custom { .. } => ("custom", capability::EVENT_APPEND, Subject::None),
-            Self::ExtensionStateMigrated { .. } => ("extension_state_migrated", capability::EXTENSION_MIGRATE, Subject::None),
-            Self::ExtensionsSelected { .. } => ("extensions_selected", capability::EXTENSION_ACTIVATE, Subject::None),
-            Self::ExtensionConfigured { .. } => ("extension_configured", capability::EXTENSION_CONFIGURE, Subject::None),
-            Self::EffectPlanned { .. } => ("effect_planned", capability::EFFECT_RUN, Subject::PlannedEffect),
-            Self::EffectDispatched { effect_id, .. } => {
-                ("effect_dispatched", capability::EFFECT_RUN, Subject::Effect(effect_id))
-            }
-            Self::EffectResolved { observation } => {
-                ("effect_resolved", capability::EFFECT_RUN, Subject::Effect(&observation.effect_id))
-            }
-            Self::ForkPublished { seed } => ("fork_published", capability::FORK_PUBLISH, Subject::Fork(seed)),
-            Self::ProjectMergePublished { receipt } => {
-                ("project_merge_published", capability::PROJECT_MERGE, Subject::Merge(receipt))
-            }
-            Self::ConversationBound { .. } => ("conversation_bound", capability::CONVERSATION_BIND, Subject::None),
-            Self::ConversationMessageAppended { .. } => ("conversation_message_appended", capability::CONVERSATION_APPEND, Subject::None),
-            Self::ModelContextSelected { .. } => ("model_context_selected", capability::CONVERSATION_SELECT_CONTEXT, Subject::None),
-            Self::InteractionOpened { .. } => ("interaction_opened", capability::INTERACTION_OPEN, Subject::None),
-            Self::InteractionResolved { resolution } => {
-                ("interaction_resolved", capability::INTERACTION_RESOLVE, Subject::Interaction(resolution))
-            }
-        }
-    }
-
-    /// Serde `kind` tag, carried beside canonical payload JSON on the wire.
-    pub(crate) fn tag(&self) -> &'static str {
-        self.admission().0
-    }
 }
 
 pub(in crate::core) fn validate_interaction_transition(
@@ -500,11 +491,16 @@ pub(in crate::core) fn validate_interaction_operation(
     Ok(())
 }
 
-pub(in crate::core) fn require_capability((id, capabilities): (&str, &Capabilities), capability: &str) -> Result<()> {
+pub(in crate::core) fn require_capability(
+    (id, capabilities): (&str, &Capabilities),
+    capability: &str,
+) -> Result<()> {
     if capabilities.contains(capability) {
         Ok(())
     } else {
-        Err(Error::Unauthorized(format!("scope {id} lacks capability {capability}")))
+        Err(Error::Unauthorized(format!(
+            "scope {id} lacks capability {capability}"
+        )))
     }
 }
 
@@ -518,12 +514,18 @@ pub(in crate::core) fn validate_causal_parent_with_work(
         return Ok(());
     };
     if reference.revision == 0 {
-        return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
-            "causal event revision must be positive"));
+        return Err(crate::fork::boundary_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "causal event revision must be positive",
+        ));
     }
     if reference.authority == *authority && reference.revision > current_revision {
-        return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
-            "causal event is in the future"));
+        return Err(crate::fork::boundary_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "causal event is in the future",
+        ));
     }
     reference.authority.validate_with_work(work)?;
     Ok(())

@@ -87,26 +87,17 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
         self.transaction(move |namespace| {
-            let paths = namespace.record(
+            let mut paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
             )?;
-            for _ in 0..2 {
-                if let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? {
+            with_lock(&mut paths, |paths| {
+                if let Some((claim, _)) = read_recoverable::<MultiRootParentClaim>(paths)? {
                     return Ok(claim.operation_id == operation_id);
                 }
-                if compare_and_swap(
-                    &paths,
-                    0,
-                    &MultiRootParentClaim {
-                        revision: 1,
-                        operation_id,
-                    },
-                )? {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+                write_journaled(paths, &MultiRootParentClaim { operation_id })?;
+                Ok(true)
+            })
         })
         .await
     }
@@ -117,17 +108,18 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
         self.transaction(move |namespace| {
-            let paths = namespace.record(
+            let mut paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
             )?;
-            let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? else {
-                return Ok(true);
-            };
-            if claim.operation_id != operation_id {
-                return Ok(true);
-            }
-            compare_and_delete::<MultiRootParentClaim>(&paths, claim.revision)
+            with_lock(&mut paths, |paths| {
+                if read_recoverable::<MultiRootParentClaim>(paths)?
+                    .is_some_and(|(claim, _)| claim.operation_id == operation_id)
+                {
+                    remove_record(paths)?;
+                }
+                Ok(true)
+            })
         })
         .await
     }

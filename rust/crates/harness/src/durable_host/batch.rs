@@ -1,17 +1,10 @@
-//! Durable batch manifests and cancellation.
+//! Main durable task operations.
 use super::*;
-
-#[derive(Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BatchCancellation {
-    pub(super) batch_id: BatchId,
-    pub(super) group_id: crate::GroupId,
-}
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(super) fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             format!("harness/v2/batches/{batch_id}"),
         )
         .map_err(|error| Error::Invalid(error.to_string()))
@@ -22,7 +15,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         batch_id: BatchId,
     ) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(
-            Arc::clone(&self.stream),
+            self.stream.clone(),
             format!("harness/v2/batch-cancellations/{batch_id}"),
         )
         .map_err(|error| Error::Invalid(error.to_string()))
@@ -108,9 +101,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if crate::contract::canonical_json_bytes(&reference)? != record.value.as_ref() {
             return Err(Error::Storage("batch manifest ref is not canonical".into()));
         }
-        self.read_json_with_work(&reference, &mut None)
+        self.read_json(&reference)
             .await
-            .map(|(value, _)| value)
             .map_err(|error| match error {
                 Error::NotFound(_) => {
                     Error::Storage("committed batch manifest content is missing".into())
@@ -133,12 +125,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .stage(operation_id, &key, &bytes, None)?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
-        if self
-            .read_json_with_work(&reference, &mut None)
-            .await
-            .map(|(value, _)| value)?
-            != canonical
-        {
+        if self.read_json(&reference).await? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }
         let published = crate::contract::canonical_json_bytes(&reference)?;
@@ -158,7 +145,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    pub(super) async fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
+    pub(super) fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
         request.validate()?;
         if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
@@ -182,42 +169,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None,
             &mut None,
         )?;
-        let inherited;
-        let scope = if request.scope.resource_proofs().is_empty() {
-            &self.root_scope
-        } else if request.inputs.is_empty() {
-            let parent = request
-                .parent
-                .ok_or_else(|| Error::Unauthorized("created batch has no parent".into()))?;
-            let (admitted, _) = self
-                .read_retained_admission_counted(
-                    OperationId::from_bytes(parent.into_bytes()),
-                    &mut None,
-                )
-                .await?;
-            if request
-                .scope
-                .resource_proofs()
-                .iter()
-                .any(|proof| !admitted.resource_proofs.contains(proof))
-            {
-                return Err(Error::Unauthorized(
-                    "empty batch resource proofs differ from parent".into(),
-                ));
-            }
-            inherited = self
-                .authenticated_scope_with_work(&admitted, &mut None)
-                .await?
-                .0;
-            &inherited
-        } else {
-            inherited = self
-                .authenticated_scope_with_work(&request.member_admission(0)?, &mut None)
-                .await?
-                .0;
-            &inherited
-        };
-        scope
+        self.root_scope
             .narrow(request.scope.grants().clone(), request.scope.limits())?
             .with_run_limits(request.scope.run_limits(), &mut None)?;
         if request.parent.is_some() {
@@ -235,7 +187,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &mut None,
         )?;
         let input =
-            crate::contract::compile_json_schema(&request.input_schema, "batch input", None)?;
+            crate::executor::compile_json_schema(&request.input_schema, "batch input", &mut None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

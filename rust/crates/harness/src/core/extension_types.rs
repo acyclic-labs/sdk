@@ -1,4 +1,3 @@
-//! extension types semantics.
 use super::*;
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -66,11 +65,13 @@ impl ExtensionRecord {
     }
 }
 
-pub(in crate::core) fn extension_name_valid(name: &str) -> bool {
+fn extension_name_valid(name: &str) -> bool {
     name.contains('.')
         && !name.starts_with("acyclic.")
         && !name.split('.').any(str::is_empty)
-        && name.chars().all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        && name
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'))
 }
 
 pub(crate) fn validate_extension_name(name: &str) -> Result<()> {
@@ -127,78 +128,35 @@ pub struct ExtensionAdmission {
 }
 
 impl ExtensionAdmission {
-    pub(crate) fn from_owned_value_with_work(
-        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(copying::is_native) {
-            fn invalid() -> Error {
-                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "invalid owned extension admission field" }
-            }
-            fn decode<T: serde::de::DeserializeOwned>(value: Value,
-                work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {
-                let diagnostic = crate::contract::audited_serde_diagnostic_bytes(
-                    value_owned_bytes(&value)?, crate::contract::preparation_serde_diagnostic_label_bytes(),
-                )?;
-                let _diagnostic = crate::wire_codec::CodecQuota::new(work, diagnostic)?;
-                serde_json::from_value(value).map_err(|_| invalid())
-            }
-            fn vector<T: serde::de::DeserializeOwned>(value: Value,
-                quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<Vec<T>> {
-                let Value::Array(values) = value else { return Err(invalid()) };
-                let mut output = reserve_copy_vector(values.len(), quota)?;
-                for value in values { output.push(decode(value, quota.work())?); }
-                Ok(output)
-            }
-            work.as_deref().expect("owned admission observer").check_cancellation()?;
-            let Value::Object(mut fields) = value else { return Err(invalid()) };
-            if fields.len() != 3 { return Err(invalid()); }
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let source = decode(fields.remove("source").ok_or_else(invalid)?, quota.work())?;
-            let selected = vector(fields.remove("selected").ok_or_else(invalid)?, &mut quota)?;
-            let configurations = vector(fields.remove("configurations").ok_or_else(invalid)?, &mut quota)?;
-            let admission = Self { source, selected, configurations };
-            admission.validate(quota.work())?;
-            let added = quota.retained();
-            quota.transfer();
-            return Ok((admission, added));
-        }
-        let admission: Self = serde_json::from_value(value)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        admission.validate(work)?;
-        Ok((admission, 0))
-    }
-
     /// Actual heap ownership, excluding inline proofs and identifiers.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         ownership::owned_sum([
             self.source.authority.id.capacity() as u64,
-            ownership::owned_vector(&self.selected, |extension| Ok(extension.name.capacity() as u64))?,
-            ownership::owned_vector(&self.configurations, ownership::owned_configuration)?,
+            ownership::owned_vector(&self.selected, |extension| {
+                Ok(extension.name.capacity() as u64)
+            })?,
+            ownership::owned_vector(&self.configurations, ownership::owned_bytes)?,
         ])
     }
 
     pub(crate) fn copy(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if work.is_none() { return Ok(self.clone()); }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let cloned = self.copy_with_quota(&mut quota)?;
-        quota.transfer();
-        Ok(cloned)
-    }
-
-    pub(crate) fn copy_with_quota(
-        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Self> {
-        if quota.work().is_none() { return Ok(self.clone()); }
-        let source = copying::copy_reference(&self.source, quota)?;
-        let selected = copying::copy_vector(
-            &self.selected, quota, copying::copy_dependency)?;
-        let configurations = copying::copy_vector(
-            &self.configurations, quota, copying::copy_configuration)?;
-        Ok(Self { source, selected, configurations })
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<(Self, u64)> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            if quota.work().is_none() {
+                return Ok(self.clone());
+            }
+            Ok(Self {
+                source: copying::copy_reference(&self.source, quota)?,
+                selected: copying::copy_vector(&self.selected, quota, copying::copy_dependency)?,
+                configurations: copying::copy_vector(
+                    &self.configurations,
+                    quota,
+                    copying::copy_configuration,
+                )?,
+            })
+        })
     }
 
     /// Exact committed selection event that supplied these bindings.
@@ -221,44 +179,73 @@ impl ExtensionAdmission {
 
     /// Checks the frozen selection and its ordered configuration records.
     pub fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         use crate::fork::boundary_error;
-        use crate::wire::ErrorCode::{Invalid, Conflict};
+        use crate::wire::ErrorCode::{Conflict, Invalid};
         if self.source.authority.kind != AggregateKind::Agent || self.source.revision == 0 {
-            return Err(boundary_error(work, Invalid, "extension admission source is invalid"));
+            return Err(boundary_error(
+                work,
+                Invalid,
+                "extension admission source is invalid",
+            ));
         }
         self.source.authority.validate_with_work(work)?;
         for (index, extension) in self.selected.iter().enumerate() {
-            if let Some(io) = work.as_deref() { io.check_cancellation()?; }
-            if !extension_name_valid(&extension.name) || extension.version == 0 {
-                return Err(boundary_error(work, Invalid, "extension dependency is invalid"));
+            if let Some(io) = work.as_deref() {
+                io.check_cancellation()?;
             }
-            if self.selected[..index].iter().any(|prior| prior.name == extension.name) {
-                return Err(boundary_error(work, Conflict, "duplicate selected extension"));
+            if !extension_name_valid(&extension.name) || extension.version == 0 {
+                return Err(boundary_error(
+                    work,
+                    Invalid,
+                    "extension dependency is invalid",
+                ));
+            }
+            if self.selected[..index]
+                .iter()
+                .any(|prior| prior.name == extension.name)
+            {
+                return Err(boundary_error(
+                    work,
+                    Conflict,
+                    "duplicate selected extension",
+                ));
             }
         }
         let mut last_position = None;
         for configuration in &self.configurations {
-            if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+            if let Some(io) = work.as_deref() {
+                io.check_cancellation()?;
+            }
             if !extension_name_valid(&configuration.extension.name)
                 || configuration.extension.version == 0
                 || configuration.schema_digest == [0; 32]
                 || configuration.content.descriptor().media_type() != "application/json"
             {
-                return Err(boundary_error(work, Invalid, "extension configuration is invalid"));
+                return Err(boundary_error(
+                    work,
+                    Invalid,
+                    "extension configuration is invalid",
+                ));
             }
             configuration.content.validate(work)?;
-            let position = self.selected.iter().position(|extension| extension == &configuration.extension);
+            let position = self
+                .selected
+                .iter()
+                .position(|extension| extension == &configuration.extension);
             if position.is_none_or(|position| last_position.is_some_and(|last| position <= last)) {
-                return Err(boundary_error(work, Conflict,
-                    "extension admission configuration is not uniquely selected"));
+                return Err(boundary_error(
+                    work,
+                    Conflict,
+                    "extension admission configuration is not uniquely selected",
+                ));
             }
             last_position = position;
         }
         Ok(())
     }
-
 }
 
 impl ExtensionConfiguration {

@@ -70,7 +70,7 @@ impl EffectProvider for ResultProvider {
 #[tokio::test]
 async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let provider = ProviderRef::new("effect-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         "effect-private".into(),
@@ -176,9 +176,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         .effect(effect_id)
         .cloned()
         .ok_or_else(|| acyclic_harness::Error::Invalid("dispatched effect missing".into()))?;
-    let mut registry = EffectRegistry::default().with_result_resolver(verifier.clone());
-    registry.register(Arc::new(ResultProvider(result.clone(), false)))?;
-    registry.register(Arc::new(ResultProvider(result, true)))?;
+    let mut registry = EffectRegistry::new(None, Some(verifier.clone()))?;
+    registry.register(Arc::new(ResultProvider(result.clone(), false)), None)?;
+    registry.register(Arc::new(ResultProvider(result, true)), None)?;
     let state = aggregate
         .reducer()
         .effect(effect_id)

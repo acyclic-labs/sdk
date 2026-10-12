@@ -72,8 +72,9 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
-#[test]
-fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn local_root_lifecycle_outlives_provider_destruction()
+-> Result<(), Box<dyn std::error::Error>> {
     struct BlockingProviderDrop {
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::mpsc::Receiver<()>,
@@ -189,7 +190,6 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let opening = tokio::spawn(run_local_initialization(
         ownership,
-        crate::obs::span!(DEBUG, "test.local_initialization"),
         move |ownership| async move {
             let _ownership = ownership;
             let _ = started_tx.send(());
@@ -339,18 +339,52 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         .await?
         .value;
     checkout
-        .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"retained")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateFile {
+                path: file.clone(),
+                bytes: (bytes::Bytes::from_static(b"retained")).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     checkout
-        .commit(OperationId::from_bytes([49; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+        .commit(
+            OperationId::from_bytes([49; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            allow::<FsError>,
+        )
         .await?;
     let pending = path("pending.txt")?;
     checkout
-        .create(crate::AuthoredMutation::CreateFile { path: pending.clone(), bytes: (bytes::Bytes::from(vec![b'p'; 256 * 1_024])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateFile {
+                path: pending.clone(),
+                bytes: (bytes::Bytes::from(vec![b'p'; 256 * 1_024])).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     checkout
-        .commit(OperationId::from_bytes([50; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
+        .commit(
+            OperationId::from_bytes([50; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            allow::<FsError>,
+        )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     drop(checkout);

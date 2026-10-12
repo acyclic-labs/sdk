@@ -17,7 +17,6 @@ use std::future::Future;
 use thiserror::Error;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::lazy_workspace::NativeOwnedCoreState;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 
@@ -188,7 +187,7 @@ impl LineageRegistrationWork<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => store.load_with_native_work(id, original, cancellation)
                 .await.map(|value| value.map(|owned| {
-                    let (record, allocation) = owned.into_parts();
+                    let (record, allocation) = owned;
                     LineageOwnedRecord { record, allocation: Some(allocation) }
                 })),
         }
@@ -202,7 +201,7 @@ impl LineageRegistrationWork<'_> {
                 .map_err(|error| (WorkspaceLineageError::Store(error), None)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => store.compare_and_swap_with_native_work(
-                id, expected, NativeOwnedCoreState::from_parts(owned.record,
+                id, expected, (owned.record,
                     owned.allocation.expect("native replacement retains original custody")),
                 original, cancellation,
             ).await,
@@ -241,7 +240,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
         workspace_id: WorkspaceId,
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> impl Future<Output = Result<Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+    ) -> impl Future<Output = Result<Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
         (WorkspaceLineageError<Self::Error>, Option<crate::NativeAllocation>)>> + Send {
         async move {
             KernelAccounting::native(original, cancellation).check().map_err(lineage_filesystem_failure)?;
@@ -258,7 +257,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
         &self,
         workspace_id: WorkspaceId,
         expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
+        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> impl Future<Output = Result<bool,
@@ -339,10 +338,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: &Workspace<A, O>,
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<NativeOwnedCoreState<WorkspaceLineageRecord>, (WorkspaceLineageError<S::Error>, Option<crate::NativeAllocation>)> {
+    ) -> Result<(WorkspaceLineageRecord, crate::NativeAllocation), (WorkspaceLineageError<S::Error>, Option<crate::NativeAllocation>)> {
         let mut control = LineageRegistrationWork::Native { original, cancellation };
         let owned = self.register_root_engine(workspace, &mut control).await?;
-        Ok(NativeOwnedCoreState::from_parts(owned.record,
+        Ok((owned.record,
             owned.allocation.expect("native registration retains original custody")))
     }
 
@@ -420,10 +419,10 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 };
                 let planned = self.register(planned).await?;
                 let child = parent
-                    .fork(
+                    .fork::<_, _, crate::WorkspaceError>(
                         destination.as_str(),
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
-                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
                     .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {
@@ -786,21 +785,21 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
     async fn load_with_native_work(
         &self, workspace_id: WorkspaceId, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+    ) -> Result<Option<(WorkspaceLineageRecord, crate::NativeAllocation)>,
         (WorkspaceLineageError<Self::Error>, Option<crate::NativeAllocation>)> {
         let mut control = LineageRegistrationWork::Native { original, cancellation };
         self.load_engine(workspace_id, &mut control).map(|value| value.map(|owned|
-            NativeOwnedCoreState::from_parts(owned.record,
+            (owned.record,
                 owned.allocation.expect("native load retains original custody"))))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn compare_and_swap_with_native_work(
         &self, workspace_id: WorkspaceId, expected_revision: u64,
-        replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
+        replacement: (WorkspaceLineageRecord, crate::NativeAllocation),
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<bool, (WorkspaceLineageError<Self::Error>, Option<crate::NativeAllocation>)> {
-        let (record, allocation) = replacement.into_parts();
+        let (record, allocation) = replacement;
         self.compare_and_swap_engine(workspace_id, expected_revision,
             LineageOwnedRecord { record, allocation: Some(allocation) },
             &mut LineageRegistrationWork::Native { original, cancellation })

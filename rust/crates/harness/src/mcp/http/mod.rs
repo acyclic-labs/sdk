@@ -1,9 +1,9 @@
 //! Streamable HTTP over a host-supplied bounded provider.
 
 use super::{
-    McpInitializeResult, McpToolResult, McpToolTransport, McpToolsPage, PROTOCOL_VERSION,
-    callbacks::{McpCallbackAdmission, McpCallbackPolicy},
-    rpc::{decode_tool_result, request, rpc_result},
+    McpToolTransport, PROTOCOL_VERSION,
+    callbacks::{McpCallbackPolicy, McpRuntimeCallbacks},
+    rpc::{initialization, request, rpc_result},
 };
 use crate::{Error, OperationId, Result, runtime::ToolContext};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -71,7 +71,7 @@ pub struct HttpMcpTransport {
     session: Option<String>,
     maximum_bytes: u32,
     timeout_ms: u32,
-    callbacks: Option<(McpCallbackPolicy, Arc<dyn McpCallbackAdmission>)>,
+    callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
 }
 
 impl HttpMcpTransport {
@@ -82,6 +82,7 @@ impl HttpMcpTransport {
         session: Option<String>,
         maximum_bytes: u32,
         timeout_ms: u32,
+        callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     ) -> Result<Self> {
         let uri = endpoint
             .parse::<::http::Uri>()
@@ -101,30 +102,22 @@ impl HttpMcpTransport {
                 "invalid MCP HTTP binding or allowance".into(),
             ));
         }
+        if let Some((policy, _)) = &callbacks {
+            policy.validate()?;
+            if session.is_some() {
+                return Err(Error::Conflict(
+                    "MCP callback policy requires fresh negotiation".into(),
+                ));
+            }
+        }
         Ok(Self {
             provider,
             endpoint,
             session,
             maximum_bytes,
             timeout_ms,
-            callbacks: None,
+            callbacks,
         })
-    }
-
-    /// Binds callback admission before session negotiation.
-    pub fn with_callbacks(
-        mut self,
-        policy: McpCallbackPolicy,
-        admission: Arc<dyn McpCallbackAdmission>,
-    ) -> Result<Self> {
-        policy.validate()?;
-        if self.session.is_some() {
-            return Err(Error::Conflict(
-                "MCP callback policy requires fresh negotiation".into(),
-            ));
-        }
-        self.callbacks = Some((policy, admission));
-        Ok(self)
     }
 
     /// Constructs initialization for separate host admission.
@@ -151,7 +144,7 @@ impl HttpMcpTransport {
         self,
         operation: OperationId,
         response: McpHttpResponse,
-    ) -> Result<(Self, McpInitializeResult, McpHttpRequest)> {
+    ) -> Result<(Self, Value, McpHttpRequest)> {
         if self.session.is_some() {
             return Err(Error::Conflict("MCP session already bound".into()));
         }
@@ -161,27 +154,14 @@ impl HttpMcpTransport {
                 "MCP initialization session header invalid".into(),
             ));
         }
-        let initialization: McpInitializeResult =
-            serde_json::from_value(self.response(operation, response, None).await?)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-        initialization.validate()?;
+        let result = self.response(operation, response, None).await?;
+        initialization(&result, None)?;
         let binding = Self { session, ..self };
         let notification = binding.request(
             "POST",
             br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec(),
         )?;
-        Ok((binding, initialization, notification))
-    }
-
-    /// Discovers one admitted tool page.
-    pub async fn list_tools(
-        &self,
-        operation: OperationId,
-        cursor: Option<&str>,
-    ) -> Result<McpToolsPage> {
-        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
-        serde_json::from_value(self.rpc(operation, "tools/list", params, None).await?)
-            .map_err(|error| Error::Invalid(error.to_string()))
+        Ok((binding, result, notification))
     }
 
     /// Constructs the exact request for separate host admission.
@@ -269,26 +249,29 @@ impl HttpMcpTransport {
     }
 
     /// Exchanges an admitted request with optional enclosing task authority.
-    pub fn rpc<'a>(
-        &'a self,
+    pub async fn rpc(
+        &self,
         operation: OperationId,
-        method: &'a str,
+        method: &str,
         params: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Value>> {
-        Box::pin(async move {
-            if context
-                .as_ref()
-                .is_some_and(|context| context.operation_id() != operation)
-            {
-                return Err(Error::Unauthorized(
-                    "MCP task context operation mismatch".into(),
-                ));
-            }
-            let request = self.request("POST", request(operation, method, params)?)?;
-            let response = self.provider.exchange(operation, request).await?;
-            self.response(operation, response, context).await
-        })
+    ) -> Result<Value> {
+        if context
+            .as_ref()
+            .is_some_and(|context| context.operation_id() != operation)
+        {
+            return Err(Error::Unauthorized(
+                "MCP task context operation mismatch".into(),
+            ));
+        }
+        super::services::validate_params(method, &params, None)?;
+        let request = self.request("POST", request(operation, method, params)?)?;
+        let response = self.provider.exchange(operation, request).await?;
+        super::services::validate_result(
+            method,
+            self.response(operation, response, context).await?,
+            None,
+        )
     }
 }
 
@@ -303,17 +286,15 @@ impl McpToolTransport for HttpMcpTransport {
         name: &'a str,
         arguments: Value,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<McpToolResult>> {
+    ) -> BoxProviderFuture<'a, Result<Value>> {
         Box::pin(async move {
-            decode_tool_result(
-                self.rpc(
-                    operation,
-                    "tools/call",
-                    json!({"name":name,"arguments":arguments}),
-                    context,
-                )
-                .await?,
+            self.rpc(
+                operation,
+                "tools/call",
+                json!({"name":name,"arguments":arguments}),
+                context,
             )
+            .await
         })
     }
 
@@ -321,7 +302,7 @@ impl McpToolTransport for HttpMcpTransport {
         &'a self,
         operation: OperationId,
         context: Option<ToolContext>,
-    ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
             if context
                 .as_ref()
@@ -332,9 +313,12 @@ impl McpToolTransport for HttpMcpTransport {
                 ));
             }
             match self.provider.reconcile(operation).await? {
-                Some(response) => {
-                    decode_tool_result(self.response(operation, response, None).await?).map(Some)
-                }
+                Some(response) => super::services::validate_result(
+                    "tools/call",
+                    self.response(operation, response, None).await?,
+                    None,
+                )
+                .map(Some),
                 None => Ok(None),
             }
         })

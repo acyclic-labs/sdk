@@ -66,7 +66,8 @@ pub struct ReferenceGrant {
 impl ReferenceGrant {
     /// Validates the standalone owner-mediated reference envelope.
     pub(crate) fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.file.validate(work)?;
         if let Some(manifest) = &self.attachment_manifest {
@@ -74,8 +75,11 @@ impl ReferenceGrant {
             if manifest.descriptor().media_type()
                 != "application/vnd.acyclic.harness.attachments+json"
             {
-                return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                    "reference grant manifest has an invalid media type"));
+                return Err(boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "reference grant manifest has an invalid media type",
+                ));
             }
         }
         Ok(())
@@ -84,19 +88,23 @@ impl ReferenceGrant {
     /// Exact, per-file capability the owner may issue to this reader.
     pub fn capability(&self) -> Result<String> {
         self.validate(&mut None)?;
-        self.file.read_capability()
+        self.file.read_capability(&mut None)
     }
 }
 
 impl SharedGrant {
     /// Validates the grant envelope; the seed checks selection and child binding.
     pub(crate) fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.volume.validate(work)?;
         if self.volume.class() != VolumeClass::SessionShared || self.operations.is_empty() {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "invalid fork shared-volume grant"));
+            return Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "invalid fork shared-volume grant",
+            ));
         }
         Ok(())
     }
@@ -105,12 +113,16 @@ impl SharedGrant {
 impl ForkOmission {
     /// Required captures and successful captures cannot become omissions.
     pub(crate) fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.selection.revision.validate(work)?;
         if self.selection.required || matches!(self.outcome, Capture::Captured(_)) {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "fork omission must be an uncaptured optional selection"));
+            return Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "fork omission must be an uncaptured optional selection",
+            ));
         }
         Ok(())
     }
@@ -119,7 +131,8 @@ impl ForkOmission {
 impl CapturedResource {
     /// Only project capture may create a new revision and volume identity.
     pub fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.source.validate(work)?;
         self.revision.validate(work)?;
@@ -147,11 +160,17 @@ impl CapturedResource {
             }
             (ResourceRevision::PrivateVolume { .. }, _)
             | (_, ResourceRevision::PrivateVolume { .. }) => Err(boundary_error(
-                work, crate::wire::ErrorCode::Invalid, "scratch capture changed its selection")),
-            (ResourceRevision::Project { .. }, _) | (_, ResourceRevision::Project { .. }) => Err(
-                boundary_error(work, crate::wire::ErrorCode::Invalid,
-                    "project capture has an invalid child volume"),
-            ),
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "scratch capture changed its selection",
+            )),
+            (ResourceRevision::Project { .. }, _) | (_, ResourceRevision::Project { .. }) => {
+                Err(boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "project capture has an invalid child volume",
+                ))
+            }
             (
                 ResourceRevision::Extension {
                     name: source_name,
@@ -173,8 +192,11 @@ impl CapturedResource {
                 Ok(())
             }
             (source, revision) if source == revision => Ok(()),
-            _ => Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "capture changed an immutable selected revision")),
+            _ => Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "capture changed an immutable selected revision",
+            )),
         }
     }
 }

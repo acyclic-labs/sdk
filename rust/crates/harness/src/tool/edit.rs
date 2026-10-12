@@ -17,16 +17,24 @@ impl AlgorithmWork {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native(work: &acyclic_fs::NativeMaterializationWork, bytes: usize) -> Result<Self> {
+    pub(super) fn native(
+        work: &acyclic_fs::NativeMaterializationWork,
+        bytes: usize,
+    ) -> Result<Self> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         io.retain_owned(bytes as u64)?;
-        Ok(Self { custody: Some(io.into_native_custody(bytes as u64)?) })
+        Ok(Self {
+            custody: Some(io.into_native_custody(bytes as u64)?),
+        })
     }
 
     pub(super) fn invalid(&self, reason: &'static str) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.custody.is_some() {
-            return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
+            return Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason,
+            };
         }
         Error::Invalid(reason.into())
     }
@@ -34,14 +42,23 @@ impl AlgorithmWork {
     pub(super) fn conflict(&self, reason: &'static str) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.custody.is_some() {
-            return Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason };
+            return Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason,
+            };
         }
         Error::Conflict(reason.into())
     }
 
-    fn allocation_error(&self, cause: std::collections::TryReserveError, reason: &'static str) -> Error {
+    fn allocation_error(
+        &self,
+        cause: std::collections::TryReserveError,
+        reason: &'static str,
+    ) -> Error {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.custody.is_some() { return Error::Allocation(cause); }
+        if self.custody.is_some() {
+            return Error::Allocation(cause);
+        }
         let _ = cause;
         self.invalid(reason)
     }
@@ -49,10 +66,15 @@ impl AlgorithmWork {
     pub(super) fn retain(&mut self, bytes: usize) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &mut self.custody {
-            let total = custody.bytes().checked_add(bytes as u64).ok_or_else(|| Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "tool logical ownership overflow",
-            })?;
-            custody.resize_retained(total).map_err(native_error)?;
+            let total =
+                custody
+                    .bytes()
+                    .checked_add(bytes as u64)
+                    .ok_or_else(|| Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "tool logical ownership overflow",
+                    })?;
+            custody.resize(total).map_err(native_error)?;
         }
         let _ = bytes;
         Ok(())
@@ -71,11 +93,14 @@ impl AlgorithmWork {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &mut self.custody {
             // Record the completed allocator capacity before observing late cancellation; the old allocation has now physically retired.
-            let bytes = custody.bytes().checked_sub(requested as u64)
+            let bytes = custody
+                .bytes()
+                .checked_sub(requested as u64)
                 .and_then(|n| n.checked_add(actual as u64))
                 .and_then(|n| n.checked_sub(old as u64))
                 .ok_or_else(|| Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid, reason: "tool allocation capacity overflow",
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool allocation capacity overflow",
                 })?;
             custody.reconcile_capacity(bytes).map_err(native_error)?;
         }
@@ -84,25 +109,34 @@ impl AlgorithmWork {
     }
 
     pub(super) fn reserve_vec<T>(&mut self, value: &mut Vec<T>, length: usize) -> Result<()> {
-        if length <= value.capacity() { return Ok(()); }
+        if length <= value.capacity() {
+            return Ok(());
+        }
         let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
         let slots = std::mem::size_of::<T>();
-        let requested = length.checked_mul(slots)
+        let requested = length
+            .checked_mul(slots)
             .ok_or_else(|| self.invalid("tool vector capacity overflow"))?;
-        let old = value.capacity().checked_mul(slots)
+        let old = value
+            .capacity()
+            .checked_mul(slots)
             .ok_or_else(|| self.invalid("tool vector capacity overflow"))?;
         self.admit_allocation(requested)?;
-        value.try_reserve_exact(length - value.len())
+        value
+            .try_reserve_exact(length - value.len())
             .map_err(|cause| self.allocation_error(cause, "tool vector allocation failed"))?;
         self.record_capacity(requested, value.capacity() * slots, old)
     }
 
     pub(super) fn reserve_string(&mut self, value: &mut String, length: usize) -> Result<()> {
-        if length <= value.capacity() { return Ok(()); }
+        if length <= value.capacity() {
+            return Ok(());
+        }
         let length = length.max(value.capacity().checked_mul(2).unwrap_or(length));
         let old = value.capacity();
         self.admit_allocation(length)?;
-        value.try_reserve_exact(length - value.len())
+        value
+            .try_reserve_exact(length - value.len())
             .map_err(|cause| self.allocation_error(cause, "tool text allocation failed"))?;
         self.record_capacity(length, value.capacity(), old)
     }
@@ -110,9 +144,13 @@ impl AlgorithmWork {
     pub(super) fn examine(&self, items: u64) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.custody {
-            custody.work().charge(acyclic_fs::WorkCounters {
-                items_examined: items, ..Default::default()
-            }).map_err(native_error)?;
+            custody
+                .work()
+                .charge(acyclic_fs::WorkCounters {
+                    items_examined: items,
+                    ..Default::default()
+                })
+                .map_err(native_error)?;
         }
         let _ = items;
         Ok(())
@@ -121,19 +159,25 @@ impl AlgorithmWork {
     pub(super) fn copy(&self, bytes: usize) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.custody {
-            custody.work().charge(acyclic_fs::WorkCounters {
-                bytes_copied: bytes as u64, ..Default::default()
-            }).map_err(native_error)?;
+            custody
+                .work()
+                .charge(acyclic_fs::WorkCounters {
+                    bytes_copied: bytes as u64,
+                    ..Default::default()
+                })
+                .map_err(native_error)?;
         }
         let _ = bytes;
         Ok(())
     }
-
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
+    Error::NativeWork {
+        cause,
+        custody: None,
+    }
 }
 
 /// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
@@ -206,10 +250,19 @@ mod tests {
     #[test]
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         assert_eq!(
-            exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut AlgorithmWork::ordinary())?,
+            exact_replace(
+                "before 🦀 after",
+                "🦀",
+                "日本語",
+                64,
+                &mut AlgorithmWork::ordinary()
+            )?,
             "before 日本語 after"
         );
-        assert_eq!(exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut AlgorithmWork::ordinary())?, "a\nb\n");
+        assert_eq!(
+            exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut AlgorithmWork::ordinary())?,
+            "a\nb\n"
+        );
         assert!(matches!(
             exact_replace("aaa", "aa", "b", 8, &mut AlgorithmWork::ordinary()),
             Err(Error::Conflict(_))
@@ -226,8 +279,14 @@ mod tests {
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
-        assert_eq!(exact_replace("abc", "b", "", 3, &mut AlgorithmWork::ordinary())?, "ac");
-        assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut AlgorithmWork::ordinary())?, "xyz");
+        assert_eq!(
+            exact_replace("abc", "b", "", 3, &mut AlgorithmWork::ordinary())?,
+            "ac"
+        );
+        assert_eq!(
+            exact_replace("abc", "abc", "xyz", 3, &mut AlgorithmWork::ordinary())?,
+            "xyz"
+        );
         assert!(exact_replace("abc", "b", "long", 4, &mut AlgorithmWork::ordinary()).is_err());
         assert!(exact_replace("abc", "abc", "a", 2, &mut AlgorithmWork::ordinary()).is_err());
         assert!(exact_replace("abc", "a", "a", 0, &mut AlgorithmWork::ordinary()).is_err());
@@ -257,7 +316,13 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = exact_replace(&source, &needle, "X", 64, &mut AlgorithmWork::ordinary());
+                            let result = exact_replace(
+                                &source,
+                                &needle,
+                                "X",
+                                64,
+                                &mut AlgorithmWork::ordinary(),
+                            );
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {

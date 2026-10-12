@@ -1,2219 +1,764 @@
+import { test, expect } from "bun:test";
+import { Harness, AgentHarness, ExecutionScope, NativeContracts, defineRuntimeSchema, TaskDefinition, defineTool, type OperationId, type TaskId, type HarnessRuntimeState, policyIdentity, type AgentId, type FileRef, composeContentBindings, DEFAULT_LIMITS, type VolumeRef, TaskContext, type HarnessRuntimeSpawner, type ModelToolDefinition, type Outcome, type BatchId, type ComponentIdentity, type HarnessExecutionProvider, type EffectiveScope, HarnessBuilder, type GroupId, Task } from "../src/index.js";
+import { contracts, parseNumber, jsonProjection, mailboxFile, testModel, parseNull, approvalPolicyIdentity, numberTool, scopedPolicyIdentity, denyPolicyIdentity, numberSchema, parseString } from "./support/runtime-fixture.js";
 import { syntheticAccounting } from "./support/model-accounting.mjs";
-import { describe, expect, test } from "bun:test";
-import {
-  AgentHarness,
-  AdmissionUncertainError,
-  ExecutionScope,
-  Harness,
-  HarnessBuilder,
-  NativeContracts,
-  TaskDefinition,
-  Task,
-  TaskContext,
-  composeContentBindings,
-  DEFAULT_LIMITS,
-  defineRuntimeSchema,
-  defineTool,
-  jsonToolProjection,
-  descriptorFor,
-  policyIdentity,
-  type BatchId,
-  type AgentId,
-  type EffectId,
-  type GroupId,
-  type EffectiveScope,
-  type HarnessExecutionProvider,
-  type HostBatchReplay,
-  type HarnessRuntimeSpawner,
-  type HarnessRuntimeState,
-  type TaskAdmissionWire,
-  type NativeLimitsWire,
-  type WorkflowAdmissionWire,
-  type ComponentIdentity,
-  type OperationId,
-  type Outcome,
-  type PolicyIdentity,
-  type TaskId,
-  type TaskMessage,
-  type ToolContext,
-  type ModelMessage,
-  type ModelToolDefinition,
-  type UserContentPart,
-  type FileRef,
-  type VolumeRef,
-  type ConversationMessageId,
-} from "../src/index.js";
-import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
-import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
-
-const contracts = await NativeContracts.create();
-const imagePolicy = { native: { intent: { kind: "image", detail: "auto" },
-  maximum_bytes: 64, maximum_work: 8, configuration: null } } as const;
-const jsonProjection = await jsonToolProjection({});
-
-function numberTool(name: string, description: string, handler: (context: ToolContext, input: number) => number | Promise<number>) {
-  return defineTool<number, number>({ name, revision: "1", description, inputSchema: { type: "number" }, outputSchema: { type: "number" },
-    parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, handler);
-}
-
-test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
-  const parent = "12345678-1234-4234-8234-123456789abc" as TaskId;
-  const child = "22345678-1234-4234-8234-123456789abc" as TaskId;
-  const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
-  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_024, page)).toEqual(page);
-  let revisionReads = 0;
-  const changingRevisionPage = {
-    get revision() {
-      revisionReads += 1;
-      return revisionReads === 1 ? 7n : 7;
-    },
-    entries: page.entries,
-    nextAfter: null,
-  } as unknown as typeof page;
-  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1, changingRevisionPage)).toEqual(page);
-  expect(revisionReads).toBe(1);
-  expect(() => contracts.validateTaskChildrenPage(parent, 6n, null, 1, page)).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, "a", 1, page)).toThrow();
-  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_000_001, page)).toEqual(page);
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 0, page)).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
-    ...page, entries: [{ slot: "a", taskId: child }, { slot: "b", taskId: child }],
-  })).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
-    ...page, nextAfter: "b",
-  })).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
-    ...page, entries: [{ slot: "\u007f", taskId: child }],
-  })).toThrow();
-
-  let observedMaximum = 0;
-  const state: HarnessRuntimeState = {
-    policyIdentity: () => null,
-    async attach() { throw new Error("not used"); },
-    async children(_parent, _revision, _after, maximum) {
-      observedMaximum = maximum;
-      return page;
-    },
-    async reconcileEffect() { return { state: "indeterminate" }; },
-    async send(message) { return { accepted: true, messageId: message.id }; },
-    async *inbox() { yield* []; },
-  };
-  const runtime = await Harness.builder(contracts).state(state).build();
-  expect(await runtime.children(parent)).toEqual(page);
-  expect(observedMaximum).toBe(HARNESS_CHILD_PAGE_DEFAULT);
-
-  const malformedRuntime = await Harness.builder(contracts).state({
-    ...state,
-    async children() {
-      return { ...page, revision: 7 as unknown as bigint };
-    },
-  }).build();
-  await expect(malformedRuntime.children(parent)).rejects.toBeInstanceOf(TypeError);
-});
-
-test("private-directory pages keep their Rust-owned bounds distinct from child pages", async () => {
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBe(256);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(0xffff_ffff);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBeLessThanOrEqual(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM);
-});
-
-test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
-  const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();
-  const admission = JSON.parse(admissionText) as TaskAdmissionWire;
-  expect(new TextDecoder().decode(contracts.encodeCanonicalJson(contracts.validate("task_admission", admission))))
-    .toBe(admissionText);
-  expect(() => contracts.validate("task_admission", { ...admission, input: "wrong" })).toThrow();
-  const placementText = (await Bun.file(new URL("../../../../fixtures/harness/v2/execution-placement.json", import.meta.url)).text()).trim();
-  const placement = JSON.parse(placementText) as import("../src/index.js").ExecutionPlacementWire;
-  expect(contracts.validate("execution_placement", placement)).toEqual(placement);
-  expect(() => contracts.validate("execution_placement", { ...placement, readiness_revision: [] })).toThrow();
-});
-
-test("Rust and TypeScript share the pinned v2 workflow admission fixture", async () => {
-  const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
-  const admission = JSON.parse(fixture) as WorkflowAdmissionWire;
-  expect(new TextDecoder().decode(contracts.encodeCanonicalJson(contracts.validate("workflow_admission", admission))))
-    .toBe(fixture);
-  expect(() => contracts.validate("workflow_admission", { ...admission, request_digest: Array(32).fill(0) })).toThrow();
-});
-
-test("native task and workflow admissions preserve Rust u64 values as BigInt", async () => {
-  const taskText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission.json", import.meta.url)).text()).trim();
-  const task = contracts.validate("task_admission", {
-    ...JSON.parse(taskText), run_limits: { concurrency: 2, max_steps: 3, deadline_epoch_ms: 4 },
-  });
-  expect(typeof task.limits.file_bytes).toBe("bigint");
-  expect(task.run_limits.max_steps).toBe(3n);
-  const workflowText = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
-  const workflow = contracts.validate("workflow_admission", JSON.parse(workflowText));
-  expect(workflow.initial.revision).toBe(0n);
-});
-
-test("Rust owns durable task and batch projection identities", async () => {
-  const limits: NativeLimitsWire = {
-    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes), path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
-    attachments: BigInt(DEFAULT_LIMITS.attachments), render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
-    model_steps: BigInt(DEFAULT_LIMITS.model_steps), model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
-    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step), context_messages: BigInt(DEFAULT_LIMITS.context_messages),
-  };
-  const common = {
-    name: "projection.task",
-    version: "1",
-    input_schema: { type: "integer" },
-    output_schema: { type: "integer" },
-    requirements: [],
-    machine_digest: Array(32).fill(9),
-    parent: null,
-    resource_proofs: [],
-    grants: [],
-    limits,
-    run_limits: { concurrency: null, max_steps: null, deadline_epoch_ms: null },
-    policy: null,
-    extensions: null,
-    execution: null,
-  } as const;
-  const identities = contracts.taskAdmissionIdentities({
-    name: common.name, version: common.version, input_schema: common.input_schema,
-    output_schema: common.output_schema, requirements: common.requirements,
-    machine_digest: common.machine_digest,
-  });
-  const task = contracts.admitTask({
-    ...common,
-    operation_id: "12345678-1234-4234-8234-123456789abc",
-    input: 4,
-  });
-  expect(task.task).toEqual(identities.task);
-  expect(task.machine).toEqual(identities.machine);
-  expect(contracts.validate("task_admission", task)).toEqual(task);
-
-  const batchInput = {
-    ...common,
-    group_id: "22345678-1234-4234-8234-123456789abc",
-    batch_id: "32345678-1234-4234-8234-123456789abc",
-    group_policy: "collect-all",
-    inputs: [4, 5],
-  } as const;
-  const batch = contracts.admitBatch(batchInput);
-  expect(contracts.validate("durable_batch_request", batch)).toEqual(batch);
-  expect(batch.inputs).toEqual([4n, 5n]);
-  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0))
-    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1));
-  const projected = contracts.admitBatchRequest(batchInput);
-  expect(projected.canonical).toEqual(batch);
-  expect(projected.policy).toEqual({ kind: "collect-all" });
-  expect(projected.members).toHaveLength(2);
-  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 65_536))
-    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0));
-  expect(() => contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0x1_0000_0000))
-    .toThrow();
-  expect(projected.members.map(member => member.operation_id)).toEqual([
-    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0),
-    contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1),
-  ]);
-  expect(projected.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(batch)));
-  expect(projected.implementationDigest).toBe("09".repeat(32));
-  expect(() => contracts.admitBatch({ ...common,
-    group_id: batch.group_id, batch_id: batch.batch_id, group_policy: "collect-all", inputs: ["wrong"],
-  })).toThrow();
-});
-const testModel = { provider: "fixture", name: "fixture", revision: "1", options: {} } as const;
-
-const durableDigest = "ab".repeat(32);
-const approvalPolicyIdentity = await policyIdentity("approval-policy", "1", new Uint8Array(32).fill(1));
-const denyPolicyIdentity = await policyIdentity("deny-policy", "1", new Uint8Array(32).fill(2));
-const scopedPolicyIdentity = await policyIdentity("scoped-policy", "1", new Uint8Array(32).fill(3));
-const numberSchema = await defineRuntimeSchema("number", { type: "number" }, (value: unknown): number => {
-  if (typeof value !== "number") throw new TypeError("invalid result");
-  return value;
-});
 
 test("fork capture binding requires parent publication authority", async () => {
-  const snapshot = { parent: { kind: "conversation" as const, id: "parent" }, revision: 1n };
-  await expect(Harness.builder(contracts).parentSnapshot(snapshot).build()).rejects.toThrow();
-  const bound = await Harness.builder(contracts).parentSnapshot(snapshot).grant("fork:publish").limits({ attachments: 1 }).build();
-  expect(bound.limits.attachments).toBe(1);
-  expect(bound).toBeInstanceOf(AgentHarness);
-  const narrowed = await bound.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
-  expect(() => narrowed.atParentSnapshot(snapshot)).toThrow();
-  expect(() => bound.atParentSnapshot(snapshot)).toThrow();
-  expect(() => bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "other" }, revision: 2n })).toThrow();
-  expect(bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "parent" }, revision: 2n })).toBeInstanceOf(AgentHarness);
+const snapshot = { parent: { kind: "conversation" as const, id: "parent" }, revision: 1n };
+await expect(Harness.builder(contracts).parentSnapshot(snapshot).build()).rejects.toThrow();
+const bound = await Harness.builder(contracts).parentSnapshot(snapshot).grant("fork:publish").limits({ attachments: 1 }).build();
+expect(bound.components.limits.attachments).toBe(1);
+expect(bound).toBeInstanceOf(AgentHarness);
+const narrowed = await bound.scoped(new ExecutionScope().onlyGrants("fork:publish"));
+expect(() => narrowed.atParentSnapshot(snapshot)).toThrow();
+expect(() => bound.atParentSnapshot(snapshot)).toThrow();
+expect(() => bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "other" }, revision: 2n })).toThrow();
+expect(bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "parent" }, revision: 2n })).toBeInstanceOf(AgentHarness);
 });
-const parseNumber = numberSchema.parse;
-const parseString = (value: unknown): string => {
-  if (typeof value !== "string") throw new TypeError("expected string");
-  return value;
-};
-const parseNull = (value: unknown): null => {
-  if (value !== null) throw new TypeError("expected null");
-  return null;
-};
 
 test("native tool JSON preserves special property names as data", async () => {
-  const value = Object.fromEntries([["__proto__", { safe: true }], ["nested", { value: 1 }], ["byte_length", -2]]);
-  const admitted = (await NativeContracts.create()).validateToolValue({ type: "object" }, value);
-  expect(Object.getOwnPropertyDescriptor(admitted, "__proto__")?.value).toEqual({ safe: true });
-  expect((admitted as { nested: { value: number } }).nested.value).toBe(1);
-  expect((admitted as { byte_length: number }).byte_length).toBe(-2);
-  expect(Object.getPrototypeOf(admitted)).toBe(Object.prototype);
+const value = Object.fromEntries([["__proto__", { safe: true }], ["nested", { value: 1 }], ["byte_length", -2]]);
+const admitted = (await NativeContracts.create()).validateToolValue({ type: "object" }, value);
+expect(Object.getOwnPropertyDescriptor(admitted, "__proto__")?.value).toEqual({ safe: true });
+expect((admitted as { nested: { value: number } }).nested.value).toBe(1);
+expect((admitted as { byte_length: number }).byte_length).toBe(-2);
+expect(Object.getPrototypeOf(admitted)).toBe(Object.prototype);
 });
 
 test("native tool JSON rejects values that the WASM serializer would coerce", async () => {
-  expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: Number.POSITIVE_INFINITY })).toThrow();
-  expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: -0 })).toThrow();
-  expect(() => contracts.validateToolValue({ type: "object", maximum: Number.POSITIVE_INFINITY }, {})).toThrow();
+expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: Number.POSITIVE_INFINITY })).toThrow();
+expect(() => contracts.validateToolValue({ type: "object" }, { unsafe: -0 })).toThrow();
+expect(() => contracts.validateToolValue({ type: "object", maximum: Number.POSITIVE_INFINITY }, {})).toThrow();
 });
 
 test("native tool admission cannot reread a mutable getter after JSON preflight", async () => {
-  let reads = 0;
-  const value = Object.defineProperty({}, "unsafe", {
-    enumerable: true,
-    get: () => ++reads === 1 ? 1 : Number.POSITIVE_INFINITY,
-  });
-  let admitted: unknown;
-  try { admitted = contracts.validateToolValue({ type: "object" }, value); }
-  catch { /* Rejecting an accessor is also safe. */ }
-  if (admitted !== undefined) expect(admitted).toEqual({ unsafe: 1 });
-  expect(reads).toBeLessThanOrEqual(1);
+let reads = 0;
+const value = Object.defineProperty({}, "unsafe", {
+  enumerable: true,
+  get: () => ++reads === 1 ? 1 : Number.POSITIVE_INFINITY,
+});
+let admitted: unknown;
+try { admitted = contracts.validateToolValue({ type: "object" }, value); }
+catch { /* Rejecting an accessor is also safe. */ }
+if (admitted !== undefined) expect(admitted).toEqual({ unsafe: 1 });
+expect(reads).toBeLessThanOrEqual(1);
 });
 
 test("task and tool schemas enter the registry only as strict Rust JSON", async () => {
-  const unsafe = { type: "number", maximum: Number.POSITIVE_INFINITY };
-  const schema = await defineRuntimeSchema("unsafe", unsafe, parseNumber);
-  const task = await TaskDefinition.live("unsafe-schema-task", "1", (_context, value: number) => value,
-    { input: schema });
-  expect(() => Harness.builder(contracts).task(task)).toThrow();
-  const tool = await defineTool({ name: "unsafe-schema-tool", revision: "1", description: "unsafe schema",
-    inputSchema: unsafe, outputSchema: { type: "number" }, parseInput: parseNumber,
-    projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => value);
-  expect(() => Harness.builder(contracts).tool(tool)).toThrow();
+const unsafe = { type: "number", maximum: Number.POSITIVE_INFINITY };
+const schema = await defineRuntimeSchema("unsafe", unsafe, parseNumber);
+const task = await TaskDefinition.live("unsafe-schema-task", "1", (_context, value: number) => value,
+  { input: schema });
+expect(() => Harness.builder(contracts).task(task)).toThrow();
+const tool = await defineTool({ name: "unsafe-schema-tool", revision: "1", description: "unsafe schema",
+  inputSchema: unsafe, outputSchema: { type: "number" }, parseInput: parseNumber,
+  projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => value);
+expect(() => Harness.builder(contracts).tool(tool)).toThrow();
 });
 
 test("resumable tools are pinned at registration and execute only through durable owner state", async () => {
-  const definition = { name: "resumable-file-tool", revision: "1", description: "read a pinned file",
-    inputSchema: { type: "number" }, outputSchema: { type: "number" },
-    parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber };
-  const machine = { name: definition.name, version: definition.revision, digest: Array(32).fill(7) as number[] };
-  await expect(Harness.builder(contracts).resumableTool(definition, machine).build()).rejects.toThrow();
-  expect(() => Harness.builder(contracts).resumableTool(definition, { ...machine, digest: Array(32).fill(0) })).toThrow();
-  const operation = "12345678-1234-4234-8234-123456789abc" as OperationId;
-  const taskId = "22345678-1234-4234-8234-123456789abc" as TaskId;
-  const state: HarnessRuntimeState = {
-    policyIdentity: () => null,
-    async attach() { throw new Error("not used"); },
-    async reconcileEffect() { return { state: "indeterminate" }; },
-    async executeTool(observedTask, observedOperation, tool, input) {
-      expect(observedTask).toBe(taskId);
-      expect(observedOperation).toBe(operation);
-      expect(tool.machine).toEqual(machine);
-      return { kind: "succeeded", value: input };
-    },
-    async send(message) { return { accepted: true, messageId: message.id }; },
-    async *inbox() { yield* []; },
-  };
-  const runtime = await Harness.builder(contracts).state(state).resumableTool(definition, machine)
-    .grant("tool:call:resumable-file-tool").build();
-  const tool = runtime.tool(definition);
-  await expect(runtime.call(tool, 2)).rejects.toThrow();
-  expect(await runtime.callDurable(operation, tool, 2, taskId)).toEqual({ kind: "succeeded", value: 2 });
+const definition = { name: "resumable-file-tool", revision: "1", description: "read a pinned file",
+  inputSchema: { type: "number" }, outputSchema: { type: "number" },
+  parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber };
+const machine = { name: definition.name, version: definition.revision, digest: Array(32).fill(7) as number[] };
+await expect(Harness.builder(contracts).resumableTool(definition, machine).build()).rejects.toThrow();
+expect(() => Harness.builder(contracts).resumableTool(definition, { ...machine, digest: Array(32).fill(0) })).toThrow();
+const operation = "12345678-1234-4234-8234-123456789abc" as OperationId;
+const taskId = "22345678-1234-4234-8234-123456789abc" as TaskId;
+const state: HarnessRuntimeState = {
+  policyIdentity: () => null,
+  async attach() { throw new Error("not used"); },
+  async reconcileEffect() { return { state: "indeterminate" }; },
+  async executeTool(observedTask, observedOperation, tool, input) {
+    expect(observedTask).toBe(taskId);
+    expect(observedOperation).toBe(operation);
+    expect(tool.machine).toEqual(machine);
+    return { kind: "succeeded", value: input };
+  },
+  async send(message) { return { accepted: true, messageId: message.id }; },
+  async *inbox() { yield* []; },
+};
+const runtime = await Harness.builder(contracts).state(state).resumableTool(definition, machine)
+  .grant("tool:call:resumable-file-tool").build();
+const tool = runtime.tool(definition);
+await expect(runtime.call(tool, 2)).rejects.toThrow();
+expect(await runtime.callDurable(operation, tool, 2, taskId)).toEqual({ kind: "succeeded", value: 2 });
 });
 
 test("content routing distinguishes owner volumes on one provider and keeps one writer", async () => {
-  const file = await mailboxFile(2);
-  const other = { ...file, volume: { ...file.volume,
-    id: "private", class: "agent_private", owner: { kind: "agent", id: "01010101-0101-0101-0101-010101010101" as AgentId } } } as FileRef;
-  const validated: number[] = [];
-  const binding = (marker: number) => ({
-    validate: (_reference: FileRef) => { validated.push(marker); },
-    verify: (reference: FileRef, bytes: Uint8Array) => {
-      if (reference.volume.provider.family === "filesystem" && bytes[0] !== 1) throw new Error("wrong owner");
-    },
-    read: async () => Uint8Array.of(marker, marker),
-    fileReadCapability: () => "read:file",
-    volumeReadCapability: () => "read:volume",
-    directoryReadCapability: () => "read:directory",
-  });
-  const first = binding(1);
-  const second = binding(2);
-  const content = composeContentBindings(contracts, [
-    { volume: file.volume, content: first },
-    { volume: other.volume, content: second },
-  ]);
-  first.read = async () => Uint8Array.of(9);
-  second.read = async () => Uint8Array.of(9);
-  expect([...await content.read(file)]).toEqual([1, 1]);
-  expect([...await content.read(other)]).toEqual([2, 2]);
-  content.validate(file, DEFAULT_LIMITS);
-  content.validate(other, DEFAULT_LIMITS);
-  expect(validated).toEqual([1, 2]);
-  expect(() => content.verify(file, Uint8Array.of(2))).toThrow();
-  expect(() => composeContentBindings(contracts, [
-    { volume: file.volume, content: first },
-    { volume: file.volume, content: second },
-  ])).toThrow();
-  expect(() => composeContentBindings(contracts, [
-    { volume: other.volume, content: first },
-    { volume: { provider: other.volume.provider, id: other.volume.id, class: "agent_private",
-      owner: { kind: "agent", id: "01010101010101010101010101010101" as AgentId } }, content: second },
-  ])).toThrow();
-  const attached = { ...file, volume: { ...file.volume,
-    class: "agent_private" as const,
-    owner: { kind: "agent", id: "03030303-0303-0303-0303-030303030303" as AgentId } } } as FileRef;
-  let granted = true;
-  const lazy = composeContentBindings(contracts, [{ volume: file.volume, content: first }], {
-    mount(volume) {
-      if (!granted || volume.owner.kind !== "agent" || volume.owner.id !== attached.volume.owner.id) {
-        throw new Error("owner read grant is unavailable");
-      }
-      return { ...binding(3), requireDirectoryPath() { throw new Error("directory was not granted"); }, requireFileRead(reference: FileRef) {
-        if (reference.path !== attached.path) throw new Error("exact file was not granted");
-      } };
-    },
-  });
-  expect([...await lazy.read(attached)]).toEqual([3, 3]);
-  await expect(lazy.directory!.list(attached.volume as VolumeRef<"agent_private">,
-    "", "", null, null, 1)).rejects.toThrow();
-  await expect(lazy.read({ ...attached, path: "other.txt" })).rejects.toThrow();
-  expect(lazy.writer).toBeUndefined();
-  granted = false;
-  await expect(lazy.read(attached)).rejects.toThrow();
+const file = await mailboxFile(2);
+const other = { ...file, volume: { ...file.volume,
+  id: "private", class: "agent_private", owner: { kind: "agent", id: "01010101-0101-0101-0101-010101010101" as AgentId } } } as FileRef;
+const validated: number[] = [];
+const binding = (marker: number) => ({
+  validate: (_reference: FileRef) => { validated.push(marker); },
+  read: async () => Uint8Array.of(marker, marker),
+  fileReadCapability: () => "read:file",
+  volumeReadCapability: () => "read:volume",
+  directoryReadCapability: () => "read:directory",
+});
+const first = binding(1);
+const second = binding(2);
+const content = composeContentBindings(contracts, [
+  { volume: file.volume, content: first },
+  { volume: other.volume, content: second },
+]);
+first.read = async () => Uint8Array.of(9);
+second.read = async () => Uint8Array.of(9);
+expect([...await content.read(file)]).toEqual([1, 1]);
+expect([...await content.read(other)]).toEqual([2, 2]);
+content.validate(file, DEFAULT_LIMITS);
+content.validate(other, DEFAULT_LIMITS);
+expect(validated).toEqual([1, 2]);
+expect(() => contracts.verifyFileBytes(file, Uint8Array.of(2))).toThrow();
+expect(() => composeContentBindings(contracts, [
+  { volume: file.volume, content: first },
+  { volume: file.volume, content: second },
+])).toThrow();
+expect(() => composeContentBindings(contracts, [
+  { volume: other.volume, content: first },
+  { volume: { provider: other.volume.provider, id: other.volume.id, class: "agent_private",
+    owner: { kind: "agent", id: "01010101010101010101010101010101" as AgentId } }, content: second },
+])).toThrow();
+const attached = { ...file, volume: { ...file.volume,
+  class: "agent_private" as const,
+  owner: { kind: "agent", id: "03030303-0303-0303-0303-030303030303" as AgentId } } } as FileRef;
+let granted = true;
+const lazy = composeContentBindings(contracts, [{ volume: file.volume, content: first }], {
+  mount(volume) {
+    if (!granted || volume.owner.kind !== "agent" || volume.owner.id !== attached.volume.owner.id) {
+      throw new Error("owner read grant is unavailable");
+    }
+    return { ...binding(3), requireDirectoryPath() { throw new Error("directory was not granted"); }, requireFileRead(reference: FileRef) {
+      if (reference.path !== attached.path) throw new Error("exact file was not granted");
+    } };
+  },
+});
+expect([...await lazy.read(attached)]).toEqual([3, 3]);
+await expect(lazy.directory!.list(attached.volume as VolumeRef<"agent_private">,
+  "", "", null, null, 1)).rejects.toThrow();
+await expect(lazy.read({ ...attached, path: "other.txt" })).rejects.toThrow();
+expect(lazy.writer).toBeUndefined();
+granted = false;
+await expect(lazy.read(attached)).rejects.toThrow();
 });
 
 test("builder snapshots owner content and writer callbacks at admission", async () => {
-  const file = await mailboxFile(1);
-  const writer = {
-    volume: file.volume,
-    writeCapability: () => "write:original",
-    stage: async () => file,
-  };
-  const binding = {
-    validate: () => {}, verify: () => {},
-    read: async () => Uint8Array.of(1),
-    fileReadCapability: () => "read:original",
-    volumeReadCapability: () => "volume:original",
-    directoryReadCapability: () => "directory:original",
-    writer,
-  };
-  const runtime = await Harness.builder(contracts).content(binding).build();
-  binding.read = async () => Uint8Array.of(9);
-  binding.fileReadCapability = () => "read:replacement";
-  writer.stage = async () => { throw new Error("writer swapped"); };
-  writer.writeCapability = () => "write:replacement";
-  expect([...await runtime.content!.read(file)]).toEqual([1]);
-  expect(runtime.content!.fileReadCapability(file)).toBe("read:original");
-  expect(runtime.content!.writer!.writeCapability()).toBe("write:original");
-  expect(await runtime.content!.writer!.stage("operation", file.path, Uint8Array.of(1), "application/octet-stream", file.display_name)).toBe(file);
-  expect(Object.isFrozen(runtime.content)).toBe(true);
-  expect(Object.isFrozen(runtime.content!.writer)).toBe(true);
+const file = await mailboxFile(1);
+const writer = {
+  volume: file.volume,
+  writeCapability: () => "write:original",
+  stage: async () => file,
+};
+const binding = {
+  validate: () => {},
+  read: async () => Uint8Array.of(1),
+  fileReadCapability: () => "read:original",
+  volumeReadCapability: () => "volume:original",
+  directoryReadCapability: () => "directory:original",
+  writer,
+};
+const runtime = await Harness.builder(contracts).content(binding).build();
+binding.read = async () => Uint8Array.of(9);
+binding.fileReadCapability = () => "read:replacement";
+writer.stage = async () => { throw new Error("writer swapped"); };
+writer.writeCapability = () => "write:replacement";
+expect([...await runtime.components.content!.read(file)]).toEqual([1]);
+expect(runtime.components.content!.fileReadCapability(file)).toBe("read:original");
+expect(runtime.components.content!.writer!.writeCapability()).toBe("write:original");
+expect(await runtime.components.content!.writer!.stage("operation", file.path, Uint8Array.of(1), "application/octet-stream", file.display_name)).toBe(file);
 });
 
 test("artifact binding is independent of conversation content and retains owner grants", async () => {
-  const file = await mailboxFile(1);
-  const bytes = new Uint8Array(1);
-  const artifacts = {
-    validate: () => {}, verify: () => {},
-    read: async () => bytes,
-    fileReadCapability: () => "artifact:read",
-    volumeReadCapability: () => "artifact:read",
-    directoryReadCapability: () => "artifact:read",
-    writer: { volume: file.volume, writeCapability: () => "artifact:write", stage: async () => file },
-  };
-  const content = { ...artifacts, read: async () => { throw new Error("wrong content provider"); } };
-  const runtime = await Harness.builder(contracts).content(content).artifacts(artifacts)
-    .grant("artifact:read", "artifact:write").build();
-  const context = new TaskContext(runtime, new AbortController().signal);
-  expect([...await context.readArtifact(file)]).toEqual([0]);
-  await expect(context.readFile(file)).rejects.toThrow();
-  expect(await context.stageArtifact("artifact-operation", file.path, bytes,
-    file.descriptor.media_type, file.display_name)).toEqual(file);
-  const denied = await Harness.builder(contracts).artifacts(artifacts).build();
-  await expect(new TaskContext(denied, new AbortController().signal).readArtifact(file))
-    .rejects.toThrow();
-  const needsArtifact = await TaskDefinition.live("artifact-task", "1", () => 1,
-    { requirements: ["artifacts:write"] });
-  await expect(Harness.builder(contracts).artifacts(artifacts).task(needsArtifact).build())
-    .rejects.toThrow();
-  await expect(Harness.builder(contracts).artifacts(artifacts).grant("artifact:write")
-    .task(needsArtifact).build()).resolves.toBeDefined();
+const file = await mailboxFile(1);
+const bytes = new Uint8Array(1);
+const artifacts = {
+  validate: () => {},
+  read: async () => bytes,
+  fileReadCapability: () => "artifact:read",
+  volumeReadCapability: () => "artifact:read",
+  directoryReadCapability: () => "artifact:read",
+  writer: { volume: file.volume, writeCapability: () => "artifact:write", stage: async () => file },
+};
+const content = { ...artifacts, read: async () => { throw new Error("wrong content provider"); } };
+const runtime = await Harness.builder(contracts).content(content).artifacts(artifacts)
+  .grant("artifact:read", "artifact:write").build();
+const context = new TaskContext(runtime, new AbortController().signal);
+expect([...await context.readArtifact(file)]).toEqual([0]);
+await expect(context.readFile(file)).rejects.toThrow();
+expect(await context.stageArtifact("artifact-operation", file.path, bytes,
+  file.descriptor.media_type, file.display_name)).toEqual(file);
+const denied = await Harness.builder(contracts).artifacts(artifacts).build();
+await expect(new TaskContext(denied, new AbortController().signal).readArtifact(file))
+  .rejects.toThrow();
+const needsArtifact = await TaskDefinition.live("artifact-task", "1", () => 1,
+  { requirements: ["artifacts:write"] });
+await expect(Harness.builder(contracts).artifacts(artifacts).task(needsArtifact).build())
+  .rejects.toThrow();
+await expect(Harness.builder(contracts).artifacts(artifacts).grant("artifact:write")
+  .task(needsArtifact).build()).resolves.toBeDefined();
 });
 
-async function mailboxFile(byteLength: number): Promise<FileRef> {
-  return {
-    volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project", owner: { kind: "project", id: "project" } },
-    path: "mailbox/payload.bin",
-    version: "generation",
-    descriptor: await descriptorFor(new Uint8Array(byteLength), "application/octet-stream"),
-    display_name: "payload.bin",
-  };
-}
-
-describe("typed agent runtime", () => {
-  test("pins task dependencies and rejects missing versions and cycles at build time", async () => {
-    const leaf = await TaskDefinition.live("leaf", "2", () => 1);
-    const parent = await TaskDefinition.live("parent", "1", () => 2, { requirements: ["task:leaf@2"] });
-    await expect(Harness.builder(contracts).task(parent).task(leaf).build()).resolves.toBeDefined();
-    const stale = await TaskDefinition.live("stale", "1", () => 0, { requirements: ["task:leaf@1"] });
-    await expect(Harness.builder(contracts).task(stale).task(leaf).build()).rejects.toThrow();
-    const left = await TaskDefinition.live("left", "1", () => 1, { requirements: ["task:right@1"] });
-    const right = await TaskDefinition.live("right", "1", () => 1, { requirements: ["task:left@1"] });
-    await expect(Harness.builder(contracts).task(left).task(right).build()).rejects.toThrow();
-  });
-
-  test("admits exact grants but rejects unauthenticated extension requirements", async () => {
-    const granted = await TaskDefinition.live("granted-task", "1", () => 1,
-      { requirements: ["grant:task:run"] });
-    await expect(Harness.builder(contracts).grant("task:run").task(granted).build()).resolves.toBeDefined();
-    await expect(Harness.builder(contracts).task(granted).build()).rejects.toThrow();
-    const extension = await TaskDefinition.live("extension-task", "1", () => 1,
-      { requirements: ["extension:example.state@3"] });
-    await expect(Harness.builder(contracts).task(extension).build()).rejects.toThrow();
-  });
-
-  test("requires capability grants and a complete durable binding for task dependencies", async () => {
-    const modelTask = await TaskDefinition.live("model-task", "1", () => 1, { requirements: ["model"] });
-    const provider = {
-      ...syntheticAccounting(contracts), async *generate() { yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    };
-    await expect(Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
-      .rejects.toThrow();
-    await expect(Harness.builder(contracts).model(testModel, provider)
-      .grant("model:generate").task(modelTask).build()).resolves.toBeDefined();
-    await expect(Harness.builder(contracts).grant("model:generate").task(modelTask).build())
-      .resolves.toBeDefined();
-
-    const stateTask = await TaskDefinition.live("state-task", "1", () => 1, { requirements: ["state"] });
-    const spawnerTask = await TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
-    const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
-    const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
-    expect((await Harness.builder(contracts).state(state).task(stateTask).build()).state).toBe(state);
-    await expect(Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).rejects.toThrow();
-    await expect(Harness.builder(contracts).state(state).spawner(spawner)
-      .task(stateTask).task(spawnerTask).build()).resolves.toBeDefined();
-  });
-
-  test("retains simultaneous pinned task revisions without an implicit latest", async () => {
-    const first = await TaskDefinition.live<void, number>("versioned", "1", () => 1);
-    const second = await TaskDefinition.live<void, number>("versioned", "2", () => 2);
-    const needsFirst = await TaskDefinition.live<void, number>("needs-first", "1", () => 1,
-      { requirements: ["task:versioned@1"] });
-    const runtime = await Harness.builder(contracts).task(first).task(second).task(needsFirst).build();
-    expect(Object.is(runtime.task("versioned@1"), first)).toBe(true);
-    expect(Object.is(runtime.task("versioned@2"), second)).toBe(true);
-    expect(runtime.task(first)).toBe(first);
-    expect(() => runtime.task("versioned")).toThrow();
-    expect(await runtime.spawn(first, undefined).result()).toEqual({ kind: "succeeded", value: 1 });
-    expect(await runtime.spawn(second, undefined).result()).toEqual({ kind: "succeeded", value: 2 });
-    expect(() => Harness.builder(contracts).task(first).task(first)).toThrow();
-    await expect(TaskDefinition.live("bad@name", "1", () => 0)).rejects.toThrow();
-  });
-
-  test("pins tool revisions independently and selects the model-visible revision explicitly", async () => {
-    const first = await defineTool<null, number>({ name: "versioned-tool", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
-    const second = await defineTool<null, number>({ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 2);
-    const needsFirst = await TaskDefinition.live<void, number>("needs-first-tool", "1", () => 1,
-      { requirements: ["tool:versioned-tool@1"] });
-    const builder = Harness.builder(contracts).tool(first).tool(second).task(needsFirst).grant("tool:call:versioned-tool");
-    const ambiguous = await builder.build();
-    expect(ambiguous.tool("versioned-tool@1").definition).toMatchObject({ name: first.name, revision: first.revision });
-    expect(ambiguous.tool("versioned-tool@2").definition).toMatchObject({ name: second.name, revision: second.revision });
-    expect(() => ambiguous.tool("versioned-tool")).toThrow();
-    expect(await ambiguous.call(ambiguous.tool("versioned-tool@1"), null)).toBe(1);
-    expect(await ambiguous.call(ambiguous.tool("versioned-tool@2"), null)).toBe(2);
-    let visible: readonly ModelToolDefinition[] = [];
-    const selected = await builder.selectModelTool("versioned-tool", "2").model(testModel, {
-      ...syntheticAccounting(contracts), async *generate(request) { visible = request.tools; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    expect(selected.tool("versioned-tool").definition).toMatchObject({ name: second.name, revision: second.revision });
-    const typedValue: number = await selected.call(selected.tool(second), null);
-    expect(typedValue).toBe(2);
-    expect(() => selected.tool({ ...second })).toThrow();
-    await selected.run("select");
-    expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, projectionSchema: jsonProjection.schema }]);
-    expect(() => Harness.builder(contracts).tool(first).tool(first)).toThrow();
-    expect(() => builder.selectModelTool("versioned-tool", "3")).toThrow();
-  });
-
-  test("preserves task input and output types through nested execution", async () => {
-    const double = await TaskDefinition.live<number, number>("double", "1", async (_context, value) => value * 2);
-    const sum = await TaskDefinition.live<readonly number[], number>("sum", "1", async (context, values) => {
-      const group = context.group<number>({ kind: "collect-all" });
-      return (await group.map(context.task(double), values)).reduce((left, right) => left + right, 0);
-    });
-    const runtime = await Harness.builder(contracts).task(double).task(sum).grant("task:spawn:double@1").build();
-
-    const outcome: Outcome<number> = await runtime.spawn(sum, [1, 2, 3]).result();
-    expect(outcome).toEqual({ kind: "succeeded", value: 12 });
-  });
-
-  test("a task context and its groups cannot invoke an ungranted descendant", async () => {
-    const allowed = await TaskDefinition.live<number, number>("allowed-child", "1", (_context, value) => value + 1);
-    const denied = await TaskDefinition.live<number, number>("denied-child", "1", (_context, value) => value + 100);
-    const nested = await TaskDefinition.live<number, boolean>("narrowed-parent", "1", async (child, value) => {
-      const allowedOutcome = await child.spawn(child.task(allowed), value).result();
-      if (allowedOutcome.kind !== "succeeded" || allowedOutcome.value !== value + 1) return false;
-      try { child.spawn(child.task(denied), value); return false; }
-      catch { return true; }
-    });
-    const tool = await defineTool({ name: "child-tool", revision: "1", description: "child tool",
-      inputSchema: { type: "null" }, outputSchema: { type: "number" },
-      parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 3);
-    const owner = await Harness.builder(contracts).task(allowed).task(denied).task(nested).tool(tool)
-      .grant("task:spawn:allowed-child@1", "task:spawn:denied-child@1", "tool:call:child-tool").build();
-    const narrowed = await owner.scoped(ExecutionScope.create().onlyGrants("task:spawn:allowed-child@1"));
-    const context = new TaskContext(narrowed, new AbortController().signal);
-    const allowedRef = context.task(allowed);
-    const deniedRef = new TaskContext(owner, new AbortController().signal).task(denied);
-    expect(allowedRef).toMatchObject({ name: "allowed-child", revision: "1" });
-    expect("implementation" in allowedRef).toBe(false);
-    expect(Object.isFrozen(allowedRef)).toBe(true);
-    expect(() => context.task(denied)).toThrow();
-    expect(() => context.tool(tool)).toThrow();
-    expect(await narrowed.spawn(nested, 1).result()).toEqual({ kind: "succeeded", value: true });
-    expect(await context.spawn(allowedRef, 1).result()).toEqual({ kind: "succeeded", value: 2 });
-    expect(() => context.spawn(deniedRef, 1)).toThrow();
-    const group = context.group<number>({ kind: "collect-all" });
-    const blocked = await group.spawnMany(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] });
-    expect(blocked[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
-    await expect(group.reconcileBatch(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] }))
-      .rejects.toThrow();
-    const admitted = await group.spawnMany(allowedRef, { id: "batch:allowed" as BatchId, inputs: [2] });
-    expect(admitted[0]?.admission.kind).toBe("accepted");
-    const durable = new TaskContext(narrowed, new AbortController().signal,
-      "task:parent" as TaskId, true);
-    expect(() => durable.admit(deniedRef, 1, "operation:blocked"))
-      .toThrow();
-    expect(owner.task(denied)).toBe(denied);
-    expect(owner.tool(tool).definition.name).toBe("child-tool");
-    expect(await owner.spawn(denied, 1).result()).toEqual({ kind: "succeeded", value: 101 });
-  });
-
-  test("never executes a resumable definition in the local in-memory runner", async () => {
-    await expect(defineRuntimeSchema("empty", {}, value => value)).rejects.toThrow();
-    await expect(defineRuntimeSchema("true", true as unknown as Parameters<typeof defineRuntimeSchema>[1], value => value))
-      .rejects.toThrow();
-    let transitions = 0;
-    const definition = await TaskDefinition.resumable<number, number, number>("durable", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) { transitions++; return { kind: "finish", output: state * 2 }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const local = await Harness.builder(contracts).task(definition).build();
-    expect(() => local.spawn(definition, 3)).toThrow();
-    const rejected = await local.group<number>({ kind: "collect-all" }).spawnMany(definition, { id: "batch:resumable" as BatchId, inputs: [3] });
-    expect(rejected[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
-    expect(transitions).toBe(0);
-
-    let admitted: { readonly input: number; readonly revision: string } | undefined;
-    const admissionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitResumable(_operationId, task, input) {
-        if (typeof input !== "number") throw new TypeError("test host expected a number");
-        admitted = { input, revision: task.revision };
-        return { kind: "accepted" as const, task: new Task("task:durable" as TaskId, async () => 6) };
-      },
-      async attach(id) { return { task: new Task(id, async () => 6), operationId: admissionId, taskName: "durable", revision: "1", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "indeterminate" } as const; },
-      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const hosted = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    const result = await hosted.admit(definition, 3, admissionId);
-    expect(result.kind).toBe("accepted");
-    if (result.kind !== "accepted") throw new Error("expected admission");
-    expect(await result.task.result()).toEqual({ kind: "succeeded", value: 6 });
-    expect(admitted).toEqual({ input: 3, revision: "1" });
-    expect(transitions).toBe(0);
-  });
-
-  test("restored resumable state is schema-admitted before a typed transition", async () => {
-    let transitions = 0;
-    const definition = await TaskDefinition.resumable<number, number, number>("checkpoint", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) { transitions++; return { kind: "finish", output: state * 2 }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    if (definition.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
-    const context = new TaskContext(await Harness.builder(contracts).build(), new AbortController().signal);
-    await expect(definition.implementation.component.transition(context, "corrupt checkpoint")).rejects.toThrow();
-    expect(transitions).toBe(0);
-    expect(await definition.implementation.component.transition(context, 4)).toEqual({ kind: "finish", output: 8 });
-    expect(transitions).toBe(1);
-  });
-
-  test("resumable transitions validate newly saved state and explicit waits", async () => {
-    const context = new TaskContext(await Harness.builder(contracts).build(), new AbortController().signal);
-    const invalid = await TaskDefinition.resumable<number, number, number>("invalid-checkpoint", "1", {
-      state: numberSchema,
-      initial: () => "invalid" as unknown as number,
-      async transition() { return { kind: "continue", state: "invalid" as unknown as number }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    if (invalid.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
-    await expect(Promise.resolve(invalid.implementation.component.initial(1))).rejects.toThrow();
-    await expect(invalid.implementation.component.transition(context, 1)).rejects.toThrow();
-
-    const wait = await TaskDefinition.resumable<number, number, number>("timer-checkpoint", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) {
-        return { kind: "wait", state: state + 1,
-          operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
-          deadline: new Date("2030-01-01T00:00:00.000Z") };
-      },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    if (wait.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
-    expect(await wait.implementation.component.transition(context, 1)).toEqual({
-      kind: "wait", state: 2, operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
-      deadline: new Date("2030-01-01T00:00:00.000Z"),
-    });
-  });
-
-  test("host-backed handles preserve authoritative events and cancellation", async () => {
-    const taskId = "task:remote" as TaskId;
-    const observed: number[] = [];
-    let cancelled = false;
-    const terminal = { id: "event:terminal", taskId, sequence: 42,
-      event: { kind: "settled" as const, outcome: { kind: "succeeded" as const, value: 7 } } };
-    const task = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events(fromSequence) {
-        observed.push(fromSequence);
-        if (fromSequence <= 41) yield { id: "event:remote", taskId, sequence: 41, event: { kind: "started" } as const };
-      },
-      async terminalEvent() { return terminal; },
-      async cancel() { cancelled = true; return { requested: true, taskId }; },
-    });
-    expect(await task.result()).toEqual({ kind: "succeeded", value: 7 });
-    const events = [];
-    for await (const event of task.events(41)) events.push(event);
-    expect(events.map(event => event.sequence)).toEqual([41, 42]);
-    expect(observed).toEqual([41]);
-    const afterTerminal = [];
-    for await (const event of task.events(44)) afterTerminal.push(event);
-    expect(afterTerminal).toEqual([]);
-    expect(observed).toEqual([41, 44]);
-    for (const outcome of [
-      { kind: "failed" as const, error: { message: "failed" } },
-      { kind: "cancelled" as const, receipt: { requested: true, taskId } },
-    ]) {
-      const settled = { ...terminal, sequence: 1, event: { kind: "settled" as const, outcome } };
-      const replayed = new Task(taskId, {
-        operationId: "operation:remote",
-        async result() { return outcome; },
-        async *events(fromSequence) {
-          if (fromSequence <= 0) yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const };
-          if (fromSequence <= settled.sequence) yield settled;
-        },
-        async terminalEvent() { return settled; },
-        async cancel() { return { requested: true, taskId }; },
-      });
-      const replay = [];
-      for await (const event of replayed.events()) replay.push(event);
-      expect(replay).toEqual([{ id: "event:started", taskId, sequence: 0, event: { kind: "started" } }, { ...settled, sequence: 1 }]);
-      const past = [];
-      for await (const event of replayed.events(settled.sequence + 1)) past.push(event);
-      expect(past).toEqual([]);
-    }
-    expect(await task.cancel()).toEqual({ requested: true, taskId });
-    expect(cancelled).toBeTrue();
-    const disconnected = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { throw new Error("transport offline"); },
-      async *events() { yield* []; },
-      async terminalEvent() { return { id: "event:indeterminate", taskId, sequence: 0,
-        event: { kind: "settled" as const, outcome: { kind: "indeterminate" as const, operationId: "operation:remote" } } }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    expect(await disconnected.result()).toEqual({ kind: "indeterminate", operationId: "operation:remote" });
-    const disconnectedEvents = [];
-    for await (const event of disconnected.events()) disconnectedEvents.push(event.event);
-    expect(disconnectedEvents).toEqual([{ kind: "settled", outcome: { kind: "indeterminate", operationId: "operation:remote" } }]);
-    const outOfOrder = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() { yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const }; },
-      async terminalEvent() { return { ...terminal, sequence: 0 }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    await expect(async () => {
-      for await (const _event of outOfOrder.events()) { /* consume */ }
-    }).toThrow();
-    const missingStreamEvent = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() {
-        yield { id: "event:later", taskId, sequence: 1, event: { kind: "started" } as const };
-      },
-      async terminalEvent() { return { ...terminal, sequence: 1 }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    await expect(async () => {
-      for await (const _event of missingStreamEvent.events()) { /* consume */ }
-    }).toThrow();
-    const missingBeforeTerminal = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() {
-        yield { id: "event:started", taskId, sequence: 0, event: { kind: "started" } as const };
-      },
-      async terminalEvent() { return { ...terminal, sequence: 2 }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    await expect(async () => {
-      for await (const _event of missingBeforeTerminal.events()) { /* consume */ }
-    }).toThrow();
-    const emptyReplay = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() { yield* []; },
-      async terminalEvent() { return { ...terminal, sequence: 2 }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    await expect(async () => {
-      for await (const _event of emptyReplay.events()) { /* consume */ }
-    }).toThrow();
-    const resumedEmptyReplay = new Task(taskId, {
-      operationId: "operation:remote",
-      async result() { return { kind: "succeeded", value: 7 } as const; },
-      async *events() { yield* []; },
-      async terminalEvent() { return { ...terminal, sequence: 7 }; },
-      async cancel() { return { requested: false, taskId }; },
-    });
-    await expect(async () => {
-      for await (const _event of resumedEmptyReplay.events(5)) { /* consume */ }
-    }).toThrow();
-  });
-
-  test("reconciles lost durable admission acknowledgement by stable operation ID", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("retryable", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const observed = new Map<string, Task<number>>();
-    const onceId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-    const missingId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const rejectedId = "12345678-1234-4234-8234-123456789abc";
-    const invalidId = "12345678-1234-4234-8234-123456789abd";
-    let loseAcknowledgement = true;
-    let reject = false;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitResumable(operationId: string) {
-        if (reject) return { kind: "rejected" as const, reason: { code: "unsupported" as const, message: "policy" } };
-        let task = observed.get(operationId);
-        if (!task) { task = new Task("task:once" as TaskId, async () => "wrong type" as unknown as number); observed.set(operationId, task); }
-        if (loseAcknowledgement) { loseAcknowledgement = false; throw new AdmissionUncertainError(operationId, new Error("ack lost")); }
-        return { kind: "accepted" as const, task };
-      },
-      async reconcileAdmission(operationId) {
-        const task = observed.get(operationId);
-        return task ? { task, operationId, taskName: "retryable", revision: "1",
-          implementationDigest: durableDigest } : null;
-      },
-      async attach(id) { return { task: observed.values().next().value as Task<unknown>, operationId: onceId, taskName: "retryable", revision: "1", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "indeterminate" } as const; },
-      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    const first = await runtime.admit(definition, 1, onceId);
-    expect(first).toEqual({ kind: "indeterminate", operationId: onceId });
-    expect(await runtime.reconcileAdmission(missingId)).toBeNull();
-    expect(await (await runtime.reconcileAdmission(onceId))?.result())
-      .toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
-    const second = await runtime.admit(definition, 1, onceId);
-    expect(second.kind).toBe("accepted");
-    if (second.kind !== "accepted") throw new Error("expected accepted retry");
-    expect(observed.size).toBe(1);
-    expect(await second.task.result()).toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
-    const settled = [];
-    for await (const event of second.task.events()) if (event.event.kind === "settled") settled.push(event.event.outcome);
-    expect(settled).toMatchObject([{ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } }]);
-    const reconnected = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    expect(await (await reconnected.attach(definition, "task:once" as TaskId)).result())
-      .toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
-    reject = true;
-    expect(await runtime.admit(definition, 2, rejectedId)).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
-    reject = false;
-    host.admitResumable = async () => { throw new TypeError("invalid admission request"); };
-    await expect(runtime.admit(definition, 2, invalidId)).rejects.toThrow();
-  });
-
-  test("separate state and spawner bind without a combined host", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("split", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, value) { return { kind: "finish", output: value }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const id = "task:split" as TaskId;
-    const admissionId = "12345678-1234-4234-8234-123456789abe";
-    let retained: TaskAdmissionWire | undefined;
-    let corruptAdmission = false;
-    const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
-    const tool = await numberTool("split-tool", "split", () => { throw new Error("local tool must not run"); });
-    const ownerTask = new Task(id, async () => 7);
-    const untrustedTask = new Task(id, async () => 99);
-    const state: HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async attach(taskId) {
-        if (taskId !== id) throw new Error("unknown task");
-        const admission = corruptAdmission && retained ? { ...retained, input: 4 } : retained;
-        return { task: ownerTask, operationId: admissionId, taskName: "split",
-          revision: "1", implementationDigest: durableDigest,
-          ...(admission === undefined ? {} : { admission }) };
-      },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async executeTool(taskId, effectId, _tool, input) {
-        expect(taskId).toBe(id);
-        expect(effectId).toBe(operation);
-        return { kind: "succeeded", value: input };
-      },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    };
-    const spawner: HarnessRuntimeSpawner = {
-      policyIdentity: () => null,
-      async admitResumable(_operationId, _definition, _input, _harness, _parentTaskId, admission) {
-        retained = admission;
-        return { kind: "accepted", task: untrustedTask };
-      },
-      async reconcileAdmission() {
-        return { task: untrustedTask, operationId: admissionId,
-          taskName: "split", revision: "1", implementationDigest: durableDigest,
-          ...(retained === undefined ? {} : { admission: retained }) };
-      },
-    };
-    const runtime = await Harness.builder(contracts).state(state).spawner(spawner).task(definition)
-      .tool(tool).grant("tool:call:split-tool").build();
-    const admitted = await runtime.admit(definition, 3, admissionId);
-    expect(admitted.kind).toBe("accepted");
-    if (admitted.kind !== "accepted") throw new Error("split task was not admitted");
-    expect(await admitted.task.result()).toEqual({ kind: "succeeded", value: 7 });
-    expect(await (await runtime.reconcileAdmission(admissionId))?.result())
-      .toEqual({ kind: "succeeded", value: 7 });
-    expect(await new TaskContext(runtime, new AbortController().signal, id, true)
-      .callDurable(operation, runtime.tool(tool), 3)).toEqual({ kind: "succeeded", value: 3 });
-    corruptAdmission = true;
-    await expect(runtime.admit(definition, 3, admissionId)).rejects.toThrow();
-  });
-
-  test("qualified execution is pinned and retries use the retained placement", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("placed", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, value) { return { kind: "finish", output: value }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const localClosure = await TaskDefinition.live<number, number>("local-closure", "1", (_context, value) => value);
-    const routeIdentity = await policyIdentity("test.execution", "1", Uint8Array.from({ length: 32 }, () => 7));
-    const placement = {
-      provider: routeIdentity,
-      build: { kind: "artifact" as const,
-        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
-      environment: { kind: "sandbox" as const,
-        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
-      readiness_revision: Array.from({ length: 32 }, () => 3),
-    };
-    const operationId = "12345678-1234-4234-8234-123456789abc";
-    const taskId = "task:placed" as TaskId;
-    const ownerTask = new Task(taskId, async () => 7);
-    let retained: TaskAdmissionWire | undefined;
-    let qualifications = 0;
-    let corruptOwner = false;
-    const attachment = () => retained === undefined
-      ? { task: ownerTask, operationId, taskName: "placed", revision: "1", implementationDigest: durableDigest }
-      : { task: ownerTask, operationId, taskName: "placed", revision: "1",
-        implementationDigest: durableDigest, admission: retained };
-    const state: HarnessRuntimeState = {
-      policyIdentity: () => null, executionIdentity: () => routeIdentity,
-      async attach() { return corruptOwner && retained
-        ? { ...attachment(), admission: { ...retained, execution: { ...placement, readiness_revision: Array.from({ length: 32 }, () => 4) } } }
-        : attachment(); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    };
-    const spawner: HarnessRuntimeSpawner = {
-      policyIdentity: () => null, executionIdentity: () => routeIdentity,
-      async admitResumable(_id, _definition, _input, _harness, _parent, admission) {
-        retained = admission;
-        return { kind: "accepted", task: ownerTask };
-      },
-      async reconcileAdmission() { return retained ? attachment() : null; },
-    };
-    const execution: HarnessExecutionProvider = {
-      identity: () => routeIdentity, spawner: () => spawner, state: () => state,
-      async qualifyTask() { qualifications++; return placement; },
-      async qualifyBatch() { throw new Error("batch route is not registered"); },
-    };
-    const runtime = await Harness.builder(contracts).execution(execution).task(definition).task(localClosure).build();
-    const unbound = await Harness.builder(contracts).task(definition).build();
-    expect(() => unbound.admissionRecord(operationId, definition, 3, undefined, placement))
-      .toThrow();
-    const otherIdentity = await policyIdentity("other.execution", "1", Uint8Array.from({ length: 32 }, () => 8));
-    expect(() => runtime.admissionRecord(operationId, definition, 3, undefined,
-      { ...placement, provider: otherIdentity }))
-      .toThrow();
-    expect(() => runtime.spawn(localClosure, 3)).toThrow();
-    expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
-    // The full task-admission envelope owns the canonical representation of
-    // nested resource keys and byte vectors.
-    expect(retained?.execution).toEqual(contracts.validate("task_admission", retained!).execution);
-    expect(retained).toEqual(contracts.validate("task_admission", retained!));
-    expect(retained?.operation_id).toBe(operationId);
-    expect(retained?.run_limits).toEqual({ concurrency: null, max_steps: null, deadline_epoch_ms: null });
-    expect(qualifications).toBe(1);
-    expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
-    expect(qualifications).toBe(1);
-    corruptOwner = true;
-    await expect(runtime.admit(definition, 3, operationId)).rejects.toThrow();
-  });
-
-  test("preserves unresolved batch admission and stable scoped entry identities", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("batch-work", "2", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const ids: string[] = [];
-    let admittedManifests = 0;
-    let retainedBatch: import("../src/index.js").BatchAdmissionRequest | undefined;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch(request) {
-        admittedManifests++;
-        retainedBatch = request;
-        expect(request.canonical.contract).toBe("harness.batch.v2");
-        expect(request.canonical.group_policy).toBe("collect-all");
-        expect(request.canonical.parent).toBeNull();
-        expect(request.canonical.inputs).toEqual([1n, 2n]);
-        expect(request.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(request.canonical)));
-        expect(Object.isFrozen(request.inputDigest)).toBeTrue();
-        ids.push(...request.members.map(member => member.operation_id));
-        return { taskName: request.taskName, revision: request.revision,
-          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
-      },
-      async reconcileBatch(request) { return { taskName: "batch-work", revision: "2", implementationDigest: durableDigest,
-        inputDigest: request.inputDigest, entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-          admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) }; },
-      async loadBatch(batchId) { return retainedBatch?.batchId === batchId ? retainedBatch.canonical : null; },
-      async cancelBatch(batchId) {
-        if (retainedBatch?.batchId !== batchId) return null;
-        return { groupId: retainedBatch.groupId, batchId,
-          entries: retainedBatch.members.map((member, index) => ({
-            key: { batchId, index },
-            status: { kind: "indeterminate" as const, operationId: member.operation_id },
-          })) };
-      },
-      async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:batch", taskName: "batch-work", revision: "2", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "indeterminate" } as const; },
-      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const groupId = "11111111-1111-4111-8111-111111111111" as GroupId;
-    const batch = { id: "22222222-2222-4222-8222-222222222222" as BatchId, inputs: [1, 2] };
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" }, groupId);
-    expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
-    expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
-    expect(admittedManifests).toBe(1);
-    expect(ids).toEqual([0, 1].map(index => contracts.batchMemberOperationId(groupId, batch.id, index)));
-    const completed = [];
-    for await (const entry of group.asCompleted()) completed.push(entry);
-    expect(completed).toHaveLength(2);
-    expect(completed.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
-    expect((await group.join()).complete).toBeFalse();
-    const reconstructed = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" }, groupId);
-    expect((await reconstructed.reconcileBatchId(definition, batch.id))?.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
-    expect(await reconstructed.reconcileBatchId(definition, "33333333-3333-4333-8333-333333333333" as BatchId)).toBeNull();
-    expect((await reconstructed.join()).entries).toHaveLength(2);
-    const cancellation = await reconstructed.cancelBatchId(definition, batch.id);
-    expect(cancellation?.entries.map(entry => entry.status.kind)).toEqual(["indeterminate", "indeterminate"]);
-  });
-
-  test("replays a retained batch without requalifying its immutable placement", async () => {
-    let parsedInputs = 0;
-    const countingInput = await defineRuntimeSchema("counting-input", { type: "number" }, (value: unknown): number => {
-      parsedInputs++;
-      if (typeof value !== "number") throw new TypeError("invalid input");
-      return value;
-    });
-    const definition = await TaskDefinition.resumable<number, number, number>("retained-placement", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: countingInput, output: numberSchema });
-    const routeIdentity = await policyIdentity("test.batch.execution", "1", Uint8Array.from({ length: 32 }, () => 8));
-    const placement = {
-      provider: routeIdentity,
-      build: { kind: "artifact" as const,
-        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
-      environment: { kind: "sandbox" as const,
-        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
-      readiness_revision: Array.from({ length: 32 }, () => 3),
-    };
-    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
-    let qualifications = 0;
-    let unavailable = false;
-    const replay = (request: import("../src/index.js").BatchAdmissionRequest): HostBatchReplay => ({
-      taskName: request.taskName, revision: request.revision,
-      implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-      entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-        admission: { kind: "indeterminate" as const, operationId: member.operation_id } })),
-    });
-    const spawner: HarnessRuntimeSpawner = {
-      policyIdentity: () => null,
-      executionIdentity: () => routeIdentity,
-      async admitBatch(request) { retained = request; return replay(request); },
-      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
-      async reconcileBatch(request) { return replay(request); },
-    };
-    const state: HarnessRuntimeState = {
-      policyIdentity: () => null,
-      executionIdentity: () => routeIdentity,
-      async attach() { throw new Error("no accepted member"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    };
-    const execution: HarnessExecutionProvider = {
-      identity: () => routeIdentity, spawner: () => spawner, state: () => state,
-      async qualifyTask() { return placement; },
-      async qualifyBatch() {
-        qualifications++;
-        if (unavailable) throw new Error("execution provider unavailable");
-        return placement;
-      },
-    };
-    const batchId = "44444444-4444-4444-8444-444444444444" as BatchId;
-    const groupId = "55555555-5555-4555-8555-555555555555" as GroupId;
-    const batch = { id: batchId, inputs: [1, 2] };
-    const first = (await Harness.builder(contracts).execution(execution).task(definition).build())
-      .group<number>({ kind: "collect-all" }, groupId);
-    expect((await first.spawnMany(definition, batch)).map(entry => entry.admission.kind))
-      .toEqual(["indeterminate", "indeterminate"]);
-    expect(parsedInputs).toBe(2);
-    expect(qualifications).toBe(1);
-    unavailable = true;
-    const reopened = (await Harness.builder(contracts).execution(execution).task(definition).build())
-      .group<number>({ kind: "collect-all" }, groupId);
-    expect((await reopened.spawnMany(definition, batch)).map(entry => entry.admission.kind))
-      .toEqual(["indeterminate", "indeterminate"]);
-    expect(parsedInputs).toBe(4);
-    expect(qualifications).toBe(1);
-  });
-
-  test("asks the durable batch owner to retain cancellation after a failed member", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("cancel-batch", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
-    let replay: HostBatchReplay | undefined;
-    let declarations = 0;
-    let requested = 0;
-    const tasks = new Map<string, Task<number>>();
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch(request) {
-        retained = request;
-        expect(request.canonical.group_policy).toBe("cancel-on-failure");
-        const [first, second] = request.members;
-        if (!first || !second) throw new Error("expected two batch members");
-        tasks.set(first.operation_id, new Task<number>(first.operation_id as TaskId,
-          async () => { throw new Error("first member failed"); }));
-        tasks.set(second.operation_id, new Task<number>(second.operation_id as TaskId,
-          async signal => new Promise<number>((_resolve, reject) => {
-            signal.addEventListener("abort", () => { requested++; reject(new Error("owner cancelled sibling")); }, { once: true });
-          })));
-        replay = { taskName: request.taskName, revision: request.revision,
-          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-            admission: { kind: "accepted" as const, task: tasks.get(member.operation_id)! } })) };
-        return replay;
-      },
-      async reconcileBatch() { if (!replay) throw new Error("batch was not retained"); return replay; },
-      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
-      async cancelBatch(batchId) {
-        if (retained?.batchId !== batchId) return null;
-        declarations++;
-        await tasks.get(retained.members[1]!.operation_id)!.cancel();
-        return { groupId: retained.groupId, batchId,
-          entries: retained.members.map((_member, index) => ({ key: { batchId, index },
-            status: { kind: "requested" as const } })) };
-      },
-      async attach(id) {
-        const member = retained?.members.find(candidate => candidate.operation_id === id);
-        const task = tasks.get(id);
-        if (!member || !task) throw new Error("unknown batch member");
-        return { task, operationId: member.operation_id, taskName: definition.name,
-          revision: definition.revision, implementationDigest: durableDigest };
-      },
-      async reconcileEffect() { return { state: "indeterminate" } as const; },
-      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const groupId = "11111111-1111-4111-8111-111111111112" as GroupId;
-    const batchId = "22222222-2222-4222-8222-222222222223" as BatchId;
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>({ kind: "cancel-on-failure" }, groupId);
-    const admitted = await group.spawnMany(definition, { id: batchId, inputs: [1, 2] });
-    expect(admitted.map(entry => entry.admission.kind)).toEqual(["accepted", "accepted"]);
-    const completed = await group.join();
-    expect(completed.entries.map(entry => entry.outcome?.kind)).toEqual(["failed", "cancelled"]);
-    expect(completed.cancellation).toBe("requested");
-    expect(completed.complete).toBeTrue();
-    expect(declarations).toBe(1);
-    expect(requested).toBe(1);
-  });
-
-  test("keeps every batch slot reconcilable after a lost manifest acknowledgement", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("batch-lost-ack", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch(request) { retained = request; throw new AdmissionUncertainError(request.batchId); },
-      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
-      async reconcileBatch(request) {
-        if (retained === undefined) throw new Error("batch admission was not retained");
-        expect(request.inputDigest).toEqual(retained.inputDigest);
-        return { taskName: request.taskName, revision: request.revision,
-          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
-      },
-      async attach() { throw new Error("no member accepted"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    }
-    const batch = { id: "33333333-3333-4333-8333-333333333333" as BatchId, inputs: [1, 2, 3] };
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>({ kind: "collect-all" }, "44444444-4444-4444-8444-444444444444" as GroupId);
-    expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind))
-      .toEqual(["indeterminate", "indeterminate", "indeterminate"]);
-    expect(retained?.members).toHaveLength(3);
-    expect((await group.reconcileBatch(definition, batch)).map(entry => entry.admission.kind))
-      .toEqual(["indeterminate", "indeterminate", "indeterminate"]);
-  });
-
-  test("rejects incomplete and unrelated host batch replay without retaining it", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("replay", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const batch = { id: "55555555-5555-4555-8555-555555555555" as BatchId, inputs: [1, 2] };
-    let entries: HostBatchReplay["entries"] = [];
-    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
-    let wrongDigest = false;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch(request) {
-        retained = request;
-        return { taskName: request.taskName, revision: request.revision,
-          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
-      },
-      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
-      async reconcileBatch(request) { return { taskName: "replay", revision: "1", implementationDigest: durableDigest,
-        inputDigest: wrongDigest ? Array(request.inputDigest.length).fill(0) as number[] : request.inputDigest, entries }; },
-      async attach() { throw new Error("unused"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    }
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>({ kind: "collect-all" }, "66666666-6666-4666-8666-666666666666" as GroupId);
-    await group.spawnMany(definition, batch);
-    const entry = (index: number, operationId: string = contracts.batchMemberOperationId(group.id, batch.id, index)) =>
-      ({ key: { batchId: batch.id, index }, admission: { kind: "indeterminate" as const, operationId } });
-    entries = [entry(0)];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(0), entry(1), entry(2)];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(0), entry(2)];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(0), entry(0)];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(0), entry(1, "wrong-operation")];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(1), entry(0)];
-    wrongDigest = true;
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    wrongDigest = false;
-    entries = [{ key: { batchId: batch.id, index: 0 },
-      admission: { kind: "rejected", reason: { code: "unsupported", message: "denied" } },
-      outcome: { kind: "succeeded", value: 1 } }, entry(1)];
-    await expect(group.reconcileBatch(definition, batch)).rejects.toThrow();
-    entries = [entry(1), entry(0)];
-    expect((await group.reconcileBatch(definition, batch)).map(value => value.key.index)).toEqual([0, 1]);
-    await expect(group.reconcileBatch(definition, { id: batch.id, inputs: [1, 3] }))
-      .rejects.toThrow();
-    expect((await group.join()).entries).toHaveLength(2);
-  });
-
-  test("non-canonical durable batch inputs reject entries before host admission", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("canonical-input", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    let admitted = 0;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch() { admitted++; throw new Error("must not admit"); },
-      async attach() { throw new Error("unused"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    }
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>({ kind: "collect-all" }, "77777777-7777-4777-8777-777777777777" as GroupId);
-    const inputs = [1, undefined] as unknown as number[];
-    const entries = await group.spawnMany(definition, { id: "88888888-8888-4888-8888-888888888888" as BatchId, inputs: inputs });
-    expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
-    expect(entries.every(entry => entry.admission.kind === "rejected"
-      && entry.admission.reason.code === "invalid_input")).toBeTrue();
-    expect(admitted).toBe(0);
-  });
-
-  test("rejects host policy drift during attachment and batch reconciliation", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("drift-replay", "1", {
-      state: numberSchema, initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    let currentIdentity: PolicyIdentity | null = null;
-    let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => currentIdentity,
-      async admitBatch(request) {
-        retained = request;
-        return { taskName: request.taskName, revision: request.revision,
-          implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,
-          entries: request.members.map((member, index) => ({ key: { batchId: request.batchId, index },
-            admission: { kind: "indeterminate" as const, operationId: member.operation_id } })) };
-      },
-      async loadBatch(batchId) { return retained?.batchId === batchId ? retained.canonical : null; },
-      async attach(id) {
-        currentIdentity = approvalPolicyIdentity;
-        return { task: new Task(id, async () => 1), operationId: "drift-op", taskName: "drift-replay",
-          revision: "1", implementationDigest: durableDigest };
-      },
-      async reconcileBatch(request) {
-        currentIdentity = approvalPolicyIdentity;
-        return { taskName: "drift-replay", revision: "1", implementationDigest: durableDigest,
-          inputDigest: request.inputDigest,
-          entries: [{ key: { batchId: request.batchId, index: 0 }, admission: { kind: "indeterminate" as const,
-            operationId: request.members[0]!.operation_id } }] };
-      },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    }
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    await expect(runtime.attach(definition, "task:drift" as TaskId)).rejects.toThrow();
-    currentIdentity = null;
-    const group = runtime.group<number>({ kind: "collect-all" }, "99999999-9999-4999-8999-999999999999" as GroupId);
-    const batch = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as BatchId, inputs: [1] };
-    await group.spawnMany(definition, batch);
-    await expect(group.reconcileBatch(definition, batch))
-      .rejects.toThrow();
-    expect((await group.join()).entries).toHaveLength(1);
-  });
-
-  test("rejects the entire immutable batch before publication when an input is invalid", async () => {
-    const definition = await TaskDefinition.resumable<number, number, number>("validate-input", "1", {
-      state: numberSchema,
-      initial: input => input,
-      async transition(_context, state) { return { kind: "finish", output: state }; },
-    }, { implementationDigest: durableDigest, input: await defineRuntimeSchema("positive", { type: "number", exclusiveMinimum: 0 }, value => {
-      if (typeof value !== "number" || value <= 0) throw new TypeError("positive number required");
-      return value;
-    }), output: numberSchema });
-    const admitted: string[] = [];
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async admitBatch(request) { admitted.push(...request.members.map(member => member.operation_id)); throw new Error("must not admit"); },
-      async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:partial", taskName: "validate-input", revision: "1", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "indeterminate" } as const; },
-      async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" },
-      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as GroupId);
-    const entries = await group.spawnMany(definition, { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" as BatchId, inputs: [1, -1, 2] });
-    expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected", "rejected"]);
-    expect(admitted).toHaveLength(0);
-    expect((await group.join()).entries).toHaveLength(0);
-  });
-
-  test("routes typed tools through policy and interaction boundaries", async () => {
-    const lengths = await defineTool<{ readonly text: string }, number>({
-      name: "length",
-      revision: "1",
-      description: "Count characters",
-      inputSchema: { type: "object" },
-      outputSchema: { type: "number" },
-      parseInput(value) {
-        if (value === null || typeof value !== "object" || Array.isArray(value)
-          || !("text" in value) || typeof value.text !== "string") throw new TypeError("expected text input");
-        return { text: value.text };
-      },
-      projection: jsonProjection, parseOutput: parseNumber,
-    }, (_context, input) => input.text.length);
-    const runtime = await Harness.builder(contracts)
-      .interactions({ route: async interaction => {
-        expect(interaction.kind).toBe("approval");
-        if (interaction.kind !== "approval") return { kind: "denied" };
-        expect(interaction.actionDigest).toHaveLength(32);
-        expect(interaction.operationId).toBeTruthy();
-        return { kind: "approved" };
-      } })
-      .policy({ identity: () => approvalPolicyIdentity,
-        evaluate: async () => ({ kind: "require-approval", prompt: "approve" }) })
-      .tool(lengths)
-      .grant("tool:call:length")
-      .build();
-
-    const handle = runtime.tool("length");
-    expect("executor" in handle).toBe(false);
-    expect("handler" in handle.definition).toBe(false);
-    expect("parseInput" in handle.definition).toBe(false);
-    expect("parseOutput" in handle.definition).toBe(false);
-    expect(await runtime.call(handle, { text: "typed" })).toBe(5);
-  });
-
-  test("approvals bind one exact tool action and only approved grants dispatch", async () => {
-    const tool = await numberTool("approved-action", "pinned action", (_context, value) => value);
-    const seen: number[][] = [];
-    const route = async (interaction: import("../src/index.js").Interaction) => {
-      if (interaction.kind !== "approval") throw new TypeError("expected an exact approval request");
-      seen.push([...interaction.actionDigest]);
-      return { kind: "approved" as const };
-    };
-    const builder = Harness.builder(contracts).tool(tool).grant("tool:call:approved-action")
-      .policy({ identity: () => approvalPolicyIdentity,
-        evaluate: async () => ({ kind: "require-approval", prompt: "approve action" }) });
-    const approved = await builder.interactions({ route }).build();
-    expect(await approved.call(approved.tool(tool), 1)).toBe(1);
-    expect(await approved.call(approved.tool(tool), 2)).toBe(2);
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).not.toEqual(seen[1]);
-    const signal = new AbortController().signal;
-    const operationId = "78eb6d34-0b1d-46e9-b282-9f0379b2b25e";
-    expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
-    expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
-    expect(seen[2]).toEqual(seen[3]);
-    await expect(approved.call(approved.tool(tool), 4, signal, undefined, "model-tool:turn:0", "provider-call"))
-      .rejects.toThrow();
-    const unapproved = await builder.interactions({ route: async () => ({ kind: "accepted", text: "not an approval" }) }).build();
-    await expect(unapproved.call(unapproved.tool(tool), 3)).rejects.toMatchObject({ kind: "invalid_response" });
-    for (const kind of ["declined", "cancelled", "expired", "denied"] as const) {
-      const rejected = await builder.interactions({ route: async () => ({ kind }) }).build();
-      await expect(rejected.call(rejected.tool(tool), 3)).rejects.toMatchObject({ kind });
-    }
-    const unresolved = await Harness.builder(contracts).tool(tool).grant("tool:call:approved-action")
-      .policy({ identity: () => approvalPolicyIdentity,
-        evaluate: async () => ({ kind: "require-approval", prompt: "approve action" }) }).build();
-    await expect(unresolved.call(unresolved.tool(tool), 3)).rejects.toMatchObject({ kind: "indeterminate" });
-    const mismatched = await builder.interactions({ route: async () => ({ kind: "indeterminate", operationId: "wrong" }) }).build();
-    await expect(mismatched.call(mismatched.tool(tool), 3)).rejects.toThrow();
-  });
-
-  test("scoped policies require separate exact approvals for each pinned layer", async () => {
-    let executed = 0;
-    const prompts: string[] = [];
-    const digests: number[][] = [];
-    let declineSecond = true;
-    const tool = await numberTool("two-approvals", "two approvals", (_context, value) => { executed++; return value; });
-    const root = await Harness.builder(contracts).tool(tool).grant("tool:call:two-approvals")
-      .policy({ identity: () => approvalPolicyIdentity,
-        evaluate: async () => ({ kind: "require-approval", prompt: "parent approval" }) })
-      .interactions({ route: async interaction => {
-        if (interaction.kind !== "approval") throw new TypeError("unexpected interaction");
-        prompts.push(interaction.prompt);
-        digests.push([...interaction.actionDigest]);
-        return declineSecond && interaction.prompt === "child approval"
-          ? { kind: "declined" } : { kind: "approved" };
-      } }).build();
-    const scoped = await root.scoped(ExecutionScope.create().policy({ identity: () => scopedPolicyIdentity,
-      evaluate: async () => ({ kind: "require-approval", prompt: "child approval" }) }));
-    expect(scoped.tool(tool)).toBe(root.tool(tool));
-    await expect(scoped.call(scoped.tool(tool), 1)).rejects.toMatchObject({ kind: "declined" });
-    expect(prompts).toEqual(["parent approval", "child approval"]);
-    expect(digests[0]).not.toEqual(digests[1]);
-    expect(executed).toBe(0);
-    declineSecond = false;
-    expect(await scoped.call(scoped.tool(tool), 2)).toBe(2);
-    expect(executed).toBe(1);
-  });
-
-  test("durable tool calls preserve explicit unresolved and terminal outcomes", async () => {
-    const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
-    const task = "task:durable-tool" as TaskId;
-    let localExecutions = 0;
-    const tool = await numberTool("durable-count", "count", () => { localExecutions++; return 99; });
-    const observed: unknown[] = [];
-    const outcomes: Outcome<unknown, OperationId>[] = [
-      { kind: "indeterminate", operationId: operation },
-      { kind: "failed", error: { message: "executor rejected" } },
-      { kind: "succeeded", value: 7 },
-    ];
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async attach() { throw new Error("not used"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-      async executeTool(taskId, operationId, definition, input) {
-        observed.push({ taskId, operationId, name: definition.definition.name, input });
-        return outcomes.shift() ?? { kind: "cancelled", receipt: { requested: true, taskId } };
-      },
-    }
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:durable-count").build();
-    const context = new TaskContext(runtime, new AbortController().signal, task, true);
-    expect(() => context.call(runtime.tool(tool), 2)).toThrow();
-    expect(await context.callDurable(operation, runtime.tool(tool), 2)).toEqual({ kind: "indeterminate", operationId: operation });
-    expect(await context.callDurable(operation, runtime.tool(tool), 2)).toEqual({ kind: "failed", error: { message: "executor rejected" } });
-    expect(await context.callDurable(operation, runtime.tool(tool), 2)).toEqual({ kind: "succeeded", value: 7 });
-    expect(await context.callDurable(operation, runtime.tool(tool), 2)).toEqual({ kind: "cancelled", receipt: { requested: true, taskId: task } });
-    expect(localExecutions).toBe(0);
-    expect(observed).toHaveLength(4);
-  });
-
-  test("durable approval is routed only through the owner host and preserves its outcome", async () => {
-    let dispatched = 0;
-    const tool = await numberTool("guarded-durable", "guarded", () => 1);
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => approvalPolicyIdentity,
-      async attach() { throw new Error("not used"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-      async executeTool(_taskId, operationId) {
-        dispatched++;
-        return { kind: "indeterminate", operationId };
-      },
-    }
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool)
-      .policy({ identity: () => approvalPolicyIdentity,
-        evaluate: async () => ({ kind: "require-approval", prompt: "approve exact tool call" }) })
-      .interactions({ route: async () => { throw new Error("local approval must not be used"); } })
-      .grant("tool:call:guarded-durable").build();
-    const context = new TaskContext(runtime, new AbortController().signal, "task:approval" as TaskId, true);
-    const operation = "02020202-0202-0202-0202-020202020202" as OperationId;
-    const outcome = await context.callDurable(operation,
-      runtime.tool(tool), 1);
-    expect(outcome).toEqual({ kind: "indeterminate", operationId: operation });
-    expect(dispatched).toBe(1);
-  });
-
-  test("durable hosts reject unpinned or composition-mismatched policies", async () => {
-    await expect(policyIdentity("policy", "1", new Uint8Array(32))).rejects.toThrow();
-    await expect(policyIdentity("policy", "1", new Uint8Array(31).fill(1))).rejects.toThrow();
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => approvalPolicyIdentity,
-      async attach() { throw new Error("not used"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    }
-    await expect(Harness.builder(contracts).state(host).spawner(host).build()).rejects.toThrow();
-    await expect(Harness.builder(contracts).state(host).spawner(host).policy({ identity: () => denyPolicyIdentity,
-      evaluate: async () => ({ kind: "deny", reason: "denied" }) }).build()).rejects.toThrow();
-    const tool = await defineTool<null, number>({ name: "policy-probe", revision: "1", description: "probe",
-      inputSchema: {}, outputSchema: { type: "number" }, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:policy-probe")
-      .policy({ identity: () => approvalPolicyIdentity, evaluate: async () => ({ kind: "allow" }) }).build();
-    const scoped = await runtime.scoped(ExecutionScope.create().policy({ identity: () => scopedPolicyIdentity,
-      evaluate: async () => ({ kind: "deny", reason: "child" }) }));
-    await expect(scoped.call(scoped.tool(tool), null)).rejects.toThrow();
-  });
-
-  test("snapshots caller-owned policy identity before async Rust admission", async () => {
-    const identity = {
-      name: "mutable-policy",
-      version: "1",
-      digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
-    };
-    const policy = {
-      identity: () => identity,
-      evaluate: async () => ({ kind: "allow" as const }),
-    };
-    const building = Harness.builder(contracts).policy(policy).build();
-    identity.name = "mutated-before-rust-admission";
-    const runtime = await building;
-    expect(runtime.durablePolicyIdentity()).toEqual({
-      name: "mutable-policy",
-      version: "1",
-      digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
-    });
-  });
-
-  test("snapshots policy and execution identities during runtime rechecks", async () => {
-    const identityWithMutation = (name: string, mutation: string): ComponentIdentity => {
-      const identity = {
-        name,
-        version: "1",
-        digest: Array.from({ length: 32 }, () => 6),
-      } as unknown as ComponentIdentity & { name: string };
-      queueMicrotask(() => { identity.name = mutation; });
-      return identity;
-    };
-    const tool = await numberTool("admission-snapshot", "admission snapshot", (_context, value) => value);
-    const policy = {
-      identity: () => identityWithMutation("runtime-policy", "mutated-policy"),
-      evaluate: async () => ({ kind: "allow" as const }),
-    };
-    const runtime = await Harness.builder(contracts).policy(policy).tool(tool)
-      .grant("tool:call:admission-snapshot").build();
-    expect(await runtime.call(runtime.tool(tool), 7)).toBe(7);
-
-    let routeCalls = 0;
-    const executionIdentity = () => identityWithMutation("execution-route", `mutated-route-${++routeCalls}`);
-    const state: HarnessRuntimeState = {
-      policyIdentity: () => null,
-      executionIdentity,
-      async attach() { throw new Error("not used"); },
-      async reconcileEffect() { return { state: "indeterminate" }; },
-      async send(message) { return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* []; },
-    };
-    const spawner: HarnessRuntimeSpawner = { policyIdentity: () => null, executionIdentity };
-    const execution: HarnessExecutionProvider = {
-      identity: executionIdentity,
-      spawner: () => spawner,
-      state: () => state,
-      async qualifyTask() { throw new Error("not used"); },
-      async qualifyBatch() { throw new Error("not used"); },
-    };
-    const executionRuntime = await Harness.builder(contracts).execution(execution).build();
-    const placement = {
-      provider: {
-        name: "execution-route",
-        version: "1",
-        digest: Array.from({ length: 32 }, () => 6),
-      },
-      build: { kind: "artifact" as const,
-        provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
-      environment: { kind: "sandbox" as const,
-        provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
-      readiness_revision: Array.from({ length: 32 }, () => 3),
-    } as import("../src/index.js").ExecutionPlacementWire;
-    await expect(executionRuntime.validateExecutionPlacement(placement)).resolves.toBeUndefined();
-  });
-
-  test("snapshots nested policy identities before parent admission can yield", async () => {
-    let childCalls = 0;
-    const childPolicy = {
-      identity: () => {
-        const identity = {
-          name: "mutable-child",
-          version: "1",
-          digest: Array.from({ length: 32 }, () => 7),
-        } as unknown as ComponentIdentity & { name: string };
-        queueMicrotask(() => { identity.name = `mutated-child-${++childCalls}`; });
-        return identity;
-      },
-      evaluate: async () => ({ kind: "allow" as const }),
-    };
-    const tool = await numberTool("nested-admission-snapshot", "nested admission snapshot", (_context, value) => value);
-    const runtime = await Harness.builder(contracts).policy({
-      identity: () => approvalPolicyIdentity,
-      evaluate: async () => ({ kind: "allow" as const }),
-    }).tool(tool).grant("tool:call:nested-admission-snapshot").build();
-    const scoped = await runtime.scoped(ExecutionScope.create().policy(childPolicy));
-    expect(await scoped.call(scoped.tool(tool), 9)).toBe(9);
-  });
-
-  test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
-    let current = approvalPolicyIdentity;
-    let executed = false;
-    const tool = await numberTool("pinned-evaluation", "pinned", (_context, value) => {
-      executed = true;
-      return value;
-    });
-    const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:pinned-evaluation")
-      .policy({ identity: () => current, evaluate: async () => {
-        current = scopedPolicyIdentity;
-        return { kind: "allow" };
-      } }).build();
-    await expect(runtime.call(runtime.tool(tool), 1)).rejects.toThrow();
-    expect(executed).toBe(false);
-  });
-
-  test("typed interactions validate answer JSON before granting a result type", async () => {
-    const observed: unknown[] = [];
-    const runtime = await Harness.builder(contracts).interactions({ route: async interaction => {
-      observed.push(interaction);
-      return { kind: "answered", value: 4 };
-    } }).build();
-    const context = new TaskContext(runtime, new AbortController().signal);
-    const answer = await context.interactTyped({ id: "question:typed", kind: "question", prompt: "Count?" }, numberSchema);
-    expect(answer).toEqual({ kind: "answered", value: 4 });
-    expect(observed[0]).toMatchObject({ responseSchema: { type: "number" } });
-    const invalid = await Harness.builder(contracts).interactions({ route: async () => ({ kind: "answered", value: "four" }) }).build();
-    await expect(new TaskContext(invalid, new AbortController().signal)
-      .interactTyped({ id: "question:invalid", kind: "question", prompt: "Count?" }, numberSchema))
-      .rejects.toThrow();
-  });
-
-  test("nested scopes preserve inherited grants, limits, and policy", async () => {
-    const observed: EffectiveScope[] = [];
-    const tool = await defineTool<null, string>({ name: "guarded", revision: "1", description: "guarded", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString }, () => "called");
-    const deadline = new Date(Date.now() + 60_000);
-    const parentPolicy = {
-      identity: () => denyPolicyIdentity,
-      async evaluate(_invocation: unknown, scope: EffectiveScope) {
-        observed.push(scope);
-        return { kind: "deny", reason: "parent denied" } as const;
-      },
-    };
-    const runtime = await (await Harness.builder(contracts).policy(parentPolicy).tool(tool).grant("read", "write", "tool:call:guarded").build()).scoped(
-      ExecutionScope.create().withLimits({ concurrency: 2, deadline, maxSteps: 12 }),
-    );
-    const child = await runtime.scoped(ExecutionScope.create().policy({ identity: () => scopedPolicyIdentity,
-      evaluate: async () => ({ kind: "allow" }) }));
-
-    await expect(child.call(child.tool("guarded"), null)).rejects.toThrow();
-    expect(observed).toEqual([{ grants: ["read", "write", "tool:call:guarded"], limits: { concurrency: 2, deadline, maxSteps: 12 } }]);
-    const withoutToolGrant = await runtime.scoped(ExecutionScope.create().onlyGrants("read"));
-    await expect(withoutToolGrant.call(withoutToolGrant.tool("guarded"), null))
-      .rejects.toThrow();
-    await expect(runtime.scoped(ExecutionScope.create().grant("admin"))).rejects.toThrow();
-    expect((await runtime.scoped(ExecutionScope.create().onlyGrants())).scope.grants).toEqual([]);
-    await expect(runtime.scoped(ExecutionScope.create().withLimits({ concurrency: 3 }))).rejects.toThrow();
-    await expect(runtime.scoped(ExecutionScope.create().withLimits({ maxSteps: 13 }))).rejects.toThrow();
-    expect(() => new HarnessBuilder(contracts).limits({ model_steps: 0 })).toThrow();
-    await expect(runtime.scoped(ExecutionScope.create().withLimits({ deadline: new Date(deadline.getTime() + 1) }))).rejects.toThrow();
-    const grantless = await (await Harness.builder(contracts).tool(tool).build()).scoped(ExecutionScope.create());
-    await expect(grantless.call(grantless.tool("guarded"), null)).rejects.toThrow();
-    await expect(grantless.scoped(ExecutionScope.create().grant("admin"))).rejects.toThrow();
-    const directlyRestricted = await Harness.builder(contracts).grant("read").build();
-    await expect(directlyRestricted.scoped(ExecutionScope.create().grant("admin"))).rejects.toThrow();
-    expect(() => Reflect.construct(AgentHarness, [new Map(), new Map(), {}, ExecutionScope.create().grant("read"), new Map(), new Map()]))
-      .toThrow();
-  });
-
-  test("keeps rejected batch admissions explicit after close", async () => {
-    const task = await TaskDefinition.live<number, number>("identity", "1", async (_context, value) => value);
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
-    group.close();
-    const entries = await group.spawnMany(task, { id: "batch:test" as BatchId, inputs: [1, 2] });
-
-    expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
-  });
-
-  test("pins live batch requests and never starts a duplicate entry", async () => {
-    let runs = 0;
-    const task = await TaskDefinition.live<number, number>("live-batch", "1", async (_context, value) => {
-      runs++;
-      return value;
-    });
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" },
-      "group:live-stable" as GroupId);
-    const batch = { id: "batch:live-stable" as BatchId, inputs: [1, 2] };
-    const first = await group.spawnMany(task, batch);
-    const repeated = await group.spawnMany(task, batch);
-    expect(repeated.map(entry => entry.admission)).toEqual(first.map(entry => entry.admission));
-    await expect(group.spawnMany(task, { id: batch.id, inputs: [1, 3] }))
-      .rejects.toThrow();
-    await group.join();
-    expect(runs).toBe(2);
-  });
-
-  test("streams thousands of completed tasks once without rebuilding pending races", async () => {
-    const task = await TaskDefinition.live<number, number>("bulk", "1", async (_context, value) => value);
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
-    const inputs = Array.from({ length: 2_048 }, (_value, index) => index);
-    await group.spawnMany(task, { id: "batch:bulk" as BatchId, inputs: inputs });
-    const completed: number[] = [];
-    for await (const entry of group.asCompleted()) {
-      if (entry.outcome?.kind === "succeeded") completed.push(entry.outcome.value);
-    }
-    expect(completed.length).toBe(inputs.length);
-    expect(completed.sort((left, right) => left - right)).toEqual(inputs);
-  });
-
-  test("routes recovery, effect reconciliation, and typed messaging through a durable host", async () => {
-    const messages: TaskMessage[] = [];
-    const recoveredId = "task:recovered" as TaskId;
-    const payload = await mailboxFile(10);
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async attach(id) { return { task: new Task(id, async () => 99), operationId: "operation:recovered", taskName: "hosted", revision: "1", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "succeeded", result: payload } as const; },
-      async send(message: TaskMessage) { messages.push(message); return { accepted: true, messageId: message.id }; },
-      async *inbox() { for (const message of messages) yield message; },
-    }
-    const definition = await TaskDefinition.live<void, number>("hosted", "1", async context => {
-      const effect = await context.reconcileEffect("effect:one" as EffectId);
-      if (effect.state !== "succeeded") return -1;
-      await context.send(recoveredId, payload, "message:one" as OperationId);
-      for await (const message of context.inbox()) return message.value.descriptor.byte_length;
-      return -1;
-    });
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    expect(await runtime.spawn(definition, undefined).result()).toEqual({ kind: "succeeded", value: 10 });
-    expect(messages[0]?.value).toEqual(payload);
-    expect(() => new TaskContext(runtime, new AbortController().signal).send(recoveredId, { body: "inline secret" } as unknown as FileRef)).toThrow();
-    expect(await (await runtime.attach([...runtime.running.keys()][0]!)).result()).toEqual({ kind: "succeeded", value: 10 });
-  });
-
-  test("cancels hanging siblings as soon as a cancel-on-failure group fails", async () => {
-    let aborted = false;
-    const task = await TaskDefinition.live<"fail" | "hang", string>("work", "1", async (context, value) => {
-      if (value === "fail") throw new Error("failed");
-      context.signal.addEventListener("abort", () => { aborted = true; }, { once: true });
-      await context.sleepUntil(new Date(Date.now() + 60_000));
-      return "late";
-    });
-    const runtime = (await Harness.builder(contracts).task(task).build());
-    await expect(runtime.group<string>({ kind: "cancel-on-failure" }).map<"fail" | "hang">(task, ["hang", "fail"])).rejects.toThrow();
-    expect(aborted).toBeTrue();
-  });
-
-  test("observes cancellation when a wait starts after its signal was aborted", async () => {
-    const runtime = await Harness.builder(contracts).build();
-    const controller = new AbortController();
-    controller.abort(new Error("already cancelled"));
-    const task = new Task("task:pre-aborted" as TaskId, signal =>
-      new TaskContext(runtime, signal).sleepUntil(new Date(Date.now() + 60_000)), controller);
-
-    expect(await task.result()).toMatchObject({ kind: "cancelled" });
-  });
-
-  test("race returns the first terminal outcome; firstSuccess ignores early failures", async () => {
-    const task = await TaskDefinition.live<{ readonly delay: number; readonly value?: string }, string>("race", "1", async (context, input) => {
-      await context.sleepUntil(new Date(Date.now() + input.delay));
-      if (input.value === undefined) throw new Error("early failure");
-      return input.value;
-    });
-    const runtime = (await Harness.builder(contracts).task(task).build());
-    const group = runtime.group<string>({ kind: "collect-all" });
-    await group.spawnMany(task, { id: "batch:race" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
-    const first = await group.race();
-    expect(first.outcome?.kind).toBe("failed");
-    expect((await group.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
-    const succeeding = runtime.group<string>({ kind: "collect-all" });
-    await succeeding.spawnMany(task, { id: "batch:first-success" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
-    expect((await succeeding.firstSuccess()).value).toBe("winner");
-    expect((await succeeding.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
-  });
-
-  test("executes model tool calls with durable task ownership and typed receipts", async () => {
-    let modelStep = 0; let sender: TaskId | undefined; let toolOperationId: string | undefined;
-    const payload = await mailboxFile(3);
-    const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
-      policyIdentity: () => null,
-      async attach(id) { return { task: new Task(id, async () => undefined), operationId: "operation:run", taskName: "acyclic.default-agent", revision: "1", implementationDigest: durableDigest }; },
-      async reconcileEffect() { return { state: "succeeded", result: payload } as const; },
-      async send(message: TaskMessage) { sender = message.sender; return { accepted: true, messageId: message.id }; },
-      async *inbox() { yield* [] as TaskMessage[]; },
-    }
-    const tool = await defineTool<number, number>({ name: "double", revision: "1", description: "double", inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
-      toolOperationId = context.operationId;
-      const effect = await context.reconcileEffect("effect:tool" as EffectId);
-      await context.send(context.taskId!, payload);
-      return effect.state === "succeeded" ? input * 4 : 0;
-    });
-    const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:double").model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
-      async reconcile() { return undefined; },
-    }).build();
-    const output = await runtime.run("go");
-    expect(output.text).toBe("done");
-    expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
-    expect(sender).toBe(output.taskId);
-    expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-    expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
-  });
-
-  test("typed run input carries attachment refs into the model context", async () => {
-    let observed: readonly ModelMessage[] = [];
-    const file = {
-      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
-      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
-    };
-    const runtime = await Harness.builder(contracts).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: imagePolicy }] });
-    expect(observed[0]?.content).toEqual([{ kind: "text", text: "describe" }, { kind: "file", file, policy: imagePolicy }]);
-  });
-
-  test("content-only turns dispatch exactly the content admitted by Rust validation", async () => {
-    let observed: readonly ModelMessage[] = [];
-    const file = {
-      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
-      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
-    };
-    const runtime = await Harness.builder(contracts).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: imagePolicy }] });
-    expect(observed[0]?.content).toEqual([{ kind: "file", file, policy: imagePolicy }]);
-  });
-
-  test("direct input is snapshotted before validation and model dispatch", async () => {
-    let observed: readonly ModelMessage[] = [];
-    let contentReads = 0;
-    const file = {
-      volume: { provider: { namespace: "test", family: "filesystem", version: "2" }, id: "project", class: "project" as const, owner: { kind: "project" as const, id: "project" } },
-      path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
-    };
-    const validContent: readonly UserContentPart[] = [{ kind: "file", file, policy: imagePolicy }];
-    const input = {
-      prompt: "",
-      get content(): readonly UserContentPart[] {
-        contentReads += 1;
-        return contentReads === 1 ? validContent : [{ kind: "text", text: "" }];
-      },
-    };
-    const runtime = await Harness.builder(contracts).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await runtime.run(input);
-    expect(contentReads).toBe(1);
-    expect(observed[0]?.content).toEqual(validContent);
-  });
-
-  test("model provider callbacks are captured once per binding and retain their receiver", async () => {
-    type Provider = import("../src/model.js").ModelProvider;
-    type StatefulProvider = Provider & { dispatches: number };
-    const accounting = syntheticAccounting(contracts);
-    const reads = { contextCapacity: 0, countTokens: 0, generate: 0, reconcile: 0 };
-    const called: string[] = [];
-    let admitted: Parameters<Provider["generate"]>[0] | undefined;
-    const provider: StatefulProvider = {
-      dispatches: 0,
-      contextCapacity(this: StatefulProvider, model) {
-        expect(this).toBe(provider);
-        called.push("capacity");
-        return accounting.contextCapacity(model);
-      },
-      countTokens(this: StatefulProvider, request) {
-        expect(this).toBe(provider);
-        called.push("count");
-        return accounting.countTokens(request);
-      },
-      async *generate(this: StatefulProvider, request) {
-        expect(this).toBe(provider);
-        this.dispatches++;
-        admitted = request;
-        yield { kind: "completed" as const, metadata: {} };
-      },
-      async reconcile(this: StatefulProvider) {
-        expect(this).toBe(provider);
-        called.push("reconcile");
-        return undefined;
-      },
-    };
-    const callbacks = { contextCapacity: provider.contextCapacity, countTokens: provider.countTokens,
-      generate: provider.generate, reconcile: provider.reconcile };
-    const names = Object.keys(callbacks) as (keyof typeof callbacks)[];
-    for (const name of names) Object.defineProperty(provider, name, {
-      configurable: true, get() { reads[name]++; return callbacks[name]; },
-    });
-    const runtime = await Harness.builder(contracts).model(testModel, provider).build();
-    const scope = ExecutionScope.create().model({ ...testModel, revision: "scoped" }, provider);
-    const scoped = await runtime.scoped(scope);
-    expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
-    for (const name of names) Object.defineProperty(provider, name, {
-      configurable: true, value() { throw new Error("replacement must require a new binding"); },
-    });
-    await runtime.run("root");
-    await scoped.run("child");
-    expect(provider.dispatches).toBe(2);
-    const binding = scope.modelBinding;
-    if (!binding || !admitted) throw new Error("expected an admitted scoped request");
-    expect(Object.isFrozen(binding.provider)).toBe(true);
-    expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
-    const count = binding.provider.countTokens(admitted);
-    expect(count).toEqual(accounting.countTokens(admitted));
-    await binding.provider.reconcile({ operationId: "binding-probe", step: 0,
-      requestDigest: count.requestDigest, observed: [] });
-    expect(called).toEqual(["capacity", "count", "reconcile"]);
-    expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
-  });
-
-  test("model provider callbacks must all be present before binding", () => {
-    for (const name of ["contextCapacity", "countTokens", "generate", "reconcile"]) {
-      let dispatches = 0;
-      const provider = { ...syntheticAccounting(contracts), async *generate() {
-        dispatches++; yield { kind: "completed" as const, metadata: {} };
-      }, async reconcile() { return undefined; } };
-      Object.defineProperty(provider, name, { value: undefined });
-      expect(() => Harness.builder(contracts).model(testModel, provider)).toThrow();
-      expect(() => ExecutionScope.create().model(testModel, provider)).toThrow();
-      expect(dispatches).toBe(0);
-    }
-  });
-
-  test("model identity and options are pinned at binding, including scoped overrides", async () => {
-    const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
-    const seen: unknown[] = [];
-    const budgets: (number | undefined)[] = [];
-    const provider = { ...syntheticAccounting(contracts), async *generate(request: { model: unknown; maxOutputTokens?: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; } };
-    const runtime = await Harness.builder(contracts).model(rootIdentity, provider).modelOutputTokens(8_192).build();
-    rootIdentity.options.mode = "mutated";
-    await runtime.run("root");
-    expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
-    const childIdentity = { provider: "child", name: "model", revision: "4", options: { mode: "scoped" } };
-    const scoped = await runtime.scoped(ExecutionScope.create().model(childIdentity, provider));
-    childIdentity.options.mode = "mutated";
-    await scoped.run("child");
-    expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
-    expect(budgets).toEqual([8_192, 8_192]);
-    await (await Harness.builder(contracts).model(testModel, provider).build()).run("without a budget");
-    expect(budgets).toEqual([8_192, 8_192, undefined]);
-    expect(() => Harness.builder(contracts).modelOutputTokens(0)).toThrow();
-    expect(() => Harness.builder(contracts).modelOutputTokens(2 ** 32)).toThrow();
-    expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow();
-  });
-
-  test("selected context preserves canonical roles without a synthetic user duplicate", async () => {
-    let observed: readonly ModelMessage[] = [];
-    const runtime = await Harness.builder(contracts).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await runtime.runSelectedContext({
-      selection: { conversationRevision: 2n, messageIds: [
-        ("01010101-0101-0101-0101-010101010101" as ConversationMessageId), ("02020202-0202-0202-0202-020202020202" as ConversationMessageId),
-      ] },
-      messages: [
-        { role: "assistant", content: "earlier answer" },
-        { role: "user", content: [{ kind: "text", text: "follow-up" }] },
-      ],
-    });
-    expect(observed).toHaveLength(2);
-    expect(observed[0]?.role).toBe("assistant");
-    expect(observed[1]?.content).toEqual([{ kind: "text", text: "follow-up" }]);
-    await runtime.runSelectedContext({
-      selection: { conversationRevision: 257n, messageIds: Array.from({ length: 257 }, (_, index) =>
-        (`${(index + 1).toString(16).padStart(8, "0")}-0000-0000-0000-000000000000` as ConversationMessageId)) },
-      messages: Array.from({ length: 257 }, (_, index) => ({ role: "user" as const,
-        content: index === 0 ? "x".repeat(128 * 1024 + 1) : "retained history" })),
-    });
-    expect(observed).toHaveLength(257);
-    expect(observed[0]?.content).toHaveLength(128 * 1024 + 1);
-    await expect(runtime.run({ prompt: "conflicting prompt", selectedContext: {
-      selection: { conversationRevision: 1n, messageIds: [("02020202-0202-0202-0202-020202020202" as ConversationMessageId)] },
-      messages: [{ role: "user", content: "recorded prompt" }],
-    } } as never)).rejects.toThrow();
-  });
-
-  test("builder limits bound selected history and direct input before model dispatch", async () => {
-    let dispatched = 0;
-    const runtime = await Harness.builder(contracts).limits({ context_messages: 1, render_bytes: 8 }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: null }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("nine bytes")).rejects.toThrow();
-    await expect(runtime.runSelectedContext({
-      selection: { conversationRevision: 2n, messageIds: [
-        ("01010101-0101-0101-0101-010101010101" as ConversationMessageId), ("02020202-0202-0202-0202-020202020202" as ConversationMessageId),
-      ] },
-      messages: [{ role: "assistant", content: "old" }, { role: "user", content: "new" }],
-    })).rejects.toThrow();
-    expect(dispatched).toBe(0);
-  });
-
-  test("stream event limits stop an unbounded provider before further dispatch", async () => {
-    let produced = 0;
-    const runtime = await Harness.builder(contracts).limits({ model_events_per_step: 2 }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() {
-        while (true) { produced++; yield { kind: "content" as const, delta: "." }; }
-      },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("bounded")).rejects.toThrow();
-    expect(produced).toBe(3);
-  });
-
-  test("model loop consumes the detached event returned by Rust admission", async () => {
-    let reads = 0;
-    const event = {
-      kind: "content" as const,
-      get delta(): string {
-        reads += 1;
-        return reads === 1 ? "ok" : "x".repeat(3);
-      },
-    };
-    const runtime = await Harness.builder(contracts).limits({ file_bytes: 2 }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() {
-        yield event;
-        yield { kind: "completed" as const, metadata: {} };
-      },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("x")).resolves.toMatchObject({ text: "ok" });
-    expect(reads).toBe(1);
-  });
-
-  test("custom context builders cannot bypass model-content bounds", async () => {
-    let dispatched = 0;
-    const runtime = await Harness.builder(contracts).limits({ render_bytes: 8 }).context({
-      async build() { return [{ role: "user" as const, content: "too much context" }]; },
-    }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("short")).rejects.toThrow();
-    expect(dispatched).toBe(0);
-  });
-
-  test("custom context builders use the native closed model-message contract", async () => {
-    let dispatched = 0;
-    const runtime = await Harness.builder(contracts).context({
-      async build() {
-        return [{ role: "developer" as never, content: "safe" }];
-      },
-    }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("safe")).rejects.toThrow();
-    expect(dispatched).toBe(0);
-  });
-
-  test("model context tool values are admitted by Rust canonical JSON before dispatch", async () => {
-    let dispatched = 0;
-    const runtime = await Harness.builder(contracts).context({
-      async build() { return [{ role: "assistant" as const, content: {
-        kind: "tool_call" as const, callId: "call", name: "tool", arguments: { unsafe: Number.POSITIVE_INFINITY },
-      } }, { role: "user" as const, content: "safe" }]; },
-    }).model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
-      async reconcile() { return undefined; },
-    }).build();
-    await expect(runtime.run("safe")).rejects.toThrow();
-    expect(dispatched).toBe(0);
-  });
-
-  test("local task names and revisions use one bounded registry contract", async () => {
-    const task = await TaskDefinition.live("leaf", "1", async () => 1);
-    expect(task.name).toBe("leaf");
-    expect(Object.isFrozen(task)).toBe(true);
-    expect(Object.isFrozen(task.implementation)).toBe(true);
-    await expect(TaskDefinition.live("bad/name", "1", async () => 1)).rejects.toThrow();
-    await expect(TaskDefinition.live("leaf", "bad version", async () => 1)).rejects.toThrow();
-  });
-
-  test("tool registration snapshots its public definition", async () => {
-    const mutable = { name: "echo", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString,
-      handler: async () => "ok" };
-    const runtime = await Harness.builder(contracts).tool(mutable).build();
-    mutable.name = "different";
-    mutable.description = "changed";
-    expect(runtime.tool("echo").definition).toMatchObject({ name: "echo", description: "first" });
-    expect(Object.isFrozen(runtime.tool("echo").definition)).toBe(true);
-  });
-
-  test("reused provider call IDs have distinct internal tool operations", async () => {
-    const operations: string[] = [];
-    const argumentsSeen: number[] = [];
-    const tool = await defineTool<number, number>({ name: "again", revision: "1", description: "again",
-      inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
-      expect(context.callId).toBe("provider-call");
-      operations.push(context.operationId!);
-      argumentsSeen.push(input);
-      return input;
-    });
-    let step = 0;
-    const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:again").model(testModel, {
-      ...syntheticAccounting(contracts), async *generate() {
-        if (step++ < 2) {
-          yield { kind: "tool_call" as const, callId: "provider-call", name: "again", arguments: step };
-        } else yield { kind: "content" as const, delta: "done" };
-        yield { kind: "completed" as const, metadata: {} };
-      },
-      async reconcile() { return undefined; },
-    }).build();
-    expect((await runtime.run("again")).text).toBe("done");
-    expect(operations).toHaveLength(2);
-    expect(new Set(operations).size).toBe(2);
-    expect(argumentsSeen).toEqual([1, 2]);
-  });
+test("pins task dependencies and rejects missing versions and cycles at build time", async () => {
+  const leaf = await TaskDefinition.live("leaf", "2", () => 1);
+  const parent = await TaskDefinition.live("parent", "1", () => 2, { requirements: ["task:leaf@2"] });
+  await expect(Harness.builder(contracts).task(parent).task(leaf).build()).resolves.toBeDefined();
+  const stale = await TaskDefinition.live("stale", "1", () => 0, { requirements: ["task:leaf@1"] });
+  await expect(Harness.builder(contracts).task(stale).task(leaf).build()).rejects.toThrow();
+  const left = await TaskDefinition.live("left", "1", () => 1, { requirements: ["task:right@1"] });
+  const right = await TaskDefinition.live("right", "1", () => 1, { requirements: ["task:left@1"] });
+  await expect(Harness.builder(contracts).task(left).task(right).build()).rejects.toThrow();
 });
 
+test("admits exact grants but rejects unauthenticated extension requirements", async () => {
+  const granted = await TaskDefinition.live("granted-task", "1", () => 1,
+    { requirements: ["grant:task:run"] });
+  await expect(Harness.builder(contracts).grant("task:run").task(granted).build()).resolves.toBeDefined();
+  await expect(Harness.builder(contracts).task(granted).build()).rejects.toThrow();
+  const extension = await TaskDefinition.live("extension-task", "1", () => 1,
+    { requirements: ["extension:example.state@3"] });
+  await expect(Harness.builder(contracts).task(extension).build()).rejects.toThrow();
+});
 
-test("model projections receive parsed invocation and retain independent canonical results", async () => {
-  const stringProjection = await jsonToolProjection<string>({ type: "string" });
-  class Projection {
-    readonly schema = stringProjection.schema;
-    readonly prefix = "selected";
-    project(invocation: { arguments: { count: number } }, result: { value: number }) {
-      return { kind: "json" as const, value: `${this.prefix}:${invocation.arguments.count}:${result.value}` };
-    }
-  }
-  const projector = new Projection();
-  const definition = await defineTool<{ count: number }, number>({
-    name: "projected", revision: "1", description: "projected",
-    inputSchema: { type: "number" }, outputSchema: { type: "number" },
-    parseInput: value => ({ count: parseNumber(value) }), parseOutput: parseNumber,
-    projection: projector,
-  }, (_context, input) => input.count * 2);
-  let steps = 0;
-  const builder = Harness.builder(contracts).tool(definition).grant("tool:call:projected");
-  // The admitted method is captured once, including a prototype method's receiver.
-  projector.project = () => { throw new Error("replacement must not execute"); };
-  const runtime = await builder.model(testModel, {
-    ...syntheticAccounting(contracts),
-    async *generate(request) {
-      if (steps++ === 0) yield { kind: "tool_call" as const, callId: "projected", name: "projected", arguments: 3 };
-      else expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "projected",
-        name: "projected", content: { kind: "json", value: "selected:3:6" } });
-      yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; },
+test("requires capability grants and a complete durable binding for task dependencies", async () => {
+  const modelTask = await TaskDefinition.live("model-task", "1", () => 1, { requirements: ["model"] });
+  const provider = {
+    ...syntheticAccounting(contracts), async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+    async reconcile() { return undefined; },
+  };
+  await expect(Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
+    .rejects.toThrow();
+  await expect(Harness.builder(contracts).model(testModel, provider)
+    .grant("model:generate").task(modelTask).build()).resolves.toBeDefined();
+  await expect(Harness.builder(contracts).grant("model:generate").task(modelTask).build())
+    .resolves.toBeDefined();
+
+  const stateTask = await TaskDefinition.live("state-task", "1", () => 1, { requirements: ["state"] });
+  const spawnerTask = await TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
+  const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
+  const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
+  expect((await Harness.builder(contracts).state(state).task(stateTask).build()).components.state).toBe(state);
+  await expect(Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).rejects.toThrow();
+  await expect(Harness.builder(contracts).state(state).spawner(spawner)
+    .task(stateTask).task(spawnerTask).build()).resolves.toBeDefined();
+});
+
+test("retains simultaneous pinned task revisions without an implicit latest", async () => {
+  const first = await TaskDefinition.live<void, number>("versioned", "1", () => 1);
+  const second = await TaskDefinition.live<void, number>("versioned", "2", () => 2);
+  const needsFirst = await TaskDefinition.live<void, number>("needs-first", "1", () => 1,
+    { requirements: ["task:versioned@1"] });
+  const runtime = await Harness.builder(contracts).task(first).task(second).task(needsFirst).build();
+  expect(Object.is(runtime.task("versioned@1"), first)).toBe(true);
+  expect(Object.is(runtime.task("versioned@2"), second)).toBe(true);
+  expect(runtime.task(first)).toBe(first);
+  expect(() => runtime.task("versioned")).toThrow();
+  expect(await runtime.spawn(first, undefined).result()).toEqual({ kind: "succeeded", value: 1 });
+  expect(await runtime.spawn(second, undefined).result()).toEqual({ kind: "succeeded", value: 2 });
+  expect(() => Harness.builder(contracts).task(first).task(first)).toThrow();
+  await expect(TaskDefinition.live("bad@name", "1", () => 0)).rejects.toThrow();
+});
+
+test("pins tool revisions independently and selects the model-visible revision explicitly", async () => {
+  const first = await defineTool<null, number>({ name: "versioned-tool", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
+  const second = await defineTool<null, number>({ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 2);
+  const needsFirst = await TaskDefinition.live<void, number>("needs-first-tool", "1", () => 1,
+    { requirements: ["tool:versioned-tool@1"] });
+  const builder = Harness.builder(contracts).tool(first).tool(second).task(needsFirst).grant("tool:call:versioned-tool");
+  const ambiguous = await builder.build();
+  expect(ambiguous.tool("versioned-tool@1").definition).toMatchObject({ name: first.name, revision: first.revision });
+  expect(ambiguous.tool("versioned-tool@2").definition).toMatchObject({ name: second.name, revision: second.revision });
+  expect(() => ambiguous.tool("versioned-tool")).toThrow();
+  expect(await ambiguous.call(ambiguous.tool("versioned-tool@1"), null)).toBe(1);
+  expect(await ambiguous.call(ambiguous.tool("versioned-tool@2"), null)).toBe(2);
+  let visible: readonly ModelToolDefinition[] = [];
+  const selected = await builder.selectModelTool("versioned-tool", "2").model(testModel, {
+    ...syntheticAccounting(contracts), async *generate(request) { visible = request.tools; yield { kind: "completed" as const, metadata: {} }; },
+    async reconcile() { return undefined; },
   }).build();
-  expect(runtime.tool(definition).definition.projectionSchema).toEqual(stringProjection.schema);
-  const result = await runtime.run("go");
-  expect(result.receipts.find(receipt => receipt.kind === "tool"))
-    .toMatchObject({ value: 6, projection: { kind: "json", value: "selected:3:6" } });
-  expect(steps).toBe(2);
+  expect(selected.tool("versioned-tool").definition).toMatchObject({ name: second.name, revision: second.revision });
+  const typedValue: number = await selected.call(selected.tool(second), null);
+  expect(typedValue).toBe(2);
+  expect(() => selected.tool({ ...second })).toThrow();
+  await selected.run("select");
+  expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, projectionSchema: jsonProjection.schema }]);
+  expect(() => Harness.builder(contracts).tool(first).tool(first)).toThrow();
+  expect(() => builder.selectModelTool("versioned-tool", "3")).toThrow();
 });
 
-test("invalid model projection fails before the next provider request", async () => {
-  const stringProjection = await jsonToolProjection<string>({ type: "string" });
-  const definition = await defineTool<null, number>({ name: "invalid-projection", revision: "1",
-    description: "invalid projection", inputSchema: { type: "null" }, outputSchema: { type: "number" },
-    parseInput: parseNull, parseOutput: parseNumber,
-    projection: { schema: stringProjection.schema, project: () => ({ kind: "json", value: 1 }) },
-  }, () => 1);
-  let calls = 0;
-  const runtime = await Harness.builder(contracts).tool(definition).grant("tool:call:invalid-projection")
-    .model(testModel, { ...syntheticAccounting(contracts), async *generate() {
-      calls++;
-      yield { kind: "tool_call" as const, callId: "invalid", name: "invalid-projection", arguments: null };
+test("preserves task input and output types through nested execution", async () => {
+  const double = await TaskDefinition.live<number, number>("double", "1", async (_context, value) => value * 2);
+  const sum = await TaskDefinition.live<readonly number[], number>("sum", "1", async (context, values) => {
+    const group = context.group<number>({ kind: "collect-all" });
+    await group.spawnMany(context.task(double), { id: "batch:sum" as BatchId, inputs: values });
+    return (await group.join()).entries.reduce((total, entry) => {
+      if (entry.outcome?.kind !== "succeeded") throw new Error("child task failed");
+      return total + entry.outcome.value;
+    }, 0);
+  });
+  const runtime = await Harness.builder(contracts).task(double).task(sum).grant("task:spawn:double@1").build();
+
+  const outcome: Outcome<number> = await runtime.spawn(sum, [1, 2, 3]).result();
+  expect(outcome).toEqual({ kind: "succeeded", value: 12 });
+});
+
+test("a task context and its groups cannot invoke an ungranted descendant", async () => {
+  const allowed = await TaskDefinition.live<number, number>("allowed-child", "1", (_context, value) => value + 1);
+  const denied = await TaskDefinition.live<number, number>("denied-child", "1", (_context, value) => value + 100);
+  const nested = await TaskDefinition.live<number, boolean>("narrowed-parent", "1", async (child, value) => {
+    const allowedOutcome = await child.spawn(child.task(allowed), value).result();
+    if (allowedOutcome.kind !== "succeeded" || allowedOutcome.value !== value + 1) return false;
+    try { child.spawn(child.task(denied), value); return false; }
+    catch { return true; }
+  });
+  const tool = await defineTool({ name: "child-tool", revision: "1", description: "child tool",
+    inputSchema: { type: "null" }, outputSchema: { type: "number" },
+    parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 3);
+  const owner = await Harness.builder(contracts).task(allowed).task(denied).task(nested).tool(tool)
+    .grant("task:spawn:allowed-child@1", "task:spawn:denied-child@1", "tool:call:child-tool").build();
+  const narrowed = await owner.scoped(new ExecutionScope().onlyGrants("task:spawn:allowed-child@1"));
+  const context = new TaskContext(narrowed, new AbortController().signal);
+  const allowedRef = context.task(allowed);
+  const deniedRef = new TaskContext(owner, new AbortController().signal).task(denied);
+  expect(allowedRef).toMatchObject({ name: "allowed-child", revision: "1" });
+  expect("implementation" in allowedRef).toBe(false);
+  expect(() => context.task(denied)).toThrow();
+  expect(() => context.tool(tool)).toThrow();
+  expect(await narrowed.spawn(nested, 1).result()).toEqual({ kind: "succeeded", value: true });
+  expect(await context.spawn(allowedRef, 1).result()).toEqual({ kind: "succeeded", value: 2 });
+  expect(() => context.spawn(deniedRef, 1)).toThrow();
+  const group = context.group<number>({ kind: "collect-all" });
+  const blocked = await group.spawnMany(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] });
+  expect(blocked[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
+  await expect(group.reconcileBatch(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] }))
+    .rejects.toThrow();
+  const admitted = await group.spawnMany(allowedRef, { id: "batch:allowed" as BatchId, inputs: [2] });
+  expect(admitted[0]?.admission.kind).toBe("accepted");
+  const durable = new TaskContext(narrowed, new AbortController().signal,
+    "task:parent" as TaskId, true);
+  expect(() => durable.admit(deniedRef, 1, "operation:blocked"))
+    .toThrow();
+  expect(owner.task(denied)).toBe(denied);
+  expect(owner.tool(tool).definition.name).toBe("child-tool");
+  expect(await owner.spawn(denied, 1).result()).toEqual({ kind: "succeeded", value: 101 });
+});
+
+test("routes typed tools through policy and interaction boundaries", async () => {
+  const lengths = await defineTool<{ readonly text: string }, number>({
+    name: "length",
+    revision: "1",
+    description: "Count characters",
+    inputSchema: { type: "object" },
+    outputSchema: { type: "number" },
+    parseInput(value) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)
+        || !("text" in value) || typeof value.text !== "string") throw new TypeError("expected text input");
+      return { text: value.text };
+    },
+    projection: jsonProjection, parseOutput: parseNumber,
+  }, (_context, input) => input.text.length);
+  const runtime = await Harness.builder(contracts)
+    .interactions({ route: async interaction => {
+      expect(interaction.kind).toBe("approval");
+      if (interaction.kind !== "approval") return { kind: "denied" };
+      expect(interaction.actionDigest).toHaveLength(32);
+      expect(interaction.operationId).toBeTruthy();
+      return { kind: "approved" };
+    } })
+    .policy({ identity: () => approvalPolicyIdentity,
+      evaluate: async () => ({ kind: "require-approval", prompt: "approve" }) })
+    .tool(lengths)
+    .grant("tool:call:length")
+    .build();
+
+  const handle = runtime.tool("length");
+  expect("executor" in handle).toBe(false);
+  expect("handler" in handle.definition).toBe(false);
+  expect("parseInput" in handle.definition).toBe(false);
+  expect("parseOutput" in handle.definition).toBe(false);
+  expect(await runtime.call(handle, { text: "typed" })).toBe(5);
+});
+
+test("approvals bind one exact tool action and only approved grants dispatch", async () => {
+  const tool = await numberTool("approved-action", "pinned action", (_context, value) => value);
+  const seen: number[][] = [];
+  const route = async (interaction: import("../src/index.js").Interaction) => {
+    if (interaction.kind !== "approval") throw new TypeError("expected an exact approval request");
+    seen.push([...interaction.actionDigest]);
+    return { kind: "approved" as const };
+  };
+  const builder = Harness.builder(contracts).tool(tool).grant("tool:call:approved-action")
+    .policy({ identity: () => approvalPolicyIdentity,
+      evaluate: async () => ({ kind: "require-approval", prompt: "approve action" }) });
+  const approved = await builder.interactions({ route }).build();
+  expect(await approved.call(approved.tool(tool), 1)).toBe(1);
+  expect(await approved.call(approved.tool(tool), 2)).toBe(2);
+  expect(seen).toHaveLength(2);
+  expect(seen[0]).not.toEqual(seen[1]);
+  const signal = new AbortController().signal;
+  const operationId = "78eb6d34-0b1d-46e9-b282-9f0379b2b25e";
+  expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
+  expect(await approved.call(approved.tool(tool), 4, signal, undefined, operationId, "provider-call")).toBe(4);
+  expect(seen[2]).toEqual(seen[3]);
+  await expect(approved.call(approved.tool(tool), 4, signal, undefined, "model-tool:turn:0", "provider-call"))
+    .rejects.toThrow();
+  const unapproved = await builder.interactions({ route: async () => ({ kind: "accepted", text: "not an approval" }) }).build();
+  await expect(unapproved.call(unapproved.tool(tool), 3)).rejects.toMatchObject({ kind: "invalid_response" });
+  for (const kind of ["declined", "cancelled", "expired", "denied"] as const) {
+    const rejected = await builder.interactions({ route: async () => ({ kind }) }).build();
+    await expect(rejected.call(rejected.tool(tool), 3)).rejects.toMatchObject({ kind });
+  }
+  const unresolved = await Harness.builder(contracts).tool(tool).grant("tool:call:approved-action")
+    .policy({ identity: () => approvalPolicyIdentity,
+      evaluate: async () => ({ kind: "require-approval", prompt: "approve action" }) }).build();
+  await expect(unresolved.call(unresolved.tool(tool), 3)).rejects.toMatchObject({ kind: "indeterminate" });
+  const mismatched = await builder.interactions({ route: async () => ({ kind: "indeterminate", operationId: "wrong" }) }).build();
+  await expect(mismatched.call(mismatched.tool(tool), 3)).rejects.toThrow();
+});
+
+test("scoped policies require separate exact approvals for each pinned layer", async () => {
+  let executed = 0;
+  const prompts: string[] = [];
+  const digests: number[][] = [];
+  let declineSecond = true;
+  const tool = await numberTool("two-approvals", "two approvals", (_context, value) => { executed++; return value; });
+  const root = await Harness.builder(contracts).tool(tool).grant("tool:call:two-approvals")
+    .policy({ identity: () => approvalPolicyIdentity,
+      evaluate: async () => ({ kind: "require-approval", prompt: "parent approval" }) })
+    .interactions({ route: async interaction => {
+      if (interaction.kind !== "approval") throw new TypeError("unexpected interaction");
+      prompts.push(interaction.prompt);
+      digests.push([...interaction.actionDigest]);
+      return declineSecond && interaction.prompt === "child approval"
+        ? { kind: "declined" } : { kind: "approved" };
+    } }).build();
+  const scoped = await root.scoped(new ExecutionScope().policy({ identity: () => scopedPolicyIdentity,
+    evaluate: async () => ({ kind: "require-approval", prompt: "child approval" }) }));
+  expect(scoped.tool(tool)).toBe(root.tool(tool));
+  await expect(scoped.call(scoped.tool(tool), 1)).rejects.toMatchObject({ kind: "declined" });
+  expect(prompts).toEqual(["parent approval", "child approval"]);
+  expect(digests[0]).not.toEqual(digests[1]);
+  expect(executed).toBe(0);
+  declineSecond = false;
+  expect(await scoped.call(scoped.tool(tool), 2)).toBe(2);
+  expect(executed).toBe(1);
+});
+
+test("durable hosts reject unpinned or composition-mismatched policies", async () => {
+  await expect(policyIdentity("policy", "1", new Uint8Array(32))).rejects.toThrow();
+  await expect(policyIdentity("policy", "1", new Uint8Array(31).fill(1))).rejects.toThrow();
+  const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
+    policyIdentity: () => approvalPolicyIdentity,
+    async attach() { throw new Error("not used"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  }
+  await expect(Harness.builder(contracts).state(host).spawner(host).build()).rejects.toThrow();
+  await expect(Harness.builder(contracts).state(host).spawner(host).policy({ identity: () => denyPolicyIdentity,
+    evaluate: async () => ({ kind: "deny", reason: "denied" }) }).build()).rejects.toThrow();
+  const tool = await defineTool<null, number>({ name: "policy-probe", revision: "1", description: "probe",
+    inputSchema: {}, outputSchema: { type: "number" }, parseInput: parseNull, projection: jsonProjection, parseOutput: parseNumber }, () => 1);
+  const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:policy-probe")
+    .policy({ identity: () => approvalPolicyIdentity, evaluate: async () => ({ kind: "allow" }) }).build();
+  const scoped = await runtime.scoped(new ExecutionScope().policy({ identity: () => scopedPolicyIdentity,
+    evaluate: async () => ({ kind: "deny", reason: "child" }) }));
+  await expect(scoped.call(scoped.tool(tool), null)).rejects.toThrow();
+});
+
+test("snapshots caller-owned policy identity before async Rust admission", async () => {
+  const identity = {
+    name: "mutable-policy",
+    version: "1",
+    digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
+  };
+  const policy = {
+    identity: () => identity,
+    evaluate: async () => ({ kind: "allow" as const }),
+  };
+  const building = Harness.builder(contracts).policy(policy).build();
+  identity.name = "mutated-before-rust-admission";
+  const runtime = await building;
+  expect(runtime.durablePolicyIdentity()).toEqual({
+    name: "mutable-policy",
+    version: "1",
+    digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
+  });
+});
+
+test("snapshots policy and execution identities during runtime rechecks", async () => {
+  const identityWithMutation = (name: string, mutation: string): ComponentIdentity => {
+    const identity = {
+      name,
+      version: "1",
+      digest: Array.from({ length: 32 }, () => 6),
+    } as unknown as ComponentIdentity & { name: string };
+    queueMicrotask(() => { identity.name = mutation; });
+    return identity;
+  };
+  const tool = await numberTool("admission-snapshot", "admission snapshot", (_context, value) => value);
+  const policy = {
+    identity: () => identityWithMutation("runtime-policy", "mutated-policy"),
+    evaluate: async () => ({ kind: "allow" as const }),
+  };
+  const runtime = await Harness.builder(contracts).policy(policy).tool(tool)
+    .grant("tool:call:admission-snapshot").build();
+  expect(await runtime.call(runtime.tool(tool), 7)).toBe(7);
+
+  let routeCalls = 0;
+  const executionIdentity = () => identityWithMutation("execution-route", `mutated-route-${++routeCalls}`);
+  const state: HarnessRuntimeState = {
+    policyIdentity: () => null,
+    executionIdentity,
+    async attach() { throw new Error("not used"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const spawner: HarnessRuntimeSpawner = { policyIdentity: () => null, executionIdentity };
+  const execution: HarnessExecutionProvider = {
+    identity: executionIdentity,
+    spawner: () => spawner,
+    state: () => state,
+    async qualifyTask() { throw new Error("not used"); },
+    async qualifyBatch() { throw new Error("not used"); },
+  };
+  const executionRuntime = await Harness.builder(contracts).execution(execution).build();
+  const placement = {
+    provider: {
+      name: "execution-route",
+      version: "1",
+      digest: Array.from({ length: 32 }, () => 6),
+    },
+    build: { kind: "artifact" as const,
+      provider: { namespace: "test", family: "objects", version: "1" }, key: [1], version: null },
+    environment: { kind: "sandbox" as const,
+      provider: { namespace: "test", family: "machines", version: "1" }, key: [2], version: null },
+    readiness_revision: Array.from({ length: 32 }, () => 3),
+  } as import("../src/index.js").WasmExecutionPlacementWire;
+  await expect(executionRuntime.validateExecutionPlacement(placement)).resolves.toBeUndefined();
+});
+
+test("snapshots nested policy identities before parent admission can yield", async () => {
+  let childCalls = 0;
+  const childPolicy = {
+    identity: () => {
+      const identity = {
+        name: "mutable-child",
+        version: "1",
+        digest: Array.from({ length: 32 }, () => 7),
+      } as unknown as ComponentIdentity & { name: string };
+      queueMicrotask(() => { identity.name = `mutated-child-${++childCalls}`; });
+      return identity;
+    },
+    evaluate: async () => ({ kind: "allow" as const }),
+  };
+  const tool = await numberTool("nested-admission-snapshot", "nested admission snapshot", (_context, value) => value);
+  const runtime = await Harness.builder(contracts).policy({
+    identity: () => approvalPolicyIdentity,
+    evaluate: async () => ({ kind: "allow" as const }),
+  }).tool(tool).grant("tool:call:nested-admission-snapshot").build();
+  const scoped = await runtime.scoped(new ExecutionScope().policy(childPolicy));
+  expect(await scoped.call(scoped.tool(tool), 9)).toBe(9);
+});
+
+test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
+  let current = approvalPolicyIdentity;
+  let executed = false;
+  const tool = await numberTool("pinned-evaluation", "pinned", (_context, value) => {
+    executed = true;
+    return value;
+  });
+  const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:pinned-evaluation")
+    .policy({ identity: () => current, evaluate: async () => {
+      current = scopedPolicyIdentity;
+      return { kind: "allow" };
+    } }).build();
+  await expect(runtime.call(runtime.tool(tool), 1)).rejects.toThrow();
+  expect(executed).toBe(false);
+});
+
+test("typed interactions validate answer JSON before granting a result type", async () => {
+  const observed: unknown[] = [];
+  const runtime = await Harness.builder(contracts).interactions({ route: async interaction => {
+    observed.push(interaction);
+    return { kind: "answered", value: 4 };
+  } }).build();
+  const context = new TaskContext(runtime, new AbortController().signal);
+  const answer = await context.interactTyped({ id: "question:typed", kind: "question", prompt: "Count?" }, numberSchema);
+  expect(answer).toEqual({ kind: "answered", value: 4 });
+  expect(observed[0]).toMatchObject({ responseSchema: { type: "number" } });
+  const invalid = await Harness.builder(contracts).interactions({ route: async () => ({ kind: "answered", value: "four" }) }).build();
+  await expect(new TaskContext(invalid, new AbortController().signal)
+    .interactTyped({ id: "question:invalid", kind: "question", prompt: "Count?" }, numberSchema))
+    .rejects.toThrow();
+});
+
+test("nested scopes preserve inherited grants, limits, and policy", async () => {
+  const observed: EffectiveScope[] = [];
+  const tool = await defineTool<null, string>({ name: "guarded", revision: "1", description: "guarded", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString }, () => "called");
+  const deadline = new Date(Date.now() + 60_000);
+  const parentPolicy = {
+    identity: () => denyPolicyIdentity,
+    async evaluate(_invocation: unknown, scope: EffectiveScope) {
+      observed.push(scope);
+      return { kind: "deny", reason: "parent denied" } as const;
+    },
+  };
+  const runtime = await (await Harness.builder(contracts).policy(parentPolicy).tool(tool).grant("read", "write", "tool:call:guarded").build()).scoped(
+    new ExecutionScope().withLimits({ concurrency: 2, deadline, maxSteps: 12 }),
+  );
+  const child = await runtime.scoped(new ExecutionScope().policy({ identity: () => scopedPolicyIdentity,
+    evaluate: async () => ({ kind: "allow" }) }));
+
+  await expect(child.call(child.tool("guarded"), null)).rejects.toThrow();
+  expect(observed).toEqual([{ grants: ["read", "write", "tool:call:guarded"], limits: { concurrency: 2, deadline, maxSteps: 12 } }]);
+  const withoutToolGrant = await runtime.scoped(new ExecutionScope().onlyGrants("read"));
+  await expect(withoutToolGrant.call(withoutToolGrant.tool("guarded"), null))
+    .rejects.toThrow();
+  await expect(runtime.scoped(new ExecutionScope().grant("admin"))).rejects.toThrow();
+  expect((await runtime.scoped(new ExecutionScope().onlyGrants())).scope.grants).toEqual([]);
+  await expect(runtime.scoped(new ExecutionScope().withLimits({ concurrency: 3 }))).rejects.toThrow();
+  await expect(runtime.scoped(new ExecutionScope().withLimits({ maxSteps: 13 }))).rejects.toThrow();
+  expect(() => new HarnessBuilder(contracts).limits({ model_steps: 0 })).toThrow();
+  await expect(runtime.scoped(new ExecutionScope().withLimits({ deadline: new Date(deadline.getTime() + 1) }))).rejects.toThrow();
+  const grantless = await (await Harness.builder(contracts).tool(tool).build()).scoped(new ExecutionScope());
+  await expect(grantless.call(grantless.tool("guarded"), null)).rejects.toThrow();
+  await expect(grantless.scoped(new ExecutionScope().grant("admin"))).rejects.toThrow();
+  const directlyRestricted = await Harness.builder(contracts).grant("read").build();
+  await expect(directlyRestricted.scoped(new ExecutionScope().grant("admin"))).rejects.toThrow();
+  expect(() => Reflect.construct(AgentHarness, [new Map(), new Map(), {}, new ExecutionScope().grant("read"), new Map(), new Map()]))
+    .toThrow();
+});
+
+test("keeps rejected batch admissions explicit after close", async () => {
+  const task = await TaskDefinition.live<number, number>("identity", "1", async (_context, value) => value);
+  const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
+  group.close();
+  const entries = await group.spawnMany(task, { id: "batch:test" as BatchId, inputs: [1, 2] });
+
+  expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
+});
+
+test("pins live batch requests and never starts a duplicate entry", async () => {
+  let runs = 0;
+  const task = await TaskDefinition.live<number, number>("live-batch", "1", async (_context, value) => {
+    runs++;
+    return value;
+  });
+  const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" },
+    "group:live-stable" as GroupId);
+  const batch = { id: "batch:live-stable" as BatchId, inputs: [1, 2] };
+  const first = await group.spawnMany(task, batch);
+  const repeated = await group.spawnMany(task, batch);
+  expect(repeated.map(entry => entry.admission)).toEqual(first.map(entry => entry.admission));
+  await expect(group.spawnMany(task, { id: batch.id, inputs: [1, 3] }))
+    .rejects.toThrow();
+  await group.join();
+  expect(runs).toBe(2);
+});
+
+test("streams thousands of completed tasks once without rebuilding pending races", async () => {
+  const task = await TaskDefinition.live<number, number>("bulk", "1", async (_context, value) => value);
+  const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
+  const inputs = Array.from({ length: 2_048 }, (_value, index) => index);
+  await group.spawnMany(task, { id: "batch:bulk" as BatchId, inputs: inputs });
+  const completed: number[] = [];
+  for await (const entry of group.asCompleted()) {
+    if (entry.outcome?.kind === "succeeded") completed.push(entry.outcome.value);
+  }
+  expect(completed.length).toBe(inputs.length);
+  expect(completed.sort((left, right) => left - right)).toEqual(inputs);
+});
+
+test("cancels hanging siblings as soon as a cancel-on-failure group fails", async () => {
+  let aborted = false;
+  const task = await TaskDefinition.live<"fail" | "hang", string>("work", "1", async (context, value) => {
+    if (value === "fail") throw new Error("failed");
+    context.signal.addEventListener("abort", () => { aborted = true; }, { once: true });
+    await context.sleepUntil(new Date(Date.now() + 60_000));
+    return "late";
+  });
+  const runtime = (await Harness.builder(contracts).task(task).build());
+  await expect(runtime.group<string>({ kind: "cancel-on-failure" }).map<"fail" | "hang">(task, ["hang", "fail"])).rejects.toThrow();
+  expect(aborted).toBeTrue();
+});
+
+test("observes cancellation when a wait starts after its signal was aborted", async () => {
+  const runtime = await Harness.builder(contracts).build();
+  const controller = new AbortController();
+  controller.abort(new Error("already cancelled"));
+  const task = new Task("task:pre-aborted" as TaskId, signal =>
+    new TaskContext(runtime, signal).sleepUntil(new Date(Date.now() + 60_000)), controller);
+
+  expect(await task.result()).toMatchObject({ kind: "cancelled" });
+});
+
+test("race returns the first terminal outcome; firstSuccess ignores early failures", async () => {
+  const task = await TaskDefinition.live<{ readonly delay: number; readonly value?: string }, string>("race", "1", async (context, input) => {
+    await context.sleepUntil(new Date(Date.now() + input.delay));
+    if (input.value === undefined) throw new Error("early failure");
+    return input.value;
+  });
+  const runtime = (await Harness.builder(contracts).task(task).build());
+  const group = runtime.group<string>({ kind: "collect-all" });
+  await group.spawnMany(task, { id: "batch:race" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
+  const first = await group.race();
+  expect(first.outcome?.kind).toBe("failed");
+  expect((await group.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
+  const succeeding = runtime.group<string>({ kind: "collect-all" });
+  await succeeding.spawnMany(task, { id: "batch:first-success" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
+  expect((await succeeding.firstSuccess()).value).toBe("winner");
+  expect((await succeeding.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
+});
+
+test("tool registration snapshots its public definition", async () => {
+  const mutable = { name: "echo", revision: "1", description: "first", inputSchema: {}, outputSchema: {}, parseInput: parseNull, projection: jsonProjection, parseOutput: parseString,
+    handler: async () => "ok" };
+  const runtime = await Harness.builder(contracts).tool(mutable).build();
+  mutable.name = "different";
+  mutable.description = "changed";
+  expect(runtime.tool("echo").definition).toMatchObject({ name: "echo", description: "first" });
+});
+
+test("reused provider call IDs have distinct internal tool operations", async () => {
+  const operations: string[] = [];
+  const argumentsSeen: number[] = [];
+  const tool = await defineTool<number, number>({ name: "again", revision: "1", description: "again",
+    inputSchema: {}, outputSchema: {}, parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, async (context, input) => {
+    expect(context.callId).toBe("provider-call");
+    operations.push(context.operationId);
+    argumentsSeen.push(input);
+    return input;
+  });
+  let step = 0;
+  const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:again").model(testModel, {
+    ...syntheticAccounting(contracts), async *generate() {
+      if (step++ < 2) {
+        yield { kind: "tool_call" as const, callId: "provider-call", name: "again", arguments: step };
+      } else yield { kind: "content" as const, delta: "done" };
       yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; } }).build();
-  await expect(runtime.run("go")).rejects.toThrow();
-  expect(calls).toBe(1);
+    },
+    async reconcile() { return undefined; },
+  }).build();
+  expect((await runtime.run("again")).text).toBe("done");
+  expect(operations).toHaveLength(2);
+  expect(new Set(operations).size).toBe(2);
+  expect(argumentsSeen).toEqual([1, 2]);
 });
 
 test("file batches check every scope and bound before the first owner read", async () => {
-  const first = await mailboxFile(1);
-  const denied = { ...first, path: "denied" };
-  let reads = 0;
-  const content = { validate: () => {}, verify: () => {},
-    read: async () => { reads++; return Uint8Array.of(0); },
-    fileReadCapability: (file: FileRef) => `read:${file.path}`,
-    volumeReadCapability: () => "read:volume", directoryReadCapability: () => "read:directory" };
-  const runtime = await Harness.builder(contracts).content(content).grant(content.fileReadCapability(first)).build();
-  const context = new TaskContext(runtime, new AbortController().signal);
-  await expect(context.readFiles([first, denied])).rejects.toThrow();
-  expect(reads).toBe(0);
-  expect(await context.readFiles([first])).toEqual([Uint8Array.of(0)]);
-  expect(reads).toBe(1);
+const first = await mailboxFile(1);
+const denied = { ...first, path: "denied" };
+let reads = 0;
+const content = { validate: () => {},
+  read: async () => { reads++; return Uint8Array.of(0); },
+  fileReadCapability: (file: FileRef) => `read:${file.path}`,
+  volumeReadCapability: () => "read:volume", directoryReadCapability: () => "read:directory" };
+const runtime = await Harness.builder(contracts).content(content).grant(content.fileReadCapability(first)).build();
+const context = new TaskContext(runtime, new AbortController().signal);
+await expect(context.readFiles([first, denied])).rejects.toThrow();
+expect(reads).toBe(0);
+expect(await context.readFiles([first])).toEqual([Uint8Array.of(0)]);
+expect(reads).toBe(1);
 });

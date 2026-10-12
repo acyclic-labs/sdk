@@ -1,35 +1,8 @@
 use super::*;
 
-/// One exact path rejected by a three-way path application.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspacePathConflict {
-    /// Portable path relative to the workspace root.
-    pub path: String,
-    /// Semantic category suitable for driver or UI selection.
-    pub kind: ConflictKind,
-}
-
-/// Terminal outcome of applying a generation delta to selected paths.
-pub enum WorkspacePathApply<A, O> {
-    /// A new generation became durable.
-    Applied(Generation<A, O>),
-    /// The exact idempotent application was already durable.
-    AlreadyApplied(Generation<A, O>),
-    /// The requested delta was already represented by the live workspace.
-    NoChanges(Generation<A, O>),
-    /// Independent live changes overlap the requested generation delta.
-    Conflicted(Vec<WorkspacePathConflict>),
-    /// The live workspace advanced after the caller's observation.
-    Stale(Generation<A, O>),
-    /// Workspace writer ownership changed before publication.
-    Fenced,
-    /// The retry identity was previously used for different inputs.
-    IdempotencyConflict,
-}
-
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
-    async fn same_path_state(
+    /// Whether a path holds the same thing in two states: the same record,
+    pub(super) async fn same_path_state(
         &self,
         left: Option<crate::kernel::FileRecord>,
         right: Option<crate::kernel::FileRecord>,
@@ -61,7 +34,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        let current = self.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map_err(|failure| failure.error)?.value;
+        let cancellation = CancellationToken::new();
+        let current = self
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         if current.id != if_current {
             return Ok(WorkspacePathApply::Stale(current));
         }
@@ -71,9 +49,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     .checkout(
                         GenerationSelector::Exact(base.id),
                         CheckoutMode::read_only_pinned(),
-                        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
                     )
-                    .await.map_err(|failure| failure.error)?.value,
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value,
             ),
             None => None,
         };
@@ -84,15 +65,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     .checkout(
                         GenerationSelector::Exact(source.id),
                         CheckoutMode::read_only_pinned(),
-                        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
                     )
-                    .await.map_err(|failure| failure.error)?.value,
+                    .await
+                    .map_err(|failure| failure.error)?
+                    .value,
             ),
             None => None,
         };
-        let mut transaction = self.begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map_err(|failure| failure.error)?.value;
+        let mut transaction = self
+            .begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
         let config = self.volume.config;
-        let cancellation = crate::CancellationToken::new();
         let parsed = paths
             .iter()
             .map(|path| {
@@ -160,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             }
             let current_record = current_records
                 .next()
-                .ok_or_else(|| WorkspaceError::Engine("missing batch lookup result".to_owned()))?;
+                .ok_or_else(|| WorkspaceError::Engine("missing batch lookup result".into()))?;
             if self.same_path_state(current_record, source_record).await? {
                 continue;
             }
@@ -176,7 +163,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                     if record.kind != FileKind::Directory
                         && let Some((parent, _)) = relative.rsplit_once('/')
                     {
-                        transaction.create_dir_all(&format!("/{parent}"), WorkBudget::UNBOUNDED, &cancellation).await.map_err(|failure| failure.error)?;
+                        transaction
+                            .create_dir_all(
+                                &format!("/{parent}"),
+                                WorkBudget::UNBOUNDED,
+                                &cancellation,
+                            )
+                            .await
+                            .map_err(|failure| failure.error)?;
                     }
                     operations.push(crate::kernel::Mutation::Restore { path, record });
                 }
@@ -209,50 +203,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .mutate(operations, crate::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(WorkspaceError::engine)?;
-        Ok(match transaction.commit(None, permit, WorkBudget::UNBOUNDED, &cancellation, |_| async { Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }).await.map_err(|failure| failure.error)?.value {
-            TransactionCommit::Committed(generation) => WorkspacePathApply::Applied(generation),
-            TransactionCommit::AlreadyCommitted(generation) => {
-                WorkspacePathApply::AlreadyApplied(generation)
-            }
-            TransactionCommit::Conflict { actual } => WorkspacePathApply::Stale(actual),
-            TransactionCommit::Fenced => WorkspacePathApply::Fenced,
-            TransactionCommit::IdempotencyConflict => WorkspacePathApply::IdempotencyConflict,
-        })
-    }
-
-}
-
-fn path_conflict_kind(
-    base: Option<crate::kernel::FileRecord>,
-    current: Option<crate::kernel::FileRecord>,
-    source: Option<crate::kernel::FileRecord>,
-) -> ConflictKind {
-    let (Some(base), Some(current), Some(source)) = (base, current, source) else {
-        return ConflictKind::Binding;
-    };
-    if base.kind != current.kind
-        || base.kind != source.kind
-        || base.file_id != current.file_id
-        || base.file_id != source.file_id
-    {
-        return ConflictKind::Binding;
-    }
-    if base.link_count != current.link_count || base.link_count != source.link_count {
-        return ConflictKind::HardLink;
-    }
-    if base.metadata != current.metadata || base.metadata != source.metadata {
-        return ConflictKind::Metadata;
-    }
-    match base.kind {
-        FileKind::Regular => ConflictKind::Binary,
-        FileKind::Directory => ConflictKind::Directory,
-        FileKind::SymbolicLink => ConflictKind::SymbolicLink,
-        FileKind::Fifo
-        | FileKind::Socket
-        | FileKind::CharacterDevice
-        | FileKind::BlockDevice
-        | FileKind::ReparsePoint
-        | FileKind::MountBoundary => ConflictKind::Special,
+        Ok(
+            match transaction
+                .commit(
+                    None,
+                    permit,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    publication_ready,
+                )
+                .await
+                .map_err(|failure| failure.error)?
+                .value
+            {
+                TransactionCommit::Committed(generation) => WorkspacePathApply::Applied(generation),
+                TransactionCommit::AlreadyCommitted(generation) => {
+                    WorkspacePathApply::AlreadyApplied(generation)
+                }
+                TransactionCommit::Conflict { actual } => WorkspacePathApply::Stale(actual),
+                TransactionCommit::Fenced => WorkspacePathApply::Fenced,
+                TransactionCommit::IdempotencyConflict => WorkspacePathApply::IdempotencyConflict,
+            },
+        )
     }
 }
-

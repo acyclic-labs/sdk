@@ -373,7 +373,7 @@ async fn native_materialization_rejects_unrepresentable_metadata()
         )?],
         limits,
     )?;
-    let host_path = GenerationHostPath::new(None, namespace.components(), &mut receipt)?;
+    let host_path = materialize_host_path(None, namespace.components(), &mut receipt)?;
     #[cfg(unix)]
     for (metadata, expected) in [
         (
@@ -448,14 +448,14 @@ fn restore_preparation_rejects_a_swapped_root_before_any_write()
     )));
     let native_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original));
     let allocation_work = (&native_work).clone();
-    let mut work = NativeSourceWork::new(&original);
+    let mut work = crate::NativeMaterializationWork::from_meter((&original).clone());
     let failure = prepare_restore(
         allocation_work
             .path(&destination, None)
-            .map_err(materialize_native_error)?,
+            .map_err(MaterializeError::from)?,
         allocation_work
             .path(Path::new("nested/entry"), None)
-            .map_err(materialize_native_error)?,
+            .map_err(MaterializeError::from)?,
         Some(expected),
         HostPathReplacement::Atomic,
         &mut work,
@@ -533,13 +533,17 @@ async fn cancelled_restore_waiter_keeps_lock_until_host_io_finishes()
     let original = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(
         restoration_work(),
     )));
-    let waiter = tokio::spawn(restore_io(Some(lock), Arc::clone(&original), move |_| {
-        let _ = started.send(());
-        // Dropping release on an early test exit also unblocks the worker.
-        blocked.recv().map_err(std::io::Error::other)?;
-        let _ = finished.send(());
-        Ok::<_, MaterializeError>(())
-    }));
+    let waiter = tokio::spawn(host_io(
+        Some(lock),
+        crate::NativeMaterializationWork::from_meter(Arc::clone(&original)),
+        move |_| {
+            let _ = started.send(());
+            // Dropping release on an early test exit also unblocks the worker.
+            blocked.recv().map_err(std::io::Error::other)?;
+            let _ = finished.send(());
+            Ok::<_, MaterializeError>(())
+        },
+    ));
     entered.await?;
     // Native waiting must not hold the original accounting leaf.
     original.with_original_leaf(|work| {

@@ -14,7 +14,7 @@ struct Fixture {
     owner: PiOwnerConfig,
     request: PiRootRequest,
     command: WorkflowCommand,
-    runtime: PiTaskRuntime<LocalStream>,
+    runtime: PiTaskRuntime,
     private: acyclic_fs::NativeHostPrivateStateRoot,
     work: acyclic_fs::NativeMaterializationWork,
     _command: acyclic_fs::NativeAllocation,
@@ -27,7 +27,7 @@ async fn open(
         FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
     >,
     work: &acyclic_fs::NativeMaterializationWork,
-) -> PiTaskRuntime<LocalStream> {
+) -> PiTaskRuntime {
     let stream = Arc::new(
         LocalStream::open(session.join("stream"), LocalStreamLimits::default())
             .await
@@ -52,8 +52,8 @@ impl Fixture {
         ))
         .await
         .unwrap();
-        let (owner, filesystem, request, raw) =
-            root_input_fixture(session.path(), raw, root_policy()).await;
+        let (owner, filesystem, request) =
+            root_input_fixture(session.path(), &raw, root_policy()).await;
         let filesystem = Arc::new(filesystem);
         let work = work();
         let private =
@@ -244,6 +244,86 @@ impl Fixture {
 #[tokio::test]
 async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen() {
     let mut fixture = Fixture::new().await;
+    let original;
+    {
+        let owner = &fixture.owner;
+        let files = &fixture.filesystem;
+        let request = &fixture.request;
+        let native = &fixture.work;
+        original = stage_root_request(owner, files, request, native)
+            .await
+            .unwrap();
+        let authority = owner.authority().unwrap();
+        let signed = authority
+            .issuer
+            .issue(
+                &owner.policy.root_task.to_string(),
+                &owner.policy.grants,
+                Some(owner.policy.agent),
+                None,
+                &mut None,
+            )
+            .unwrap();
+        let read = ContentGrant::verify_read(&authority.verifier, &signed, &original.0).unwrap();
+        assert_eq!(
+            fixture
+                .filesystem
+                .read_content(&original.0, &read, owner.policy.maximum_payload_bytes, None)
+                .await
+                .unwrap()
+                .as_ref(),
+            serde_json::to_vec(&request).unwrap()
+        );
+        assert!(
+            ContentGrant::verify(
+                &authority.verifier,
+                &signed,
+                &owner.policy.journal,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None
+            )
+            .is_err()
+        );
+        for path in [
+            "pi-inputs-sibling/root.json",
+            ".system/harness-uploads/receipt.json",
+        ] {
+            let foreign = FileRef::new(
+                original.0.volume().clone(),
+                path.into(),
+                original.0.version().to_owned(),
+                original.0.descriptor().clone(),
+                "root.json".into(),
+                &mut None,
+            )
+            .unwrap();
+            assert!(ContentGrant::verify_read(&authority.verifier, &signed, &foreign).is_err());
+        }
+        let mut changed = request.clone();
+        let PiRootIntent::Project { paths, .. } = &mut changed.root else {
+            unreachable!()
+        };
+        *paths.values_mut().next().unwrap() = fixture
+            .session
+            .path()
+            .join("changed-selected-root")
+            .to_str()
+            .unwrap()
+            .into();
+        assert!(
+            stage_root_request(owner, files, &changed, native)
+                .await
+                .is_err()
+        );
+        assert!(
+            !fixture
+                .session
+                .path()
+                .join("changed-selected-root")
+                .exists()
+        );
+    }
     assert!(matches!(
         fixture
             .runtime
@@ -301,13 +381,11 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     ))
     .await
     .unwrap();
-    fixture.filesystem = Arc::new(
-        FilesystemHost::new(
+    fixture.filesystem = FilesystemHost::new(
             fixture.raw.clone(),
-            fixture.owner.policy.journal.provider().clone(),
+            fixture.owner.policy.journal.provider(), None,
         )
-        .unwrap(),
-    );
+        .unwrap();
     fixture.runtime = open(
         fixture.session.path(),
         &fixture.owner,
@@ -318,6 +396,30 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     let reopened = fixture.load().await.unwrap();
     assert_eq!(reopened.request, fixture.request);
     assert_eq!(reopened.command, fixture.command);
+    assert_eq!(
+        stage_root_request(
+            &fixture.owner,
+            &fixture.filesystem,
+            &fixture.request,
+            &fixture.work
+        )
+        .await
+        .unwrap()
+        .0,
+        original.0
+    );
+    assert_eq!(
+        stage_root_command(
+            &fixture.owner,
+            &fixture.filesystem,
+            &fixture.request,
+            &fixture.work
+        )
+        .await
+        .unwrap()
+        .0,
+        fixture.command
+    );
     assert_eq!(fixture.head().await, head);
     fixture.assert_idle().await;
 }
@@ -342,7 +444,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
     let head = fixture.head().await;
     for case in ["key", "bytes", "concurrency", "depth"] {
         let other = tempfile::tempdir().unwrap();
-        let mut owner = PiOwnerConfig::load(fixture.session.path()).unwrap();
+        let mut owner = crate::pi_owner::tests::load_owner(fixture.session.path()).unwrap();
         match case {
             "key" => owner = PiOwnerConfig::new(&owner.policy, None, &fixture.work).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,

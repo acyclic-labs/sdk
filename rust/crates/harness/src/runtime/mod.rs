@@ -1,7 +1,6 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
 mod native_startup;
-use native_startup::StartupIo;
 use crate::contract::capability;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
@@ -24,7 +23,7 @@ use crate::{
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
+    tool::{ToolDefinition, ToolInvocation, ToolRegistry},
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
         MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowJournal,
@@ -32,6 +31,7 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::{StreamExt as _, stream};
+use native_startup::StartupIo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -44,15 +44,11 @@ use std::{
     },
 };
 /// Default number of direct children requested by the SDK facade.
-
 pub const DEFAULT_CHILD_PAGE: usize = 256;
 /// Default number of entries requested by the private-directory SDK facade.
-
 pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_context;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use native_context::NativeTaskContext;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -83,26 +79,24 @@ pub use tools::*;
 mod dependencies;
 pub use dependencies::*;
 mod children;
-pub use children::*;
+pub(crate) use children::*;
 mod context_open;
-pub use context_open::*;
-mod host_binding;
-mod fork_binding;
-mod startup;
+pub(crate) use context_open::*;
 mod admission_execution;
+mod fork_binding;
+mod host_binding;
 mod reattachment;
-pub use reattachment::*;
+mod startup;
 mod task_context;
 pub use task_context::*;
 mod content_read;
 pub use content_read::*;
 mod content_write;
+mod groups;
+mod interactions;
 mod model_context;
 mod tool_dispatch;
-mod interactions;
-mod groups;
 pub use groups::*;
 
 #[cfg(test)]
 mod tests;
-

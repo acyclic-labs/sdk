@@ -16,10 +16,6 @@ export function requestBound(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(name);
   return value;
 }
-export function requestAborted(): DOMException {
-  return new DOMException("Request cancelled", "AbortError");
-}
-
 /** Cancellation retains running reservations until provider settlement. */
 export class RequestScheduler {
   readonly limits: RequestLimits;
@@ -38,10 +34,10 @@ export class RequestScheduler {
     return { requests: this.#jobs.size, running: this.#running, bytes: this.#bytes };
   }
   /** Reserve before capturing inputs and invoking provider code. */
-  schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
+  schedule<Value>(bytes: number, work: (signal: AbortSignal) => Promise<Value>,
     signal?: AbortSignal, capture?: () => void): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("request scheduler disposed"));
-    if (signal?.aborted) return Promise.reject(requestAborted());
+    if (signal?.aborted) return Promise.reject(new DOMException("Request cancelled", "AbortError"));
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.limits.bytes) return Promise.reject(new RangeError("request byte reservation"));
     if (this.#jobs.size >= this.limits.requests || bytes > this.limits.bytes - this.#bytes) return Promise.reject(new RequestCapacityError("request capacity exhausted"));
     return new Promise<Value>((resolve, reject) => {
@@ -50,7 +46,7 @@ export class RequestScheduler {
       const job: Job = {
         bytes, running: false,
         cancel: () => {
-          reject(requestAborted()); controller.abort(); detach();
+          reject(new DOMException("Request cancelled", "AbortError")); controller.abort(); detach();
           if (!job.running) {
             const index = this.#queue.indexOf(job);
             if (index >= 0) this.#queue.splice(index, 1);
@@ -59,8 +55,8 @@ export class RequestScheduler {
         },
         start: async () => {
           try {
-            if (controller.signal.aborted) throw requestAborted();
-            resolve(await work(controller.signal, bytes));
+            if (controller.signal.aborted) throw new DOMException("Request cancelled", "AbortError");
+            resolve(await work(controller.signal));
           } catch (error) { reject(error); }
           finally { detach(); this.#release(job); }
         },
@@ -92,4 +88,13 @@ export class RequestScheduler {
     this.#queue.length = 0;
     for (const job of this.#jobs) job.cancel();
   }
+}
+
+export function abortableWait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timeout); reject(signal.reason); };
+    const timeout = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
 }

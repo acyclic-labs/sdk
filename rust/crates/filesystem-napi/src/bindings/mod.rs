@@ -1,3 +1,32 @@
+macro_rules! unbounded_future {
+    ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
+        ($owner).$operation(
+            $($argument,)*
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+    };
+}
+
+macro_rules! sdk_value {
+    ($future:expr) => {
+        ($future)
+            .await
+            .map_err(|failure| napi_error(failure.error))
+            .map(|receipt| receipt.value)
+    };
+}
+
+macro_rules! checkout_call {
+    ($owner:ident, $checkout:ident, $operation:ident($($argument:expr),* $(,)?)) => {
+        $checkout.$operation(
+            $($argument,)*
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &$owner.cancellation,
+        ).await.map_err(napi_error)
+    };
+}
+
 macro_rules! checkout_mutation {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         let mut checkout = Box::pin($owner.inner.lock()).await;
@@ -90,7 +119,7 @@ use acyclic_fs::model::{
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
-    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, CheckoutCommitOutcome,
+    ApplyOptions, AuthoredMutation, ByteRange, CancellationToken, ChangeSet, LivePublicationObservation,
     ConflictSide, DependencyRegion, DependencyState, DependencyUse, Digest, DirectoryPage,
     FileCloneRequest, FileId, ForkOptions, Generation, GenerationExportManifest, GenerationId,
     GitCommand, GitCommitId, GitCompatRepository, GitFilesystemResult, GitTransitionId, GitTreeRef,

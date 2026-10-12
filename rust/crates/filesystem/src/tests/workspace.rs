@@ -1,7 +1,18 @@
-use acyclic_stream::OwnedBytes;
 use super::*;
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, WorkBudget};
+use crate::{FsError, OperationFailure, OperationReceipt, PublicationPermit, WorkCounters};
+use acyclic_stream::OwnedBytes;
+const B: WorkBudget = WorkBudget::UNBOUNDED;
+fn allow<E>(
+    _: WorkBudget,
+) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
+    std::future::ready(Ok(OperationReceipt {
+        value: (),
+        work: WorkCounters::UNCHARGED,
+    }))
+}
+
 use std::error::Error;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use std::path::Path;
@@ -20,7 +31,7 @@ proptest::proptest! {
             transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let mut paths = vec!["/file".to_owned()];
             if carry_alias { paths.push("/alias".to_owned()); }
-            let child = parent.fork("hardlink-child", ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).inherit_paths(paths), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let child = parent.fork::<_, _, crate::WorkspaceError>("hardlink-child", ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).inherit_paths(paths), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(child.read("/file", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), bytes.as_slice());
             if carry_alias { assert_eq!(child.read("/alias", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), bytes.as_slice()); }
             else { assert!(child.read("/alias", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err()); }
@@ -240,12 +251,24 @@ async fn first_fork_record(
 ) -> Result<Option<crate::foundation::DurableCommit>, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
     let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
-    match ({ let __authority_args = (authority, crate::foundation::Sequence::GENESIS, crate::storage::ReplayLimit {
-                records: 1,
-                payload_bytes: 4 * 1024,
-            }, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = store.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
-    {
-        Ok(records) => Ok(records.value.into_iter().next()),
+    match ({
+        let authority_cancellation = &CancellationToken::new();
+        let mut __authority_work =
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+        let __authority_result = store
+            .replay(
+                authority,
+                crate::foundation::Sequence::GENESIS,
+                crate::storage::ReplayLimit {
+                    records: 1,
+                    payload_bytes: 4 * 1024,
+                },
+                &mut __authority_work,
+            )
+            .await;
+        __authority_work.receipt(__authority_result)
+    }) {
+        Ok(records) => Ok(records.value.0.into_iter().next()),
         Err(failure) if matches!(failure.error, crate::storage::AuthorityStoreError::Missing) => {
             Ok(None)
         }
@@ -281,7 +304,9 @@ async fn assert_fork_state_exact(
     )
     .await?;
     if let Some(created) = &created {
-        let record = crate::kernel::decode_volume_created(&created.payload, 4 * 1024, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
+        let record = crate::kernel::decode_volume_created(&created.payload, 4 * 1024, &mut |_| {
+            Ok::<_, crate::kernel::VolumeCreatedError>(())
+        })?;
         assert_eq!(record.volume_id, destination.volume_id());
         assert!(
             retained.is_some(),
@@ -299,11 +324,18 @@ async fn creation_operation(
     key: IdempotencyKey,
 ) -> Result<bool, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
-    let found = ({ let __authority_args = (crate::kernel::volume_authority_id(destination.volume_id()), key.operation_id(), WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream)).find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
-        .map_err(|failure| failure.error)?;
-    Ok(found
-        .value
-        .is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
+    let found = ({
+        let authority_cancellation = &CancellationToken::new();
+
+        crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
+            .find_operation(
+                crate::kernel::volume_authority_id(destination.volume_id()),
+                key.operation_id(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
+            .await
+    })?;
+    Ok(found.is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
 }
 
 /// Checks that a fork's authority lineage is exactly the one separate fork
@@ -331,7 +363,14 @@ async fn assert_fork_lineage_exact(
     let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
     let authority =
         |workspace: WorkspaceId| crate::kernel::volume_authority_id(workspace.volume_id());
-    let head = fork.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
+    let head = fork
+        .head(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await?
+        .value
+        .id();
     let mut expected = if independent {
         Vec::new()
     } else {
@@ -358,21 +397,56 @@ async fn assert_fork_lineage_exact(
     );
     // A fork of the fork's published head reuses that lineage.
     let grandchild = fork
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "grandchild",
             ForkOptions::from_generation(
-                fork.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+                fork.head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await?
+                .value,
                 IdempotencyKey::from_bytes([0x71; 16]),
             ),
-        crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+            &mut |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
     if inherits_base {
         assert_eq!(
-            grandchild.read("/base.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+            grandchild
+                .read(
+                    "/base.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await?
+                .value,
             OwnedBytes::from_static(b"base")
         );
     } else {
-        assert!(grandchild.read("/base.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+        assert!(
+            grandchild
+                .read(
+                    "/base.txt",
+                    16,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .is_err()
+        );
     }
     let grandchild_lineage = store.generation_lineage(authority(grandchild.id())).await?;
     assert_eq!(
@@ -404,10 +478,23 @@ async fn fork_through_every_cut(
                 crate::LogicalObjectStore::new(Arc::new(objects), bucket),
                 crate::EmbeddedCapabilities::MEMORY,
             );
-            let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let main = fs
+                .create_workspace(
+                    "repo",
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await?
+                .value;
             main.write_text("/base.txt", "base").await?;
             main.write_text("/excluded.txt", "excluded").await?;
-            let source = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let source = main
+                .head(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .await?
+                .value;
             if advance_source {
                 main.write_text("/later.txt", "later").await?;
             }
@@ -420,7 +507,23 @@ async fn fork_through_every_cut(
                 }
             };
             cutting.arm(fail_at, cut);
-            let attempt = main.fork("agent", options(), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error);
+            let attempt = main
+                .fork::<_, _, crate::WorkspaceError>(
+                    "agent",
+                    options(),
+                    crate::PublicationPermit::Unrestricted,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                    &mut |_| {
+                        std::future::ready(Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error);
             let fired = cutting.disarm();
             let committed = cutting.commits();
             let destination = fs.workspace_id("agent")?;
@@ -447,31 +550,121 @@ async fn fork_through_every_cut(
                 attempt.is_err(),
                 "a fault at call {fail_at} was not reported"
             );
-            let retried = main.fork("agent", options(), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let retried = main
+                .fork::<_, _, crate::WorkspaceError>(
+                    "agent",
+                    options(),
+                    crate::PublicationPermit::Unrestricted,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                    &mut |_| {
+                        std::future::ready(Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                )
+                .await?
+                .value;
             assert_eq!(retried.id(), destination);
             if inherits_base {
                 assert_eq!(
-                    retried.read("/base.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
+                    retried
+                        .read(
+                            "/base.txt",
+                            16,
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
+                        .await?
+                        .value,
                     OwnedBytes::from_static(b"base")
                 );
             } else {
-                assert!(retried.read("/base.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+                assert!(
+                    retried
+                        .read(
+                            "/base.txt",
+                            16,
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .is_err()
+                );
             }
             assert!(
                 retried
-                    .head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
-                    .matches_fork_selection(&source, paths.clone(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await?
+                    .value
+                    .matches_fork_selection(
+                        &source,
+                        paths.clone(),
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await?
+                    .value
             );
             if paths.is_some() {
-                assert!(retried.read("/excluded.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+                assert!(
+                    retried
+                        .read(
+                            "/excluded.txt",
+                            16,
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                        .is_err()
+                );
             }
             assert!(
                 assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
                     .await?
             );
-            let again = main.fork("agent", options(), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-            assert_eq!(again.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), retried.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
+            let again = main
+                .fork::<_, _, crate::WorkspaceError>(
+                    "agent",
+                    options(),
+                    crate::PublicationPermit::Unrestricted,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                    &mut |_| {
+                        std::future::ready(Ok(crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                )
+                .await?
+                .value;
+            assert_eq!(
+                again
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await?
+                    .value
+                    .id(),
+                retried
+                    .head(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                    .await?
+                    .value
+                    .id()
+            );
             assert_fork_lineage_exact(
                 &stream,
                 &main,
@@ -551,15 +744,23 @@ enum OrdinaryOwnerError {
     #[error(transparent)]
     Sdk(WorkspaceError),
     #[error("ordinary owner denied publication")]
-    Denied { task: [u8; 16], revision: u64, expired: bool },
+    Denied {
+        task: [u8; 16],
+        revision: u64,
+        expired: bool,
+    },
 }
 
 impl From<WorkspaceError> for OrdinaryOwnerError {
-    fn from(error: WorkspaceError) -> Self { Self::Sdk(error) }
+    fn from(error: WorkspaceError) -> Self {
+        Self::Sdk(error)
+    }
 }
 
 impl From<FsError> for OrdinaryOwnerError {
-    fn from(error: FsError) -> Self { Self::Sdk(error.into()) }
+    fn from(error: FsError) -> Self {
+        Self::Sdk(error.into())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -579,11 +780,11 @@ mod collection;
 mod discovery;
 #[path = "workspace/faults.rs"]
 mod faults;
-#[path = "workspace/joins.rs"]
+#[path = "workspace/joins/mod.rs"]
 mod joins;
 #[path = "workspace/materialization.rs"]
 mod materialization;
-#[path = "workspace/restore.rs"]
+#[path = "workspace/restore/mod.rs"]
 mod restore;
 #[path = "workspace/retention.rs"]
 mod retention;

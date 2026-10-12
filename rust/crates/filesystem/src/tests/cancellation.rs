@@ -260,7 +260,7 @@ fn native_original_token_registry_has_no_strong_cycle_after_last_future_drop() {
     let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(error, _)| error).unwrap();
     let state = Arc::downgrade(&token.state);
-    let original = work.original_demand_work();
+    let original = work.clone();
     let accounting = Arc::downgrade(&original.state);
     let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
     drop(original);
@@ -337,7 +337,7 @@ fn native_linked_child_parent_registration_and_guards_have_no_strong_cycle() {
     let child = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
     let parent_state = Arc::downgrade(&parent.state);
     let child_state = Arc::downgrade(&child.state);
-    let accounting = Arc::downgrade(original.native_read_meter());
+    let accounting = Arc::downgrade((&original.state));
     drop(original);
     drop(parent);
     assert!(accounting.upgrade().is_some());

@@ -216,22 +216,21 @@ pub(in crate::bindings) const fn operation_reconcile_limits(
 pub(in crate::bindings) fn native_reconcile_outcome(
     outcome: ReconcileOutcome<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeSourceResult {
-    match outcome {
-        ReconcileOutcome::Clean(generation) => NativeSourceResult {
-            status: "clean".to_owned(),
-            reason: None,
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        },
-        ReconcileOutcome::NeedsRescan(reason) => NativeSourceResult {
-            status: "needs-rescan".to_owned(),
-            reason: Some(watch_reason(reason).to_owned()),
-            generation_id: None,
-        },
-        ReconcileOutcome::Conflict => NativeSourceResult {
-            status: "conflict".to_owned(),
-            reason: None,
-            generation_id: None,
-        },
+    let (status, reason, generation_id) = match outcome {
+        ReconcileOutcome::Clean(generation) => (
+            "clean",
+            None,
+            Some(native_generation_buffer(generation.id())),
+        ),
+        ReconcileOutcome::NeedsRescan(reason) => {
+            ("needs-rescan", Some(watch_reason(reason).to_owned()), None)
+        }
+        ReconcileOutcome::Conflict => ("conflict", None, None),
+    };
+    NativeSourceResult {
+        status: status.to_owned(),
+        reason,
+        generation_id,
     }
 }
 
@@ -323,7 +322,7 @@ pub(in crate::bindings) fn native_storage_tier(value: &str) -> Result<StorageTie
 }
 
 pub(in crate::bindings) fn encode_checkpoint_receipt(
-    receipt: &acyclic_fs::FsReceipt<acyclic_fs::GenerationId>,
+    receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
         generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),

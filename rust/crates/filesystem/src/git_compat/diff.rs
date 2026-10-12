@@ -43,9 +43,23 @@ where
         if record.kind == FileKind::Directory {
             continue;
         }
-        let (generation, policies) =
-            if change.after.is_some() { (to, &mut after_policies) } else { (from, &mut before_policies) };
-        if !git_path_eligible_at(generation, policies, &path, already_tracked).await? {
+        let (generation, policies) = if change.after.is_some() {
+            (to, &mut after_policies)
+        } else {
+            (from, &mut before_policies)
+        };
+        load_git_ignore_policy(generation, policies, "").await?;
+        let root = policies.get("").cloned().unwrap_or_default();
+        if !git_path_eligible_with_root_at(
+            generation,
+            policies,
+            &root,
+            &path,
+            false,
+            already_tracked,
+        )
+        .await?
+        {
             continue;
         }
         let comparable = |record: Option<crate::kernel::FileRecord>| {
@@ -61,22 +75,10 @@ where
             bindings = bindings.saturating_add(1);
         }
     }
-    Ok(GitDiffCounts { file_changes: files.len(), binding_changes: bindings })
-}
-
-pub(super) async fn git_path_eligible_at<A, O>(
-    generation: &Generation<A, O>,
-    policies: &mut BTreeMap<String, GitIgnorePolicy>,
-    path: &str,
-    already_tracked: &BTreeSet<String>,
-) -> Result<bool, GitCaptureError>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-{
-    load_git_ignore_policy(generation, policies, "").await?;
-    let root = policies.get("").cloned().unwrap_or_default();
-    git_path_eligible_with_root_at(generation, policies, &root, path, false, already_tracked).await
+    Ok(GitDiffCounts {
+        file_changes: files.len(),
+        binding_changes: bindings,
+    })
 }
 
 pub(super) async fn git_path_eligible_with_root_at<A, O>(
@@ -95,16 +97,18 @@ where
         return Ok(true);
     }
     let mut directory = String::new();
-    let components = path.split('/').collect::<Vec<_>>();
-    for component in components.iter().take(components.len().saturating_sub(1)) {
+    let parent = path.rsplit_once('/').map(|(parent, _)| parent);
+    for component in parent.into_iter().flat_map(|parent| parent.split('/')) {
         load_git_ignore_policy(generation, policies, &directory).await?;
         if !directory.is_empty() {
             directory.push('/');
         }
         directory.push_str(component);
         let prefix = format!("{directory}/");
-        let tracked_descendant =
-            already_tracked.range(prefix.clone()..).next().is_some_and(|candidate| candidate.starts_with(&prefix));
+        let tracked_descendant = already_tracked
+            .range(prefix.clone()..)
+            .next()
+            .is_some_and(|candidate| candidate.starts_with(&prefix));
         if !tracked_descendant && !git_path_eligible(root, policies, &directory, true, false) {
             return Ok(false);
         }

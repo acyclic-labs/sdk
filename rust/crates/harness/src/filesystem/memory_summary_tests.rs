@@ -173,21 +173,26 @@ async fn sealed_summary_preparation(
     host.start_task(&root_lease, None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
-    let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
+    let proofs = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
-        provider: storage.volume.provider().clone(), child,
-        resources, creation_grant: "fork:publish".into(),
-        maximum_resources: 2, maximum_work, maximum_bytes,
-        payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
-        command: Some(crate::workflow::WorkflowCommand {
+provider: storage.volume.provider().clone(),
+child,
+creation_grant: "fork:publish".into(),
+maximum_resources: 2,
+maximum_work,
+maximum_bytes,
+payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
+command: Some(crate::workflow::WorkflowCommand {
             operation_id: fork.operation_id, kind: crate::filesystem::FORK_PREPARE_TASK_COMMAND_KIND.into(),
             payload: command_payload,
         }),
-        source_checkpoint: None, input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
-    };
+source_checkpoint: None,
+input_files: Vec::new(),
+read_authorization: fork.authorized_source.clone(),
+};
     assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
         (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
@@ -339,7 +344,6 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(proof.summary.is_some());
     let source = prepared.context().clone();
     let selection = prepared.selection().clone();
-    drop(prepared);
     let provider = storage.volume.provider().clone();
     let project = VolumeRef::new(
         provider.clone(),
@@ -376,7 +380,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
+    .with_summary_context(prepared, storage.journal(), None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -448,41 +452,25 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         aggregate.reducer(),
         ForkHistoryPolicy::Summary(Box::new(selection)), &mut None,
     )?;
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let proof_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
-    let proof_hold;
-    let finite = preparer.prepare_bound_summary(&request, Some(&proof_io)).await?
-        .ok_or_else(|| Error::Invalid("finite Summary source proof missing".into()))?;
-    proof_hold = proof_io.guard_owned(proof_io.owned_bytes()?)?;
+    let finite = preparer.prepare_bound_summary(&request, None)?
+        .ok_or_else(|| Error::Invalid("bound Summary source proof missing".into()))?;
     assert_eq!(finite.context(), &source);
     assert_eq!(finite.selection(), request.preparation.summary.as_ref().unwrap());
-    assert!(proof_io.receipt().bytes_encoded > 0);
-    assert!(proof_io.receipt().bytes_hashed > 0);
-    assert!(proof_io.receipt().items_examined > 0);
-    drop(finite);
-    drop(proof_hold);
-    assert_eq!(proof_io.owned_bytes()?, 0);
-    let small_io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
-    assert!(preparer.prepare_bound_summary(&request, Some(&small_io)).await.is_err());
-    assert_eq!(small_io.owned_bytes()?, 0);
-    let cancelled_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
-    cancellation.cancel();
-    assert!(preparer.prepare_bound_summary(&request, Some(&cancelled_io)).await.is_err());
-    assert_eq!(cancelled_io.receipt(), acyclic_fs::WorkCounters::default());
     let (quota_preparation, _quota_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1, 134_217_728).await?;
-    assert!(preparer.prepare_for_task(request.clone(), &quota_preparation).await.is_err());
+    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(quota_preparation)).await.is_err());
     let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name(&mut None)?)?;
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (cancelled_preparation, cancelled_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
     cancelled_invocation.0.cancel();
-    assert!(preparer.prepare_for_task(request.clone(), &cancelled_preparation).await.is_err());
+    assert!(preparer.prepare_for_task(request.clone(), &Arc::new(cancelled_preparation)).await.is_err());
     assert!(matches!(storage.host.resolve(&child_private_workspace).await, Err(Error::NotFound(_))));
     let (task_preparation, _successful_invocation) =
         sealed_summary_preparation(&storage, &preparer, &request, 1_000_000, 134_217_728).await?;
+    let task_preparation = Arc::new(task_preparation);
     let lost_acknowledgement = preparer.prepare_for_task(request.clone(), &task_preparation).await?;
-    let preparer = preparer.with_task_preparation(Arc::new(task_preparation))?;
+    let preparer = preparer.with_task_preparation(task_preparation)?;
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(report, lost_acknowledgement);
     assert_eq!(
@@ -499,7 +487,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .ok_or_else(|| Error::Invalid("missing Summary capture".into()))?;
     assert!(!capture.payloads.is_empty());
     assert_eq!(report.inherited_through_sequence, 6);
-    let bytes = storage.host.read_pinned(&capture.context, 262_144).await?;
+    let bytes = storage.host.read_pinned_io(&capture.context, 262_144, None).await?;
     let captured: Context = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(captured.messages.len(), source.messages.len());
@@ -511,7 +499,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .chain(source.metadata.values())
         .map(|file| {
             Ok((
-                hex::encode(crate::contract::canonical_json_digest(file)?),
+                hex::encode(crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?),
                 file.clone(),
             ))
         })
@@ -528,8 +516,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.volume(), &child_private);
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
-            storage.host.read_pinned(copy, 262_144).await?.as_ref(),
-            storage.journal.load(original).await?.as_ref()
+            storage.host.read_pinned_io(copy, 262_144, None).await?.as_ref(),
+            storage.journal.load(original, None)?.await?.as_ref()
         );
     }
     let seed = report.into_seed(&mut None)?;
@@ -573,10 +561,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
-    aggregate = aggregate.with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(&[
         fs_verifier,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?));
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?);
     aggregate
         .execute(Command {
             operation_id: seed.operation_id,
@@ -654,7 +642,7 @@ async fn assert_summary_child_import(
         .as_ref()
         .ok_or_else(|| Error::Invalid("no Summary capture".into()))?;
     let denied = issuer.issue("denied", &scope.capabilities().without(&Capabilities::new([
-            capture.context.read_capability()?,
+            capture.context.read_capability(&mut None)?,
             seed.child_private_volume
                 .capability(VolumeOperation::Read, &mut None)?,
         ])), Some(seed.child_agent), None, &mut None).expect("scope proof");
@@ -1276,10 +1264,10 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         }, #[cfg(feature = "filesystem")] None, &mut None).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
         assert_eq!(parent.reducer().revision(), revision);
     }
-    let fork_verifier = Arc::new(CompositeForkVerifier::new(&[
+    let fork_verifier = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     *parent = crate::store::StreamAggregate::open(
         &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
         None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,

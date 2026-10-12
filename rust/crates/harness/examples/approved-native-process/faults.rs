@@ -249,7 +249,7 @@ async fn host_death() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let mut host = acyclic_native_runtime::spawn_process_tree(&mut command)?;
+    let mut host = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
     let ready = host_ready(&mut host, storage.path()).await;
     let status = host.terminate_after(Duration::from_millis(250))?;
     if status.success() || !host.is_reaped() {
@@ -344,7 +344,7 @@ async fn launch_only(
         ("command", serde_json::to_value(seed.command)?),
         (
             "approval_digest",
-            serde_json::to_value(seed.request.approval_digest(seed.task, seed.command)?)?,
+            serde_json::to_value(seed.request.approval_digest(seed.task, seed.command, None)?)?,
         ),
     ] {
         if value.get(field) != Some(&expected) {
@@ -361,10 +361,10 @@ async fn verify_pending_task(
     seed: &super::Restart,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let issuer = super::issuer();
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         filesystem,
-        seed.destination.provider().clone(),
-    )?);
+        seed.destination.provider(), None,
+    )?;
     let task = super::runtime(
         stream.clone(),
         files.clone(),
@@ -408,8 +408,8 @@ async fn verify_pending_task(
     let recovery = super::recovered_effects(stream, files, &task, seed, &issuer).await?;
     if recovery
         .effects
-        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan)
-        .await?
+        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan, None)
+        .await.map(|result| result.0)?
         != EffectStatus::Indeterminate
     {
         return Err("cancelled host-death reconciliation became an authoritative result".into());

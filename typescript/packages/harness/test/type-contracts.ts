@@ -1,8 +1,7 @@
 import type {
   AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
   ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
-  SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
-  NativeModelContent, NativeModelContentPart,
+  BatchId, SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
 import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
@@ -29,8 +28,6 @@ type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
 
 type _BrowserAggregateBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["execute"]>[0], Omit<Command, "authority">>>;
 type _BrowserReconciliationBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["reconcile"]>[0], Omit<Command, "authority">>>;
-type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, ModelContentPartWire>>;
-type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, ModelContentWire>>;
 
 type _CompactionContractsUseGeneratedRustShapes = Assert<Equal<
   [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire],
@@ -288,9 +285,10 @@ function childTaskHandlesDoNotExposeExecutors(context: TaskContext, definition: 
   void context.spawn(definition, 1);
   void context.spawn(child, 1);
   const group = context.group<number>({ kind: "collect-all" });
+  const batch = { id: "batch:typed" as BatchId, inputs: [1] };
   // @ts-expect-error a scoped group cannot accept a raw task implementation
-  void group.map(definition, [1]);
-  void group.map(child, [1]);
+  void group.spawnMany(definition, batch);
+  void group.spawnMany(child, batch);
 }
 
 function durableToolOutcomeCannotBeErased(context: TaskContext, tool: ToolRef<number, number>, operation: OperationId): void {

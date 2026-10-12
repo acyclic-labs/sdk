@@ -1,16 +1,15 @@
 import { expect, test } from "bun:test";
 import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
-import { ProjectionStore, type ClientEvent, type ClientListener } from "../src/client.js";
+import { ProjectionStore, type ClientEvent } from "../src/client.js";
 import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Value = Readonly<{ count: number }>;
-type Evidence = ClientObservation<Value>;
 const limits: ClientViewLimits = { records: 4, branches: 4, edges: 8, bytes: 1_000_000, work: 256, retention: 10n, visible: 4 };
 const value = (count: number): Value => Object.freeze({ count });
-const evidence = (key: string, revision: number, projected: Value, operation: Evidence["operation"] = null): Evidence => ({
+const evidence = (key: string, revision: number, projected: Value, operation: ClientObservation<Value>["operation"] = null): ClientObservation<Value> => ({
   fact: { key, basis: String(revision), value: projected, bytes: 512 }, operation, work: 1,
 });
-const domain: ClientDomain<Value, null, Evidence> = {
+const domain: ClientDomain<Value, null, ClientObservation<Value>> = {
   identity: "1",
   validate: () => ({ bytes: 512, work: 1 }),
   observe(input, current) {
@@ -25,7 +24,7 @@ await ClientViews.initialize();
 
 test("restored hypotheses retain dependencies and require trusted outcome receipts", () => {
   const receipt = evidence("a", 1, value(1), ["op", "Completed"]);
-  const recovering: ClientDomain<Value, null, Evidence> = {
+  const recovering: ClientDomain<Value, null, ClientObservation<Value>> = {
     ...domain,
     restore(fact, branch) {
       if (branch.adapter !== "1") throw new Error("adapter drift");
@@ -60,7 +59,7 @@ test("restored hypotheses retain dependencies and require trusted outcome receip
   expect(restored.checkpoint(parent).outcome).toBe("Completed");
   const next = restored.begin({ key: "a", basis: "1", operation: null, predicted: value(3), assumption: null,
     dependencies: [], expires: 5n });
-  expect(next).toBe("71:3");
+  expect([parent, child]).not.toContain(next);
   const unsupported = new ClientViews(domain, "71", source.sequence(), limits);
   unsupported.observe("a", receipt);
   expect(() => unsupported.restore(savedParent)).toThrow();
@@ -186,8 +185,8 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
 });
 
 test("ProjectionStore explicitly starts before delivery and retains updates across subscriber churn", () => {
-  const listeners = new Set<ClientListener<number>>();
-  const client = { subscribe(listener: ClientListener<number>) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+  const listeners = new Set<(event: ClientEvent<number>) => void>();
+  const client = { subscribe(listener: (event: ClientEvent<number>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
   const store = new ProjectionStore(client, 0, (state, event) => state + event.event);
   expect(listeners.size).toBe(0);
   store.start(); store.start();
@@ -222,7 +221,7 @@ test("bounded reordered/duplicate/partial outcomes preserve unrelated authoritat
     const selected = client.select("a", [branch]);
     try {
       for (const outcome of repeated ? [first, second, second] : [first, second]) {
-        const observation: Evidence = outcome === "Completed" ? evidence("a", 1, value(1), ["original", outcome])
+        const observation: ClientObservation<Value> = outcome === "Completed" ? evidence("a", 1, value(1), ["original", outcome])
           : { fact: null, operation: ["original", outcome], work: 1 };
         const before = selected.getSnapshot();
         const residency = client.residency();

@@ -49,68 +49,145 @@ pub enum WorkspaceForkOutcome {
 /// Largest first record a fork compares when resolving a retry.
 const MAXIMUM_FIRST_RECORD_BYTES: u64 = 4 * 1024;
 
-pub(crate) async fn seal<G: AuthorityGuard>(guard: Option<&mut G>, work: &mut AuthorityWork<'_>)
-    -> Result<(), AuthorityError<G::Error>> {
-    if let Some(guard) = guard { guard.seal(work).await?; }
+pub(crate) async fn seal<G: AuthorityGuard>(
+    guard: Option<&mut G>,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityError<G::Error>> {
+    if let Some(guard) = guard {
+        guard.seal(work).await?;
+    }
     Ok(())
 }
 
 pub(crate) async fn workspace_fork<S: AsyncAuthorityStore + ?Sized, G: AuthorityGuard>(
-    store: &S, fork: WorkspaceForkCommit, permit: PublicationPermit, work: &mut AuthorityWork<'_>, mut guard: Option<&mut G>,
+    store: &S,
+    fork: WorkspaceForkCommit,
+    permit: PublicationPermit,
+    work: &mut AuthorityWork<'_>,
+    mut guard: Option<&mut G>,
 ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
     #[cfg(not(target_arch = "wasm32"))]
-    if work.original.is_some() { work.check()?; }
-    if permit != PublicationPermit::Unrestricted {
-        return Err(crate::AuthorityStoreError::RejectedStatic("authority backend cannot atomically evaluate fork publication leases").into());
+    if work.original.is_some() {
+        work.check()?;
     }
-    let WorkspaceForkCommit { lineage, destination, creation, retention, retained } = fork;
+    if permit != PublicationPermit::Unrestricted {
+        return Err(crate::AuthorityStoreError::RejectedStatic(
+            "authority backend cannot atomically evaluate fork publication leases",
+        )
+        .into());
+    }
+    let WorkspaceForkCommit {
+        lineage,
+        destination,
+        creation,
+        retention,
+        retained,
+    } = fork;
     #[cfg(not(target_arch = "wasm32"))]
     let native = work.original.is_some();
     #[cfg(target_arch = "wasm32")]
     let native = false;
     let retained = if native {
-        store.create_first_record(retention, retained, work, None::<&mut ()>).await
+        store
+            .create_first_record(retention, retained, work, None::<&mut ()>)
+            .await
     } else {
         first_record(store, retention, retained, work, None::<&mut ()>).await
-    }.map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
-    if !retained { return Ok(WorkspaceForkOutcome::RetentionConflict); }
+    }
+    .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+    if !retained {
+        return Ok(WorkspaceForkOutcome::RetentionConflict);
+    }
     match lineage {
-        Some(source) => store.fork_authority(source, destination, creation.operation_id, work, guard.as_deref_mut()).await?,
-        None => store.create_authority(destination, Epoch::GENESIS, work, guard.as_deref_mut()).await?,
+        Some(source) => {
+            store
+                .fork_authority(
+                    source,
+                    destination,
+                    creation.operation_id,
+                    work,
+                    guard.as_deref_mut(),
+                )
+                .await?
+        }
+        None => {
+            store
+                .create_authority(destination, Epoch::GENESIS, work, guard.as_deref_mut())
+                .await?
+        }
     };
     let created = if native || guard.is_some() {
-        store.create_first_record(destination, creation, work, guard).await?
+        store
+            .create_first_record(destination, creation, work, guard)
+            .await?
     } else {
-        first_record(store, destination, creation, work, None::<&mut ()>).await
+        first_record(store, destination, creation, work, None::<&mut ()>)
+            .await
             .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?
     };
-    Ok(if created { WorkspaceForkOutcome::Committed } else { WorkspaceForkOutcome::CreationRejected })
+    Ok(if created {
+        WorkspaceForkOutcome::Committed
+    } else {
+        WorkspaceForkOutcome::CreationRejected
+    })
 }
 
 pub(crate) async fn first_record<S: AsyncAuthorityStore + ?Sized, G: AuthorityGuard>(
-    store: &S, authority: AuthorityId, commit: ProposedCommit, work: &mut AuthorityWork<'_>, mut guard: Option<&mut G>,
+    store: &S,
+    authority: AuthorityId,
+    commit: ProposedCommit,
+    work: &mut AuthorityWork<'_>,
+    mut guard: Option<&mut G>,
 ) -> Result<bool, AuthorityError<G::Error>> {
-    let created =store.create_authority(authority, Epoch::GENESIS, work, guard.as_deref_mut()).await?;
-    let head = match created { CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head };
+    let created = store
+        .create_authority(authority, Epoch::GENESIS, work, guard.as_deref_mut())
+        .await?;
+    let head = match created {
+        CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
+    };
     let identity = (commit.operation_id, commit.fingerprint);
     seal(guard.as_deref_mut(), work).await?;
-    let (appended, allocation) = store.compare_and_append(GuardedAppend {
-        authority_id: authority, epoch: head.epoch, expected: Head::genesis(head.epoch), commit,
-        permit: PublicationPermit::Unrestricted,
-    }, work, None::<&mut ()>).await.map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
-    let retry = matches!(&appended, AppendOutcome::AlreadyCommitted(_) | AppendOutcome::Conflict { .. });
+    let appended = store
+        .compare_and_append(
+            GuardedAppend {
+                authority_id: authority,
+                epoch: head.epoch,
+                expected: Head::genesis(head.epoch),
+                commit,
+                permit: PublicationPermit::Unrestricted,
+            },
+            work,
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+    let retry = matches!(
+        &appended,
+        AppendOutcome::AlreadyCommitted(_) | AppendOutcome::Conflict { .. }
+    );
     let matches = match appended {
         AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => true,
         AppendOutcome::Conflict { .. } => {
-            let (first, _allocation) = store.replay(authority, Sequence::GENESIS,
-                ReplayLimit { records: 1, payload_bytes: MAXIMUM_FIRST_RECORD_BYTES }, work).await?;
-            first.first().is_some_and(|record| record.sequence == Sequence::new(1)
-                && (record.operation_id, record.fingerprint) == identity)
+            let (first, _allocation) = store
+                .replay(
+                    authority,
+                    Sequence::GENESIS,
+                    ReplayLimit {
+                        records: 1,
+                        payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
+                    },
+                    work,
+                )
+                .await?;
+            first.first().is_some_and(|record| {
+                record.sequence == Sequence::new(1)
+                    && (record.operation_id, record.fingerprint) == identity
+            })
         }
         AppendOutcome::Fenced { .. } | AppendOutcome::IdempotencyConflict { .. } => false,
     };
-    drop(allocation);
-    if matches && retry { seal(guard.as_deref_mut(), work).await?; }
+    if matches && retry {
+        seal(guard.as_deref_mut(), work).await?;
+    }
     Ok(matches)
 }
-

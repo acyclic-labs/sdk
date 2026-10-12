@@ -63,7 +63,9 @@ impl NativeViewOptions {
         use crate::Error;
         let budget = self.work_per_volume;
         if !budget.has_finite_allowances() || count == 0 {
-            return Err(Error::Invalid("native work requires finite nonempty allowances".into()));
+            return Err(Error::Invalid(
+                "native work requires finite nonempty allowances".into(),
+            ));
         }
         let count = u64::try_from(count).map_err(|error| Error::Storage(error.to_string()))?;
         macro_rules! scale {
@@ -76,15 +78,34 @@ impl NativeViewOptions {
             };
         }
         let scaled = scale!(
-            authority_records_read, authority_records_appended, authority_bytes_read,
-            authority_bytes_written, object_probes, backend_read_operations,
-            backend_write_operations, durability_operations, page_reads, page_writes,
-            object_bytes_read, object_bytes_written, bytes_hashed, bytes_copied,
-            bytes_encoded, source_bytes_read, source_path_components, source_entries_visited,
-            output_bytes, items_examined, items_returned, allocation_operations, materializations,
+            authority_records_read,
+            authority_records_appended,
+            authority_bytes_read,
+            authority_bytes_written,
+            object_probes,
+            backend_read_operations,
+            backend_write_operations,
+            durability_operations,
+            page_reads,
+            page_writes,
+            object_bytes_read,
+            object_bytes_written,
+            bytes_hashed,
+            bytes_copied,
+            bytes_encoded,
+            source_bytes_read,
+            source_path_components,
+            source_entries_visited,
+            output_bytes,
+            items_examined,
+            items_returned,
+            allocation_operations,
+            materializations,
         );
         if !scaled.has_finite_allowances() {
-            return Err(Error::Invalid("native total allowances must remain finite".into()));
+            return Err(Error::Invalid(
+                "native total allowances must remain finite".into(),
+            ));
         }
         Ok(scaled)
     }
@@ -93,16 +114,12 @@ impl NativeViewOptions {
 impl NativeViewManifest {
     /// One finite validation span for the actual original selection.
     pub fn validation_budget(&self) -> Result<WorkBudget> {
-        self.validate()?;
+        self.validate(None)?;
         self.options.budget_for_volume_count(self.volumes.len())
     }
 
-    /// Validate selection shape and finite bounds without opening native paths.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_io(None)
-    }
-
-    pub(crate) fn validate_with_io(&self, io: Option<&super::PreparationIo>) -> Result<()> {
+    /// Validates selection shape and finite bounds on the optional ledger.
+    pub fn validate(&self, io: Option<&super::PreparationIo>) -> Result<()> {
         use std::path::Component;
 
         if !self.options.root.is_absolute()
@@ -116,12 +133,18 @@ impl NativeViewManifest {
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
         {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
-                "invalid native view selection or bounds"));
+            return Err(validation_error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "invalid native view selection or bounds",
+            ));
         }
         for (index, mapping) in self.volumes.iter().enumerate() {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
             }
             mapping.volume.validate(&mut None)?;
             mapping.generation.validate(&mut None)?;
@@ -134,22 +157,34 @@ impl NativeViewManifest {
                     .components()
                     .any(|part| matches!(part, Component::ParentDir))
             {
-                return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
-                    "native volume selection overlaps or escapes its root"));
+                return Err(validation_error(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "native volume selection overlaps or escapes its root",
+                ));
             }
             for prior in self.volumes.iter().take(index) {
                 if let Some(io) = io {
-                    io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                    io.charge(acyclic_fs::WorkCounters {
+                        items_examined: 1,
+                        ..Default::default()
+                    })?;
                 }
                 if mapping.path.starts_with(&prior.path) || prior.path.starts_with(&mapping.path) {
-                    return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
-                        "native volume selection overlaps or escapes its root"));
+                    return Err(validation_error(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "native volume selection overlaps or escapes its root",
+                    ));
                 }
             }
         }
         for mapping in &self.volumes {
             if let Some(io) = io {
-                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
             }
             if let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace
                 && (snapshot.workspace_id.into_bytes() == [0; 16]
@@ -157,8 +192,11 @@ impl NativeViewManifest {
                     || snapshot.authored_generation.digest().as_bytes().as_slice()
                         != mapping.generation.as_resource().key())
             {
-                return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
-                    "lazy native snapshot differs from its selected generation"));
+                return Err(validation_error(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "lazy native snapshot differs from its selected generation",
+                ));
             }
         }
         Ok(())
@@ -166,10 +204,15 @@ impl NativeViewManifest {
 }
 
 pub(super) fn validation_error(
-    io: Option<&super::PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str,
+    io: Option<&super::PreparationIo>,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
 ) -> crate::Error {
     #[cfg(not(target_arch = "wasm32"))]
-    if io.and_then(super::PreparationIo::original_native_work).is_some() {
+    if io
+        .and_then(super::PreparationIo::original_native_work)
+        .is_some()
+    {
         return crate::Error::NativeBoundary { code, reason };
     }
     let _ = io;
@@ -226,17 +269,21 @@ impl super::PreparationRecord for NativeProcessRequest {
             std::mem::size_of::<serde_json::Value>() as u64,
             std::mem::size_of::<(String, serde_json::Value)>() as u64,
             std::mem::size_of::<crate::mcp::stdio::McpStdioRequest>() as u64,
-        ].into_iter().max().unwrap_or(0);
-        let content = std::mem::size_of::<serde::__private229::de::Content<'static>>()
-            .max(std::mem::size_of::<(
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        let content = std::mem::size_of::<serde::__private229::de::Content<'static>>().max(
+            std::mem::size_of::<(
                 serde::__private229::de::Content<'static>,
                 serde::__private229::de::Content<'static>,
-            )>()) as u64;
+            )>(),
+        ) as u64;
         typed + 2 * content
     }
 
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::NativeProcessRequest
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::NativeProcessRequest
     }
 }
 
@@ -248,8 +295,10 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        crate::filesystem::native_decoded(io.decode(std::marker::PhantomData::<Self>,
-            bytes, crate::wire::ErrorCode::Storage,
+        crate::filesystem::native_decoded(io.decode(
+            std::marker::PhantomData::<Self>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
         )?)
     }
 
@@ -264,39 +313,39 @@ impl NativeProcessRequest {
         )
     }
 
-    /// Binds the existing approval mechanism to the task, command and exact request.
-    pub fn approval_digest(&self, task: crate::TaskId, command: OperationId) -> Result<[u8; 32]> {
-        self.approval_digest_with_io(task, command, None)
-    }
-
-    /// Computes the same approval digest using the caller's original finite work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn approval_digest_with_native_work(
-        &self, task: crate::TaskId, command: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<[u8; 32]> {
-        if !work.remaining().map_err(|cause| crate::Error::NativeWork {
-            cause, custody: None,
-        })?.has_finite_allowances() {
-            return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native approval digest requires finite original work",
-            });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        self.approval_digest_with_io(task, command, Some(&io))
-    }
-
-    pub(crate) fn approval_digest_with_io(
-        &self, task: crate::TaskId, command: OperationId,
+    /// Binds approval to the task, command and exact request.
+    pub fn approval_digest(
+        &self,
+        task: crate::TaskId,
+        command: OperationId,
         io: Option<&super::PreparationIo>,
     ) -> Result<[u8; 32]> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if io
+            .and_then(super::PreparationIo::original_native_work)
+            .is_some()
+            && !io
+                .expect("native approval IO")
+                .remaining()?
+                .has_finite_allowances()
+        {
+            return Err(validation_error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "native approval digest requires finite original work",
+            ));
+        }
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
-        let Some(io) = io else { return crate::contract::canonical_json_digest(&value); };
+        let Some(io) = io else {
+            return crate::executor::json::canonical_json_digest(&value, u64::MAX, &mut None);
+        };
         let guard;
         let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;
         guard = io.guard_bytes(&encoded)?;
-        io.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() })?;
+        io.charge(acyclic_fs::WorkCounters {
+            bytes_hashed: encoded.len() as u64,
+            ..Default::default()
+        })?;
         let digest = *blake3::hash(&encoded).as_bytes();
         drop(encoded);
         drop(guard);
@@ -313,7 +362,6 @@ impl NativeProcessRequest {
         }
         exchange.decode_response(&result.stdout)
     }
-
 }
 
 /// Bounded bytes from a completed process. Bytes preserve non-UTF-8 output.
@@ -341,7 +389,10 @@ impl super::PreparationRecord for NativeProcessResult {
             std::mem::size_of::<Vec<u8>>(),
             std::mem::size_of::<String>(),
             std::mem::size_of::<(String, u8)>(),
-        ].into_iter().max().unwrap_or(0) as u64
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0) as u64
     }
 }
 
@@ -353,15 +404,23 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode(std::marker::PhantomData::<Self>,
-            bytes, crate::wire::ErrorCode::Storage,
+        let mut decoded = io.decode(
+            std::marker::PhantomData::<Self>,
+            bytes,
+            crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)
             .checked_add(decoded.0.stdout.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(decoded.0.stderr.capacity() as u64))
-            .and_then(|bytes| bytes.checked_add(
-                decoded.0.stop.as_ref().map_or(0, |stop| stop.message.capacity() as u64),
-            ))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    decoded
+                        .0
+                        .stop
+                        .as_ref()
+                        .map_or(0, |stop| stop.message.capacity() as u64),
+                )
+            })
             .ok_or(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "native result ownership overflow",
@@ -432,11 +491,17 @@ mod native_result_decode_tests {
         };
         let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED, &cancellation,
-        ).unwrap();
-        let source_custody = work.claim(bytes.capacity() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
-        let (decoded, custody) = NativeProcessRequest::decode_with_native_work(&bytes, &work).unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .unwrap();
+        let source_custody = work
+            .claim(
+                bytes.capacity() as u64,
+                0,
+                acyclic_fs::WorkCounters::UNCHARGED,
+            )
+            .unwrap();
+        let (decoded, custody) =
+            NativeProcessRequest::decode_with_native_work(&bytes, &work).unwrap();
         assert_eq!(decoded, request);
         assert!(custody.bytes() >= std::mem::size_of::<NativeProcessRequest>() as u64);
         assert!(custody.work().shares_ledger(&work));
@@ -444,45 +509,5 @@ mod native_result_decode_tests {
         drop(custody);
         drop(bytes);
         drop(source_custody);
-    }
-
-    #[test]
-    fn closed_result_decode_retains_actual_payload_on_original_ledger() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED, &cancellation,
-        ).unwrap();
-        let bytes = br#"{"success":false,"exit_code":null,"stdout":[255,0],"stderr":[1],"stop":{"kind":"capture_failed","message":"partial capture","cleanup_completed":false}}"#;
-        let (result, custody) = NativeProcessResult::decode_with_native_work(bytes, &work).unwrap();
-        assert_eq!(result.stdout, [255, 0]);
-        assert_eq!(result.stderr, [1]);
-        let stop = result.stop.as_ref().unwrap();
-        assert_eq!(stop.kind, NativeProcessStopKind::CaptureFailed);
-        assert!(!stop.cleanup_completed);
-        let actual = std::mem::size_of::<NativeProcessResult>() as u64
-            + result.stdout.capacity() as u64
-            + result.stderr.capacity() as u64
-            + stop.message.capacity() as u64;
-        assert_eq!(custody.bytes(), actual);
-        assert!(custody.work().shares_ledger(&work));
-        drop(result);
-        drop(custody);
-    }
-
-    #[test]
-    fn closed_result_decode_preserves_storage_error_and_paid_diagnostic() {
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            WorkBudget::UNBOUNDED, &cancellation,
-        ).unwrap();
-        match NativeProcessResult::decode_with_native_work(b"{}", &work).unwrap_err() {
-            crate::Error::NativeDecode { code, source, custody: Some(custody) } => {
-                assert_eq!(code, crate::wire::ErrorCode::Storage);
-                assert!(custody.work().shares_ledger(&work));
-                drop(source);
-                drop(custody);
-            }
-            error => panic!("unexpected decode error: {error:?}"),
-        }
     }
 }

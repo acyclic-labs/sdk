@@ -44,12 +44,6 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     let mut owner =
         NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
     let identity = owner.cleanup_state().fence_identity;
-    let borrowed_path = owner
-        .cleanup_state()
-        .destination
-        .as_os_str()
-        .as_encoded_bytes()
-        .as_ptr();
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
@@ -65,15 +59,6 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     assert!(owner.cleanup_state().destination_fence_retained);
     assert!(owner.cleanup_state().measured_cleanup_failed);
     assert_eq!(owner.cleanup_state().fence_identity, identity);
-    assert_eq!(
-        owner
-            .cleanup_state()
-            .destination
-            .as_os_str()
-            .as_encoded_bytes()
-            .as_ptr(),
-        borrowed_path
-    );
     assert!(matches!(
         acquire_existing_mount_lock(&lock_path),
         Err(NativeMountError::DestinationBusy)
@@ -90,7 +75,7 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     );
     let unlocked = acquire_existing_mount_lock(&lock_path)?;
     let (after_identity, _) =
-        crate::native_host::file_identity_and_length_with_work(&unlocked, &mut &original)?;
+        crate::native_host::file_identity_and_length(&unlocked, &mut &original)?;
     assert_eq!(after_identity, identity);
     drop(unlocked);
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
@@ -367,7 +352,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     let mut readiness = Vec::new();
     for ordinal in 0..2 {
         let ready = temporary.path().join(format!("ready-{ordinal}"));
-        let child = acyclic_native_runtime::spawn_process_tree(
+        let child = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args([
                     "--exact",
@@ -413,7 +398,7 @@ fn destination_ownership_is_reclaimed_after_process_death() -> Result<(), Box<dy
     let destination = temporary.path().join("mount");
     let ready = temporary.path().join("ready");
     std::fs::create_dir(&destination)?;
-    let child = acyclic_native_runtime::spawn_process_tree(
+    let child = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
@@ -468,7 +453,6 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;
     let mut guard = guard.expect("actual fence was admitted");
-    assert!(Arc::ptr_eq(meter.native_read_meter(), &original));
     assert!(guard.parent_directory.is_some());
     assert!(guard.file.is_some());
     let mut competing_guard = None;

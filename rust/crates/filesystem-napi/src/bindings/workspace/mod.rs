@@ -158,14 +158,8 @@ impl NativeWorkspace {
     /// Current immutable generation identity.
     #[napi]
     pub async fn head(&self) -> Result<Buffer> {
-        self.inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| Buffer::from(receipt.value.id().digest().into_bytes().to_vec()))
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner, head()))
+            .map(|value| Buffer::from(value.id().digest().into_bytes().to_vec()))
     }
 
     /// Reopens an authenticated exact retained generation without moving the head.
@@ -175,31 +169,15 @@ impl NativeWorkspace {
             id.as_ref(),
             "generation identity",
         )?));
-        self.inner
-            .generation(
-                id,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
+        sdk_value!(unbounded_future!(self.inner, generation(id)))
             .map(|inner| NativeGeneration { inner })
-            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Synchronizes prior workspace operations and returns the exact immutable head.
     #[napi]
     pub async fn sync(&self) -> Result<NativeGeneration> {
-        self.inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| NativeGeneration {
-                inner: receipt.value,
-            })
-            .map_err(|failure| napi_error(failure.error))
+        sdk_value!(unbounded_future!(self.inner, head()))
+            .map(|value| NativeGeneration { inner: value })
     }
 
     /// Retains the current generation under one human-readable label.
@@ -294,53 +272,39 @@ impl NativeWorkspace {
     /// Reads one complete regular file under a caller bound.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read(
-            &path,
-            bigint_u64(&maximum_bytes, "maximumBytes")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?)
+        )))
+        .map(|value| Buffer::from(value.to_vec()))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_range(
+                &path,
+                bigint_u64(&offset, "offset")?,
+                bigint_u64(&length, "length")?
+            )
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(self.inner.stat(
-            &path,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| native_workspace_stat(receipt.value))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(self.inner, stat(&path))))
+            .map(|value| native_workspace_stat(value))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(self.inner.read_symbolic_link(
-            &path,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
-        .map_err(|failure| napi_error(failure.error))
+        sdk_value!(Box::pin(unbounded_future!(
+            self.inner,
+            read_symbolic_link(&path)
+        )))
+        .map(|value| Buffer::from(value.bytes.to_vec()))
     }
 
     #[napi(js_name = planExtents)]
@@ -391,29 +355,16 @@ impl NativeWorkspace {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        let generation = self
-            .inner
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| napi_error(failure.error))?;
+        let generation = sdk_value!(unbounded_future!(self.inner, head()))?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 ForkOptions::from_generation(generation, idempotency_key),
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
+                &mut publication_ready,
             )
             .await
             .map(|receipt| receipt.value)
@@ -436,18 +387,13 @@ impl NativeWorkspace {
             None => fork,
         };
         self.inner
-            .fork(
+            .fork::<_, _, acyclic_fs::WorkspaceError>(
                 destination,
                 fork,
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::UNCHARGED,
-                    }))
-                },
+                &mut publication_ready,
             )
             .await
             .map(|receipt| receipt.value)
@@ -462,12 +408,7 @@ impl NativeWorkspace {
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspaceTransaction> {
         let idempotency_key = native_idempotency_key(idempotency_key)?;
-        self.inner
-            .begin_transaction(
-                idempotency_key,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
+        unbounded_future!(self.inner, begin_transaction(idempotency_key))
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -511,12 +452,11 @@ impl NativeWorkspace {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .diff(&from.inner, &to.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            diff(&from.inner, &to.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 
     /// Builds one immutable side-effect-free plan for joining this workspace into a target.
@@ -535,8 +475,8 @@ impl NativeWorkspace {
                 options.maximum_changes.into_inner(),
                 options.maximum_conflicts.into_inner(),
             )
-            .plan_pinned(
-                match options.source_generation {
+            .plan_at(
+                &match options.source_generation {
                     Some(id) => self
                         .inner
                         .generation(
@@ -550,42 +490,24 @@ impl NativeWorkspace {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| napi_error(failure.error))?,
-                    None => self
-                        .inner
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| napi_error(failure.error))?,
+                    None => sdk_value!(unbounded_future!(self.inner, head()))?,
                 },
-                match options.target_generation {
-                    Some(id) => target
-                        .inner
-                        .generation(
-                            acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                                &id,
-                                "target generation",
-                            )?)),
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| napi_error(failure.error))?,
-                    None => target
-                        .inner
-                        .head(
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| napi_error(failure.error))?,
+                &match options.target_generation {
+                    Some(id) => sdk_value!(unbounded_future!(
+                        target.inner,
+                        generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                            &id,
+                            "target generation",
+                        )?)))
+                    ))?,
+                    None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
     }
@@ -630,63 +552,51 @@ impl NativeWorkspace {
 pub(in crate::bindings) fn native_workspace_rebase_result(
     outcome: WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceRebaseResult {
-    let generation =
-        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
-            NativeWorkspaceRebaseResult {
-                status: status.to_owned(),
-                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-                conflicts: Vec::new(),
-                truncated: false,
-            }
-        };
-    match outcome {
-        WorkspaceRebase::Rebased(value) => generation("rebased", value),
-        WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-        WorkspaceRebase::Current(value) => generation("current", value),
-        WorkspaceRebase::Stale(value) => generation("stale", value),
+    let (status, generation) = match outcome {
+        WorkspaceRebase::Rebased(value) => ("rebased", Some(value)),
+        WorkspaceRebase::AlreadyRebased(value) => ("already-rebased", Some(value)),
+        WorkspaceRebase::Current(value) => ("current", Some(value)),
+        WorkspaceRebase::Stale(value) => ("stale", Some(value)),
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
-        } => NativeWorkspaceRebaseResult {
-            status: "conflicted".to_owned(),
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        WorkspaceRebase::Fenced => NativeWorkspaceRebaseResult {
-            status: "fenced".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        WorkspaceRebase::IdempotencyConflict => NativeWorkspaceRebaseResult {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return NativeWorkspaceRebaseResult {
+                status: "conflicted".to_owned(),
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        WorkspaceRebase::Fenced => ("fenced", None),
+        WorkspaceRebase::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeWorkspaceRebaseResult {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }
 
 pub(in crate::bindings) fn native_workspace_operation_finish(
     outcome: WorkspaceOperationFinish<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceOperationFinish {
-    match outcome {
-        WorkspaceOperationFinish::StillActive { remaining } => NativeWorkspaceOperationFinish {
-            kind: "still-active".to_owned(),
-            remaining: Some(remaining),
-            rebase: None,
-        },
-        WorkspaceOperationFinish::AlreadyClosed => NativeWorkspaceOperationFinish {
-            kind: "already-closed".to_owned(),
-            remaining: None,
-            rebase: None,
-        },
-        WorkspaceOperationFinish::Reconciled(outcome) => NativeWorkspaceOperationFinish {
-            kind: "reconciled".to_owned(),
-            remaining: None,
-            rebase: Some(native_workspace_rebase_result(outcome)),
-        },
+    let (kind, remaining, rebase) = match outcome {
+        WorkspaceOperationFinish::StillActive { remaining } => {
+            ("still-active", Some(remaining), None)
+        }
+        WorkspaceOperationFinish::AlreadyClosed => ("already-closed", None, None),
+        WorkspaceOperationFinish::Reconciled(outcome) => (
+            "reconciled",
+            None,
+            Some(native_workspace_rebase_result(outcome)),
+        ),
+    };
+    NativeWorkspaceOperationFinish {
+        kind: kind.to_owned(),
+        remaining,
+        rebase,
     }
 }
 

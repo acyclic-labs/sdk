@@ -1,64 +1,16 @@
 use super::*;
 
-#[derive(Debug)]
-pub(super) enum FuseRequestError {
-    Native(NativeMountError),
-    Errno(i32),
-}
-
-impl From<FuseRequestError> for NativeMountError {
-    fn from(error: FuseRequestError) -> Self {
-        match error {
-            FuseRequestError::Native(error) => error,
-            FuseRequestError::Errno(error) => Self::Io(std::io::Error::from_raw_os_error(error)),
-        }
-    }
-}
-
-impl From<i32> for FuseRequestError {
+impl From<i32> for NativeMountError {
     fn from(error: i32) -> Self {
-        Self::Errno(error)
-    }
-}
-
-impl From<NativeMountError> for FuseRequestError {
-    fn from(error: NativeMountError) -> Self {
-        Self::Native(error)
-    }
-}
-
-impl From<MountSourceError> for FuseRequestError {
-    fn from(error: MountSourceError) -> Self {
-        Self::Native(error.into())
-    }
-}
-
-impl From<crate::DemandError> for FuseRequestError {
-    fn from(error: crate::DemandError) -> Self {
-        Self::Native(error.into())
-    }
-}
-
-impl From<crate::WorkError> for FuseRequestError {
-    fn from(error: crate::WorkError) -> Self {
-        Self::Native(error.into())
-    }
-}
-
-impl From<crate::NativeTreeMaterializationError> for FuseRequestError {
-    fn from(error: crate::NativeTreeMaterializationError) -> Self {
-        Self::Native(error.into())
-    }
-}
-
-impl From<crate::native_mount::NativeMountStartupAdmissionError> for FuseRequestError {
-    fn from(error: crate::native_mount::NativeMountStartupAdmissionError) -> Self {
-        Self::Native(error.into())
+        Self::Io(std::io::Error::from_raw_os_error(error))
     }
 }
 
 pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<MountSourceError> {
-    let cause = match error.semantic_error() {
+    if let MountSourceError::Retained(owner) = error {
+        return Some(MountSourceError::Retained(Arc::clone(owner)));
+    }
+    Some(match error {
         MountSourceError::Work(error) => MountSourceError::Work(error.clone()),
         MountSourceError::Cancelled => MountSourceError::Cancelled,
         MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(error)) => {
@@ -67,6 +19,11 @@ pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<Mount
         MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)
         }
+        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(
+            error,
+        )) => MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::AllocationFailed(error.clone()),
+        ),
         MountSourceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable
         }
@@ -82,6 +39,9 @@ pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<Mount
         MountSourceError::Filesystem(crate::FsError::Cancelled(error)) => {
             MountSourceError::Filesystem(crate::FsError::Cancelled(*error))
         }
+        MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed) => {
+            MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed)
+        }
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(error)) => {
             MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(error.clone()))
         }
@@ -92,12 +52,7 @@ pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<Mount
             MountSourceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
         }
         _ => return None,
-    };
-    if let MountSourceError::Retained(owner) = error {
-        Some(MountSourceError::Retained(Arc::clone(owner)))
-    } else {
-        Some(cause)
-    }
+    })
 }
 
 pub(super) fn clone_fatal_handler_error(error: &NativeMountError) -> Option<NativeMountError> {
@@ -119,6 +74,11 @@ pub(super) fn clone_fatal_handler_error(error: &NativeMountError) -> Option<Nati
                 crate::NativeTreeMaterializationError::Cancelled,
             ))
         }
+        NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::AllocationFailed(error),
+        ) => Some(NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::AllocationFailed(error.clone()),
+        )),
         NativeMountError::Demand(crate::DemandError::Mount(error)) => {
             clone_fatal_source_error(error)
                 .map(|error| NativeMountError::Demand(crate::DemandError::Mount(error)))
@@ -156,99 +116,94 @@ pub(super) fn fatal_handler_error(error: &NativeMountError) -> bool {
         }
         NativeMountError::Source(error)
         | NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            if let MountSourceError::NativeWork(error) = error.semantic_error() {
-                return crate::native_mount::native_materialization_failure_is_fatal(error);
-            }
-            if let MountSourceError::WorkspaceCause(error) = error.semantic_error() {
-                return crate::native_mount::native_workspace_failure_is_fatal(error);
-            }
-            if let MountSourceError::WorkspacePrefixFailure { source, accounting } =
-                error.semantic_error()
-            {
-                return crate::native_mount::native_workspace_failure_is_fatal(source)
-                    || crate::native_mount::native_workspace_failure_is_fatal(accounting);
-            }
-            if matches!(
-                error.semantic_error(),
-                MountSourceError::NativeCallbackDenied { .. }
-            ) {
-                return false;
-            }
-            if let MountSourceError::NativeWorkspaceCause(error) = error.semantic_error() {
-                return crate::native_mount::native_workspace_failure_is_fatal(&error.source);
-            }
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            if matches!(
-                error.semantic_error(),
+            match error.semantic_error() {
+                MountSourceError::NativeWork(error) => {
+                    crate::native_mount::native_materialization_failure_is_fatal(error)
+                }
+                MountSourceError::WorkspaceCause(error) => {
+                    crate::native_mount::native_workspace_failure_is_fatal(error)
+                }
+                MountSourceError::WorkspacePrefixFailure { source, accounting } => {
+                    crate::native_mount::native_workspace_failure_is_fatal(source)
+                        || crate::native_mount::native_workspace_failure_is_fatal(accounting)
+                }
+                MountSourceError::NativeWorkspaceCause(error, _) => {
+                    crate::native_mount::native_workspace_failure_is_fatal(error)
+                }
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 MountSourceError::SourceWatchStartup(_)
-                    | MountSourceError::NativeWatchStartupFailed { .. }
-                    | MountSourceError::NativeWatchSourceStartupFailed { .. }
-            ) {
-                return true;
-            }
-            matches!(
-                error.semantic_error(),
+                | MountSourceError::NativeWatchStartupFailed { .. }
+                | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,
                 MountSourceError::Work(_)
-                    | MountSourceError::Cancelled
-                    | MountSourceError::Allocation(_)
-                    | MountSourceError::ServicesNotInitialized
-                    | MountSourceError::ServiceUnavailable(_)
-                    | MountSourceError::OriginalSnapshotUnavailable
-                    | MountSourceError::Indeterminate
-                    | MountSourceError::Filesystem(
-                        crate::FsError::Work(_) | crate::FsError::Cancelled(_)
-                    )
-                    | MountSourceError::NamespacePath(
-                        crate::kernel::NamespacePathError::Work(_)
-                            | crate::kernel::NamespacePathError::Cancelled
-                            | crate::kernel::NamespacePathError::AllocationFailed
-                    )
-            )
+                | MountSourceError::Cancelled
+                | MountSourceError::Allocation(_)
+                | MountSourceError::ServicesNotInitialized
+                | MountSourceError::ServiceUnavailable(_)
+                | MountSourceError::OriginalSnapshotUnavailable
+                | MountSourceError::Indeterminate
+                | MountSourceError::Filesystem(
+                    crate::FsError::Work(_)
+                    | crate::FsError::Cancelled(_)
+                    | crate::FsError::HandleAllocationFailed,
+                )
+                | MountSourceError::NamespacePath(
+                    crate::kernel::NamespacePathError::Work(_)
+                    | crate::kernel::NamespacePathError::Cancelled
+                    | crate::kernel::NamespacePathError::AllocationFailed,
+                ) => true,
+                _ => false,
+            }
         }
         _ => false,
-    }
-}
-
-pub(super) fn source_callback_errno(error: &MountSourceError) -> i32 {
-    match error.semantic_error() {
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::NativeWork(error) => {
-            crate::native_mount::native_materialization_errno(error)
-        }
-        MountSourceError::WorkspaceCause(error) => {
-            crate::native_mount::native_workspace_errno(error)
-        }
-        MountSourceError::NativeWorkspaceCause(error) => {
-            crate::native_mount::native_workspace_errno(&error.source)
-        }
-        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
-        MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
-            libc::ECANCELED
-        }
-        MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
-        MountSourceError::PublicationRetryLimit => libc::EIO,
-        MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
-        MountSourceError::Stale => libc::ESTALE,
-        MountSourceError::Cancelled
-        | MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ECANCELED,
-        MountSourceError::Filesystem(crate::FsError::NotFound) => libc::ENOENT,
-        MountSourceError::Filesystem(crate::FsError::NotDirectory) => libc::ENOTDIR,
-        _ => libc::EIO,
     }
 }
 
 pub(super) fn native_callback_errno(error: &NativeMountError) -> i32 {
     match error {
         NativeMountError::CallbackDenied { .. } => libc::EACCES,
+        NativeMountError::Allocation(_) => libc::ENOMEM,
         NativeMountError::Io(error) => error.raw_os_error().unwrap_or(libc::EIO),
         NativeMountError::Materialization(error) => {
             crate::native_mount::native_materialization_errno(error)
         }
         NativeMountError::Source(error)
         | NativeMountError::Demand(crate::DemandError::Mount(error)) => {
-            source_callback_errno(error)
+            match error.semantic_error() {
+                MountSourceError::NotFound => libc::ENOENT,
+                MountSourceError::AlreadyExists => libc::EEXIST,
+                MountSourceError::NativeWork(error) => {
+                    crate::native_mount::native_materialization_errno(error)
+                }
+                MountSourceError::WorkspaceCause(error) => {
+                    crate::native_mount::native_workspace_errno(error)
+                }
+                MountSourceError::NativeWorkspaceCause(error, _) => {
+                    crate::native_mount::native_workspace_errno(error)
+                }
+                MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
+                MountSourceError::Allocation(_)
+                | MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed)
+                | MountSourceError::NamespacePath(
+                    crate::kernel::NamespacePathError::AllocationFailed,
+                ) => libc::ENOMEM,
+                MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
+                    libc::ECANCELED
+                }
+                MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => {
+                    libc::EIO
+                }
+                MountSourceError::PublicationRetryLimit => libc::EIO,
+                MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
+                MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => {
+                    libc::EOPNOTSUPP
+                }
+                MountSourceError::Stale => libc::ESTALE,
+                MountSourceError::Cancelled
+                | MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ECANCELED,
+                MountSourceError::Filesystem(crate::FsError::NotFound) => libc::ENOENT,
+                MountSourceError::Filesystem(crate::FsError::NotDirectory) => libc::ENOTDIR,
+                _ => libc::EIO,
+            }
         }
         NativeMountError::Demand(crate::DemandError::Cancelled) => libc::ECANCELED,
         NativeMountError::FuseUnsupportedCapabilities(_) => libc::EOPNOTSUPP,

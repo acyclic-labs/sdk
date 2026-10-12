@@ -1,16 +1,17 @@
-import type { FsWorkspace, WasmRawWorkspace } from "./contracts.js";
+import type { FsWorkspace } from "./contracts.js";
+import type { WasmRawWorkspace } from "./binding-types.js";
 import { parseWorkspaceRebaseResult } from "./workspace-results.js";
 import type { OperationWindowCoordinator, OperationWindowLease, OperationWindowPhase, OperationWindowClose } from "./compat.js";
 import type { BrowserOperationWindowCoordinator, BrowserOperationWindowLease, BrowserOperationWindowPhase, BrowserOperationWindowClose } from "../generated/wasm/acyclic_fs_wasm.js";
-import { copyBytes, copyOptionalBytes, requireIdentity, requireGenerationIdentity } from "./binding-values.js";
+import { copyOptionalBytes, requireIdentity } from "./binding-values.js";
 
 function copyOperationWindowLease(
   lease: BrowserOperationWindowLease,
 ): OperationWindowLease {
   return {
-    workspaceId: copyBytes(lease.workspaceId),
-    leaseId: copyBytes(lease.leaseId),
-    pinnedParent: copyBytes(lease.pinnedParent),
+    workspaceId: new Uint8Array(lease.workspaceId),
+    leaseId: new Uint8Array(lease.leaseId),
+    pinnedParent: new Uint8Array(lease.pinnedParent),
     expiresAtMillis: lease.expiresAtMillis,
   };
 }
@@ -18,9 +19,9 @@ function copyOperationWindowLease(
 function validateOperationWindowLease(
   lease: OperationWindowLease,
 ): BrowserOperationWindowLease {
-  requireIdentity(lease.workspaceId, "workspace identity");
-  requireIdentity(lease.leaseId, "lease identity");
-  requireGenerationIdentity(lease.pinnedParent, "pinned parent");
+  requireIdentity(lease.workspaceId, 16, "workspace identity");
+  requireIdentity(lease.leaseId, 16, "lease identity");
+  requireIdentity(lease.pinnedParent, 32, "pinned parent");
   return lease;
 }
 
@@ -31,7 +32,7 @@ function parseOperationWindowPhase(
   if (phase.kind === "active" && phase.pinnedParent !== undefined) {
     return {
       kind: "active",
-      pinnedParent: copyBytes(phase.pinnedParent),
+      pinnedParent: new Uint8Array(phase.pinnedParent),
       pendingParent: copyOptionalBytes(phase.pendingParent),
       activeLeaseCount: phase.activeLeaseCount ?? 0,
     };
@@ -42,8 +43,8 @@ function parseOperationWindowPhase(
   ) {
     return {
       kind: "reconciling",
-      ticket: copyBytes(phase.ticket),
-      pinnedParent: copyBytes(phase.pinnedParent),
+      ticket: new Uint8Array(phase.ticket),
+      pinnedParent: new Uint8Array(phase.pinnedParent),
       pendingParent: copyOptionalBytes(phase.pendingParent),
     };
   }
@@ -63,8 +64,8 @@ function parseOperationWindowClose(
   ) {
     return {
       kind: "reconcile",
-      ticket: copyBytes(close.ticket),
-      pinnedParent: copyBytes(close.pinnedParent),
+      ticket: new Uint8Array(close.ticket),
+      pinnedParent: new Uint8Array(close.pinnedParent),
       pendingParent: copyOptionalBytes(close.pendingParent),
     };
   }
@@ -77,9 +78,9 @@ export function adaptOperationWindowCoordinator(
 ): OperationWindowCoordinator {
   return {
     async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis, leaseId) {
-      requireIdentity(workspaceId, "workspace identity");
-      requireGenerationIdentity(parent, "parent");
-      if (leaseId !== undefined) requireIdentity(leaseId, "lease identity");
+      requireIdentity(workspaceId, 16, "workspace identity");
+      requireIdentity(parent, 32, "parent");
+      if (leaseId !== undefined) requireIdentity(leaseId, 16, "lease identity");
       if (owner.length === 0) throw new RangeError("operation owner must be non-empty");
       return copyOperationWindowLease(
         await raw.begin(workspaceId, parent, owner, nowMillis, expiresAtMillis, leaseId),
@@ -89,8 +90,8 @@ export function adaptOperationWindowCoordinator(
       return copyOperationWindowLease(await raw.renew(validateOperationWindowLease(lease), nowMillis, expiresAtMillis));
     },
     async observeParent(workspaceId, parent) {
-      requireIdentity(workspaceId, "workspace identity");
-      requireGenerationIdentity(parent, "parent");
+      requireIdentity(workspaceId, 16, "workspace identity");
+      requireIdentity(parent, 32, "parent");
       return raw.observeParent(workspaceId, parent);
     },
     async finish(lease, nowMillis) {
@@ -99,7 +100,7 @@ export function adaptOperationWindowCoordinator(
       );
     },
     async inspect(workspaceId) {
-      requireIdentity(workspaceId, "workspace identity");
+      requireIdentity(workspaceId, 16, "workspace identity");
       return parseOperationWindowPhase(await raw.inspect(workspaceId));
     },
     async finishWorkspace(workspace, lease, nowMillis, options) {
