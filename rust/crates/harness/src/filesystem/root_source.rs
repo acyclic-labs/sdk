@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?;
                 Ok((generation(commit), snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let allowance = io.remaining()?;
             let (commit, snapshot) = if allowance.has_finite_allowances() {
                 let mut before_mutation = |budget| async move {
-                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, &io.cancellation)
+                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                     let verified = callback.verify_publication_lease(lease.as_ref()).await;
                     match verified {
@@ -177,13 +177,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    allowance, &io.cancellation, &mut before_mutation,
+                    allowance, io.cancellation(), &mut before_mutation,
                 ).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
                 self.lazy.write_at_snapshot_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?
             };
             Ok((generation(commit), snapshot))

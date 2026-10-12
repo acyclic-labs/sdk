@@ -159,7 +159,7 @@ fn decode(bytes: &[u8], work: &NativeMaterializationWork,
     custody: &mut NativeAllocation,
 ) -> Result<Receipt<'static>> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let decoded = io.decode_preparation_with_code::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
+    let decoded = io.decode_preparation::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
     let (receipt, mut payload) = decoded.into_native_parts()?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;

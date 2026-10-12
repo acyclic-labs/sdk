@@ -554,11 +554,11 @@ where
                 Some(io), ErrorCode::Unsupported, "fork preparation source is not configured"))?;
             let retained = if reconciliation_only {
                 source.preparation_for_reconciliation_with_native_work(
-                    shared, &preparation, &io.cancellation, work,
+                    shared, &preparation, io.cancellation(), work,
                 )?.await?
             } else {
                 source.preparation_with_native_work(
-                    shared, &preparation, &io.cancellation, work,
+                    shared, &preparation, io.cancellation(), work,
                 )?.await?
             };
             io.absorb_native_custody(retained.1)?;

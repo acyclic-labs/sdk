@@ -102,7 +102,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
     }
     let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
-    let request = io.decode_preparation_with_code::<NativeProcessRequest>(
+    let request = io.decode_preparation::<NativeProcessRequest>(
         bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
     drop(bytes);
     request.view.validate_with_io(Some(&io))?;
@@ -130,7 +130,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
             "effect schema must be JSON schema content"));
     }
     let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
-    let decoded = io.decode_preparation_with_code::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
+    let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
     crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
     let result_schema = decoded.into_retained();
     drop(schema);

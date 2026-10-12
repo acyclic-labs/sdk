@@ -798,7 +798,7 @@ impl DurableContextProvider {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
                 "context record exceeds Stream limit"));
         }
-        let stored = io.decode_preparation::<StoredContextRevision>(&record.value)
+        let stored = io.decode_preparation::<StoredContextRevision>(&record.value, crate::wire::ErrorCode::Storage)
             .map_err(native_context_decode_storage)?.into_retained();
         let canonical_guard;
         let canonical = io.encode(&stored, MAX_RECORD_BYTES as u64, true)?;
@@ -825,7 +825,7 @@ impl DurableContextProvider {
         let payload = self.content_verifier.read_with_native_work(
             &stored.context, stored.context.descriptor().byte_length(), work)?.await?;
         stored.context.descriptor().verify_with_work(payload.as_ref(), &mut Some(&mut observer))?;
-        let context = io.decode_preparation::<Context>(payload.as_ref())
+        let context = io.decode_preparation::<Context>(payload.as_ref(), crate::wire::ErrorCode::Storage)
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
         let context_canonical = io.encode(&context, limits.render_bytes, true)?;

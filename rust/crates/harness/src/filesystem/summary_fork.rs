@@ -316,7 +316,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         validate_capture(&planned_capture, child_private, io)?;
         if let Some(io) = io {
             for file in references.values() {
-                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, &io.cancellation).await)?;
+                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, io.cancellation()).await)?;
             }
         }
         let keys = summary_keys(key, io)?;
@@ -355,7 +355,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                         journal.load_with_native_work(file, original)?.await?
                     }
                     Some(io) => {
-                        let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, &io.cancellation).await)?;
+                        let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, io.cancellation()).await)?;
                         io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
                         bytes
                     }

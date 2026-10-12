@@ -394,7 +394,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
     )?
     .with_history_context(archived)?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor)?;
+    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),

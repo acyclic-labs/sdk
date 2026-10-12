@@ -2272,7 +2272,7 @@ impl SchemaRegistry {
         let _bytes;
         let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
-        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes)?;
+        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
         record.validate()?;
         Ok(record)
     }
@@ -2389,7 +2389,7 @@ impl SchemaRegistry {
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes)?;
+                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.value
             }
             _ => {
