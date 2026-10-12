@@ -7,7 +7,7 @@ use crate::{
     conversation::{VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     runtime::ContentBindings,
 };
@@ -40,7 +40,7 @@ impl ModelProvider for CountedModel {
             Ok(ModelEvent::Completed { metadata: serde_json::Value::Null }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt)
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent])
         -> acyclic_stream::BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>>
     {
         Box::pin(async { Err(Error::Unsupported("all fixture attempts settle".into())) })

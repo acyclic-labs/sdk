@@ -336,7 +336,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     lazy.workspace().write_text("/later.txt", "mutable authored head").await?;
     let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
-    let advanced = source.invalidate();
+    let advanced = source.invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))?;
     let rebound = lazy.rebind_source_measured(budget, &cancellation).await?;
     rebound.work.verify(budget)?;
     assert_eq!(rebound.value.source, advanced);

@@ -16,7 +16,7 @@ use crate::demand::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    ContentStager, NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
+    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
     WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget,
     WorkCounters, WorkError,
 };
@@ -1372,7 +1372,7 @@ impl CaptureWorkScope {
         let bytes = custody.take_retained_bytes();
         drop(custody);
         let (released, completed) = self.native.with_original_leaf(|work| {
-            (work.without_capture_custody(|work| work.release(bytes)), work.work)
+            (work.with_capture(None, |work| work.release(bytes)), work.work)
         });
         released.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))
     }
@@ -1553,7 +1553,7 @@ impl acyclic_native_runtime::NativeReadMeter for CaptureNativeReadMeter<'_> {
         result.map_err(|error| self.0.original().relay_io_failure(error))
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        let (claimed, result) = capture_owned_leaf(self.0, |work| work.record_native_completed_adoption(bytes));
+        let (claimed, result) = capture_owned_leaf(self.0, |work| work.record_native_owned_completed(bytes, &work.capture_custody()));
         (claimed, result.map_err(|error| self.0.original().relay_io_failure(error)))
     }
     fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
@@ -3645,7 +3645,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
         capture_step(&mut receipt.work, &mut original, |meter| meter.release(states_bytes).map_err(capture_demand_error))?;
     }
     finish_prepared_paths(
-        &checkout.content_stager(), source_root, prepared, maximum_extent_spans,
+        checkout, source_root, prepared, maximum_extent_spans,
         &mut mutations, &mut receipt, budget, &cancellation, meter,
     ).await?;
     apply_capture_transaction(checkout, mutations, &mut receipt, budget, &cancellation, meter).await?;
@@ -4837,7 +4837,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             }
         }
         capture_step(&mut receipt.work, meter, |meter| meter.release(observed_bytes).map_err(capture_demand_error))?;
-        finish_prepared_paths(&checkout.content_stager(),
+        finish_prepared_paths(checkout,
         &source_root,
         prepared,
         options.maximum_extent_spans,
@@ -5970,7 +5970,7 @@ fn append_final_state<W: CaptureNativeWork>(
     reason = "the stager, root, prepared file, span bound, mutation list, receipt, budget, and cancellation are all used per file"
 )]
 async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     prepared: PreparedRegular,
     maximum_extent_spans: u32,
@@ -6022,7 +6022,7 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reason = "the stager, root, prepared paths, span bound, mutation list, receipt, budget, and cancellation are all used per batch"
 )]
 async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     prepared: Vec<PreparedPath>,
     maximum_extent_spans: u32,
@@ -6113,7 +6113,7 @@ type PendingHardLinks = CaptureMap<NamespacePath, Vec<(NamespacePath, Option<Fil
     reason = "stages one body from its host path and snapshot under the span bound, prior work, budget, and cancellation"
 )]
 async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostSnapshot,
@@ -6531,7 +6531,7 @@ struct StagedHostRanges {
 }
 
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     ranges: &[HostDataRange],
     prior_work: WorkCounters,
@@ -7014,14 +7014,14 @@ mod native_range_tests {
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
         let (resume, resumed) = std::sync::mpsc::channel();
-        let operation = native.control_bounded_async(move |file, meter| {
+        let operation = native.control_async(move |file, meter| { let meter = meter.expect("metered control");
             started.send(()).map_err(std::io::Error::other)?;
             resumed.recv().map_err(std::io::Error::other)?;
             let mut data = [0; 3];
             assert_eq!(acyclic_native_runtime::read_declared_source_bytes(file, 0, &mut data, meter)?, 3);
             assert_eq!(&data, b"abc");
             Ok(())
-        }, meter)?;
+        }, Some(meter))?;
         let operation = tokio::spawn(operation);
         tokio::task::yield_now().await;
         start.recv_timeout(std::time::Duration::from_secs(10))?;

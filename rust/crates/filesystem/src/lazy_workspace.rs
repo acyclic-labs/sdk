@@ -131,10 +131,10 @@ impl SelectedImportPlan {
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn input_digest_with_work(
         &self, destination: LazySnapshotRef,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<crate::Digest, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original, cancellation)?;
         self.input_digest(destination, &work)
     }
 }
@@ -11179,10 +11179,10 @@ where
         &self, paths: &[String], selected_paths: &[String],
         identity_records: &[(FileRecord, FileMetadata)],
         idempotency_key: IdempotencyKey,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original, cancellation)?;
         self.prepare_mount_removals_with_accounting(
             paths, selected_paths, identity_records, idempotency_key, &work, cancellation,
         ).await
@@ -11430,10 +11430,10 @@ where
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn mount_removal_publication_with_work(
-        &self, original: &crate::native_mount::NativeMountMeterWork,
+        &self, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<Option<bool>, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original, cancellation)?;
         self.mount_removal_publication_with_accounting(&work, cancellation).await
     }
 
@@ -11472,10 +11472,10 @@ where
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) async fn finish_mount_removals_with_work(
-        &self, original: &crate::native_mount::NativeMountMeterWork,
+        &self, original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<bool, LazyWorkspaceError> {
-        let work = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
+        let work = LazyTreapWork::native_with_work(&original, cancellation)?;
         self.finish_mount_removals_with_accounting(&work, cancellation).await
     }
 
@@ -12443,10 +12443,10 @@ where
     pub(crate) async fn prepare_selected_import_into_checkout_with_work(
         &self, destination: LazySnapshotRef, plan: &SelectedImportPlan,
         checkout: &mut crate::Checkout<A, O>, operation: crate::OperationId,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<SelectedImportEffects, LazyWorkspaceError> {
-        let accounting = LazyTreapWork::native_with_work(&original.native_materialization_work(), cancellation)?;
+        let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
         let scratch = TreapAllocationScope::new(&accounting);
         let mut value = self.prepare_selected_import_into_checkout_with_accounting(
             destination, plan, checkout, operation, &accounting, cancellation,
@@ -13317,10 +13317,10 @@ where
         &'a self, operation: crate::OperationId, generation: crate::GenerationId,
         destination: LazySnapshotRef, source: LazySnapshotRef,
         source_config: VolumeConfig, input: crate::Digest,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<LazySnapshotRef, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
-        let original = original.native_materialization_work();
+        let original = original.clone();
         async move {
             let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
             self.selected_committed_snapshot_with_accounting(
@@ -13405,10 +13405,10 @@ where
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn selected_import_generation_with_work<'a>(
         &'a self, operation: crate::OperationId,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<Option<crate::GenerationId>, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
-        let original = original.native_materialization_work();
+        let original = original.clone();
         async move {
             let generation = self.workspace.operation_generation_with_native_work(
                 operation, &original, cancellation,
@@ -13423,10 +13423,10 @@ where
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub(crate) fn selected_import_snapshot_for_generation_with_work<'a>(
         &'a self, operation: crate::OperationId, generation: crate::GenerationId,
-        original: &crate::native_mount::NativeMountMeterWork,
+        original: &crate::NativeMaterializationWork,
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<LazySnapshotRef, LazyWorkspaceError>> + Send + 'a + use<'a, A, O, D, S> {
-        let original = original.native_materialization_work();
+        let original = original.clone();
         async move {
             let accounting = LazyTreapWork::native_with_work(&original, cancellation)?;
             let phase = self.load_state_with_accounting(&accounting, cancellation).await?
@@ -16656,7 +16656,7 @@ mod tests {
                 move |work| {
                     if work.receipt().source_bytes_read != 0 {
                         if mode == 0 {
-                            guard_source.invalidate_with_native_work(work).expect("actual source epoch change");
+                            guard_source.invalidate(&mut crate::demand::NativeSourceWork::from_native_materialization_work(work)).expect("actual source epoch change");
                         } else {
                             guard_cancellation.cancel();
                         }
@@ -17672,12 +17672,7 @@ mod tests {
                 .workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("checkout");
             checkout
-                .create_file(
-                    path.clone(),
-                    content.clone(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: path.clone(), bytes: (content.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("stage content");
             let identity = checkout
@@ -17687,7 +17682,7 @@ mod tests {
                 .value
                 .expect("staged file");
             checkout
-                .remove(path.clone(), None, WorkBudget::UNBOUNDED, &cancellation)
+                .mutate(vec![crate::kernel::Mutation::Remove { path: path.clone(), expected_file_id: (None).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .expect("remove");
             root.prepare_mount_removals(&[], &[(identity.record, identity.metadata)], removal)
@@ -19686,7 +19681,7 @@ mod tests {
         let before = root.snapshot().await.expect("snapshot before change");
 
         std::fs::write(&path, b"after").expect("external write");
-        source.invalidate();
+        source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source invalidation");
         root.rebind_source().await.expect("rebind source");
 
         assert_eq!((root.read("/file.txt", 64).await.expect("refreshed read")).as_ref(), b"after");

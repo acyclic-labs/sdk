@@ -39,13 +39,6 @@ impl std::os::fd::AsFd for NativeFilePayload {
 }
 
 #[cfg(windows)]
-impl std::os::windows::io::AsHandle for NativeFilePayload {
-    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        std::os::windows::io::AsHandle::as_handle(&self.file)
-    }
-}
-
-#[cfg(windows)]
 type FileIdentity = windows::FileIdentity;
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 type FileIdentity = (u64, u64);
@@ -3380,10 +3373,10 @@ mod tests {
                     .read(true)
                     .write(true)
                     .open(directory.path().join("panic-worker"))?, None).map_err(|(error, _)| error)?;
-            let _ = complete(file.control_async(|_| {
+            let _ = complete(file.control_async(|_, _| {
                 eprintln!("injected native worker unwind");
                 std::panic::resume_unwind(Box::new("injected native worker unwind"));
-            }));
+            }, None).expect("unmetered control construction cannot fail"));
             return Err(io::Error::other(
                 "native worker unwind returned to observer",
             ));
@@ -4107,9 +4100,7 @@ mod tests {
             bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
             meter: meter.clone(), actual_prefix: 9,
         };
-        let mut write = file.write_bounded_async_with_custody(
-            0, bytes, meter.clone(), custody,
-        )?;
+        let mut write = file.write_async(0, bytes, meter.clone(), custody)?;
         let completed = write.state.as_ref().expect("pending write").clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.try_send(write.pending.take().expect("the real write is pending"))
@@ -4146,7 +4137,7 @@ mod tests {
             bytes_dropped: bytes_dropped.clone(), retired: retired.clone(),
             meter: meter.clone(), actual_prefix: 0,
         };
-        assert!(file.write_bounded_async_with_custody(0, bytes, meter.clone(), custody).is_err());
+        assert!(file.write_async(0, bytes, meter.clone(), custody).is_err());
         assert!(retired.load(Ordering::Acquire));
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::read(&path)?, b"");
@@ -4163,9 +4154,7 @@ mod tests {
         let mut budget = ReadBudgetMeter { memory_limit: u64::MAX, ..ReadBudgetMeter::new(10, 10) };
         budget.memory_limit = 0;
         let meter = Arc::new(budget);
-        assert!(file.write_bounded_async(
-            0, Bytes::from_static(b"x"), meter.clone(),
-        ).is_err());
+        assert!(file.write_async(0, Bytes::from_static(b"x"), meter.clone(), ()).is_err());
         assert_eq!(std::fs::metadata(path)?.len(), 0);
         Ok(())
     }
@@ -4504,11 +4493,11 @@ mod tests {
         let tail = Arc::downgrade(&native.health.tail);
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel::<()>(1);
-        let mut pending = native.control_async(move |_| {
+        let mut pending = native.control_async(move |_, _| {
             started_sender.send(()).map_err(io::Error::other)?;
             release_receiver.recv().map_err(io::Error::other)?;
             Ok(())
-        });
+        }, None).expect("unmetered control construction cannot fail");
         let waker = completion_waker();
         assert!(matches!(
             Pin::new(&mut pending).poll(&mut Context::from_waker(&waker)),
@@ -4639,13 +4628,13 @@ mod tests {
             }
         };
         let (sender, receiver) = mpsc::channel();
-        let control = native.control_async(move |file| {
+        let control = native.control_async(move |file, _| {
             let mut bytes = [0; 5];
             read_at(file, 0, &mut bytes)?;
             sender
                 .send(bytes)
                 .map_err(|error| io::Error::other(error.to_string()))
-        });
+        }, None).expect("unmetered control construction cannot fail");
         complete(control)?;
         assert_eq!(receiver.recv().map_err(io::Error::other)?, *b"ready");
         if !write_completed {
@@ -5344,7 +5333,7 @@ mod tests {
                 bytes_dropped, retired: retired.clone(), meter: meter.clone(),
                 actual_prefix: expected.len() as u64,
             };
-            let error = complete(file.write_bounded_async_with_custody(0, bytes, meter.clone(), custody)?).unwrap_err();
+            let error = complete(file.write_async(0, bytes, meter.clone(), custody)?).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             assert!(retired.load(Ordering::Acquire));
             assert_eq!(meter.memory.load(Ordering::Acquire), 0);

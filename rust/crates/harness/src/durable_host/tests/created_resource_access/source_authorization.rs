@@ -92,7 +92,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
-        let mut budget = creation_control_budget();
+        let mut budget = test_budget(16_384, 16 * 1_024 * 1_024);
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("admitted original ledger with no remaining allocator attempt");
@@ -131,7 +131,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     {
         let native_cancellation = acyclic_fs::CancellationToken::new();
         let native = acyclic_fs::NativeMaterializationWork::new(
-            creation_control_budget(), &native_cancellation,
+            test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
         ).expect("finite original source invocation");
         let mut prepared = created.request.clone();
         prepared.read_authorization = Some(handle.authorization().clone());
@@ -191,7 +191,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         }
         let foreign_cancellation = acyclic_fs::CancellationToken::new();
         let foreign = acyclic_fs::NativeMaterializationWork::new(
-            creation_control_budget(), &foreign_cancellation,
+            test_budget(16_384, 16 * 1_024 * 1_024), &foreign_cancellation,
         ).expect("independent caller ledger for the hostile selection");
         let before = foreign.receipt();
         assert!(matches!(selected.require_native_project_selection_with_native_work(
@@ -205,7 +205,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
 
-        let mut denied_budget = creation_control_budget();
+        let mut denied_budget = test_budget(16_384, 16 * 1_024 * 1_024);
         denied_budget.backend_read_operations = 0;
         let denied = acyclic_fs::NativeMaterializationWork::new(
             denied_budget, &native_cancellation,

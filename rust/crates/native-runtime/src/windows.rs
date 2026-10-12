@@ -51,14 +51,14 @@ use windows_sys::Win32::System::Threading::{
 #[derive(Clone, Debug)]
 enum DriverFile {
     Reopened(SharedFd<OwnedFd>),
-    Original(SharedFd<Arc<NativeFilePayload>>),
+    Original(Arc<NativeFilePayload>),
 }
 
 impl compio_driver::AsFd for DriverFile {
     fn as_fd(&self) -> BorrowedFd<'_> {
         match self {
             Self::Reopened(file) => file.as_fd(),
-            Self::Original(file) => file.as_fd(),
+            Self::Original(file) => BorrowedFd::from(file.as_handle()),
         }
     }
 }
@@ -1010,7 +1010,7 @@ impl DriverState {
                     }
                 }
             }
-            return Ok(DriverFile::Original(SharedFd::new(Arc::clone(file))));
+            return Ok(DriverFile::Original(Arc::clone(file)));
         }
         let reopened = reopen_overlapped(file, access)?;
         self.proactor.attach(reopened.as_raw_handle().cast())?;

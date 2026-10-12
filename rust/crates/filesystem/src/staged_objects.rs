@@ -430,9 +430,9 @@ impl<S> StagedObjects<S> {
                 let bytes = staged_owned_bytes(
                     buffer, buffer_control.expect("native spill buffer is admitted"), native,
                 ).map_err(ObjectFailure::before_work)?;
-                self.spill.control_bounded_async(move |file, meter| {
+                self.spill.control_async(move |file, meter| { let meter = meter.expect("metered control");
                     acyclic_native_runtime::write_all_at(file, offset, &bytes, Some((meter, true)))
-                }, native.runtime_meter_owner())
+                }, Some(native.runtime_meter_owner()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
                 // Physical partial writes (including cancellation) are
@@ -1811,9 +1811,9 @@ mod tests {
         store.put(id, bytes.clone(), WorkBudget::UNBOUNDED, token).await?;
         let _spill_file = store.spill_io.write().await;
         let spill_bytes = bytes.clone();
-        store.spill.control_async(move |file| {
+        store.spill.control_async(move |file, _| {
             acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice(), None)
-        }).await?;
+        }, None).expect("unmetered control construction cannot fail").await?;
         let mut index = store.index_mut();
         if let Some(Staged::Resident { order, .. }) = index.objects.get(&id) {
             let order = *order;
@@ -1943,9 +1943,9 @@ mod tests {
             let _spill_file = store.spill_io.write().await;
             let offset = store.index().spill_end;
             let spill_bytes = second_bytes.clone();
-            store.spill.control_async(move |file| {
+            store.spill.control_async(move |file, _| {
                 acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice(), None)
-            }).await?;
+            }, None).expect("unmetered control construction cannot fail").await?;
             let mut index = store.index_mut();
             if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {
                 let order = *order;

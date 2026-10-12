@@ -166,12 +166,12 @@ mod tests {
                         drop(tracing::info_span!("test.worker_nested"));
                     };
                     if native_control {
-                        Box::new(native.control_async(move |file| {
+                        Box::new(native.control_async(move |file, _| {
                             work();
                             let result = file.set_len(73);
                             done_tx.send(()).unwrap();
                             result
-                        })) as Box<dyn Future<Output = std::io::Result<()>> + Unpin>
+                        }, None).expect("unmetered control construction cannot fail")) as Box<dyn Future<Output = std::io::Result<()>> + Unpin>
                     } else {
                         Box::new(crate::run_blocking_io(move || { work(); done_tx.send(()).unwrap(); }, None).expect("unmetered task construction cannot fail"))
                     }

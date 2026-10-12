@@ -133,7 +133,7 @@ struct PendingObserverDelivery {
 
 impl PendingObserverDelivery {
     fn visit(&mut self) {
-        self.sync.lock().record_pending_items(1)
+        self.sync.lock().complete(crate::materializer::NativeResourceCredit::Items, 1, 1)
             .expect("an actual notification visit owns an original credit");
         self.credits = self.credits.checked_sub(1).expect("one notification visit");
     }
@@ -142,7 +142,7 @@ impl PendingObserverDelivery {
 impl Drop for PendingObserverDelivery {
     fn drop(&mut self) {
         if self.credits != 0 {
-            self.sync.lock().refund_pending_items(self.credits);
+            self.sync.lock().refund(crate::materializer::NativeResourceCredit::Items, self.credits).expect("original reservation is balanced");
         }
     }
 }
@@ -187,9 +187,9 @@ impl PendingDeliveryBuffer {
     fn cancel_with_work(&mut self, work: &mut crate::demand::DemandWork) {
         for delivery in &mut self.entries {
             if delivery.credits != 0 {
-                work.record_pending_items(1).expect("actual prepared cleanup owns a credit");
+                work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1).expect("actual prepared cleanup owns a credit");
                 delivery.credits -= 1;
-                work.refund_pending_items(delivery.credits);
+                work.refund(crate::materializer::NativeResourceCredit::Items, delivery.credits).expect("original reservation is balanced");
                 delivery.credits = 0;
             }
         }
@@ -244,7 +244,7 @@ struct PreparedObserverJoin {
 
 impl Drop for PreparedObserverJoin {
     fn drop(&mut self) {
-        if self.credits != 0 { self.sync.lock().refund_pending_items(self.credits); }
+        if self.credits != 0 { self.sync.lock().refund(crate::materializer::NativeResourceCredit::Items, self.credits).expect("original reservation is balanced"); }
     }
 }
 
@@ -261,12 +261,12 @@ fn prepare_join_buffer(
 ) -> Result<u64, super::MountSourceError> {
     let Some(pending) = hub.pending.as_mut() else { return Ok(0); };
     let bytes = std::mem::size_of::<PendingObserverDelivery>() as u64;
-    work.reserve_copy(bytes).map_err(super::lazy::mount_demand_error)?;
+    work.reserve(crate::materializer::NativeResourceCredit::Copy, bytes).map_err(super::lazy::mount_demand_error)?;
     let result = pending.deliveries.entries.len().checked_add(1)
         .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
         .and_then(|required| pending.deliveries.reserve(required, work));
     if let Err(error) = result {
-        work.cancel_reserved_copy(bytes);
+        work.refund(crate::materializer::NativeResourceCredit::Copy, bytes).expect("original reservation is balanced");
         return Err(error);
     }
     Ok(bytes)
@@ -284,7 +284,7 @@ fn append_join(
         sync: Arc::clone(&join.sync), credits: std::mem::take(&mut join.credits),
     });
     let copied = std::mem::take(copy_credit);
-    work.record_reserved_copy(copied, copied).map_err(super::lazy::mount_demand_error)
+    work.complete(crate::materializer::NativeResourceCredit::Copy, copied, copied).map_err(super::lazy::mount_demand_error)
 }
 
 /// The observers of one source of view changes.
@@ -319,7 +319,7 @@ impl ViewObservers {
         };
         let Some((id, original)) = pending else { return Ok(None); };
         let sync = original.upgrade().ok_or(super::MountSourceError::Stale)?;
-        sync.lock().reserve_pending_items(2).map_err(super::lazy::mount_demand_error)?;
+        sync.lock().reserve(crate::materializer::NativeResourceCredit::Items, 2).map_err(super::lazy::mount_demand_error)?;
         Ok(Some(PreparedObserverJoin { id, sync, credits: 2 }))
     }
 
@@ -871,7 +871,7 @@ impl ViewLedger {
                     ..crate::WorkCounters::UNCHARGED
                 };
                 work.admit(copied).map_err(mount_demand_error)?;
-                work.reserve_pending_items(2).map_err(mount_demand_error)?;
+                work.reserve(crate::materializer::NativeResourceCredit::Items, 2).map_err(mount_demand_error)?;
                 deliveries.entries.push(PendingObserverDelivery {
                     observer: PendingObserverState::Reserved(Weak::clone(&slot.observer)),
                     sync: Arc::clone(original), credits: 2,
@@ -959,7 +959,7 @@ impl ViewLedger {
                         )?;
                         append_join(&mut hub, &observer, &mut join, &mut work, &mut copy_credit)
                     })();
-                    if copy_credit != 0 { work.cancel_reserved_copy(copy_credit); }
+                    if copy_credit != 0 { work.refund(crate::materializer::NativeResourceCredit::Copy, copy_credit).expect("original reservation is balanced"); }
                     Some(admitted)
                 }
             };
