@@ -1125,7 +1125,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError>>> {
         let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         crate::NativeFutureBundle::new(work, || async move {
-            Ok(self.publish_original(owner, work, custody).await)
+            Ok(self.publish_original(owner, work, Some(custody)).await)
         })
     }
 }
@@ -1931,6 +1931,7 @@ where
         &self, owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
         custody: Option<acyclic_fs::NativeAllocation>,
     ) -> std::result::Result<NativeViewPublicationReceipt, NativeViewPublicationError> {
+        let mut custody = custody.expect("original publication has its funded custody");
         let mut completed = Vec::new();
         let mut published = Vec::new();
         let mut mappings = Vec::new();
@@ -2523,7 +2524,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let mut native_io = crate::store::history::native_work_io(&self.work)?;
         let mut observer = Some(&mut native_io as &mut dyn crate::store::history::HistoryIo);
         let bounds = match crate::store::operations::bounds_with_work(
-            self.read_client(), &path, &mut observer,
+            &self.read_client(), &path, &mut observer,
         ).await? {
             Ok(bounds) => bounds,
             Err(error) if matches!(crate::distributed::sdk_source(&error), acyclic_stream::StreamError::NotFound) => return Ok(None),
@@ -2535,9 +2536,9 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             None => return Err(boundary(crate::wire::ErrorCode::Storage, "empty materializer journal")),
         };
         self.verify_read_owner().await?;
-        let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
+        let stream = crate::store::operations::stream(&self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
-            self.read_client(), &stream.0, sequence, 1, &mut observer,
+            &self.read_client(), &stream.0, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
         let record = records.next(&mut observer).await?
             .ok_or(boundary(crate::wire::ErrorCode::Storage, "missing materializer journal"))?;

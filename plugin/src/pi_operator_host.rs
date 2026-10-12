@@ -142,7 +142,7 @@ struct PiWritebackResponse<'a> {
     receipt: Option<&'a acyclic_fs::MaterializationJournal>,
 }
 fn status_response<'a>(descriptor: &'a PiPreparedApproval, status: &'static str,
-    native: Option<&'a acyclic_fs::OwnedMaterializationJournal>) -> PiWritebackResponse<'a> {
+    native: Option<&'a acyclic_fs::MaterializationJournal>) -> PiWritebackResponse<'a> {
     PiWritebackResponse { status, operation: &descriptor.command.sdk_operation,
         source: descriptor.command.source, root: &descriptor.command.root, paths: &descriptor.command.paths,
         approval_digest: &descriptor.approval_digest,
@@ -182,7 +182,7 @@ struct PiInspectionResponse<'a> {
 
 async fn observe_writeback(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources, protected: &PiOwnerConfig, descriptor: &PiPreparedApproval,
-    work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::OwnedMaterializationJournal>)> {
+    work: &NativeMaterializationWork) -> Result<(&'static str, Option<acyclic_fs::MaterializationJournal>)> {
     let journal = conversation_journal(filesystem, stream, protected, descriptor, work)?;
     let (outcome, _outcome_custody) = journal.interaction_outcome_with_native_work(
         acyclic_harness::durable_host::task_interaction_id_with_native_work(protected.policy().root_task, descriptor.operation, work)?, work)?.await?;

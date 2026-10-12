@@ -570,6 +570,7 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
+            expected_root_identity: Some(physical.source_root_identity),
             maximum_directory_entries: 4_096,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,

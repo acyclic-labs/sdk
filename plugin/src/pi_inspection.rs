@@ -342,7 +342,7 @@ pub(crate) struct PiPreparedWriteback<'a> {
     pub(crate) generations: &'a PiWritebackGenerations<'a>,
     options: &'a acyclic_fs::MaterializeOptions,
     excluded_names: &'a [&'a str],
-    pub(crate) journal: acyclic_fs::OwnedMaterializationJournal,
+    pub(crate) journal: acyclic_fs::MaterializationJournal,
     pub(crate) approval_digest: String,
     pub(crate) canonical_digest_input: String,
     _codec_custody: acyclic_fs::NativeAllocation,
@@ -412,7 +412,7 @@ pub(crate) async fn publish_writeback(
     state: &acyclic_fs::LocalCoreStateStore, confirmed_digest: &str, confirmed_by_user: bool,
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<acyclic_fs::OwnedMaterializationJournal> {
+) -> Result<acyclic_fs::MaterializationJournal> {
     let root = prepared.root;
     let generations = prepared.generations;
     let operation = acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes());
@@ -432,7 +432,7 @@ pub(crate) async fn publish_writeback(
     let work = native_work.clone();
     let guard_work = work.clone();
     let guard_cause = std::sync::Mutex::new(None);
-    let receipt = acyclic_fs::publish_native_generation_transition_with_work_guarded(from, candidate, state,
+    let receipt = acyclic_fs::publish_native_generation_transition(from, candidate, state,
         acyclic_fs::NativeWorkspacePublication {
             root: &root.path, source_root_identity: root.identity, operation_directory: &root.operation_directory,
             operation_id: operation, from: from.id(), to: candidate.id(),

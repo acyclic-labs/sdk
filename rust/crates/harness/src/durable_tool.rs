@@ -240,7 +240,15 @@ impl ResumableTool {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let state = self.machine.initialize(&invocation.arguments)?;
         let initial = MachineCheckpoint {
-            machine: crate::workflow::workflow_copy_identity(identity, io)?,
+            machine: crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let machine = crate::workflow::MachineIdentity {
+                    name: crate::core::copy_text(&identity.name, &mut quota)?,
+                    version: crate::core::copy_text(&identity.version, &mut quota)?, digest: identity.digest,
+                };
+                quota.transfer();
+                Ok(machine)
+            })?,
             revision: 0,
             state,
         };

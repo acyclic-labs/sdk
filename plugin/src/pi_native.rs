@@ -1064,8 +1064,12 @@ impl PiNativeRootSeed {
         owner.verify_with_native_work(false, meter).await?;
         let authority_revision = native_digest(&(authority.0.audience(), &authority.1),
             context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES), meter)?;
-        let mut volume_copy = acyclic_harness::filesystem::copy_native_volume_with_work(volume, meter)?;
-        let mut generation_copy = acyclic_harness::filesystem::copy_native_generation_with_work(original_generation, meter)?;
+        let mut volume_io = acyclic_harness::store::history::native_work_io(meter).map_err(native_error)?;
+        let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
+        let mut volume_copy = (volume_copy, volume_io.into_custody());
+        let reference = original_generation.as_resource();
+        let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
+            reference.provider(), reference.key(), reference.version(), meter)?;
         let namespace = NativeVolumeNamespace::LazyMount { snapshot };
         let declaration = BorrowedNativeVolumeBinding { host: filesystem.as_ref(), volume,
             generation: original_generation, namespace: &namespace, path: &route.0, writable,
@@ -1331,7 +1335,9 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         &resources.private_state_root, [relative(&options.root, &resources.data)?, relative(&operation_root.0, &resources.data)?,
             relative(&target.0, &resources.data)?, relative(&backup.0, &resources.data)?], meter).map_err(native_error)?;
     let mut service_root = meter.copy_path(service).map_err(native_error)?;
-    let mut scratch = acyclic_harness::filesystem::copy_native_volume_with_work(&binding.scratch.volume, meter)?;
+    let mut scratch_io = acyclic_harness::store::history::native_work_io(meter).map_err(native_error)?;
+    let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
+    let mut scratch = (scratch, scratch_io.into_custody());
     let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;
     let mut custody = meter.claim(std::mem::size_of::<PiNativeRootSeed>() as u64, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
     custody.absorb(&mut service_root.1).map_err(native_error)?;
