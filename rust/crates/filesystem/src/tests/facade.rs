@@ -3858,13 +3858,17 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
           (&second, OwnedBytes::from_static(b"second actual source"))],
         metadata, &original, &cancellation,
     )?;
-    let result = candidate.apply_authored_transaction_with_native_work(
-        input.0, input.1, &original, &cancellation,
+    let result = candidate.apply_authored_transaction_with_accounting(
+        crate::kernel::Owned { value: input.0, bytes: input.1.bytes(), allocation: KernelOwnedAllocation::NativeOriginal(input.1) },
+        &mut KernelAccounting::native(&original, &cancellation), &cancellation,
     ).await?;
-    assert_eq!(result.0.created_file_ids, expected);
-    assert!(result.1.work().shares_ledger(&original));
-    assert_eq!(result.1.bytes(),
-        (result.0.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
+    assert_eq!(result.value.created_file_ids, expected);
+    let KernelOwnedAllocation::NativeOriginal(allocation) = &result.allocation else {
+        return Err("native authored result lost its original custody".into());
+    };
+    assert!(allocation.work().shares_ledger(&original));
+    assert_eq!(allocation.bytes(),
+        (result.value.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
     let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
     for (requested, expected) in [(&first, expected[0]), (&second, expected[1])] {
         let actual = crate::kernel::lookup_path_async_with_accounting(
@@ -3874,7 +3878,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         assert_eq!(Some(actual.file_id), expected);
     }
     let live = original.live_allocation_bytes();
-    let result_bytes = result.1.bytes();
+    let result_bytes = allocation.bytes();
     drop(result);
     assert_eq!(original.live_allocation_bytes(), live - result_bytes);
     assert!(checkout.lookup_no_follow(
