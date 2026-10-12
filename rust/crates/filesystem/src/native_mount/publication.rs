@@ -485,7 +485,7 @@ mod tests {
         let context = crate::Digest::from_bytes([0x63; 32]);
         let (bytes, allocation) = original.copy_bytes(b"original-source-cut")?;
         let evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            bytes, allocation, original.runtime_meter_owner(),
+            bytes, allocation, original.runtime_meter(),
         ).map_err(|failure| format!("{:?}", failure.into_error()))?;
         simulation.schedule_next(
             crate::SimulationOperation::AuthorityAppend, crate::SimulationFault::AmbiguousAuthorityAppend,
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(original.receipt().authority_records_appended, appended);
         let (changed_bytes, changed_allocation) = original.copy_bytes(b"changed-source-cut")?;
         let changed_evidence = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            changed_bytes, changed_allocation, original.runtime_meter_owner(),
+            changed_bytes, changed_allocation, original.runtime_meter(),
         ).map_err(|failure| format!("{:?}", failure.into_error()))?;
         let changed_payload = seal_checkout_with_permit_guarded_with_native_work(
             &mut checkout, operation, PublicationPermit::Unrestricted, true, &original, &cancellation,

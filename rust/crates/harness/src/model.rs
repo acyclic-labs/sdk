@@ -18,23 +18,7 @@ pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
 }
 
 #[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for Model {
-    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
-    fn maximum_slot_bytes() -> u64 {
-        <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-    }
-}
-
-#[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for ModelPrefix {
-    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
-    fn maximum_slot_bytes() -> u64 {
-        <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-    }
-}
-
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for Vec<ModelMessage> {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
@@ -70,15 +54,6 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
     }
 }
 
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
-    fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
-    fn maximum_slot_bytes() -> u64 {
-        <ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes()
-            .max(std::mem::size_of::<Self>() as u64)
-    }
-}
-
 pub(crate) fn vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
@@ -89,7 +64,7 @@ pub(crate) fn vec_with_capacity<T>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             if bytes == 0 { work.remaining()?; return Ok(values); }
-            let mut custody = work.claim(bytes)?;
+            let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::default())?;
             values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
             let completed = custody.reconcile_capacity(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?);
             io.absorb_native_custody(custody)?;
@@ -321,16 +296,6 @@ fn model_history_bounds(
     Ok(crate::contract::JsonBounds { maximum_bytes: maximum, maximum_items, maximum_depth: 256 })
 }
 
-fn model_json_bound<T: Serialize>(
-    value: &T, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    let unobserved = work.is_none();
-    let result = crate::contract::validate_trusted_json_byte_bound(value, maximum, work);
-    if unobserved {
-        result.map_err(|_| model_history_invalid(work, "model tool projection exceeds render limit"))
-    } else { result }
-}
-
 fn model_value_json_bound(
     value: &Value, maximum: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -340,7 +305,7 @@ fn model_value_json_bound(
             crate::contract::JsonValueSchema::None,
             &mut |next| work.as_deref_mut().expect("observed model value").codec_charge(next))?;
     }
-    model_json_bound(value, maximum, work)
+    crate::contract::validate_trusted_json_byte_bound(value, maximum, work)
 }
 
 fn model_tool_result_json_bound(
@@ -369,7 +334,7 @@ fn model_tool_result_json_bound(
             },
         }
     }
-    model_json_bound(content, maximum, work)
+    crate::contract::validate_trusted_json_byte_bound(content, maximum, work)
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&crate::executor::PreparationIo>) -> Result<[u8; 32]> {
@@ -787,11 +752,8 @@ impl NativeConfigurationBinding {
         let linked = linked.ok_or_else(|| {
             Error::Unsupported("original linked extension version is unavailable".into())
         })?;
-        let expected = match io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => crate::executor::with_history_io(Some(io), |work| schemas.implementation_digest(&extension.name, extension.version, work))?,
-            _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
-        };
+        let expected = crate::executor::with_history_io(io, |work|
+            schemas.implementation_digest(&extension.name, extension.version, work))?;
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(
                 "native options implementation binding differs".into(),
@@ -1635,7 +1597,7 @@ impl<'a> NativeModelStream<'a> {
     {
         work.remaining()?;
         let bytes = std::mem::size_of::<S>() as u64;
-        let custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
+        let custody = work.claim(bytes, u64::from(bytes != 0), acyclic_fs::WorkCounters::default())?;
         let stream = Box::pin(build());
         Ok(Self { stream, custody })
     }

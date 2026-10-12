@@ -575,7 +575,7 @@ impl CreationFixture {
             TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
             (&lease.reservation).into(),
         ).await?.with_invocation_cancellation(&invocation.0));
-        Ok((owner.resource_preparation(request.clone()).await?, lease, invocation))
+        Ok((owner.resource_preparation(request.clone(), &mut None).await?, lease, invocation))
     }
 
     pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
@@ -1125,7 +1125,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert!(terminal.1.bytes() > 0);
     drop(terminal);
     assert!(native_work.receipt().backend_read_operations > 0);
-    assert!(original_owner.verify_with_native_work(true,&native_work).await.is_err());
+    assert!(original_owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(&native_work)?)).await.is_err());
     cancellation.cancel();
     let before = native_work.receipt();
     assert!(matches!(original_owner.outcome_with_native_work(&native_work).await,
@@ -1624,7 +1624,7 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
-        let input_custody = work.retain_owned(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?)?;
+        let input_custody = work.claim(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut io = crate::store::history::native_work_io(&work)?;
         let result = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await;
         assert!(result.is_err());

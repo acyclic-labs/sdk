@@ -89,7 +89,6 @@ async fn start(
     let fence = LeaseFence::from(&reservation);
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("admit-{operation_id}"))?,
             SchedulerEvent::Admitted {
                 operation_id,
@@ -99,7 +98,6 @@ async fn start(
         .await?;
     coordinator
         .apply(
-            operation_id,
             IdempotencyKey::new(format!("start-{operation_id}"))?,
             SchedulerEvent::Started {
                 operation_id,
@@ -110,7 +108,6 @@ async fn start(
     if waiting_for_children {
         coordinator
             .apply(
-                operation_id,
                 IdempotencyKey::new(format!("wait-{operation_id}"))?,
                 SchedulerEvent::WaitingForChildren {
                     operation_id,
@@ -233,7 +230,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("corrupt-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -261,7 +257,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("missing-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -288,7 +283,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             assert!(
                 coordinator
                     .apply(
-                        child,
                         IdempotencyKey::new("schema-child")?,
                         SchedulerEvent::Completed {
                             operation_id: child,
@@ -309,7 +303,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         }
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
@@ -347,7 +340,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .revision;
     let forged_result = coordinator
         .apply(
-            parent,
             IdempotencyKey::new("forged-join")?,
             SchedulerEvent::Orchestrated {
                 operation_id: parent,
@@ -466,7 +458,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .await?;
         coordinator
             .apply(
-                child,
                 IdempotencyKey::new(format!("finish-{slot}"))?,
                 SchedulerEvent::Completed {
                     operation_id: child,
@@ -573,7 +564,6 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .await?;
     coordinator
         .apply(
-            child,
             IdempotencyKey::new("finish-reduce-child")?,
             SchedulerEvent::Completed {
                 operation_id: child,

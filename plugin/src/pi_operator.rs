@@ -88,7 +88,7 @@ impl PiOperatorRequest {
         let remaining = work.remaining().map_err(native_error)?;
         let bounds = JsonBounds { maximum_bytes: crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
             maximum_items: remaining.items_examined, maximum_depth: 64 };
-        let mut custody = work.retain_owned(0).map_err(native_error)?;
+        let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         let decoded = json_from_value_bounded_native_trusted(body_value, bounds, 0,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             &mut |charge| operator_decode_charge(charge, work, &mut custody));
@@ -283,7 +283,7 @@ fn decode_prepared_approval(bytes: &[u8], work: &NativeMaterializationWork)
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
     let decoded = json_from_slice_bounded_native_trusted(bytes, bounds, 0,
         acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
         &mut |charge| operator_decode_charge(charge, work, &mut custody));
@@ -309,7 +309,7 @@ fn operator_decode_charge(charge: JsonCodecCharge, work: &NativeMaterializationW
             let input_bytes = items.checked_mul(64).and_then(|scalars| scalars.checked_add(value_shape.input_bytes()))
                 .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
                 .map_err(native_error)?;
-            let mut quota = work.retain_owned(operator_owned_quota(items, input_bytes, scratch)?).map_err(native_error)?;
+            let mut quota = work.claim(operator_owned_quota(items, input_bytes, scratch)?, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
             custody.absorb(&mut quota).map_err(native_error)
         }
         charge => pi_root_provider::native_buffer_codec_charge(work, custody, charge),

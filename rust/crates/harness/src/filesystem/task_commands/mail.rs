@@ -68,7 +68,7 @@ where
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
             let input: MailSendTaskCommand = decode_command(payload, io)?;
             let message = super::super::task_runtime::execution_operation(task, command.operation_id, io)?;
-            self.runtime.task_host().send_owned_with_io(task, fence, input.recipient, message, input.payload, io).await?;
+            self.runtime.task_host().send_mail(task, fence, input.recipient, message, input.payload, io).await?;
             ready(Outcome::Succeeded(Value::Null), io)
         } else {
             let input: MailReceiveTaskCommand = decode_command(payload, io)?;

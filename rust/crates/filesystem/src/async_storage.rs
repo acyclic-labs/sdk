@@ -39,7 +39,7 @@ pub(crate) fn owned_read(
             read.bytes.retained_capacity().and_then(|capacity| u64::try_from(capacity).ok())
                 == Some(logical_bytes)
                 && logical_bytes >= read.bytes.len() as u64
-                && read.bytes.matches_meter(&original.runtime_meter_owner())
+                && read.bytes.matches_meter(&original.runtime_meter())
         }
         crate::storage::ObjectReadRetention::Shared => false,
     };

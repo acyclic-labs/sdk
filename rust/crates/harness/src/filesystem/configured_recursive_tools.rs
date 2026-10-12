@@ -13,7 +13,7 @@ use crate::{
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, TaskAdmissionRecord, TaskContext, ToolContext},
+    runtime::{TaskAdmissionRecord, TaskContext, ToolContext},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
     source_authorization::{ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider},
     tool::ToolInvocation,
@@ -379,8 +379,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let merge = FilesystemProjectMergeVerifier::new_with_native_work(
                 Arc::clone(&self.filesystem), &verifier, scope, work,
             )?.into_native_shared(work)?;
-            return aggregate.with_content_verifier(content).with_fork_verifier(forks)
-                .with_merge_verifier(merge).with_limits(self.limits);
+            let mut aggregate = aggregate.with_content_verifier(content).with_fork_verifier(forks)
+                .with_merge_verifier(merge);
+            aggregate.set_limits(self.limits)?;
+            return Ok(aggregate);
         }
         let content = match content {
             Some(content) => content,
@@ -538,9 +540,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        let pinned = StreamAggregate::open_measured(&self.stream, caller.owner.authority().clone(),
-            verifier(&caller.owner)?, SchemaRegistry::default(), Some(intent.request.parent_revision),
-            self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
+        let authority = caller.owner.authority().clone();
+        let authority_verifier = verifier(&caller.owner)?;
+        let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+        let pinned = async {
+            open_work.preflight()?;
+            StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(intent.request.parent_revision), &mut Some(&mut open_work)).await
+        }.await;
+        let pinned = open_work.finish(pinned).map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
         let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None, None)?;
         let source_read = self.restore_intent_source(context.task(), &intent.request, cancellation).await?;
@@ -697,9 +704,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_measured(&self.stream, binding.owner.authority().clone(),
-                verifier(&binding.owner)?, SchemaRegistry::default(), Some(request.parent_revision),
-                self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
+            let authority = binding.owner.authority().clone();
+            let authority_verifier = verifier(&binding.owner)?;
+            let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+            let opened = async {
+                open_work.preflight()?;
+                StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(request.parent_revision), &mut Some(&mut open_work)).await
+            }.await;
+            aggregate = open_work.finish(opened).map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
         restore_recursive_fork_source(self.filesystem.clone(), &self.stream, reducer, verifier(&binding.owner)?,
@@ -715,7 +727,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let owner = Arc::new(self.runtime(None)?.task_host()
             .journal_owner(task, context.owned_task_fence()?).await?
             .with_invocation_cancellation(cancellation));
-        context.content_residency_verifier(owner)
+        crate::runtime::content_residency_verifier(Arc::new(context.clone()), owner, None)
     }
 
     async fn restore_snapshot(&self, binding: &ConfiguredRecursiveAuthorityBinding, request: &ForkRequest, snapshot: Snapshot,
@@ -801,9 +813,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     reason: "native source binding differs from authenticated current allocation" });
             }
         }
-        owner.require_volume_grant_with_native_work(&caller.private_volume, VolumeOperation::Read, work)?;
+        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if require_project_read {
-            owner.require_volume_grant_with_native_work(&caller.project, VolumeOperation::Read, work)?;
+            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
@@ -974,10 +986,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
-        context.native_task().ok_or(Error::NativeBoundary {
+        let context = context.native_task().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "native recursive source requires its original native task context",
-        })?.content_residency_verifier_with_native_work(owner, work)
+        })?;
+        crate::runtime::content_residency_verifier(Arc::clone(context), owner,
+            Some(&super::PreparationIo::from_native_work(work)?))
     }
 
     async fn native_restore_source(
@@ -1539,7 +1553,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             token.verify_creation_with_native_work(work)?.await?;
         }
         let owner = self.native_source_owner(task_context, cancellation, work).await?;
-        let resolver = context.content_residency_verifier_with_native_work(owner, work)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::clone(context), owner, Some(&super::PreparationIo::from_native_work(work)?))?;
         let preparation = token.request();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         {
@@ -1629,7 +1643,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<RecursiveToolOwner<P, A, O>>> {
-        Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation).await })
+        Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation, None).await })
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn owner_with_native_work<'a>(&'a self, context: &'a ToolContext,
@@ -1637,14 +1651,15 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
-            let owner = runtime.recursive_tool_owner_with_native_work(
-                context, tool, invocation, cancellation, work,
+            let io = super::PreparationIo::from_native_work(work)?;
+            let runtime = self.runtime(Some(&io))?;
+            let owner = runtime.recursive_tool_owner(
+                context, tool, invocation, cancellation, Some(&io),
             ).await?;
             self.authenticate_native_caller(
-                context.task(), owner.0.journal_owner.as_ref(), false, work,
+                context.task(), owner.journal_owner.as_ref(), false, work,
             ).await?;
-            Ok(owner)
+            Ok((owner, io.into_native_custody(0)?))
         })
     }
     fn select<'a>(&'a self, context: &'a ToolContext, arguments: &'a ForkToolArguments, cancellation: &'a CancellationToken)

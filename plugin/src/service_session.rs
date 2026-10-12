@@ -48,7 +48,7 @@ impl SessionController {
                 Ok(Self::from(host))
             }
             PluginTaskBinding::Pi(_) => {
-                let mut custody = work.retain_owned(std::mem::size_of::<PiSession>() as u64)
+                let mut custody = work.claim(std::mem::size_of::<PiSession>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
                     .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
                 let session = PiSession::open(directory, loaded.0.0, loaded.0.1, resources, work).await?;
                 custody.absorb(&mut loaded.1)
@@ -500,7 +500,7 @@ impl PiSession {
                     })
             },
         )?;
-        let mut context_custody = original_native_work.retain_owned(context_bytes)
+        let mut context_custody = original_native_work.claim(context_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut context_roots = Vec::with_capacity(self.roots.len());
         for (key, handle) in &self.roots {
@@ -708,7 +708,7 @@ impl PiSession {
         let work = self.mail_work(caller, owner, query_work).await?;
         let operation = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let message = arguments.get("message").and_then(Value::as_str).ok_or_else(|| RootError::Invalid("Pi mail message must be a string".to_owned()))?;
-        let _envelope_custody = work.retain_owned(message.len() as u64)
+        let _envelope_custody = work.claim(message.len() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let envelope = pi_mail::PiMailEnvelope { kind, message: message.to_owned() };
         if caller == owner.policy().root_task {

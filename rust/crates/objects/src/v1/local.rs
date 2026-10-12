@@ -326,29 +326,13 @@ impl ObjectsProvider for LocalObjects {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::v1::tests::{bucket, get, identity};
     mod collection;
-    fn bucket() -> Option<wire::BucketRef> {
-        Some(wire::BucketRef {
-            name: "customer.inputs".into(),
-        })
-    }
-    fn identity(key: &str) -> Option<wire::MutationIdentity> {
-        Some(wire::MutationIdentity {
-            idempotency_key: key.into(),
-        })
-    }
     fn put(key: &str) -> wire::PutObjectHeader {
         wire::PutObjectHeader {
             bucket: bucket(),
             object_key: key.into(),
             mutation: identity(key),
-            ..Default::default()
-        }
-    }
-    fn get(key: &str) -> wire::GetObjectRequest {
-        wire::GetObjectRequest {
-            bucket: bucket(),
-            object_key: key.into(),
             ..Default::default()
         }
     }

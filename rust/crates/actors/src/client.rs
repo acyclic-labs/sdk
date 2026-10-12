@@ -280,9 +280,6 @@ where
     let Some(cancellation) = cancellation else {
         return operation.await;
     };
-    if cancellation.is_cancelled() {
-        return Err(Error::Cancelled);
-    }
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(Error::Cancelled),

@@ -196,7 +196,7 @@ async fn sealed_summary_preparation(
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));
-    Ok((owner.resource_preparation(request).await?, invocation))
+    Ok((owner.resource_preparation(request, &mut None).await?, invocation))
 }
 
 #[tokio::test]

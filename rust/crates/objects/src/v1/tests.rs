@@ -231,12 +231,12 @@ pub(super) async fn exercise_streaming<'a>(
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "customer.inputs".into(),
     })
 }
-fn identity(key: &str) -> Option<wire::MutationIdentity> {
+pub(super) fn identity(key: &str) -> Option<wire::MutationIdentity> {
     Some(wire::MutationIdentity {
         idempotency_key: key.into(),
     })
@@ -248,7 +248,7 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
         bucket: bucket(),
         object_key: key.into(),
@@ -1358,44 +1358,19 @@ async fn native_transport_get<P: ObjectsProvider>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_input_string(
-    value: &str,
-    meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<(String, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
-    meter.admit_codec(0, value.len() as u64, 0)?;
-    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, value.len())?;
-    let mut string = String::new();
-    string.try_reserve_exact(value.len()).map_err(|error| meter.allocation_failed(error))?;
-    allocation.reconcile_capacity(string.capacity())?;
-    string.push_str(value);
-    if let Err(error) = meter.record_codec(0, value.len() as u64, 0) {
-        return Err(super::NativeObjectsError::from(error).with_wire(string.into_bytes(), allocation));
-    }
-    Ok((string, allocation))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn native_get_input(
     query: wire::GetObjectRequest,
     meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> Result<(wire::GetObjectRequest, acyclic_native_runtime::ReadAllocation), super::NativeObjectsError> {
-    let mut input = (wire::GetObjectRequest { range: query.range, ..Default::default() },
-        acyclic_native_runtime::ReadAllocation::empty(meter));
-    if let Some(bucket) = &query.bucket {
-        let mut name = native_input_string(&bucket.name, meter)?;
-        input.1.absorb(&mut name.1)?;
-        input.0.bucket = Some(wire::BucketRef { name: name.0 });
-    }
-    let mut key = native_input_string(&query.object_key, meter)?;
-    input.1.absorb(&mut key.1)?;
-    input.0.object_key = key.0;
-    let mut if_match = native_input_string(&query.if_match, meter)?;
-    input.1.absorb(&mut if_match.1)?;
-    input.0.if_match = if_match.0;
-    let mut if_none_match = native_input_string(&query.if_none_match, meter)?;
-    input.1.absorb(&mut if_none_match.1)?;
-    input.0.if_none_match = if_none_match.0;
-    Ok(input)
+    let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+    let mut text = |value: &str| super::memory::clone_native_text(value, meter, &mut allocation);
+    let query = wire::GetObjectRequest {
+        bucket: query.bucket.as_ref().map(|bucket| text(&bucket.name)
+            .map(|name| wire::BucketRef { name })).transpose()?,
+        object_key: text(&query.object_key)?, if_match: text(&query.if_match)?,
+        if_none_match: text(&query.if_none_match)?, range: query.range,
+    };
+    Ok((query, allocation))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1406,13 +1381,14 @@ async fn native_transport_put<P: ObjectsProvider>(
     body: acyclic_stream::OwnedBytes,
     meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> Result<super::ObjectsPutReceipt, super::NativeObjectsError> {
-    let mut input = (wire::PutObjectHeader::default(), acyclic_native_runtime::ReadAllocation::empty(&meter));
-    let mut name = native_input_string(&bucket.name, &meter)?;
-    input.1.absorb(&mut name.1)?;
-    input.0.bucket = Some(wire::BucketRef { name: name.0 });
-    let mut key = native_input_string(key, &meter)?;
-    input.1.absorb(&mut key.1)?;
-    input.0.object_key = key.0;
-    let request = super::ObjectsNativeRequest::new((input.0, body), input.1, &meter)?;
+    let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
+    let header = wire::PutObjectHeader {
+        bucket: Some(wire::BucketRef {
+            name: super::memory::clone_native_text(&bucket.name, &meter, &mut allocation)?,
+        }),
+        object_key: super::memory::clone_native_text(key, &meter, &mut allocation)?,
+        ..Default::default()
+    };
+    let request = super::ObjectsNativeRequest::new((header, body), allocation, &meter)?;
     provider.put_native(request, meter)?.await
 }

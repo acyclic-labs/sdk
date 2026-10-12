@@ -473,7 +473,7 @@ where
                 let owner = self.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
                     .into_native_shared(work)?;
                 let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
-                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+                let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64, u64::from((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
                 preparation.native_custody.as_mut().ok_or_else(|| boundary(Some(io), ErrorCode::Unauthorized,
                     "native preparation has no original metadata custody"))?.absorb(&mut header)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
@@ -517,7 +517,7 @@ where
         let _guard = super::default_tools::InvocationCancellation(cancellation.clone());
         let owner = self.runtime.task_host().journal_owner(task, fence.clone()).await?
             .with_invocation_cancellation(&cancellation);
-        let preparation = Arc::new(owner).resource_preparation(request).await?;
+        let preparation = Arc::new(owner).resource_preparation(request, &mut None).await?;
         let fork: crate::fork::ForkRequest = serde_json::from_value(preparation.request().payload.clone())
             .map_err(|cause| Error::Invalid(format!("invalid exact fork request: {cause}")))?;
         let preparer = if let Some(preparer) = &self.fork_preparer {
@@ -946,7 +946,7 @@ where
                     let item = self.committed_mail_input(task, fence, turn, receive, &context, None).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
                     let copy_path = format!("mailbox/{receive}/parcel");
-                    let copy = match context.observe_staged_file_once(copy_operation).await? {
+                    let copy = match context.observe_staged_file_once(copy_operation, None).await? {
                         Some(file) => file,
                         None if reconciliation_only => return Err(boundary(io, ErrorCode::Storage,
                             "started steered model has no retained receiver parcel")),
