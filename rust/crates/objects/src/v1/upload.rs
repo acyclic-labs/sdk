@@ -11,13 +11,12 @@ use std::{
     future::Future,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 
 pub(super) struct State {
-    length: AtomicU64,
-    complete: AtomicBool,
+    completed: Mutex<Option<u64>>,
     closed: AtomicBool,
     failure: Mutex<Option<Error>>,
     waker: AtomicWaker,
@@ -25,10 +24,8 @@ pub(super) struct State {
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
-        if !self.complete.load(Ordering::Acquire) {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
-        Ok(self.length.load(Ordering::Acquire))
+        (*self.completed.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+            .ok_or_else(|| wire::ErrorCode::Unavailable.into())
     }
     fn fail(&self, error: Error) {
         let mut failure = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -60,16 +57,15 @@ pub(super) fn chunks(
         None => None,
     };
     let state = Arc::new(State {
-        length: AtomicU64::new(0),
-        complete: AtomicBool::new(false),
+        completed: Mutex::new(None),
         closed: AtomicBool::new(false),
         failure: Mutex::new(None),
         waker: AtomicWaker::new(),
         _allocation: allocation,
     });
     let chunks = stream::try_unfold(
-        (body, OwnedBytes::new(), SourceState(state.clone()), controls.clone()),
-        |(mut body, mut pending, state, controls)| async move {
+        (body, OwnedBytes::new(), 0_u64, SourceState(state.clone()), controls.clone()),
+        |(mut body, mut pending, mut length, state, controls)| async move {
             if let Some(controls) = &controls {
                 if let Err(failure) = controls.check() {
                     state.0.fail(failure);
@@ -85,15 +81,14 @@ pub(super) fn chunks(
                 }
                 match body.next().await {
                     Some(Ok(bytes)) => {
-                        let size = state.0.length.load(Ordering::Acquire)
-                            .checked_add(bytes.len() as u64)
+                        let size = length.checked_add(bytes.len() as u64)
                             .ok_or(Error::from(wire::ErrorCode::QuotaExceeded));
                         match size.and_then(|size| {
                             request::upload_length(size)?;
                             Ok(size)
                         }) {
                             Ok(size) => {
-                                state.0.length.store(size, Ordering::Release);
+                                length = size;
                                 pending = bytes;
                             }
                             Err(failure) => {
@@ -107,7 +102,7 @@ pub(super) fn chunks(
                         return Err(failure);
                     }
                     None => {
-                        state.0.complete.store(true, Ordering::Release);
+                        *state.0.completed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(length);
                         return Ok(None);
                     }
                 }
@@ -115,7 +110,7 @@ pub(super) fn chunks(
             let size = pending.len().min(65_536);
             let chunk = pending.slice(..size);
             pending = pending.slice(size..);
-            Ok(Some((chunk, (body, pending, state, controls))))
+            Ok(Some((chunk, (body, pending, length, state, controls))))
         },
     );
     let chunks = match &controls {
