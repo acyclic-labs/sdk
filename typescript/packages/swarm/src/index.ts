@@ -131,22 +131,32 @@ export class SwarmClient {
       if (!response.body) throw new TypeError("Swarm event response has no body");
       reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8", { fatal: true });
-      let buffer = "";
+      let fragments: string[] = [];
       let id = "";
       let event = "message";
       let data: string[] = [];
       let size = 0;
       while (true) {
         const chunk = await reader.read();
-        buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
-        let newline: number;
-        while ((newline = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, newline).replace(/\r$/, "");
-          buffer = buffer.slice(newline + 1);
-          size += new TextEncoder().encode(line).byteLength;
+        // An incomplete event after disconnect is replayed by the next subscription.
+        if (chunk.done) { decoder.decode(); return; }
+        let offset = 0;
+        while (offset < chunk.value.byteLength) {
+          const newline = chunk.value.indexOf(10, offset);
+          const end = newline < 0 ? chunk.value.byteLength : newline + 1;
+          const part = chunk.value.subarray(offset, end);
+          size += part.byteLength;
           if (size > this.maximum) throw new RangeError("Swarm event exceeds maximumResponseBytes");
+          fragments.push(decoder.decode(part, { stream: true }));
+          offset = end;
+          if (newline < 0) break;
+          const line = fragments.join("").replace(/\r?\n$/, "");
+          fragments = [];
           if (line === "") {
-            if (data.length) yield { id, event, data: JSON.parse(data.join("\n")) as T };
+            if (data.length) {
+              controller.signal.throwIfAborted();
+              yield { id, event, data: JSON.parse(data.join("\n")) as T };
+            }
             data = []; event = "message"; size = 0;
           } else {
             const colon = line.indexOf(":");
@@ -157,9 +167,6 @@ export class SwarmClient {
             if (field === "id" && !value.includes("\0")) id = value;
           }
         }
-        if (size + new TextEncoder().encode(buffer).byteLength > this.maximum) throw new RangeError("Swarm event exceeds maximumResponseBytes");
-        // An incomplete event after disconnect is replayed by the next subscription.
-        if (chunk.done) return;
       }
     } finally {
       controller.abort();

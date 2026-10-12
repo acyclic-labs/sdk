@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { SwarmClient, SwarmHttpError } from "@acyclic-labs/swarm";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -90,6 +91,25 @@ test("every public Cloud route forwards its method, identity, body and response 
   assert.equal(index, 18);
 });
 
+test("detail preserves Cloud's flattened spend for every role", async t => {
+  const detail = JSON.parse(readFileSync(new URL("./fixtures/detail-role-spend.json", import.meta.url), "utf8"));
+  const { client } = await fixture(t, (request, response) => {
+    assert.equal(request.url, "/v1/swarms/swarm");
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(detail));
+  });
+  const result = await client.detail("swarm");
+  assert.deepEqual(result, detail);
+  const root = result.spend_by_role.root;
+  assert.equal(root.agents, 2);
+  assert.equal(root.inference_usd, 0.25);
+  assert.equal(root.sandbox_usd, 0.5);
+  assert.equal(root.model_calls, 3);
+  assert.equal(root.prompt_tokens, 100);
+  assert.equal(root.cached_tokens, 25);
+  assert.equal(root.completion_tokens, 50);
+  assert.equal("spend" in root, false);
+});
+
 test("SSE parses split UTF-8, CRLF, multiline data and heartbeat, with exact replay cursors", async t => {
   const cursors = [];
   const event = { seq: 2, type: "log", agent_id: "agent", line: "résumé" };
@@ -125,6 +145,61 @@ test("ending SSE consumption cancels the subscription without reconnecting", asy
   for await (const event of client.watch("swarm")) { assert.equal(event.id, "1"); break; }
   await closed;
   assert.equal(calls, 1);
+});
+
+test("aborting between buffered SSE events prevents later delivery", async () => {
+  const controller = new AbortController();
+  const events = [1, 2].map(seq => ({ seq, type: "log", agent_id: "agent", line: "buffered" }));
+  const body = new TextEncoder().encode(events.map(event => `id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+  const client = new SwarmClient({
+    endpoint: "https://fixture", token: "fixture",
+    fetch: async () => new Response(new ReadableStream({ start(stream) { stream.enqueue(body); stream.close(); } }), { headers: { "content-type": "text/event-stream" } }),
+  });
+  const delivered = [];
+  await assert.rejects(async () => {
+    for await (const event of client.watch("swarm", { signal: controller.signal })) {
+      delivered.push(event.data);
+      controller.abort();
+    }
+  }, error => error.name === "AbortError");
+  assert.deepEqual(delivered, [events[0]]);
+});
+
+for (const ending of ["\n", "\r\n"]) {
+  test(`SSE wire limit counts ${ending === "\n" ? "LF" : "CRLF"} at exact boundaries`, async t => {
+    const frame = `data: {}${ending}${ending}`;
+    const size = Buffer.byteLength(frame);
+    const { client, endpoint } = await fixture(t, (request, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" }).end(frame);
+    }, { maximumResponseBytes: size });
+    const frames = [];
+    for await (const event of client.watch("swarm")) frames.push(event);
+    assert.deepEqual(frames, [{ id: "", event: "message", data: {} }]);
+    const bounded = new SwarmClient({ endpoint, token: "fixture", maximumResponseBytes: size - 1 });
+    await assert.rejects(async () => {
+      for await (const event of bounded.watch("swarm")) assert.fail(`oversize frame delivered: ${JSON.stringify(event)}`);
+    }, RangeError);
+  });
+}
+
+test("fragmented long SSE lines preserve UTF-8 and count wire bytes once", async () => {
+  const event = { seq: 1, type: "log", agent_id: "agent", line: "résumé".repeat(4096) };
+  const bytes = new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
+  const client = new SwarmClient({
+    endpoint: "https://fixture", token: "fixture", maximumResponseBytes: bytes.byteLength,
+    fetch: async () => {
+      let offset = 0;
+      return new Response(new ReadableStream({
+        pull(stream) {
+          if (offset === bytes.byteLength) stream.close();
+          else { stream.enqueue(bytes.subarray(offset, offset + 7)); offset = Math.min(offset + 7, bytes.byteLength); }
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  const frames = [];
+  for await (const frame of client.watch("swarm")) frames.push(frame);
+  assert.deepEqual(frames, [{ id: "", event: "message", data: event }]);
 });
 
 test("failed mutations expose status, error payload and trace without retry", async t => {

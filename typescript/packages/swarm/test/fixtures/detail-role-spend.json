@@ -1,0 +1,14 @@
+{
+  "swarm_id": "swarm",
+  "spend_by_role": {
+    "root": {
+      "agents": 2,
+      "inference_usd": 0.25,
+      "sandbox_usd": 0.5,
+      "model_calls": 3,
+      "prompt_tokens": 100,
+      "cached_tokens": 25,
+      "completion_tokens": 50
+    }
+  }
+}

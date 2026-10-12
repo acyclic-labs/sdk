@@ -104,7 +104,7 @@ export interface SwarmDetail extends SwarmSummary {
   verify?: { command: string; round: number; rounds_left: number } | null;
   verification?: CheckOutcome | null;
   next_round?: string | null;
-  spend_by_role?: Record<string, { agents: number; spend: AgentSpend }>;
+  spend_by_role?: Record<string, { agents: number } & AgentSpend>;
 }
 export interface SwarmPullRequest {
   url: string;

@@ -9,6 +9,6 @@
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "types": "./dist/index.d.ts",
   "files": ["dist", "README.md", "CHANGELOG.md"],
-  "scripts": { "build": "tsc -b", "test": "tsc -b && node --test test/http.test.mjs", "pack:dry": "bun pm pack --dry-run" },
+  "scripts": { "build": "tsc -b", "check:types": "tsc -p tsconfig.type-tests.json", "test": "tsc -b && tsc -p tsconfig.type-tests.json && node --test test/http.test.mjs", "pack:dry": "bun pm pack --dry-run" },
   "devDependencies": { "typescript": "7.0.2" }
 }
