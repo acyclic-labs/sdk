@@ -5448,7 +5448,7 @@ fn capture_changed_windows_metadata(
     projection.source.set_attributes_with_meter(path, metadata, None, projection.work)
         .map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.flush_with_meter(projection.work).map_err(detach_source_error)?;
+    projection.source.flush(projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)
 }
 
@@ -6290,7 +6290,7 @@ fn handle_rename_source(
     verify_source_write_work(projection.source, projection.work)?;
     projection.source.rename_with_meter(source, destination, true, projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.flush_with_meter(projection.work).map_err(detach_source_error)?;
+    projection.source.flush(projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)
 }
 
@@ -6401,7 +6401,7 @@ mod tests {
         AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
         VolumeConfig,
     };
-    use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
+    use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout, boundary};
     use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
     use crate::{
         CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
@@ -6931,7 +6931,7 @@ mod tests {
         source.create_file(&target, FileMetadata::default())?;
         source.write_range(&target, 0, Bytes::from_static(b"linked-data"))?;
         let link = windows_path("link");
-        source.create_symbolic_link(&link, Bytes::from(windows_name("target.txt")), FileMetadata::default())?;
+        boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("target.txt")).into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_driver_source(&source, false)?;
         let runtime = session.test_runtime().expect("actual original SDK runtime");
         let owner = {
@@ -7308,14 +7308,14 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         let target = |name: &str| Bytes::from(windows_name(name));
         let link = windows_path("link");
-        source.create_symbolic_link(&link, target("first.txt"), FileMetadata::default())?;
+        boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(target("first.txt").into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         assert_eq!(
             std::fs::read_link(destination.join("link"))?,
             std::path::Path::new("first.txt")
         );
         source.remove(&link, None)?;
-        source.create_symbolic_link(&link, target("second.txt"), FileMetadata::default())?;
+        boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(target("second.txt").into(), 0), FileMetadata::default(), work))?;
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["link"]);
         assert_eq!(
@@ -7468,15 +7468,11 @@ mod tests {
 
         let source = windows_checkout_source(None).await?;
         let folder = windows_path("folder");
-        source.create_directory(&folder, FileMetadata::default())?;
+        boundary(source.cancellation(), |work| source.create_directory(&folder, FileMetadata::default(), work))?;
         let inner = folder.child(windows_name("inner.txt"));
         source.create_file(&inner, FileMetadata::default())?;
         source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
-        source.create_symbolic_link(
-            &windows_path("folder-link"),
-            Bytes::from(windows_name("folder")),
-            FileMetadata::default(),
-        )?;
+        boundary(source.cancellation(), |work| source.create_symbolic_link(&windows_path("folder-link"), crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("folder")).into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let link = destination.join("folder-link");
         assert!(
@@ -7499,9 +7495,7 @@ mod tests {
         for directory in [false, true] {
             let source = windows_checkout_source(None).await?;
             let name = windows_path("name");
-            source.create_symbolic_link(
-                &name, Bytes::from(windows_name("target.txt")), FileMetadata::default(),
-            )?;
+            boundary(source.cancellation(), |work| source.create_symbolic_link(&name, crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("target.txt")).into(), 0), FileMetadata::default(), work))?;
             let (_root, destination, mut session) = mount_source(&source)?;
             let projected = destination.join("name");
             // No delete sharing: replacement must wait for this handle.
@@ -7512,7 +7506,7 @@ mod tests {
                 .open(&projected)?;
             source.remove(&name, None)?;
             if directory {
-                source.create_directory(&name, FileMetadata::default())?;
+                boundary(source.cancellation(), |work| source.create_directory(&name, FileMetadata::default(), work))?;
                 let inner = name.child(windows_name("inner.txt"));
                 source.create_file(&inner, FileMetadata::default())?;
                 source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
@@ -7539,11 +7533,7 @@ mod tests {
     async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let link = windows_path("link");
-        source.create_symbolic_link(
-            &link,
-            Bytes::from(windows_name("target.txt")),
-            FileMetadata::default(),
-        )?;
+        boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("target.txt")).into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("link");
         assert_eq!(
