@@ -39,7 +39,7 @@ pub struct NativePublicationConfig {
 }
 
 fn verifier(binding: &AuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier();
+    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
     verifier.verify(&binding.scope)?;
     Ok(verifier)
 }
@@ -386,7 +386,7 @@ impl NativeSession {
             Some(agent) => issuer.root_for_agent(agent, label, capabilities),
             None => issuer.root(label, capabilities),
         };
-        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(), SchemaRegistry::default()).await?;
+        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
         let operation = decision_operation(binding.operation_id, approved);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
             id: ticket.id, expected_version: 1,

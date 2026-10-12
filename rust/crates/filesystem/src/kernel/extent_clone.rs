@@ -43,24 +43,7 @@ pub struct ExtentCloneRequest {
 }
 
 /// Clones one logical sparse range without reading or copying content bytes.
-pub fn clone_extent_range<S: crate::ImmediateObjectStore>(
-    store: &S,
-    request: ExtentCloneRequest,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<ExtentCloneReceipt, ExtentCloneFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(clone_extent_range_async(
-        store,
-        request,
-        limits,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously clones a sparse logical range through the canonical planner and destination path-copy machine.
-pub async fn clone_extent_range_async<S: crate::AsyncObjectStore>(
+pub async fn clone_extent_range<S: crate::AsyncObjectStore>(
     store: &S,
     request: ExtentCloneRequest,
     limits: DecodeLimits,

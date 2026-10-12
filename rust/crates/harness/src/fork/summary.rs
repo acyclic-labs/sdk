@@ -79,7 +79,7 @@ impl SummaryForkCapture {
         child_private: &VolumeRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let mut work = super::ForkValidationWork::new(work)?;
+        let mut work = super::CodecQuota::observed(work)?;
         self.selection.validate()?;
         if self
             .payloads

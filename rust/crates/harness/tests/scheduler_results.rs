@@ -156,8 +156,8 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
     let state = host
         .put_content(
             &volume,
@@ -172,14 +172,14 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .await?;
     let verifier = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         1_024,
     )?);
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
         volume.clone(),
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_024,
     )?);
@@ -192,7 +192,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(parent, &owner, &state, Orchestration::Join, None, "array"),
             IdempotencyKey::new("declare-parent")?,
             None,
@@ -206,7 +206,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(
                     child,
                     &owner,
@@ -424,7 +424,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 quorum,
                 &owner,
@@ -444,7 +444,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             .declare_operation(
                 &owner,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 spec(
                     child,
                     &owner,
@@ -536,7 +536,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 reduction,
                 &owner,
@@ -555,7 +555,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .declare_operation(
             &owner,
             &scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             spec(
                 child,
                 &owner,

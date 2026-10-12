@@ -1601,7 +1601,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "internal storage file is not public content"));
                 }
                 let mut work = io.history_io();
-                self.verifier.verify_with_work(&self.scope, &mut Some(&mut work))?;
+                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
                 if !io.contains_capability(self.scope.capabilities(), reference, "file:read:")? {
                     return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "exact file read is not granted"));
@@ -2548,7 +2548,7 @@ mod tests {
                 stream.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &crate::core::SchemaRegistry::new(),
                 &scope,
                 4096,
@@ -2690,21 +2690,21 @@ mod tests {
         );
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             4096,
         )?);
         let publisher = super::super::FilesystemContentPublisher::new(
             host.clone(),
             volume.clone(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             4096,
         )?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?
@@ -2876,7 +2876,7 @@ mod tests {
                 client.clone(),
                 host.clone(),
                 &volume,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &SchemaRegistry::new(),
                 &scope,
                 4096,

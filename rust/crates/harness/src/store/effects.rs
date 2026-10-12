@@ -86,7 +86,7 @@ fn decode_location_with_work(
 }
 
 fn path(authority: &Authority, effect: EffectId) -> Result<StreamPath> {
-    let canonical = authority.stream_path()?;
+    let canonical = authority.stream_path(&mut None)?;
     let suffix = canonical
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("effect index authority path is invalid".into()))?;
@@ -112,7 +112,7 @@ fn canonical_path_with_work(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     if work.is_none() {
-        return Ok((StreamPath::new(authority.stream_path()?)?, 0));
+        return Ok((StreamPath::new(authority.stream_path(&mut None)?)?, 0));
     }
     operations::publication_path_with_work(authority, "harness/v2/", None, work)
 }
@@ -201,7 +201,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    let verifier = reducer.event_verifier_with_work(work)?;
+    let verifier = reducer.event_verifier(work)?;
     let result = async {
         let Some(effect_id) = crate::core::event_effect_id(&event.payload) else {
             return effect_heads::publication_with_work(
@@ -293,7 +293,7 @@ pub async fn effect_events<P: StreamProvider>(
     limits: HistoryReadLimits,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(Vec<Event>, u64)> {
-    verifier.verify_audience_with_work(&cursor.authority, work)?;
+    verifier.verify_audience(&cursor.authority, work)?;
     if limits.maximum_events == 0
         || limits.maximum_bytes == 0
         || cursor.after_revision > cursor.through_revision
@@ -661,7 +661,7 @@ mod native_effect_paid_point_tests {
     async fn original_effect_point_returns_actual_decoder_and_vector_paid_claim() -> Result<()> {
         let authority = Authority { kind: AggregateKind::Agent, id: "paid-effect-point".into() };
         let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
-        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let volume = VolumeRef::new(
             ProviderRef::new("test", "filesystem", "2")?, "effect-volume",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -711,7 +711,7 @@ mod native_effect_paid_point_tests {
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
         let (events, paid) = read(
-            &client, &issuer.verifier(), &cursor, effect,
+            &client, &issuer.verifier(&mut None).expect("verifier copy"), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),
         ).await?;

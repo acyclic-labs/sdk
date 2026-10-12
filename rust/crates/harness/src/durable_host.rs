@@ -716,10 +716,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         quota.adopt(retained)?;
         match io {
-            Some(io) => schemas.verify_configuration_binding_with_io(
-                &binding.configuration, expected, &bytes, self.input_limits, io),
+            Some(io) => schemas.verify_configuration_binding(
+                &binding.configuration, expected, &bytes, self.input_limits, Some(io)),
             None => schemas.verify_configuration_binding(
-                &binding.configuration, expected, &bytes, self.input_limits),
+                &binding.configuration, expected, &bytes, self.input_limits, None),
         }
     }
 
@@ -1647,7 +1647,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap creator requires an original root admission" });
         }
-        verifier.verify_audience_with_native_work(&self.host.owner, work)?;
+        verifier.verify_audience(&self.host.owner, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         verifier.verify_with_native_work(&self.host.owner_scope, work)?;
         self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
     }
@@ -2851,8 +2851,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh().await?;
-        self.verifier.verify_audience(&self.owner)?;
-        self.verifier.verify(&self.owner_scope)?;
+        self.verifier.verify_audience(&self.owner, &mut None)?;
+        self.verifier.verify(&self.owner_scope, &mut None)?;
         if !self
             .owner_scope
             .capabilities()
@@ -3475,8 +3475,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 Some(io) => io.clone_authority(&self.owner)?,
                 None => self.owner.clone(),
             },
-            scope: self.owner_scope.clone_with_work(work)?,
-            verifier: self.verifier.clone_with_work(work)?,
+            scope: self.owner_scope.copy(work)?,
+            verifier: self.verifier.copy(work)?,
             operation, fence, clock: Arc::clone(&self.clock), deadline_epoch_ms,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_custody: None,
@@ -3815,9 +3815,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "owner authority differs from the configured verifier"));
             }
         } else {
-            verifier.verify_audience(&owner)?;
+            verifier.verify_audience(&owner, &mut None)?;
         }
-        verifier.verify_with_work(&owner_scope, &mut work)?;
+        verifier.verify(&owner_scope, &mut work)?;
         for capability in [
             capability::OPERATION_DECLARE,
             capability::OPERATION_OBSERVE,
@@ -4176,7 +4176,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "parent scope lacks the exact descendant grant"));
             }
         }
-        if let Some(extensions) = scope.extensions() { extensions.validate_with_work(work)?; }
+        if let Some(extensions) = scope.extensions() { extensions.validate(work)?; }
         if scope.extensions() != self.root_scope.extensions() {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Conflict,
                 "task extensions differ from owner bindings"));
@@ -4844,7 +4844,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         if let Some(extensions) = &admission.extensions {
-            extensions.validate_with_work(work)?;
+            extensions.validate(work)?;
         }
         if admission.extensions.as_ref() != self.root_scope.extensions() {
             return Err(admission_boundary(
@@ -6226,7 +6226,7 @@ pub(crate) mod tests {
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&fixture.stream, fixture.host.payloads.clone()).await?,
             fixture.stream.clone(), fixture.host.payloads.clone(), fixture.host.reader.clone(),
-            foreign, signed, issuer.verifier(), fixture.root_scope.clone(),
+            foreign, signed, issuer.verifier(&mut None).expect("verifier copy"), fixture.root_scope.clone(),
             fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(),
         )?;
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -6306,7 +6306,7 @@ pub(crate) mod tests {
             payloads.clone(),
             authority,
             signed,
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             runtime_scope.clone(),
             tasks,
             machines,
@@ -6606,9 +6606,9 @@ pub(crate) mod tests {
                 let key = IdempotencyKey::new(format!("discovery-{index}-{step}"))?;
                 if let SchedulerEvent::Declared { spec } = event {
                     let (authority, signed, verifier) = if index % 2 == 0 {
-                        (&foreign, &foreign_scope, foreign_issuer.verifier())
+                        (&foreign, &foreign_scope, foreign_issuer.verifier(&mut None).expect("verifier copy"))
                     } else {
-                        (&owner, &scope, issuer.verifier())
+                        (&owner, &scope, issuer.verifier(&mut None).expect("verifier copy"))
                     };
                     coordinator
                         .declare_operation(authority, signed, &verifier, *spec, key, None)
@@ -6636,7 +6636,7 @@ pub(crate) mod tests {
             payloads,
             owner,
             scope.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             RuntimeScope::new(scope.capabilities().clone(), Limits::default())?,
             TaskRegistry::default(),
             MachineRegistry::default(),
@@ -6811,7 +6811,7 @@ pub(crate) mod tests {
             reader,
             authority,
             signed,
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             runtime_scope.clone(),
             tasks,
             machines,
@@ -7298,7 +7298,7 @@ pub(crate) mod tests {
         let aggregate = crate::store::StreamAggregate::open(
             &stream,
             conversation,
-            conversation_issuer.verifier(),
+            conversation_issuer.verifier(&mut None).expect("verifier copy"),
             SchemaRegistry::new(),
         )
         .await?;
@@ -7399,10 +7399,10 @@ pub(crate) mod tests {
             agent, "native-owned-content", Capabilities::new(volume_grants.clone()),
         );
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(), volume.clone(), &issuer.verifier(), &content_scope, 65_536,
+            filesystem.clone(), volume.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), issuer.verifier(), content_scope.clone(), 65_536,
+            filesystem.clone(), issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?);
         let (host, owner, runtime_scope) = effect_task_fixture_with_storage(
             stream.clone(), "test.native-release", volume_grants,
@@ -7414,11 +7414,11 @@ pub(crate) mod tests {
         let attempt = OperationId::from_bytes([54; 16]);
         let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
             owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(), content_scope.clone(), 65_536,
+            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?);
         let journal = FilesystemExecutionJournal::for_task(
             owner.clone(), attempt, attempt, filesystem.clone(), volume.clone(),
-            issuer.verifier(), content_scope.clone(), 65_536,
+            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?;
         let units = 100_000;
         let bytes = 100_000_000;
@@ -7567,7 +7567,7 @@ pub(crate) mod tests {
         assert_ne!(replacement_owner.task_binding().1, &fence);
         let replacement_workflow = FilesystemWorkflowJournal::for_task(
             replacement_owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(), content_scope.clone(), 65_536,
+            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?;
         let denied_prefix = work.receipt();
         assert!(matches!(
@@ -7578,7 +7578,7 @@ pub(crate) mod tests {
         let replacement_journal = FilesystemExecutionJournal::for_task(
             replacement_owner.clone(), OperationId::from_bytes([55; 16]),
             OperationId::from_bytes([55; 16]),
-            filesystem.clone(), volume.clone(), issuer.verifier(), content_scope.clone(), 65_536,
+            filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?;
         let other_volume = VolumeRef::new(
             filesystem_provider, "other-native-owned", VolumeClass::AgentPrivate,
@@ -7591,7 +7591,7 @@ pub(crate) mod tests {
         ]));
         let other_volume_workflow = FilesystemWorkflowJournal::for_task(
             replacement_owner, filesystem.clone(), other_volume,
-            issuer.verifier(), other_scope, 65_536,
+            issuer.verifier(&mut None).expect("verifier copy"), other_scope, 65_536,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
@@ -7603,7 +7603,7 @@ pub(crate) mod tests {
         });
         assert!(matches!(
             FilesystemWorkflowJournal::for_task(
-                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(),
+                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(), 65_536,
             ),
             Err(Error::Unauthorized(_))
@@ -7629,7 +7629,7 @@ pub(crate) mod tests {
             crate::scheduler::LeaseFence::from(&other_lease.reservation),
         ).await?;
         let other_workflow = FilesystemWorkflowJournal::for_task(
-            other_owner, filesystem, volume, issuer.verifier(), content_scope, 65_536,
+            other_owner, filesystem, volume, issuer.verifier(&mut None).expect("verifier copy"), content_scope, 65_536,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
@@ -7708,7 +7708,7 @@ pub(crate) mod tests {
             payloads.clone(),
             owner.clone(),
             owner_scope.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             tasks,
             machines,
@@ -7742,7 +7742,7 @@ pub(crate) mod tests {
                 .configure_session(
                     &owner,
                     &owner_scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation_id,
                     crate::scheduler::SessionLimits {
                         active_tasks: 1,
@@ -7810,7 +7810,7 @@ pub(crate) mod tests {
             let original_owner = host.journal_owner(task_id, fence.clone()).await?;
             assert!(
                 original_owner
-                    .validate_storage(&issuer.verifier(), scope.limits().file_bytes + 1, &mut None)
+                    .validate_storage(&issuer.verifier(&mut None).expect("verifier copy"), scope.limits().file_bytes + 1, &mut None)
                     .is_err()
             );
             let foreign = AuthorityIssuer::new(
@@ -7823,7 +7823,7 @@ pub(crate) mod tests {
             );
             assert!(
                 original_owner
-                    .validate_storage(&foreign.verifier(), 65_536, &mut None)
+                    .validate_storage(&foreign.verifier(&mut None).expect("verifier copy"), 65_536, &mut None)
                     .is_err()
             );
             let binding = host.journal_owner(task_id, fence.clone()).await?;
@@ -7832,7 +7832,7 @@ pub(crate) mod tests {
                 binding,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?);
@@ -7932,7 +7932,7 @@ pub(crate) mod tests {
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8085,7 +8085,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(), crate::core::SchemaRegistry::new(),
+                issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8116,7 +8116,7 @@ pub(crate) mod tests {
                 uncharged,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8179,7 +8179,7 @@ pub(crate) mod tests {
             let mut aggregate = crate::store::StreamAggregate::open(
                 &stream,
                 conversation.clone(),
-                conversation_issuer.verifier(),
+                conversation_issuer.verifier(&mut None).expect("verifier copy"),
                 crate::core::SchemaRegistry::new(),
             )
             .await?;
@@ -8201,12 +8201,12 @@ pub(crate) mod tests {
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?
             .with_interaction_owner(
-                conversation_issuer.verifier(),
+                conversation_issuer.verifier(&mut None).expect("verifier copy"),
                 crate::core::SchemaRegistry::new(),
                 conversation_scope,
                 volume.clone(),
@@ -8215,7 +8215,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(), crate::core::SchemaRegistry::new(),
+                issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8231,7 +8231,7 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     unbound.with_interaction_owner(
-                        conversation_issuer.verifier(),
+                        conversation_issuer.verifier(&mut None).expect("verifier copy"),
                         crate::core::SchemaRegistry::new(),
                         response_scope,
                         volume.clone(),
@@ -8245,7 +8245,7 @@ pub(crate) mod tests {
             journal.open_interaction(id, request.clone()).await?;
             journal.open_interaction(id, request.clone()).await?;
             assert_eq!(journal.interaction_outcome(id).await?, None);
-            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path()?)?.tail().await?, 2);
+            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path(&mut None)?)?.tail().await?, 2);
             assert!(matches!(
                 journal
                     .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
@@ -8254,7 +8254,7 @@ pub(crate) mod tests {
             ));
             let pending = original_owner
                 .prepare_append_with_work(
-                    &acyclic_stream::StreamPath::new(conversation.stream_path()?)?,
+                    &acyclic_stream::StreamPath::new(conversation.stream_path(&mut None)?)?,
                     2,
                     &StreamKey::new(OwnedBytes::from_static(b"approval-before-replacement"))?,
                     &OwnedBytes::from_static(b"must not publish"),
@@ -8341,7 +8341,7 @@ pub(crate) mod tests {
             let pending = binding
                 .prepare_append_with_work(
                     &acyclic_stream::StreamPath::new(
-                        conversation_issuer.verifier().audience().stream_path()?,
+                        conversation_issuer.verifier(&mut None).expect("verifier copy").audience().stream_path(&mut None)?,
                     )?,
                     2,
                     &StreamKey::new(OwnedBytes::from_static(b"approval-before-cancellation"))?,
@@ -8356,12 +8356,12 @@ pub(crate) mod tests {
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?
             .with_interaction_owner(
-                conversation_issuer.verifier(),
+                conversation_issuer.verifier(&mut None).expect("verifier copy"),
                 crate::core::SchemaRegistry::new(),
                 conversation_scope,
                 volume.clone(),
@@ -8371,7 +8371,7 @@ pub(crate) mod tests {
                 .await?;
             assert_eq!(journal.interaction_outcome(approval_id).await?, None);
             assert_eq!(
-                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier(&mut None).expect("verifier copy").audience().stream_path(&mut None)?)?
                     .tail()
                     .await?,
                 2
@@ -8432,7 +8432,7 @@ pub(crate) mod tests {
                 binding,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8490,7 +8490,7 @@ pub(crate) mod tests {
             .cancel_operation(
                 &owner,
                 &owner_scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 IdempotencyKey::new("model-cancel")?,
                 false,
@@ -8553,7 +8553,7 @@ pub(crate) mod tests {
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8639,7 +8639,7 @@ pub(crate) mod tests {
                 attempt,
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8753,7 +8753,7 @@ pub(crate) mod tests {
                 None
             );
             assert_eq!(
-                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier(&mut None).expect("verifier copy").audience().stream_path(&mut None)?)?
                     .tail()
                     .await?,
                 2
@@ -8815,7 +8815,7 @@ pub(crate) mod tests {
                 payloads.clone(),
                 owner.clone(),
                 owner_scope.clone(),
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 runtime_scope.clone(),
                 tasks.clone(),
                 machines.clone(),
@@ -8890,7 +8890,7 @@ pub(crate) mod tests {
                 payloads.clone(),
                 owner.clone(),
                 renewed,
-                issuer.verifier(),
+                issuer.verifier(&mut None).expect("verifier copy"),
                 runtime_scope.clone(),
                 tasks.clone(),
                 machines.clone(),
@@ -8941,7 +8941,7 @@ pub(crate) mod tests {
                 payloads.clone(),
                 owner.clone(),
                 impostor.root("renewed-owner", owner_scope.capabilities().clone()),
-                impostor.verifier(),
+                impostor.verifier(&mut None).expect("verifier copy"),
                 runtime_scope.clone(),
                 tasks.clone(),
                 machines.clone(),
@@ -8967,7 +8967,7 @@ pub(crate) mod tests {
                 .cancel_operation(
                     &owner,
                     &reopened.owner_scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     operation_id,
                     IdempotencyKey::new("renewal-parent-cancel")?,
                     false,
@@ -9037,7 +9037,7 @@ pub(crate) mod tests {
             payloads.clone(),
             owner.clone(),
             owner_scope.clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             runtime_scope.clone(),
             tasks.clone(),
             machines.clone(),
@@ -9089,7 +9089,7 @@ pub(crate) mod tests {
             .declare_operation(
                 &owner,
                 &owner_scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 unrelated,
                 IdempotencyKey::new("unrelated-metadata-observation")?,
                 None,
@@ -9198,7 +9198,7 @@ pub(crate) mod tests {
             payloads.clone(),
             owner,
             owner_scope,
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             runtime_scope.clone(),
             tasks,
             machines,

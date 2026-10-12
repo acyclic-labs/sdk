@@ -223,22 +223,7 @@ pub struct AttributeMutationReceipt {
 pub type AttributeMutationFailure = OperationFailure<AttributeMutationError>;
 
 /// Applies one bounded ordered attribute mutation batch.
-pub fn apply_attribute_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<AttributeMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeMutationReceipt, AttributeMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_attribute_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies the same iterative attribute path-copy machine.
-pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
+pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<AttributeMutation>,
