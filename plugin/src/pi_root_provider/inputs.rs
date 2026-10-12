@@ -6,7 +6,7 @@ fn pi_input_write_grant_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority(work)?;
-    let mut io = acyclic_harness::store::native_work_io(work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let grant = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -15,7 +15,7 @@ fn pi_input_write_grant_with_native_work(
         owner.policy().maximum_payload_bytes,
         &mut Some(&mut io),
     )?;
-    Ok((grant, io.into_custody()))
+    Ok((grant, io.into_custody()?))
 }
 
 fn validate_pi_input_media(

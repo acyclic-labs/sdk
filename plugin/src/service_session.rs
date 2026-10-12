@@ -669,10 +669,9 @@ impl PiSession {
                     })?;
                 let workspace_name = {
                     let mut io =
-                        acyclic_harness::store::history::native_work_io(original_native_work)
-                            .map_err(acyclic_harness::Error::from)?;
+                        acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(original_native_work)?);
                     let value = volume.storage_name(&mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 let workspace = self
                     .resources
@@ -1191,9 +1190,9 @@ impl PiSession {
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
-        let mut lease_io = acyclic_harness::store::native_work_io(&work)?;
+        let mut lease_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?);
         let reservation = host.recover_work(caller, &mut Some(&mut lease_io)).await?;
-        let _reservation_custody = lease_io.into_custody();
+        let _reservation_custody = lease_io.into_custody()?;
         let lease = match reservation {
             acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
             acyclic_harness::distributed::WorkPull::Unresolved { .. } => {

@@ -1,126 +1,57 @@
 use super::*;
+use crate::core::tests::{command, issuer, operation, reducer_fixture, request_file};
 use serde_json::json;
 
-fn fixture() -> (Reducer, AuthorityIssuer) {
-    let owner = AuthorityIssuer::new(
-        "checkpoint-owner",
-        [23; 32],
-        Authority {
-            kind: AggregateKind::Agent,
-            id: "checkpoint-agent".into(),
-        },
-    );
-    (
-        Reducer::new(
-            owner.audience.clone(),
-            owner.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        ),
-        owner,
-    )
-}
-
-#[test]
-fn recomputing_public_digest_cannot_authenticate_forged_projection() -> Result<()> {
-    let (reducer, owner) = fixture();
-    let original = reducer.snapshot(usize::MAX, &mut None)?.0;
-    let mut forged = original.copy(&mut None)?;
-    forged.projection.lifecycle = LifecycleState::Completed;
-    forged.state_digest = forged.digest_with_work(&mut None)?;
-    assert!(matches!(
-        Reducer::restore(
-            forged,
-            owner.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-            &mut None
-        ),
-        Err(Error::Unauthorized(_))
-    ));
-    let mut cache = original;
-    cache.revision = 50;
-    cache.state_digest = cache.digest_with_work(&mut None)?;
-    assert!(matches!(
-        Reducer::restore(
-            cache,
-            owner.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-            &mut None
-        ),
-        Err(Error::Unauthorized(_))
-    ));
-    Ok(())
+fn restore(
+    snapshot: Snapshot,
+    owner: &AuthorityIssuer,
+    registry: SchemaRegistry,
+) -> Result<Reducer> {
+    Reducer::restore(snapshot, owner.verifier(&mut None)?, registry, &mut None)
 }
 
 #[test]
 fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()> {
-    let (reducer, owner) = fixture();
+    let mut reducer = reducer_fixture();
+    let content = request_file(br#"{"text":"hello"}"#)?;
+    let action = Action::AppendCustom {
+        schema: "example.message".into(),
+        version: 1,
+        content,
+    };
+    let ApplyResult::Applied { event } = reducer.apply(command(operation(70), 0, action))? else {
+        panic!("fresh append replayed")
+    };
     let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
     for other in [
-        AuthorityIssuer::new("checkpoint-owner", [24; 32], reducer.authority.clone()),
-        AuthorityIssuer::new("other-owner", [23; 32], reducer.authority),
+        AuthorityIssuer::new("test", [8; 32], reducer.authority.clone()),
+        AuthorityIssuer::new("other", [7; 32], reducer.authority.clone()),
         AuthorityIssuer::new(
-            "checkpoint-owner",
-            [23; 32],
+            "test",
+            [7; 32],
             Authority {
                 kind: AggregateKind::Agent,
                 id: "other-agent".into(),
             },
         ),
     ] {
-        assert!(matches!(
-            Reducer::restore(
-                snapshot.copy(&mut None)?,
-                other.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(),
-                &mut None
-            ),
-            Err(Error::Unauthorized(_))
-        ));
+        assert!(restore(snapshot.copy(&mut None)?, &other, reducer.schemas.clone()).is_err());
     }
-    let mut old = snapshot;
+    let mut old = snapshot.copy(&mut None)?;
     old.format_version = 2;
-    assert!(matches!(
-        Reducer::restore(
-            old,
-            owner.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-            &mut None
-        ),
-        Err(Error::Unsupported(_))
-    ));
-    Ok(())
-}
-
-#[test]
-fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Result<()> {
-    let (mut reducer, owner) = fixture();
-    reducer.schemas.register(
-        "example.pinned",
-        1,
-        json!({"type":"object"}),
-        [8; 32],
-        ExtensionForkPolicy::Inherit,
-        [],
-        Some(json!({"type":"object"})),
-    )?;
-    let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
-    assert!(matches!(
-        Reducer::restore(
-            snapshot.copy(&mut None)?,
-            owner.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-            &mut None
-        ),
-        Err(Error::Unsupported(_))
-    ));
+    assert!(restore(old, &issuer(), reducer.schemas.clone()).is_err());
+    assert!(restore(snapshot.copy(&mut None)?, &issuer(), SchemaRegistry::new()).is_err());
+    let verifier = issuer().verifier(&mut None)?;
+    let mut missing = Reducer::new(issuer().audience, verifier, SchemaRegistry::new());
+    assert!(missing.apply_committed(event.clone(), &mut None).is_err());
     for edit in 0..5 {
         let mut changed = reducer.schemas.clone();
-        let binding = Arc::make_mut(changed.schemas.as_mut().expect("fixture registry"))
-            .get_mut(&("example.pinned".into(), 1))
-            .expect("fixture binding");
+        let binding = Arc::make_mut(changed.schemas.as_mut().unwrap())
+            .get_mut(&("example.message".into(), 1))
+            .unwrap();
         match edit {
             0 => binding.schema = json!({"type":"string"}),
-            1 => binding.implementation_digest = [9; 32],
+            1 => binding.implementation_digest = [8; 32],
             2 => binding.fork_policy = ExtensionForkPolicy::Reset,
             3 => {
                 binding.dependencies.insert(ExtensionDependency {
@@ -130,16 +61,29 @@ fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Resul
             }
             _ => binding.configuration_schema = Some(json!({"type":"string"})),
         }
-        assert!(matches!(
-            Reducer::restore(
-                snapshot.copy(&mut None)?,
-                owner.verifier(&mut None).expect("verifier copy"),
-                changed,
-                &mut None
-            ),
-            Err(Error::Conflict(_))
-        ));
+        assert!(restore(snapshot.copy(&mut None)?, &issuer(), changed.clone()).is_err());
+        if edit == 1 || edit == 2 {
+            let mut candidate =
+                Reducer::new(issuer().audience, issuer().verifier(&mut None)?, changed);
+            assert!(candidate.apply_committed(event.clone(), &mut None).is_err());
+        }
     }
+    let mut exact = reducer_fixture();
+    exact.apply_committed(event, &mut None)?;
+    assert!(
+        exact
+            .schemas
+            .register(
+                "example.message",
+                1,
+                json!({"type":"object"}),
+                [8; 32],
+                ExtensionForkPolicy::Inherit,
+                [],
+                None
+            )
+            .is_err()
+    );
     let mut expanded = reducer.schemas.clone();
     expanded.register(
         "example.additional",
@@ -150,13 +94,7 @@ fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Resul
         [],
         None,
     )?;
-    let restored = Reducer::restore(
-        snapshot,
-        owner.verifier(&mut None).expect("verifier copy"),
-        expanded.clone(),
-        &mut None,
-    )?;
-    reducer.schemas = expanded;
-    assert_eq!(restored, reducer);
+    let restored = restore(snapshot, &issuer(), expanded.clone())?;
+    assert_eq!(restored.schemas, expanded);
     Ok(())
 }

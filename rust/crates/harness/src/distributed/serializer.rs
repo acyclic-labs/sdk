@@ -6,7 +6,7 @@ pub(super) fn validate_idempotency_key(
     work: &Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     if value.is_empty() || value.chars().any(char::is_control) {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             work,
             wire::ErrorCode::Invalid,
             "idempotency key is invalid",
@@ -189,7 +189,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
                         )
                     }
                     .ok_or_else(|| {
-                        coordinator_boundary(
+                        guarded_boundary(
                             &Some(&mut *observer),
                             wire::ErrorCode::Invalid,
                             "JSON ownership admission overflows",
@@ -221,7 +221,7 @@ pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
         .check_cancellation()?;
     let retained = owned(&value)?;
     let slack = reservation.checked_sub(retained).ok_or_else(|| {
-        coordinator_boundary(custody.work(), code, "JSON decoder exceeds its admission")
+        guarded_boundary(custody.work(), code, "JSON decoder exceeds its admission")
     })?;
     custody.relinquish(slack)?;
     custody.transfer();
@@ -240,7 +240,7 @@ pub(super) fn inspect_envelope<'a>(
             io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let (tag, kind) = decode_key(&mut input).map_err(|_| {
-            coordinator_boundary(
+            guarded_boundary(
                 work,
                 wire::ErrorCode::Storage,
                 "invalid scheduler protobuf field",
@@ -248,7 +248,7 @@ pub(super) fn inspect_envelope<'a>(
         })?;
         let framed = input;
         skip_field(kind, tag, &mut input, DecodeContext::default()).map_err(|_| {
-            coordinator_boundary(
+            guarded_boundary(
                 work,
                 wire::ErrorCode::Storage,
                 "invalid scheduler protobuf framing",
@@ -272,7 +272,7 @@ pub(super) fn inspect_envelope<'a>(
         let value = &framed[header..header + length];
         if !protocol && tag == 4 {
             key = Some(std::str::from_utf8(value).map_err(|_| {
-                coordinator_boundary(
+                guarded_boundary(
                     work,
                     wire::ErrorCode::Storage,
                     "scheduler retry key is not UTF-8",
@@ -307,7 +307,7 @@ pub(super) fn decode(
         quota.replace(quota.retained() + payload * 2 + buffers * 8)?;
     }
     let mut envelope = wire::SchedulerEventEnvelope::decode(bytes).map_err(|_| {
-        coordinator_boundary(
+        guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "invalid scheduler protobuf envelope",
@@ -327,7 +327,7 @@ pub(super) fn decode(
         0
     };
     if fields > quota.retained() {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "scheduler protobuf exceeds its concrete admission",
@@ -337,14 +337,14 @@ pub(super) fn decode(
     if envelope.protocol.as_ref().is_none_or(|p| {
         p.version != COORDINATOR_WIRE_VERSION || p.descriptor_digest != COORDINATOR_WIRE_DIGEST
     }) {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "scheduler protocol identity differs",
         ));
     }
     let digest: [u8; 32] = envelope.event_digest.as_slice().try_into().map_err(|_| {
-        coordinator_boundary(
+        guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "scheduler digest must be 32 bytes",
@@ -354,7 +354,7 @@ pub(super) fn decode(
         io.hashed_bytes(envelope.canonical_event_json.len() as u64)?;
     }
     if *blake3::hash(&envelope.canonical_event_json).as_bytes() != digest {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "scheduler event digest mismatch",
@@ -371,14 +371,14 @@ pub(super) fn decode(
         .committed_at_ms
         .filter(|time| *time > 0)
         .ok_or_else(|| {
-            coordinator_boundary(
+            guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Storage,
                 "coordinator event lacks commit time",
             )
         })?;
     let operation = uuid::Uuid::parse_str(&envelope.operation_id).map_err(|_| {
-        coordinator_boundary(
+        guarded_boundary(
             quota.work(),
             wire::ErrorCode::Invalid,
             "scheduler operation id is not a UUID",
@@ -387,7 +387,7 @@ pub(super) fn decode(
     if envelope.revision != next_revision(record.sequence)?
         || event.operation_id() != OperationId::from_bytes(*operation.as_bytes())
     {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "coordinator record identity differs",

@@ -79,7 +79,24 @@ impl Snapshot {
                 .and_then(|value| decoder.end().map(|()| value));
         let wire = match decoded {
             Ok(snapshot) => snapshot,
-            Err(source) => return Err(Error::Storage(source.to_string())),
+            Err(source) => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if quota.work().as_deref().is_some_and(copying::is_native) {
+                    let bytes = quota.retained();
+                    let custody = quota
+                        .work()
+                        .as_deref_mut()
+                        .expect("native decoder observer")
+                        .take_native_custody(bytes)?;
+                    quota.transfer();
+                    return Err(Error::NativeJson {
+                        code: crate::wire::ErrorCode::Storage,
+                        source,
+                        custody: Some(custody),
+                    });
+                }
+                return Err(Error::Storage(source.to_string()));
+            }
         };
         quota.relinquish(conversation_allowance)?;
         let Snapshot {

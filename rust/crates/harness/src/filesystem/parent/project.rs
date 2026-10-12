@@ -552,7 +552,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<MergePlan> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .describe_conflicts(conflicts, truncated)
+            .describe_conflicts(conflicts.to_vec(), truncated)
             .await
             .map_err(map_error)
     }

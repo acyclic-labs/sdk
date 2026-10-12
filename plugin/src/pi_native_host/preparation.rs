@@ -136,9 +136,9 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let mut verifier = {
-                    let mut io = acyclic_harness::store::history::native_work_io(work)?;
+                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                     let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 conversation.1.absorb(&mut verifier.1)?;
                 let (_, _, scope) = conversation.0;
@@ -265,9 +265,9 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let write_capability = {
-                    let mut io = acyclic_harness::store::history::native_work_io(work)?;
+                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                     let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 let writable = context.scope().grants().contains(&write_capability.0);
                 let project_permit = handles

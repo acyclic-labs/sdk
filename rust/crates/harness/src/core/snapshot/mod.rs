@@ -1,4 +1,4 @@
-//! Authenticated checkpoints of the reducer projection.
+//! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
 mod entries;

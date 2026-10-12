@@ -1,4 +1,4 @@
-//! selection fork protocol.
+//! Selected provider revisions and fork preparation.
 use super::*;
 /// One exact retained resource revision selected for a child.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -228,7 +228,7 @@ pub struct ForkPreparation {
     /// Fresh private workspace owned by the child agent.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire"))]
     pub child_private_volume: VolumeRef,
-    /// Optional child-owned unmounted result namespace, distinct from scratch.
+    /// Optional child-owned result namespace, distinct from scratch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "wasm", tsify(type = "WasmVolumeRefWire | null"))]
     pub child_result_volume: Option<VolumeRef>,
@@ -345,7 +345,7 @@ pub(in crate::fork) fn validate_child_result_generation(
     }
 }
 
-/// Provider-neutral owner boundary for an idempotent multi-resource fork preparation.
+/// Provider-neutral owner boundary for an idempotent multi-resource fork
 pub trait ForkPreparer: acyclic_stream::ProviderPlatform {
     /// Exact immutable parent projection this preparer was constructed from.
     fn parent_snapshot(&self) -> (&Authority, u64);
@@ -357,51 +357,22 @@ pub trait ForkPreparer: acyclic_stream::ProviderPlatform {
     fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>>;
 }
 
-/// Provider-owned capture of one selected revision during parent-controlled fork preparation.
+/// Provider-owned capture of one selected revision during parent-controlled
 pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
     /// Exact provider identity whose resource revisions this adapter owns.
     fn provider(&self) -> &ProviderRef;
 
-    /// Captures one immutable child-visible revision or reports an explicit unavailable state.
+    /// Captures one immutable child-visible revision or reports an explicit
     fn capture<'a>(
         &'a self,
         request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Capture>>;
 
-    /// Observes a capture whose start was durably recorded but whose result may have been lost. `None` means unresolved, not permission to repeat the side effect.
+    /// Observes a capture whose start was durably recorded but whose result
     fn reconcile<'a>(
         &'a self,
         request: &'a ForkRequest,
         selection: &'a ForkSelection,
     ) -> BoxFuture<'a, Result<Option<Capture>>>;
-
-    /// Captures the same immutable selection on the supplied original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn capture_with_native_work<'a>(
-        &'a self,
-        _request: &'a ForkRequest,
-        _selection: &'a ForkSelection,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Capture, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "fork capture provider has no original native callback",
-        })
-    }
-
-    /// Reconciles the original capture operation without repeating uncertain effects or replacing its pinned selection.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn reconcile_with_native_work<'a>(
-        &'a self,
-        _request: &'a ForkRequest,
-        _selection: &'a ForkSelection,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Capture>, acyclic_fs::NativeAllocation)>>
-    {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "fork capture provider has no original native reconciliation callback",
-        })
-    }
 }
