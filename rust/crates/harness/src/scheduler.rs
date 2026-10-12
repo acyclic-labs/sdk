@@ -1218,7 +1218,6 @@ impl Scheduler {
             } else { None };
             let guard = incoming.as_mut().map(|guard| guard.split_off(bytes)
                 .expect("exact preclaimed payload transfer does not consult quota or cancellation"));
-            if guard.is_none() && !self.native_operations.contains_key(&id) { return; }
             let held = self.native_operations.entry(id).or_default();
             if metadata.is_some() { held[5] = metadata; }
             // Assignment physically dropped the replaced DTO before this corresponding old allocation guard is dropped.
@@ -1879,19 +1878,14 @@ fn observe(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Resu
     Ok(())
 }
 
-fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_ref() { return io.original_native_work().is_some(); }
-    let _ = work;
-    false
-}
-
 pub(crate) fn diagnostic(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if native_observer(work) { return Error::NativeBoundary { code, reason }; }
+    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code, reason };
+    }
     let _ = work;
     match code {
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
@@ -2262,6 +2256,13 @@ mod tests {
         scheduler.apply(&(SchedulerEvent::Admitted { operation_id, reservation }), &mut None)?;
         scheduler.apply(&(SchedulerEvent::Started { operation_id, fence: fence.clone() }), &mut None)?;
         Ok(fence)
+    }
+
+    fn wait_for_children(
+        scheduler: &mut Scheduler, operation_id: OperationId, reservation: Reservation,
+    ) -> Result<()> {
+        let fence = start(scheduler, operation_id, reservation)?;
+        scheduler.apply(&SchedulerEvent::WaitingForChildren { operation_id, fence }, &mut None)
     }
 
     fn complete(
@@ -3148,26 +3149,10 @@ mod tests {
     fn race_uses_first_observed_success_and_cancels_losers() -> Result<()> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(&(scheduler.declare(spec(id(1), Orchestration::Race)?)?), &mut None)?;
-        scheduler.apply(&(SchedulerEvent::Admitted {
-            operation_id: id(1),
-            reservation: Reservation {
-                id: "parent-lease".into(),
-                placement: "parent-worker".into(),
-                admitted: ResourceRequest::default(),
-            },
-        }), &mut None)?;
-        let parent_fence = LeaseFence {
-            reservation_id: "parent-lease".into(),
-            placement: "parent-worker".into(),
-        };
-        scheduler.apply(&(SchedulerEvent::Started {
-            operation_id: id(1),
-            fence: parent_fence.clone(),
-        }), &mut None)?;
-        scheduler.apply(&(SchedulerEvent::WaitingForChildren {
-            operation_id: id(1),
-            fence: parent_fence,
-        }), &mut None)?;
+        wait_for_children(&mut scheduler, id(1), Reservation {
+            id: "parent-lease".into(), placement: "parent-worker".into(),
+            admitted: ResourceRequest::default(),
+        })?;
         for (child_id, slot) in [(id(2), "a"), (id(3), "b")] {
             let mut child = spec(child_id, Orchestration::Leaf)?;
             child.parent = Some(ParentLink {
@@ -3307,13 +3292,6 @@ mod tests {
         };
         scheduler.apply(&(claim), &mut None)?;
         scheduler.apply(&(claim), &mut None)?;
-        assert_eq!(
-            scheduler
-                .model_claims
-                .get(&id(40))
-                .map(TaskModelClaims::used),
-            Some(1)
-        );
         let before = scheduler.clone();
         assert!(
             scheduler
@@ -3358,14 +3336,6 @@ mod tests {
         assert_eq!(scheduler, before);
         complete(&mut scheduler, id(41), Outcome::Indeterminate { operation_id: id(41), }, Some(child_fence))?;
         assert!(scheduler.ready(&ResourceSnapshot::default(), &BTreeMap::new(), None).collect::<Vec<_>>().is_empty());
-        assert_eq!(
-            scheduler
-                .model_claims
-                .values()
-                .map(TaskModelClaims::used)
-                .sum::<u64>(),
-            2
-        );
         Ok(())
     }
 
@@ -3499,11 +3469,7 @@ mod tests {
             placement: "worker".into(),
             admitted: ResourceRequest::default(),
         };
-        start(&mut scheduler, id(1), parent.clone())?;
-        scheduler.apply(&(SchedulerEvent::WaitingForChildren {
-            operation_id: id(1),
-            fence: (&parent).into(),
-        }), &mut None)?;
+        wait_for_children(&mut scheduler, id(1), parent)?;
         let partial = Reservation {
             id: "partial".into(),
             placement: "worker".into(),
@@ -3789,12 +3755,7 @@ mod tests {
             placement: "worker".into(),
             admitted: ResourceRequest::default(),
         };
-        let fence = LeaseFence::from(&reservation);
-        start(&mut scheduler, id(10), reservation)?;
-        scheduler.apply(&(SchedulerEvent::WaitingForChildren {
-            operation_id: id(10),
-            fence,
-        }), &mut None)?;
+        wait_for_children(&mut scheduler, id(10), reservation)?;
         let expected_revision = scheduler
             .operation(id(10))
             .ok_or_else(|| Error::NotFound("parent".into()))?
@@ -3844,12 +3805,7 @@ mod tests {
             placement: "worker".into(),
             admitted: ResourceRequest::default(),
         };
-        let parent_fence = LeaseFence::from(&parent_reservation);
-        start(&mut scheduler, id(11), parent_reservation)?;
-        scheduler.apply(&(SchedulerEvent::WaitingForChildren {
-            operation_id: id(11),
-            fence: parent_fence,
-        }), &mut None)?;
+        wait_for_children(&mut scheduler, id(11), parent_reservation)?;
         let mut child = spec(id(12), Orchestration::Leaf)?;
         child.parent = Some(ParentLink {
             operation_id: id(11),

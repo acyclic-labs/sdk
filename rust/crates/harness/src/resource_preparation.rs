@@ -947,13 +947,8 @@ pub fn created_resource_capability(
     if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
         || operation.chars().any(char::is_control)
     {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "created resource operation is invalid",
-            });
-        }
-        return Err(Error::Invalid("created resource operation is invalid".into()));
+        return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
+            "created resource operation is invalid"));
     }
     created_access_canonical_capability(&(resource, operation), "resource:created:", work)
 }
