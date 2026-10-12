@@ -217,7 +217,7 @@ impl PiNativeCommandHost {
                 .ok_or_else(|| unauthorized("Pi cleanup has no original view work"))?;
             effect
                 .owner
-                .verify(true, &mut Some(&mut native_work_io(meter)?))
+                .verify(true)
                 .await?;
             handles.stop_startup_mount(effect.command)?;
             let LiveHandles {
@@ -255,7 +255,7 @@ impl PiNativeCommandHost {
         }
         effect
             .owner
-            .verify(true, &mut Some(&mut native_work_io(meter)?))
+            .verify(true)
             .await?;
         handles
             .project_gate
@@ -359,7 +359,7 @@ impl PiNativeCommandHost {
                 )
             })?;
         owner
-            .verify(true, &mut Some(&mut native_work_io(meter)?))
+            .verify(true)
             .await?;
         let admission = self.child_admission(task, meter).await?;
         let input = &admission.1;
