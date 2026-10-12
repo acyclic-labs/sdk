@@ -204,15 +204,8 @@ where
             if !exists {
                 let file = self
                     .authored
-<<<<<<< HEAD
                     .detached_file_from_record(*record, *metadata, owner, &mut carrier)
                     .await?;
-=======
-                    .detached_file_from_record(
-                        *record, *metadata, ViewGate::callback_owner(),
-                        &mut adapter::NativeDemandCarrier::Native(work),
-                    ).await?;
->>>>>>> goal/harness-final
                 self.detached
                     .lock()
                     .map_err(|_| MountSourceError::Stale)?
