@@ -7,13 +7,19 @@ const LEXICAL_INCOMPLETE_ERROR: &str = "incomplete JSON document";
 
 /// Maximum ONE newly owned SDK lexical-error String payload.
 pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
-    let labels = [LEXICAL_BYTE_ERROR, LEXICAL_NESTING_ERROR,
-        LEXICAL_ITEM_ERROR, LEXICAL_INCOMPLETE_ERROR];
+    let labels = [
+        LEXICAL_BYTE_ERROR,
+        LEXICAL_NESTING_ERROR,
+        LEXICAL_ITEM_ERROR,
+        LEXICAL_INCOMPLETE_ERROR,
+    ];
     let mut maximum = 0;
     let mut index = 0;
     while index < labels.len() {
         let bytes = labels[index].len() as u64;
-        if bytes > maximum { maximum = bytes; }
+        if bytes > maximum {
+            maximum = bytes;
+        }
         index += 1;
     }
     maximum
@@ -28,38 +34,59 @@ pub(super) struct Scan {
     pub(super) string: bool,
     pub(super) escape: bool,
     pub(super) atom: bool,
-    pub(super) inspector: Option<ValueInspector>,
 }
 impl Scan {
-    pub(super) fn with_value_schema(schema: Option<JsonValueSchema>, bounds: JsonBounds) -> Self {
-        Self { inspector: Some(ValueInspector::new(schema, bounds)), ..Self::default() }
-    }
-    pub(super) fn value_shape(&self) -> std::result::Result<JsonValueShape, CodecError> {
-        self.end_inline()?;
-        self.inspector.as_ref().expect("Value shape requested only from configured source pass")
-            .finish(self.bytes, self.items)
-    }
     pub(super) fn push_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
-        &mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F,
+        &mut self,
+        bytes: &[u8],
+        bounds: JsonBounds,
+        charge: &mut F,
     ) -> std::result::Result<(), CodecError> {
         for &byte in bytes {
-            if self.bytes >= bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
+            if self.bytes >= bounds.maximum_bytes {
+                return Err(CodecError::Bound(LEXICAL_BYTE_ERROR));
+            }
             charge(JsonCodecCharge::Read { bytes: 1 })?;
             self.bytes += 1;
-            if let Some(inspector) = &mut self.inspector { inspector.push(byte, charge)?; }
             if self.string {
-                if self.escape { self.escape = false; }
-                else if byte == b'\\' { self.escape = true; }
-                else if byte == b'"' { self.string = false; }
+                if self.escape {
+                    self.escape = false;
+                } else if byte == b'\\' {
+                    self.escape = true;
+                } else if byte == b'"' {
+                    self.string = false;
+                }
                 continue;
             }
             let item_depth = self.depth;
             let item = match byte {
-                b'"' => { self.string = true; self.atom = false; true }
-                b'[' | b'{' => { self.depth += 1; self.atom = false; true }
-                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(CodecError::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
-                b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => { self.atom = false; false }
-                _ => { let first = !self.atom; self.atom = true; first }
+                b'"' => {
+                    self.string = true;
+                    self.atom = false;
+                    true
+                }
+                b'[' | b'{' => {
+                    self.depth += 1;
+                    self.atom = false;
+                    true
+                }
+                b']' | b'}' => {
+                    self.depth = self
+                        .depth
+                        .checked_sub(1)
+                        .ok_or(CodecError::Bound(LEXICAL_NESTING_ERROR))?;
+                    self.atom = false;
+                    false
+                }
+                b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => {
+                    self.atom = false;
+                    false
+                }
+                _ => {
+                    let first = !self.atom;
+                    self.atom = true;
+                    first
+                }
             };
             if item {
                 if item_depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
@@ -72,34 +99,60 @@ impl Scan {
         Ok(())
     }
     pub(super) fn end_inline(&self) -> std::result::Result<(), CodecError> {
-        if self.string || self.depth != 0 { return Err(CodecError::Bound(LEXICAL_INCOMPLETE_ERROR)); }
+        if self.string || self.depth != 0 {
+            return Err(CodecError::Bound(LEXICAL_INCOMPLETE_ERROR));
+        }
         Ok(())
     }
 }
 
 /// Bounds lexical tokens, including duplicate keys.
-pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
-    let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR).into_error(None)); }
+pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
+    bytes: &[u8],
+    bounds: JsonBounds,
+    charge: &mut F,
+) -> Result<()> {
+    let bounds = JsonBounds {
+        maximum_depth: bounds.maximum_depth.min(256),
+        ..bounds
+    };
+    if bytes.len() as u64 > bounds.maximum_bytes {
+        return Err(CodecError::Bound(LEXICAL_BYTE_ERROR).into_error(None));
+    }
     let mut scan = Scan::default();
-    scan.push_inline(bytes, bounds, charge).map_err(|failure| failure.into_error(None))?;
-    scan.end_inline().map_err(|failure| failure.into_error(None))
+    scan.push_inline(bytes, bounds, charge)
+        .map_err(|failure| failure.into_error(None))?;
+    scan.end_inline()
+        .map_err(|failure| failure.into_error(None))
 }
 
 pub(super) fn admit_json_value_shape_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, schema: Option<JsonValueSchema>, charge: &mut F,
+    bytes: &[u8],
+    bounds: JsonBounds,
+    schema: Option<JsonValueSchema>,
+    charge: &mut F,
 ) -> std::result::Result<JsonValueShape, CodecError> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
-    let mut scan = Scan::with_value_schema(schema, bounds);
-    scan.push_inline(bytes, bounds, charge)?;
-    scan.value_shape()
+    if bytes.len() as u64 > bounds.maximum_bytes {
+        return Err(CodecError::Bound(LEXICAL_BYTE_ERROR));
+    }
+    value_shape::inspect_source(bytes, bounds, schema, charge)
 }
 
 /// The original source pass with a real closed SDK Value field descriptor.
 pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
+    bytes: &[u8],
+    bounds: JsonBounds,
+    schema: JsonValueSchema,
+    charge: &mut F,
 ) -> Result<JsonValueShape> {
-    admit_json_value_shape_inline(bytes, JsonBounds {
-        maximum_depth: bounds.maximum_depth.min(256), ..bounds
-    }, Some(schema), charge).map_err(|failure| failure.into_error(None))
+    admit_json_value_shape_inline(
+        bytes,
+        JsonBounds {
+            maximum_depth: bounds.maximum_depth.min(256),
+            ..bounds
+        },
+        Some(schema),
+        charge,
+    )
+    .map_err(|failure| failure.into_error(None))
 }

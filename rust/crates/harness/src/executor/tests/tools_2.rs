@@ -62,8 +62,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    assert!(journal.journal.0.lock().unwrap().is_empty());
-    assert!(journal.journal.1.lock().unwrap().is_empty());
+    assert!(journal.0.lock().unwrap().is_empty());
+    assert!(journal.1.lock().unwrap().is_empty());
     assert!(messages.is_empty());
     Ok(())
 }

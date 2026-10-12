@@ -628,20 +628,23 @@ impl ser::Serializer for Raw<'_, '_> {
         } else {
             Some(JsonValueSchema::Root)
         };
-        let mut scan = Scan::with_value_schema(schema, bounds);
-        scan.push_inline(value.as_bytes(), bounds, &mut |event| {
-            let items = match event {
-                JsonCodecCharge::Work { items, .. } => items,
-                _ => 0,
-            };
-            meter
-                .charge(event)
-                .map_err(|error| meter.root_error(error))?;
-            meter.items += items;
-            Ok(())
-        })
+        let value_shape = lexical::admit_json_value_shape_inline(
+            value.as_bytes(),
+            bounds,
+            schema,
+            &mut |event| {
+                let items = match event {
+                    JsonCodecCharge::Work { items, .. } => items,
+                    _ => 0,
+                };
+                meter
+                    .charge(event)
+                    .map_err(|error| meter.root_error(error))?;
+                meter.items += items;
+                Ok(())
+            },
+        )
         .map_err(|error| meter.forward(error))?;
-        let value_shape = scan.value_shape().map_err(|error| meter.forward(error))?;
         meter.items = meter
             .items
             .checked_add(value_shape.virtual_items)

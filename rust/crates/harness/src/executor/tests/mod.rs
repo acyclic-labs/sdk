@@ -314,8 +314,14 @@ async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime:
             }
         },
     )?)?;
-    let harness =
-        crate::runtime::AgentHarness::new(tasks, ToolRegistry::default(), scope, 1, None)?;
+    let harness = crate::runtime::Bindings {
+        tasks,
+        tools: ToolRegistry::default(),
+        scope,
+        concurrency: 1,
+        ..crate::runtime::Bindings::local()
+    }
+    .build(None)?;
     let definition = harness.task::<(), ()>("context-probe@1")?;
     assert!(matches!(
         harness.spawn(&definition, ()).await?.result().await?,

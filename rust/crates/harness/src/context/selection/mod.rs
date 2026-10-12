@@ -53,17 +53,20 @@ fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result
     if !has_native_work(work) {
         return Ok(());
     }
-    let io = work.as_deref_mut().expect("native selection observer");
-    let remaining = io.remaining()?;
-    crate::contract::json_owned_value_shape_bounded(
-        value,
-        crate::contract::JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined,
-            maximum_depth: 256,
-        },
-        crate::contract::JsonValueSchema::None,
-        &mut |charge| io.codec_charge(charge),
-    )?;
+    #[cfg(feature = "filesystem")]
+    {
+        let io = work.as_deref_mut().expect("native selection observer");
+        let remaining = io.remaining()?;
+        crate::contract::json_owned_value_shape_bounded(
+            value,
+            crate::contract::JsonBounds {
+                maximum_bytes: remaining.bytes_encoded,
+                maximum_items: remaining.items_examined,
+                maximum_depth: 256,
+            },
+            crate::contract::JsonValueSchema::None,
+            &mut |charge| io.codec_charge(charge),
+        )?;
+    }
     Ok(())
 }

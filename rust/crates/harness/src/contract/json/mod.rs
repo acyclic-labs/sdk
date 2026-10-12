@@ -31,7 +31,6 @@ pub use records::json_from_value_bounded;
 pub(crate) use records::validate_json_byte_bound_native_trusted;
 pub use records::{json_bytes_bounded, json_from_slice_bounded};
 mod value_shape;
-use value_shape::ValueInspector;
 #[cfg(test)]
 mod value_shape_tests;
 
