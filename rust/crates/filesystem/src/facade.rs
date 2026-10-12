@@ -6400,7 +6400,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             });
         }
         cancellation.check()?;
-        let mut token_header = original.claim_checkout_token_metadata()?;
+        let mut token_header = original.claim_root_metadata(std::mem::size_of::<ProofDataCustody>() as u64)?;
         let custody_bytes = token_header.bytes();
         let custody = Arc::new(ProofDataCustody::default());
         let witness = original.register_native_checkout_control(&custody, &mut token_header)?;
@@ -10068,7 +10068,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let mut header = original.claim_checkout_token_metadata()?;
+            let mut header = original.claim_root_metadata(std::mem::size_of::<ProofDataCustody>() as u64)?;
             let custody = Arc::new(ProofDataCustody::default());
             cancellation.check()?;
             original.register_native_checkout_control(&custody, &mut header)?;
