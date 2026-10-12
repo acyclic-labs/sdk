@@ -100,10 +100,9 @@ pub(crate) enum SessionCommand {
 impl SessionHandle {
     pub(crate) fn new(
         key: SessionKey,
-        control: impl Into<SessionController>,
+        control: SessionController,
         resources: (ServiceResources, Option<acyclic_fs::NativeAllocation>),
     ) -> Self {
-        let control = control.into();
         let snapshot = Arc::new(std::sync::RwLock::new(Some(SessionSnapshot::observe(
             &control,
         ))));

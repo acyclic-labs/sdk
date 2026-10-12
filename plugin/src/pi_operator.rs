@@ -1,4 +1,5 @@
 //! Host-only Pi operator transport. Signing material never enters a native caller scope.
+pub(crate) mod evidence;
 use crate::{
     ControlCommand, ControlRequest, pi_owner::PiOwnerConfig, pi_root_provider,
     pi_selected_host::PiSelectedCommand,
@@ -38,7 +39,6 @@ pub(crate) struct PiPreparedApproval<
     /// Child snapshot sealed by the actual selected import, not its native mount.
     pub(crate) selected_snapshot: LazySnapshotRef,
     pub(crate) imported: GenerationId,
-    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt<S, V, P>,
     pub(crate) journal: J,
     pub(crate) canonical_digest_input: S,
     pub(crate) root_path: S,
@@ -450,7 +450,6 @@ pub(crate) const fn prepared_labels_bytes() -> u64 {
     pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "PiPreparedApproval",
         "PiSelectedCommand",
-        "PiSelectedImportReceipt",
         "VolumeRefWire",
         "ProviderRefWire",
         "VolumeOwner",
@@ -475,7 +474,6 @@ pub(crate) const fn prepared_labels_bytes() -> u64 {
         "source_snapshot",
         "selected_snapshot",
         "imported",
-        "import_receipt",
         "journal",
         "canonical_digest_input",
         "root_path",
@@ -490,7 +488,6 @@ pub(crate) const fn prepared_labels_bytes() -> u64 {
         "destination",
         "paths",
         "confirm",
-        "import_operation",
         "destination_snapshot",
         "provider",
         "id",

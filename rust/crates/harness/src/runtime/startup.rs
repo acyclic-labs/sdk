@@ -120,7 +120,7 @@ impl AgentHarness {
 
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.tools
-            .get(name, None)?
+            .get(name, None, None)?
             .map(|tool| tool.definition.clone())
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))
     }

@@ -85,7 +85,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         Ok((page, state, allocation))
     }
 
-    pub(crate) async fn list_directory_at(
+    /// Lists the merged directory represented by the supplied state and checkout.
+    pub async fn list_directory_at(
         &self,
         state: &LazyWorkspaceState,
         checkout: &mut crate::Checkout<A, O>,

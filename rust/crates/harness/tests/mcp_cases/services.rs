@@ -4,7 +4,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
-    mcp::{McpToolTransport, callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
+    mcp::{McpToolTransport, callbacks::{McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
@@ -106,7 +106,7 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         let operation = OperationId::from_bytes([81;16]);
         let tool = ToolContext::new(std::sync::Arc::new(context), operation, "remote", None)?;
         let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: false });
-        let callback: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
+        let callback: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope.clone())?, disk.clone(), "deterministic".into(), sampling_policy())?);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
         let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
         let callback_message = sampling(operation).message;
@@ -223,7 +223,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let operation = OperationId::from_bytes([83;16]);
     let tool = ToolContext::new(std::sync::Arc::new(context), operation, "cancel", None)?;
     let model = Arc::new(ByteModel { dispatches: AtomicUsize::new(0), pause: true });
-    let callbacks: Arc<dyn McpCallbackAdmission> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
+    let callbacks: Arc<McpRuntimeCallbacks> = Arc::new(McpRuntimeCallbacks::new(executor(Arc::clone(&model), scope)?, disk.clone(), "deterministic".into(), sampling_policy())?);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|error| Error::Storage(error.to_string()))?;
     let address = listener.local_addr().map_err(|error| Error::Storage(error.to_string()))?;
     let server_model = Arc::clone(&model);
@@ -244,7 +244,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
     let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callbacks))?;
     assert!(matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
-    let records = disk.replay(callback.operation()?, 0, 64).await?;
+    let records = disk.replay(callback.validate()?, 0, 64).await?;
     assert!(records.iter().any(|record| matches!(record.event, acyclic_harness::executor::ExecutionEvent::ModelStarted { .. })));
     assert!(matches!(callbacks.admit(tool, &callback).await, Err(Error::Indeterminate(_))));
     assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
@@ -283,7 +283,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         assert_eq!(result.is_ok(), granted);
         assert_eq!(model.dispatches.load(Ordering::SeqCst), usize::from(granted));
         if granted {
-            let records = disk.replay(request.operation()?, 0, 64).await?;
+            let records = disk.replay(request.validate()?, 0, 64).await?;
             let file = records.iter().find_map(|record| match &record.event {
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;

@@ -11,7 +11,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     runtime::{TaskSpawner as _, TaskStateProvider},
-    scheduler::ResourceSnapshot,
+    scheduler::ResourceRequest,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::{collections::BTreeMap, path::Path};

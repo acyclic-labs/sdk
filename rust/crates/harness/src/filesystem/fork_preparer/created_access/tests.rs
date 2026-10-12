@@ -1,25 +1,35 @@
 use super::*;
-use crate::AgentId;
 use crate::core::AggregateKind;
+use crate::durable_host::tests::created_resource_access::CreationFixture;
+use crate::source_authorization::{
+    ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
+};
 
-fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
+#[tokio::test]
+async fn source_requires_its_current_protected_original_root_record() -> Result<()> {
+    let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(1_048_576, 128 * 1_048_576),
         &CancellationToken::new(),
     )
     .map_err(|(cause, _)| Error::NativeWork {
         cause,
         custody: None,
-    })
-}
-
-fn original_root_fixture_authority(
-    agent: AgentId,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(
-    (Authority, AuthorityIssuer, crate::core::Scope),
-    acyclic_fs::NativeAllocation,
-)> {
+    })?;
+    let fixture = CreationFixture::new_with_original_root_births(&work).await?;
+    let creator = &fixture.filesystem_creator;
+    let birth = &fixture.original_root_births.as_ref().unwrap()[0];
+    let owner = fixture
+        .host
+        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .await?;
+    let agent = owner
+        .authenticated_binding_agent(&mut Some(
+            &mut PreparationIo::from_native_work(&work)?.history_io(),
+        ))?
+        .ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "fixture has no original Root actor",
+        })?;
     use crate::store::history::HistoryIo as _;
     let configured_audience = Authority {
         kind: AggregateKind::Conversation,
@@ -27,38 +37,23 @@ fn original_root_fixture_authority(
     };
     let configured_issuer =
         AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
-    let mut metadata = crate::store::history::native_work_io(work).map_err(Error::from)?;
+    let metadata = PreparationIo::from_native_work(&work)?;
     metadata.retain_owned(
         std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64,
     )?;
-    let audience = metadata.clone_authority(&configured_audience)?;
-    let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
+    let mut observer = metadata.history_io();
+    let audience = observer.clone_authority(&configured_audience)?;
+    let issuer = configured_issuer.copy(&mut Some(&mut observer))?;
     let scope = issuer.issue(
         "genuine-original-root-bootstrap",
         &Capabilities::new(["conversation:bind"]),
         Some(agent),
         None,
-        &mut Some(&mut metadata),
+        &mut Some(&mut observer),
     )?;
-    let custody = metadata.into_custody();
-    Ok(((audience, issuer, scope), custody))
-}
-
-async fn bind_genuine_original_root(
-    fixture: &crate::durable_host::tests::created_resource_access::CreationFixture,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<crate::durable_host::TaskJournalOwner<acyclic_stream::MemoryStream>> {
-    let owner = fixture
-        .host
-        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
-        .await?;
-    let agent = owner
-        .authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?
-        .ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "fixture has no original Root actor",
-        })?;
-    let (authority, custody) = original_root_fixture_authority(agent, work)?;
+    let retained = metadata.owned_bytes()?;
+    let custody = metadata.into_native_custody(retained)?;
+    let authority = (audience, issuer, scope);
     let scratch = &fixture
         .original_root_births
         .as_ref()
@@ -71,30 +66,14 @@ async fn bind_genuine_original_root(
         &scratch.volume,
         scratch.operation,
         fixture.root_scope.limits(),
-        work,
+        &work,
     )
     .await?;
-    Ok(owner)
-}
-
-use crate::durable_host::tests::created_resource_access::CreationFixture;
-use crate::resource_preparation::RootBootstrapContentRole;
-use crate::source_authorization::{
-    ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
-};
-
-#[tokio::test]
-async fn source_requires_its_current_protected_original_root_record() -> Result<()> {
-    let work = observation_work()?;
-    let fixture = CreationFixture::new_with_original_root_births(&work).await?;
-    let creator = &fixture.filesystem_creator;
-    let birth = &fixture.original_root_births.as_ref().unwrap()[0];
-    let owner = bind_genuine_original_root(&fixture, &work).await?;
     let token = creator
         .protect_root_bootstrap_with_native_work(
             &owner,
             &birth.volume,
-            RootBootstrapContentRole::Project,
+            VolumeClass::Project,
             birth.operation,
             birth.config,
             birth.initial_generation,
@@ -109,6 +88,17 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
         .original_root_admission_with_native_work(&work)
         .await?;
     admission_hold = hold;
+    creator.bind_root_bootstrap_allocation_with_native_work(Arc::clone(&token), &work)?;
+    let root_context = owner.root_bootstrap_context(
+        &admission,
+        token.witness.binding(),
+        &work,
+    )
+    .await?;
+    let receipt = creator
+        .verify_root_bootstrap_with_native_work(root_context, token.request(), &work)?
+        .await?;
+    drop(receipt);
     let bare = crate::filesystem::root_source::FsRootProjectSourceProvider::new(
         fixture.filesystem.clone(),
         creator.issuer.audience(),
@@ -148,7 +138,8 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
             birth.initial_generation.digest().as_bytes(),
             None,
             None,
-        )?.0,
+        )?
+        .0,
         native_snapshot: None,
     };
     assert!(

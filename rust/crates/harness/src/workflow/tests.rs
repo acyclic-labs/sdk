@@ -24,7 +24,7 @@ fn workflow_history_and_command_counts_have_no_fixed_ceiling() -> Result<()> {
         revision: 1_000_001, state: json!(0) };
     let mut record = WorkflowRecord {
         operation_id: OperationId::from_bytes(1_000_000_u128.to_be_bytes()), idempotency_key: IdempotencyKey::new("large-history")?,
-        input_digest: crate::contract::canonical_json_digest(&Value::Null)?, prior: prior.clone(), input: Value::Null,
+        input_digest: crate::contract::canonical_json_digest(&Value::Null, u64::MAX, &mut None)?, prior: prior.clone(), input: Value::Null,
         transition: MachineTransition { state: json!(1), commands: (100_000_u128..101_025).map(|id| WorkflowCommand {
             operation_id: OperationId::from_bytes(id.to_be_bytes()), kind: "test.publish".into(), payload: payload.clone(),
         }).collect(), status: MachineStatus::Suspended },

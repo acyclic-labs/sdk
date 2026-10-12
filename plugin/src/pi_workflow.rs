@@ -11,7 +11,7 @@ use acyclic_harness::{
     scheduler::LeaseFence,
     workflow::{MachineCheckpoint, WorkflowCommand},
 };
-use pi_selected_host::PiControlHost;
+use pi_host::PiControlHost;
 
 impl PiControlHost<'_> {
     pub(crate) async fn drive_root(

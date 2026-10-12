@@ -2,7 +2,7 @@
 
 use super::{
     McpInitializeResult, McpToolResult, McpToolTransport, McpToolsPage, PROTOCOL_VERSION,
-    callbacks::{McpCallbackAdmission, McpCallbackPolicy},
+    callbacks::{McpCallbackPolicy, McpRuntimeCallbacks},
     rpc::{decode_tool_result, request, rpc_result},
 };
 use crate::{Error, OperationId, Result, runtime::ToolContext};
@@ -71,7 +71,7 @@ pub struct HttpMcpTransport {
     session: Option<String>,
     maximum_bytes: u32,
     timeout_ms: u32,
-    callbacks: Option<(McpCallbackPolicy, Arc<dyn McpCallbackAdmission>)>,
+    callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
 }
 
 impl HttpMcpTransport {
@@ -115,7 +115,7 @@ impl HttpMcpTransport {
     pub fn with_callbacks(
         mut self,
         policy: McpCallbackPolicy,
-        admission: Arc<dyn McpCallbackAdmission>,
+        admission: Arc<McpRuntimeCallbacks>,
     ) -> Result<Self> {
         policy.validate()?;
         if self.session.is_some() {

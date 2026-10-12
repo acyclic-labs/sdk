@@ -136,7 +136,7 @@ impl ExtensionAdmission {
             ownership::owned_vector(&self.selected, |extension| {
                 Ok(extension.name.capacity() as u64)
             })?,
-            ownership::owned_vector(&self.configurations, ownership::owned_configuration)?,
+            ownership::owned_vector(&self.configurations, ownership::owned_bytes)?,
         ])
     }
 

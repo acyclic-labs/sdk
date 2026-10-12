@@ -735,7 +735,7 @@ impl acyclic_harness::tool::ToolExecutor for PiBuiltinToolExecutor {
 type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::LocalStream>;
 
 /// Borrows original providers and creator handles; it owns no second journal, route registry, root credential, or independent filesystem.
-impl<'a> crate::pi_selected_host::PiControlHost<'a> {
+impl<'a> crate::pi_host::PiControlHost<'a> {
     async fn root_read(
         &self,
         native_context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
@@ -775,27 +775,15 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let relatives = scoped_variants(variants, root)?;
         let selection = self
             .selected(
-                context,
                 &native_context,
                 &owner,
                 request.caller,
                 Some(key),
                 None,
                 request.operation(self.protected.policy().root_task, work)?,
-                self.work.cancellation(),
                 &self.work,
             )
             .await?;
-        let (_, volume, workspace, frozen, inspection, _) = &selection;
-        let reader = crate::pi_inspection::PiNativeSelectedSource::select(
-            inspection,
-            request.caller,
-            request.caller,
-            volume,
-            workspace,
-            *frozen,
-            &self.work,
-        )?;
         let mut last_absence = None;
         for (path, candidate) in std::iter::once(relative)
             .chain(relatives.into_iter().flatten())
@@ -804,10 +792,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let converted = logical_path(path, &self.work)?;
             let _path_custody = converted.1;
             let path = converted.0;
-            match reader
-                .read_with_native_work(context, &owner, &path, *maximum_bytes, &self.work)
-                .await
-            {
+            match selection.read(&path, *maximum_bytes, &self.work).await {
                 Ok(bytes) => {
                     let response =
                         match authorize_owner(context, &owner, request.caller, &self.work).await {

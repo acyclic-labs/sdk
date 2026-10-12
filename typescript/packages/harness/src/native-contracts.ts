@@ -188,7 +188,7 @@ export class NativeContracts {
 
   /** Rust's typed serde serialization is the manifest byte contract. */
   encodeAttachmentManifest(items: readonly Attachment[]): Uint8Array {
-    return Uint8Array.from(wasm.encodeAttachmentManifest(items));
+    return wasm.encodeAttachmentManifest(items);
   }
 
   forkSeed(report: ForkReport): ForkSeed {
@@ -410,8 +410,8 @@ export class NativeContracts {
 
   taskIdentityDigest(name: string, version: string, input: ToolJsonSchema, output: ToolJsonSchema,
     requirements: readonly string[], machineDigest: Uint8Array): readonly number[] {
-    const digest = Uint8Array.from(wasm.taskIdentityDigest(name, version, input, output,
-      [...requirements], Uint8Array.from(machineDigest)));
+    const digest = wasm.taskIdentityDigest(name, version, input, output,
+      [...requirements], Uint8Array.from(machineDigest));
     if (digest.length !== 32) throw new TypeError("native task identity digest has an invalid length");
     return Object.freeze(Array.from(digest));
   }
@@ -514,7 +514,7 @@ export class NativeContracts {
   }
 
   encodeCanonicalJson(value: unknown): Uint8Array {
-    return Uint8Array.from(wasm.encodeCanonicalJson(value));
+    return wasm.encodeCanonicalJson(value);
   }
 
   /** Compare complete admitted records without maintaining parallel field lists. */
@@ -527,7 +527,7 @@ export class NativeContracts {
 
   /** Rust canonical JSON plus BLAKE3; only the digest leaves this boundary. */
   digestCanonicalJson(value: unknown): Uint8Array {
-    const digest = Uint8Array.from(wasm.digestCanonicalJson(value));
+    const digest = wasm.digestCanonicalJson(value);
     if (digest.byteLength !== 32) throw new TypeError("native canonical digest has an invalid length");
     return digest;
   }

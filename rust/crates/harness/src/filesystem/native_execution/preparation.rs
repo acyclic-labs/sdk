@@ -56,13 +56,13 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             }
             let io = PreparationIo::from_native_work(work)?;
             let plan_io = PreparationIo::from_native_work(work)?;
-            let mut mappings = super::super::fork_preparer_io::vector(bindings.len(), Some(&io))?;
+            let mut mappings = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             let mut generations =
-                super::super::fork_preparer_io::vector(bindings.len(), Some(&io))?;
+                crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             let mut selected =
-                super::super::fork_preparer_io::vector(bindings.len(), Some(&plan_io))?;
-            let mut edits = super::super::fork_preparer_io::vector(bindings.len(), Some(&plan_io))?;
-            let mut preserved = super::super::fork_preparer_io::vector(bindings.len(), Some(&io))?;
+                crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
+            let mut edits = crate::model::vec_with_capacity(bindings.len(), Some(&plan_io))?;
+            let mut preserved = crate::model::vec_with_capacity(bindings.len(), Some(&io))?;
             for (index, (binding, guard)) in bindings.iter().zip(guards).enumerate() {
                 if binding.path.is_empty()
                     || binding.path.contains(['\\', '\0'])
@@ -122,7 +122,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     path,
                     writable: binding.writable,
                     namespace: binding.namespace.clone(),
-                    authority_revision: crate::contract::canonical_json_digest_with_work(
+                    authority_revision: crate::contract::canonical_json_digest(
                         &(binding.verifier.audience(), binding.scope),
                         owner.input_limits().file_bytes,
                         &mut Some(&mut io.history_io()),
@@ -289,7 +289,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     let io_paths = PreparationIo::from_native_work(volume_work)?;
                     let (empty, custody) = volume_work.display("")?;
                     io_paths.absorb_native_custody(custody)?;
-                    let mut paths = super::super::fork_preparer_io::vector(1, Some(&io_paths))?;
+                    let mut paths = crate::model::vec_with_capacity(1, Some(&io_paths))?;
                     paths.push(empty);
                     journal = materializer
                         .stage_generation(
@@ -314,7 +314,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 .ok_or_else(invalid)?;
             let final_io = PreparationIo::from_native_work(work)?;
             let mut volumes =
-                super::super::fork_preparer_io::vector(bindings.len(), Some(&final_io))?;
+                crate::model::vec_with_capacity(bindings.len(), Some(&final_io))?;
             for (index, (binding, (generation, volume_work))) in
                 bindings.iter().zip(generations).enumerate()
             {

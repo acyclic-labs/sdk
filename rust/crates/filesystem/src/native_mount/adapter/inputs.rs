@@ -1,5 +1,5 @@
 pub(super) struct InputBuffers<'a, 'w> {
-    carrier: &'a mut NativeDemandCarrier<'w>,
+    pub(super) carrier: &'a mut NativeDemandCarrier<'w>,
     pub(super) bytes: u64,
     allocation: Option<crate::NativeAllocation>,
     pending: Option<crate::materializer::NativeWorkReservation>,
@@ -96,7 +96,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         Ok(vector)
     }
 
-    fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
+    pub(super) fn copy_bytes(&mut self, bytes: &[u8]) -> Result<Vec<u8>, MountSourceError> {
         let delta = crate::WorkCounters {
             bytes_copied: bytes.len() as u64,
             ..crate::WorkCounters::UNCHARGED
@@ -224,7 +224,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        let (path, mut allocation) = crate::native_host::clone_path_with_work(path, &mut &original)
+        let (path, mut allocation) = crate::native_host::clone_path(path, &mut &original)
             .map_err(MountSourceError::NativeWork)?;
         self.allocation
             .as_mut()
@@ -239,7 +239,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         self.allocation.take()
     }
 
-    fn observer<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    pub(super) fn observer<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         &mut self,
         checkout: &Checkout<A, O>,
         cancellation: &CancellationToken,

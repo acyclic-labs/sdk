@@ -68,7 +68,7 @@ impl ConcurrentServiceControl {
                 session_id,
                 Arc::new(SessionHandle::new(
                     key,
-                    control,
+                    SessionController::HostManaged(Box::new(control)),
                     (actor_resources.0, Some(actor_resources.1)),
                 )),
             );

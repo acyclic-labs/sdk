@@ -136,7 +136,7 @@ const PENDING_DIAGNOSTIC_LABEL_BYTES: u64 =
             "discarding",
         ]);
 
-impl<'a> crate::pi_selected_host::PiControlHost<'a> {
+impl<'a> crate::pi_host::PiControlHost<'a> {
     /// The actor durably saves these existing Preparing records before another pass.
     pub(crate) fn pending_to_save(
         &self,

@@ -1,35 +1,6 @@
 //! Original allocation, scratch and conversation observations.
 use super::*;
 
-/// Reopens historical successful creation after the root released its lease.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "original archived owner, producers and finite observation"
-)]
-pub(crate) async fn observe_root_allocation(
-    owner: Arc<PiOwnerConfig>,
-    resources: &ServiceResources,
-    filesystem: Arc<Host>,
-    stream: Arc<LocalStream>,
-    preparation: PiRootPreparation,
-    work: &NativeMaterializationWork,
-) -> Result<Option<((FileRef, PiRootAllocation), NativeAllocation)>> {
-    let observer = root_provider(
-        owner,
-        resources,
-        filesystem,
-        stream,
-        preparation,
-        None,
-        work.clone(),
-    )?;
-    let attempt =
-        EffectAttemptId::from_bytes(observer.effect_id_with_native_work(work)?.into_bytes());
-    observer
-        .observe_allocation_with_native_work(attempt, work)
-        .await
-}
-
 /// Root output is its genuinely created private scratch, never the protected bootstrap journal.
 #[allow(
     clippy::too_many_arguments,

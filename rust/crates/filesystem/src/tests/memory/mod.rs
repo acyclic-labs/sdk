@@ -1,74 +1,71 @@
 use super::*;
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::facade::test_authority::OpaqueAuthority;
 use crate::foundation::Digest;
 use crate::storage::FenceOutcome;
 use acyclic_stream::OwnedBytes;
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_authority_budget() -> WorkBudget {
-    WorkBudget {
-        authority_records_read: 32,
-        authority_records_appended: 32,
-        authority_bytes_read: 131_072,
-        authority_bytes_written: 131_072,
-        backend_read_operations: 32,
-        backend_write_operations: 32,
-        bytes_hashed: 131_072,
-        bytes_copied: 131_072,
-        items_examined: 128,
-        allocation_operations: 32,
-        peak_allocation_bytes: 131_072,
-        ..WorkBudget::default()
-    }
-}
+const NATIVE_AUTHORITY_BUDGET: WorkBudget = WorkBudget {
+    authority_records_read: 32,
+    authority_records_appended: 32,
+    authority_bytes_read: 131_072,
+    authority_bytes_written: 131_072,
+    backend_read_operations: 32,
+    backend_write_operations: 32,
+    bytes_hashed: 131_072,
+    bytes_copied: 131_072,
+    items_examined: 128,
+    allocation_operations: 32,
+    peak_allocation_bytes: 131_072,
+    ..WorkCounters::UNCHARGED
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn native_authority_fixture()
 -> Result<(MemoryAuthorityStore, AuthorityId, DurableCommit), Box<dyn std::error::Error>> {
     let store = MemoryAuthorityStore::default();
     let id = AuthorityId::from_bytes([0xe1; 16]);
-    let budget = native_authority_budget();
+    let budget = NATIVE_AUTHORITY_BUDGET;
     let CreateAuthorityOutcome::Created(head) = ({
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work = crate::AuthorityWork::new(budget, authority_cancellation);
-        let __authority_result = store
-            .create_authority(id, Epoch::GENESIS, &mut __authority_work, None::<&mut ()>)
+        store
+            .create_authority(
+                id,
+                Epoch::GENESIS,
+                &mut crate::AuthorityWork::new(budget, authority_cancellation),
+                None::<&mut ()>,
+            )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+            .map_err(|error| error.into_error(std::convert::identity))
     })?
-    .value
     else {
         return Err("native fixture authority already exists".into());
     };
     let AppendOutcome::Committed(commit) = ({
-        let authority_input_3 = ProposedCommit {
-            operation_id: OperationId::from_bytes([0xe2; 16]),
-            fingerprint: Digest::from_bytes([0xe3; 32]),
-            payload: bytes::Bytes::from(vec![0x5a; 8_192]),
-        };
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work = crate::AuthorityWork::new(budget, authority_cancellation);
-        let __authority_result = store
+        store
             .compare_and_append(
                 crate::GuardedAppend {
                     authority_id: id,
                     epoch: Epoch::GENESIS,
                     expected: head,
-                    commit: authority_input_3,
+                    commit: ProposedCommit {
+                        operation_id: OperationId::from_bytes([0xe2; 16]),
+                        fingerprint: Digest::from_bytes([0xe3; 32]),
+                        payload: bytes::Bytes::from(vec![0x5a; 8_192]),
+                    },
                     permit: crate::PublicationPermit::Unrestricted,
                 },
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(budget, authority_cancellation),
                 None::<&mut ()>,
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
     })?
-    .value
     else {
         return Err("native fixture did not append".into());
     };
@@ -76,22 +73,20 @@ async fn native_authority_fixture()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_object_budget() -> WorkBudget {
-    WorkBudget {
-        object_probes: 128,
-        object_bytes_read: 131_072,
-        object_bytes_written: 131_072,
-        bytes_hashed: 131_072,
-        bytes_copied: 131_072,
-        backend_read_operations: 32,
-        backend_write_operations: 32,
-        allocation_operations: 32,
-        peak_allocation_bytes: 131_072,
-        items_examined: 128,
-        items_returned: 128,
-        ..WorkBudget::default()
-    }
-}
+const NATIVE_OBJECT_BUDGET: WorkBudget = WorkBudget {
+    object_probes: 128,
+    object_bytes_read: 131_072,
+    object_bytes_written: 131_072,
+    bytes_hashed: 131_072,
+    bytes_copied: 131_072,
+    backend_read_operations: 32,
+    backend_write_operations: 32,
+    allocation_operations: 32,
+    peak_allocation_bytes: 131_072,
+    items_examined: 128,
+    items_returned: 128,
+    ..WorkCounters::UNCHARGED
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
@@ -101,7 +96,7 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
     let cancellation = crate::CancellationToken::new();
     let budget = WorkBudget {
         allocation_operations: 1, // Only the original meter's own allocation.
-        ..native_object_budget()
+        ..NATIVE_OBJECT_BUDGET
     };
     let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let before = work.receipt();
@@ -111,12 +106,12 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
         OwnedBytes::from_static(b"body"),
     );
     let result = {
-        let authority_input_0 = object.clone();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result =
-            AsyncObjectStore::put_hashed(&store, authority_input_0, &mut __object_work).await;
-        __object_result
+        AsyncObjectStore::put_hashed(
+            &store,
+            object.clone(),
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await
     };
     assert!(matches!(
         result,
@@ -131,18 +126,16 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(work.receipt().bytes_hashed, 0);
     assert_eq!(work.receipt().object_bytes_written, 0);
-    assert!(
-        !{
-            let authority_input_0 = object.object_id();
-            let authority_cancellation = &crate::CancellationToken::new();
+    assert!(!{
+        let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.contains(authority_input_0, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }?
-        .value
-    );
+        store
+            .contains(
+                object.object_id(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
+            .await
+    }?);
     assert!(
         store
             .objects
@@ -162,7 +155,7 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     use crate::materializer::NativeMaterializationWork;
     use std::sync::Arc;
     let cancellation = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_object_budget(), &cancellation)
+    let work = NativeMaterializationWork::new(NATIVE_OBJECT_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
     let mut allocation = work.claim(4, 1, crate::WorkCounters::UNCHARGED)?;
@@ -186,10 +179,12 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let id = object.object_id();
     let store = Arc::new(MemoryObjectStore::default());
     (async {
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result =
-            AsyncObjectStore::put_hashed(&store, object, &mut __object_work).await;
-        __object_result
+        AsyncObjectStore::put_hashed(
+            &store,
+            object,
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await
     })
     .await?;
     assert_eq!(
@@ -202,19 +197,25 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let view = {
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = AsyncObjectStore::read(&*store, id, 4, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
-    let reader = NativeMaterializationWork::new(native_object_budget(), &cancellation)
+        AsyncObjectStore::read(
+            &*store,
+            id,
+            4,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+        )
+        .await
+    }?;
+    let reader = NativeMaterializationWork::new(NATIVE_OBJECT_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let reader_before = reader.receipt();
     let native_view = {
-        let mut __object_work = crate::AuthorityWork::native(&reader, &cancellation);
-        let __object_result = AsyncObjectStore::read(&*store, id, 4, &mut __object_work).await;
-        __object_result
+        AsyncObjectStore::read(
+            &*store,
+            id,
+            4,
+            &mut crate::AuthorityWork::native(&reader, &cancellation),
+        )
+        .await
     }?;
     assert_eq!(
         reader.receipt().allocation_operations,
@@ -227,14 +228,15 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     assert_eq!(work.receipt(), alias_before);
     assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
     {
-        let authority_input_1 = OwnedBytes::from_static(b"body");
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = // A duplicate ordinary input leaves the original resident carrier intact.
-    AsyncObjectStore::put(&*store, id, authority_input_1, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        AsyncObjectStore::put(
+            &*store,
+            id,
+            OwnedBytes::from_static(b"body"),
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+        )
+        .await
     }?;
     assert_eq!(work.live_allocation_bytes(), body_live);
     drop(native_view);
@@ -244,20 +246,24 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
         OwnedBytes::from_static(b"second"),
     );
     {
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result =
-            AsyncObjectStore::put_hashed(&*store, second, &mut __object_work).await;
-        __object_result
+        AsyncObjectStore::put_hashed(
+            &*store,
+            second,
+            &mut crate::AuthorityWork::native(&work, &cancellation),
+        )
+        .await
     }?;
     let resident = {
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = AsyncObjectStore::read(&*store, id, 4, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    }?
-    .value;
+        AsyncObjectStore::read(
+            &*store,
+            id,
+            4,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+        )
+        .await
+    }?;
     assert_eq!(resident.bytes.as_ptr(), alias.as_ptr());
     drop(resident);
     // Removing the map's alias cannot release custody retained by either read.
@@ -303,160 +309,12 @@ fn native_mutation_request(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum OriginalMutationOwnerFailure {
-    Authority(AuthorityStoreError),
+    #[error(transparent)]
+    Authority(#[from] AuthorityStoreError),
+    #[error("owner rejection {0}")]
     Owner(u8),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl From<AuthorityStoreError> for OriginalMutationOwnerFailure {
-    fn from(error: AuthorityStoreError) -> Self {
-        Self::Authority(error)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for OriginalMutationOwnerFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Authority(error) => std::fmt::Display::fmt(error, formatter),
-            Self::Owner(code) => write!(formatter, "owner rejection {code}"),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::error::Error for OriginalMutationOwnerFailure {}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-struct OpaqueImmediateAuthority(MemoryAuthorityStore);
-
-#[cfg(not(target_arch = "wasm32"))]
-impl crate::AsyncAuthorityStore for OpaqueImmediateAuthority {
-    async fn create_authority<G: crate::AuthorityGuard>(
-        &self,
-        authority: crate::AuthorityId,
-        epoch: crate::Epoch,
-        work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
-    ) -> Result<crate::CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        let value = crate::AsyncAuthorityStore::create_authority(
-            &self.0,
-            authority,
-            epoch,
-            work,
-            None::<&mut ()>,
-        )
-        .await
-        .map_err(|error| {
-            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-        })?;
-        if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) {
-            crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        }
-        Ok(value)
-    }
-    async fn compare_and_append<G: crate::AuthorityGuard>(
-        &self,
-        request: crate::GuardedAppend,
-        work: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
-    ) -> Result<(crate::AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>>
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        if request.permit != crate::PublicationPermit::Unrestricted {
-            return Err(crate::AuthorityStoreError::Rejected(
-                "authority backend cannot atomically evaluate operation leases".to_owned(),
-            )
-            .into());
-        }
-        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        crate::AsyncAuthorityStore::compare_and_append(&self.0, request, work, None::<&mut ()>)
-            .await
-            .map_err(|error| {
-                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
-            })
-    }
-    async fn head(
-        &self,
-        authority: crate::AuthorityId,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::Head, crate::AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        crate::AsyncAuthorityStore::head(&self.0, authority, work).await
-    }
-    async fn replay(
-        &self,
-        authority: crate::AuthorityId,
-        after: crate::Sequence,
-        limit: crate::ReplayLimit,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Vec<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError>
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        crate::AsyncAuthorityStore::replay(&self.0, authority, after, limit, work).await
-    }
-    async fn fence(
-        &self,
-        authority: crate::AuthorityId,
-        expected: crate::Head,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<crate::FenceOutcome, crate::AuthorityStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        crate::AsyncAuthorityStore::fence(&self.0, authority, expected, work).await
-    }
-    async fn find_operation(
-        &self,
-        authority: crate::AuthorityId,
-        operation: crate::OperationId,
-        work: &mut crate::AuthorityWork<'_>,
-    ) -> Result<
-        (Option<crate::DurableCommit>, crate::AuthorityAllocation),
-        crate::AuthorityStoreError,
-    > {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        }
-        work.cancellation
-            .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-        crate::AsyncAuthorityStore::find_operation(&self.0, authority, operation, work).await
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -465,47 +323,38 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::async_storage::AsyncAuthorityStore;
     use crate::materializer::NativeMaterializationWork;
-    let store = std::sync::Arc::new(OpaqueImmediateAuthority::default());
+    let store = std::sync::Arc::new(OpaqueAuthority::default());
     let id = AuthorityId::from_bytes([0x99; 16]);
     let cancellation = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+    let work = NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let prefix = work.receipt();
     let request = native_mutation_request(id, Head::genesis(Epoch::GENESIS));
     assert!(matches!(
         (async {
-            let authority_input_1 = request.commit.clone();
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::create_first_record(
+            AsyncAuthorityStore::create_first_record(
                 &store,
                 id,
-                authority_input_1,
-                &mut __authority_work,
+                request.commit.clone(),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-            __authority_result
+            .map_err(|error| error.into_error(std::convert::identity))
         })
         .await,
         Err(AuthorityStoreError::NativeOriginalUnsupported)
     ));
     assert!(matches!(
         (async {
-            let authority_input_0 = request.clone();
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::compare_and_append(
+            AsyncAuthorityStore::compare_and_append(
                 &store,
-                authority_input_0,
-                &mut __authority_work,
+                request.clone(),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
                 None::<&mut ()>,
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-            __authority_result
         })
         .await,
         Err(AuthorityStoreError::NativeOriginalUnsupported)
@@ -518,22 +367,14 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
     };
     assert!(matches!(
         (async {
-            let authority_input_0 = request.clone();
-            let authority_input_3 = &mut guard;
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::compare_and_append(
+            AsyncAuthorityStore::compare_and_append(
                 &store,
-                authority_input_0,
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard(
-                    (authority_input_3).clone(),
-                )),
+                request.clone(),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+                Some(&mut crate::NativeAuthorityGuard((&mut guard).clone())),
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-            __authority_result
         })
         .await,
         Err(AuthorityStoreError::NativeOriginalUnsupported)
@@ -556,13 +397,11 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
         })
     ));
     let ordinary = (async {
-        let authority_input_1 = request.commit;
-
         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = AsyncAuthorityStore::create_first_record(
             &store,
             id,
-            authority_input_1,
+            request.commit,
             &mut __authority_work,
             None::<&mut ()>,
         )
@@ -579,3 +418,5 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
 mod authority;
 mod native_publication;
 mod objects;
+
+const B: WorkBudget = WorkBudget::UNBOUNDED;

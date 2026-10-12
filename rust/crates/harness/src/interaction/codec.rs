@@ -77,7 +77,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let decoded = decoded.map_err(|mut error| {
-        if let Error::NativeDecode {
+        if let Error::NativeJson {
             custody: error_custody,
             ..
         } = &mut error

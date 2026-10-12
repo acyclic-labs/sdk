@@ -37,7 +37,7 @@ use acyclic_harness::{
     fork::ForkReport,
     resources::GenerationRef,
     runtime::{ContentBindings, DurableTaskHost, TaskAdmissionRecord, TaskContext},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand,
 };
@@ -48,7 +48,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-pub(crate) type PiNativeRuntime = PiTaskRuntime;
 pub(crate) type PiNativeFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type PiNativeLiveView = NativeVolumeView<LocalAuthorityBackend, LocalObjectBackend>;
 
@@ -64,7 +63,7 @@ pub(crate) use sources::PiNativeLiveSource;
 use state::*;
 
 pub(crate) struct PiNativeCommandHost {
-    runtime: Arc<PiNativeRuntime>,
+    runtime: Arc<PiTaskRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
     stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
@@ -76,7 +75,7 @@ pub(crate) struct PiNativeCommandHost {
 
 impl PiNativeCommandHost {
     pub(crate) fn new(
-        runtime: Arc<PiNativeRuntime>,
+        runtime: Arc<PiTaskRuntime>,
         filesystem: Arc<PiNativeFilesystem>,
         stream: std::sync::Arc<LocalStream>,
         resources: &ServiceResources,

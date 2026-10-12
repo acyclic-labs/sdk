@@ -66,7 +66,7 @@ pub(crate) use inputs::{
     observe_pi_root_input_with_native_work, stage_pi_input, stage_pi_operator_input,
     stage_pi_root_input_with_native_work,
 };
-pub(crate) use preparation::{bind_root_output_context_with_native_work, observe_root_allocation};
+pub(crate) use preparation::bind_root_output_context_with_native_work;
 pub(crate) use sources::{
     guard_root_preparation_source_with_native_work, prove_root_project_source_with_native_work,
 };
@@ -95,17 +95,18 @@ impl PiRootHandle {
                 reason: "root index key custody differs from original source work",
             });
         }
-        let workspace = workspace.into_arc_with_native_work(work)?;
         let mut entry = work.claim(
-            std::mem::size_of::<(String, Self)>() as u64,
-            0,
+            (std::mem::size_of::<(String, Self)>()
+                + std::mem::size_of::<LocalLazyWorkspace>()
+                + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         key.1.absorb(&mut entry)?;
         Ok((
             key.0,
             Self {
-                workspace,
+                workspace: Arc::new(workspace),
                 physical,
                 _custody: key.1,
             },

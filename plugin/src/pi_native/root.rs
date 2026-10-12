@@ -66,7 +66,10 @@ impl PiNativeRoot {
             });
         }
         let creator = owner.child_scratch_creation_proof()?;
-        if creator.original_task() != self.task || creator.volume() != &self.scratch {
+        if acyclic_harness::runtime::task_id_for_admission(creator.origin().intended_child)
+            != self.task
+            || creator.volume() != &self.scratch
+        {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi native directory creation differs from its sealed Created scratch",

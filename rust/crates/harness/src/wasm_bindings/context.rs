@@ -162,6 +162,8 @@ pub fn prepare_conversation_turn_wasm(
         existing_selection,
         has_completed_output,
         can_reconcile,
+        None,
+        None,
     )
     .map_err(js_error)?;
     to_js(&preparation)

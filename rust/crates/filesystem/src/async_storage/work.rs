@@ -13,6 +13,7 @@ pub struct AuthorityWork<'a> {
     pub original: Option<&'a crate::NativeMaterializationWork>,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
     pub(crate) opaque_live_upper_bytes: u64,
+    pub(crate) read_observation: Option<(&'a crate::kernel::ProofDataCustody, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
 }
@@ -26,6 +27,7 @@ impl<'a> AuthorityWork<'a> {
             cancellation,
             allocations: Default::default(),
             opaque_live_upper_bytes: 0,
+            read_observation: None,
             #[cfg(not(target_arch = "wasm32"))]
             request_allocation: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -43,6 +45,14 @@ impl<'a> AuthorityWork<'a> {
             original: Some(original),
             ..Self::new(WorkBudget::UNBOUNDED, cancellation)
         }
+    }
+
+    pub(super) fn object_fallback(&self) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        Ok(())
     }
 
     /// Returns actual completed work.
@@ -81,6 +91,47 @@ impl<'a> AuthorityWork<'a> {
                 work: self.spent(),
             })
             .map_err(|error| crate::performance::OperationFailure::new(error, self.spent()))
+    }
+
+    /// Returns the read budget after accounting for resident cache data.
+    pub fn read_budget(&mut self) -> Result<WorkBudget, crate::WorkError> {
+        let mut remaining = self.work.remaining(self.budget)?;
+        if let Some((_, standing)) = self.read_observation {
+            let Some(peak) = remaining.peak_allocation_bytes.checked_sub(standing) else {
+                self.read_observation = None;
+                return Err(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    observed: standing,
+                    maximum: remaining.peak_allocation_bytes,
+                });
+            };
+            remaining.peak_allocation_bytes = peak;
+        }
+        Ok(remaining)
+    }
+
+    pub(crate) fn read_receipt(
+        &self,
+        result: Result<ObjectRead, crate::ObjectStoreError>,
+    ) -> ObjectResult<ObjectRead> {
+        let mut work = self.spent();
+        if let Some((observation, standing)) = self.read_observation {
+            observation
+                .record_completed_leaf_work(work)
+                .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+            if standing != 0 {
+                work = WorkCounters::UNCHARGED
+                    .with_backend(work, standing)
+                    .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+                if result.is_ok() {
+                    work.verify(self.budget)
+                        .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+                }
+            }
+        }
+        result
+            .map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::ObjectFailure::new(error, work))
     }
 
     pub(crate) fn check(&self) -> Result<(), crate::AuthorityStoreError> {
@@ -140,11 +191,13 @@ impl<'a> AuthorityWork<'a> {
 }
 
 /// Publication failed in the authority provider or its owner guard.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuthorityError<E> {
     /// The authority provider rejected the operation.
+    #[error(transparent)]
     Authority(crate::AuthorityStoreError),
     /// The owner guard rejected the operation.
+    #[error(transparent)]
     Owner(E),
 }
 

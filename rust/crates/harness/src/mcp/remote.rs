@@ -39,7 +39,7 @@ impl RemoteTool {
         }
         let value =
             serde_json::to_value(result).map_err(|error| Error::Invalid(error.to_string()))?;
-        rpc::check_dto(rpc::Dto::CallToolResult, &value, None)?;
+        rpc::check::<rmcp::model::CallToolResult>(&value, None)?;
         Ok(ToolResult { value })
     }
 }

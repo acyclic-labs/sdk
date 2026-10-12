@@ -19,7 +19,7 @@ impl PiNativeCommandHost {
             crate::guarded_cli_text(&["pi-native:", &self.resources.instance_id], &work)?;
         let worker = Worker {
             id,
-            available: ResourceSnapshot::default(),
+            available: ResourceRequest::default(),
             labels: BTreeMap::new(),
         };
         let result = async {

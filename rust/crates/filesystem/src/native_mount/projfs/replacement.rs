@@ -17,17 +17,7 @@ pub(super) fn replace_written(
         Err(MountSourceError::NotFound) => None,
         Err(error) => return Err(error.to_string()),
     };
-    rewrite(projection, path, &relative, written.owned, current, basis)
-}
-
-pub(super) fn rewrite(
-    projection: Projection<'_>,
-    path: &MountPath,
-    relative: &HSTRING,
-    owned: Option<Owned>,
-    current: Option<(MountLookup, Option<MountContentPin>)>,
-    basis: Option<ReadBasis>,
-) -> Result<Replaced, String> {
+    let owned = written.owned;
     let replacing = match (owned, current) {
         (Some(Owned::File(state)), Some((lookup, _)))
             if lookup.node.kind == MountNodeKind::Regular =>
@@ -46,7 +36,7 @@ pub(super) fn rewrite(
             match unsafe {
                 PrjDeleteFile(
                     projection.context,
-                    relative,
+                    &relative,
                     Some(PRJ_UPDATE_ALLOW_READ_ONLY),
                     None,
                 )

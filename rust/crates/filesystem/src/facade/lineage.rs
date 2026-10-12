@@ -147,10 +147,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         maximum_generations: u32,
         cancellation: &CancellationToken,
     ) -> Result<RebaseLineage<A, O>, WorkspaceError> {
-        let (target_object, target_head, _) = target
-            .resolve_head_generation(WorkBudget::UNBOUNDED, cancellation)
+        let (target_object, target_head) = target
+            .resolve_head_generation(
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation),
+                cancellation,
+            )
             .await
-            .map(|receipt| receipt.value)
             .map_err(WorkspaceError::engine)?;
         let (target_root, _) = read_generation_root(
             &self.inner.objects,
@@ -203,10 +205,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if source.config != target.config || base_root.root_file_id != target_root.root_file_id {
             return Err(WorkspaceError::IncompatibleWorkspace);
         }
-        let (source_object, _, _) = source
-            .resolve_head_generation(WorkBudget::UNBOUNDED, cancellation)
+        let (source_object, _) = source
+            .resolve_head_generation(
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation),
+                cancellation,
+            )
             .await
-            .map(|receipt| receipt.value)
             .map_err(WorkspaceError::engine)?;
         Ok(RebaseLineage {
             target_object,

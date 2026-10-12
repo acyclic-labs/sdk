@@ -201,7 +201,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     assert_eq!(token.origin().intended_child, child.operation_id);
     assert_eq!(
         token.origin().request_digest,
-        crate::contract::canonical_json_digest(&request)?
+        crate::contract::canonical_json_digest(&request, u64::MAX, &mut None)?
     );
     for change in 0..4 {
         let mut changed = request.clone();
@@ -219,7 +219,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let unbound = crate::resource_preparation::ResourceCreationProofRef {
         provider: request.provider.clone(),
         preparation: prep,
-        resource: request.resources[0].clone(),
+        resource: request.resources().next().expect("resource").clone(),
         evidence: ResourceRef::new(
             ResourceKind::Stream,
             request.provider.clone(),

@@ -124,7 +124,7 @@ impl<'a> PiForkCoordinator<'a> {
                         work.display(&format_args!("pi-fork:{}", self.resources.instance_id))?;
                     let worker = Worker {
                         id: worker_id.0,
-                        available: ResourceSnapshot::default(),
+                        available: ResourceRequest::default(),
                         labels: BTreeMap::new(),
                     };
                     let result = {

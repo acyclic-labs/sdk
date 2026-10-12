@@ -2,11 +2,12 @@
 use crate::{
     PiTaskBinding,
     pi_fork::{derived, original_operation},
-    pi_native_host::{PiNativeFilesystem, PiNativeRuntime},
+    pi_native_host::PiNativeFilesystem,
     pi_operator::{
         self, PiOperatorBody, PiOperatorDecision, PiOperatorRequest, PiPreparedApproval,
     },
     pi_owner::PiOwnerConfig,
+    pi_runtime::PiTaskRuntime,
 };
 use acyclic_fs::{MaterializationPhase, NativeMaterializationWork};
 use acyclic_harness::store::native_work_io;
@@ -50,7 +51,6 @@ impl<'a> From<&'a crate::pi_selected_host::PiSelectedCommand>
             paths: &command.paths,
             confirm: command.confirm,
             approval_digest: command.approval_digest.as_deref(),
-            import_operation: command.import_operation,
         }
     }
 }
@@ -62,7 +62,6 @@ impl<'a> crate::pi_selected_host::PiSelectedCommand<&'a str, &'a [String]> {
         Self {
             root: Some(root),
             approval_digest: None,
-            import_operation: None,
             ..Self::from(command)
         }
     }
@@ -86,7 +85,6 @@ impl<'a> From<&'a PiPreparedApproval>
             source_snapshot: descriptor.source_snapshot,
             selected_snapshot: descriptor.selected_snapshot,
             imported: descriptor.imported,
-            import_receipt: (&descriptor.import_receipt).into(),
             journal: &descriptor.journal,
             canonical_digest_input: &descriptor.canonical_digest_input,
             root_path: &descriptor.root_path,
@@ -117,7 +115,6 @@ fn validate_descriptor(
         || descriptor.command.source == root
         || descriptor.operation != derived(original, "selected-writeback", work)?
         || descriptor.command.approval_digest.is_some()
-        || descriptor.command.import_operation.is_some()
         || !descriptor.command.confirm
         || descriptor.command.paths.is_empty()
         || descriptor.journal.plan.operation_id
@@ -175,7 +172,7 @@ fn conversation_journal<'a>(
     reason = "original task, conversation and measured producer are independent"
 )]
 pub(crate) async fn open_prepared_approval(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     protected: &PiOwnerConfig,
     context: &TaskContext,
@@ -309,7 +306,7 @@ pub(crate) async fn require_resolved_approval<'a>(
 
 /// Passive: no lease pull, source capture, import, preparation, launch or workflow mutation.
 pub(crate) async fn read_prepared_approval(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     protected: &PiOwnerConfig,
     sdk_operation: &str,
@@ -500,7 +497,7 @@ pub(crate) async fn writeback_status(
 
 /// Rejects invalid operator responses before staging an immutable Root control.
 pub(crate) async fn validate_approval_request(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     protected: &PiOwnerConfig,
     session: &str,
@@ -539,7 +536,7 @@ pub(crate) async fn validate_approval_request(
 
 /// Signed responder authority stays in Root-only input storage.
 pub(crate) async fn stage_operator_command(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     protected: &PiOwnerConfig,
     filesystem: &Arc<PiNativeFilesystem>,
     request: &PiOperatorRequest,
@@ -582,7 +579,7 @@ pub(crate) async fn stage_operator_command(
 }
 
 pub(crate) async fn inspect_operator(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources,
@@ -648,7 +645,7 @@ pub(crate) async fn inspect_operator(
                 }
             }
         }
-        let projection = crate::pi_selected_host::read_imported_selected_files(
+        let projection = crate::pi_operator::evidence::read_imported_selected_files(
             protected,
             retained,
             roots,
@@ -687,7 +684,7 @@ pub(crate) async fn inspect_operator(
 
 /// Caller proof is verified by the existing actor before entering this passive API.
 pub(crate) async fn passive_status(
-    runtime: &PiNativeRuntime,
+    runtime: &PiTaskRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     stream: &std::sync::Arc<LocalStream>,
     resources: &crate::ServiceResources,
@@ -750,7 +747,7 @@ pub(crate) async fn passive_status(
     )
 }
 
-impl<'a> crate::pi_selected_host::PiControlHost<'a> {
+impl<'a> crate::pi_host::PiControlHost<'a> {
     pub(crate) async fn run_operator(
         &self,
         context: Arc<TaskContext>,

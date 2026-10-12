@@ -86,9 +86,8 @@ export class ClientViews<Value, Assumption, Evidence> {
     tick(sequence);
     const budget = Object.freeze({ ...limits });
     this.#kernel = new WasmClientViews(domain.identity, namespace, sequence, budget,
-      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain));
+      domain.validate.bind(domain), domain.observe.bind(domain), domain.corresponds.bind(domain), domain.restore?.bind(domain));
     this.#maximumSelections = budget.records + budget.branches;
-    if (domain.restore !== undefined) this.#kernel.enableRestore(domain.restore.bind(domain));
   }
 
   #live(): void { if (this.#disposed) throw new Error("client views are disposed"); }

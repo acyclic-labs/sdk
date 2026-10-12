@@ -310,33 +310,6 @@ impl PiNativeCommandHost {
         view
     }
 
-    pub(crate) fn binding(
-        &self,
-        task: TaskId,
-        work: &NativeMaterializationWork,
-    ) -> Result<Option<(PiTaskBinding, NativeAllocation)>> {
-        let Some(prepared) = self.source_prepared(task) else {
-            return Ok(None);
-        };
-        let maximum = self
-            .protected
-            .policy()
-            .maximum_payload_bytes
-            .min(prepared.admission.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&prepared.binding, maximum, work)?;
-        Ok(Some(crate::pi_root_provider::guarded_pi_decode::<
-            PiTaskBinding,
-        >(
-            &bytes.0,
-            maximum,
-            self.protected.policy().maximum_payload_bytes,
-            acyclic_harness::wire::ErrorCode::Invalid,
-            JsonValueSchema::None,
-            crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES,
-            work,
-        )?))
-    }
-
     /// The exact originally prepared child workspace, not a current-head reopen.
     pub(crate) fn live_workspace(&self, task: TaskId) -> Option<Arc<LocalLazyWorkspace>> {
         self.source_prepared(task)
@@ -409,7 +382,7 @@ impl PiNativeCommandHost {
             .authorized_source
             .as_ref()
             .map(|source| source.source_task)
-            .or_else(|| TaskId::parse(&prepared.report.request.parent.id).ok())
+            .or(prepared.admission.parent)
     }
 
     /// Approval display metadata only; authority remains the selected FS volume.

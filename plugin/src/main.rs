@@ -25,6 +25,7 @@ mod pi_conversation;
 mod pi_fork;
 mod pi_fork_host;
 mod pi_inspection;
+mod pi_host;
 mod pi_mail;
 mod pi_native;
 mod pi_native_host;
