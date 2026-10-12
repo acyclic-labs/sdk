@@ -337,8 +337,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.read_received_mail_owned(task, fence.clone(), receive_operation, item).await
+            self.host.read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None).await
         })
     }
 }
@@ -476,19 +475,7 @@ where
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
-        let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            stream.clone(),
-            payloads,
-            reader.clone(),
-            verifier.audience().clone(),
-            signed.clone(),
-            verifier.clone(),
-            scope.clone(),
-            tasks.clone(),
-            machines,
-            clock,
-        )?
+        let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
         .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
@@ -1163,8 +1150,8 @@ where
             .for_tool_workflow(context, tool, invocation, cancellation).await?;
         let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
         Ok(Arc::new(FilesystemWorkflowJournal::for_task(
-            owner, self.filesystem.clone(), self.volume.clone(),
-            self.verifier.clone(), self.signed.clone(), maximum_payload_bytes,
+            owner, self.filesystem.clone(), &self.volume,
+            &self.verifier, &self.signed, maximum_payload_bytes, None,
         )?))
     }
 
@@ -1192,10 +1179,10 @@ where
         Ok(Arc::new(FilesystemWorkflowJournal::for_task(
             self.host.journal_owner(task, fence).await?,
             self.filesystem.clone(),
-            self.volume.clone(),
-            self.verifier.clone(),
-            self.signed.clone(),
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            &self.volume,
+            &self.verifier,
+            &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes), None,
         )?))
     }
 
@@ -1210,9 +1197,9 @@ where
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-        FilesystemWorkflowJournal::for_task_with_native_work(
+        FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
-            &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
+            &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), Some(&io),
         )?.into_native_shared(work)
     }
 
@@ -1233,9 +1220,9 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<FilesystemWorkflowJournal<P, A, O>> {
         let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
-        FilesystemWorkflowJournal::for_task_with_native_work(
+        FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
-            &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), work,
+            &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), Some(&super::PreparationIo::from_native_work(work)?),
         )
     }
 
@@ -1335,11 +1322,13 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "worker pull requires original native work",
                     })?;
-                    let (pull, custody) = self.host.pull_operation_with_native_work(worker, admission.operation_id, work).await?;
-                    io.absorb_native_custody(custody)?;
+                    let mut operation_io = crate::store::native_work_io(work)?;
+                    crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
+                    let pull = self.host.pull_operation(worker, admission.operation_id, &mut Some(&mut operation_io)).await?;
+                    io.absorb_native_custody(operation_io.into_custody())?;
                     return Ok(pull);
                 }
-                self.host.pull_operation(worker, admission.operation_id).await
+                self.host.pull_operation(worker, admission.operation_id, &mut None).await
             }, io, observed::pull_has_native_failure,
         ).await?;
         Ok(match pulled {
@@ -1435,12 +1424,14 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wake requires original observer",
             ))?;
-            let (slot, custody) = self.host.workflow_suspension_with_native_work(task, work).await?;
-            io.absorb_native_custody(custody)?;
+            let mut operation_io = crate::store::native_work_io(work)?;
+            crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<Option<crate::scheduler::WorkflowSuspension>>() as u64)?;
+            let slot = self.host.workflow_suspension(task, &mut Some(&mut operation_io)).await?;
+            io.absorb_native_custody(operation_io.into_custody())?;
             slot
-        } else { self.host.workflow_suspension(task).await? };
+        } else { self.host.workflow_suspension(task, &mut None).await? };
         #[cfg(target_arch = "wasm32")]
-        let slot = self.host.workflow_suspension(task).await?;
+        let slot = self.host.workflow_suspension(task, &mut None).await?;
         let Some(slot) = slot else {
             return Ok(false);
         };
@@ -1457,17 +1448,17 @@ where
         } else {
             FilesystemWorkflowJournal::new(
                 self.host.workflow_stream(), Arc::clone(&self.filesystem),
-                &admission.operation_id.to_string(), self.volume.clone(),
-                self.verifier.clone(), self.signed.clone(),
-                self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                &admission.operation_id.to_string(), &self.volume,
+                &self.verifier, &self.signed,
+                self.maximum_payload_bytes.min(admission.limits.file_bytes), None,
             )?
         };
         #[cfg(target_arch = "wasm32")]
         let journal = FilesystemWorkflowJournal::new(
             self.host.workflow_stream(), Arc::clone(&self.filesystem),
-            &admission.operation_id.to_string(), self.volume.clone(),
-            self.verifier.clone(), self.signed.clone(),
-            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            &admission.operation_id.to_string(), &self.volume,
+            &self.verifier, &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes), None,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let retained = if let Some(io) = io {
@@ -1490,17 +1481,7 @@ where
             return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "wake workflow differs from admitted task"));
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        let record = if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| observed::boundary(
-                Some(io), crate::wire::ErrorCode::Unsupported, "native wake transition requires original observer",
-            ))?;
-            let (record, custody) = journal.observe_transition_with_native_work(slot.revision, work).await?;
-            io.absorb_native_custody(custody)?;
-            record
-        } else { journal.observe_transition(slot.revision, None).await? };
-        #[cfg(target_arch = "wasm32")]
-        let record = journal.observe_transition(slot.revision, None).await?;
+        let record = journal.observe_transition(slot.revision, io).await?;
         if record.next.revision != slot.revision
             || record.next.machine != admission.machine
             || !matches!(record.transition.status, MachineStatus::Suspended)

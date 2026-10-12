@@ -29,28 +29,28 @@ use acyclic_harness::{
     runtime::{RuntimeScope, ToolPolicy},
     tool::ToolRegistry,
 };
+use acyclic_native_runtime::obs::OperationSpan;
 use futures::{FutureExt as _, future::BoxFuture};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, ffi::OsString, path::PathBuf, sync::Arc, time::Instant};
 use tokio::sync::mpsc;
-use tracing::{Instrument as _, Span};
 
 /// A span with the `outcome` and `error.kind` slots that [`traced`] fills.
 macro_rules! op_span {
     ($level:ident, $name:literal) => {
-        tracing::span!(
+        OperationSpan::new(tracing::span!(
             tracing::Level::$level,
             $name,
             outcome = tracing::field::Empty,
             error.kind = tracing::field::Empty
-        )
+        ))
     };
 }
 
 /// Runs `future` inside `span` and records its outcome there.
-async fn traced<T>(span: Span, future: impl Future<Output = Result<T>>) -> Result<T> {
-    let result = future.instrument(span.clone()).await;
+async fn traced<T>(span: OperationSpan, future: impl Future<Output = Result<T>>) -> Result<T> {
+    let result = span.scope(future).await;
     match &result {
         Ok(_) => span.record("outcome", "ok"),
         Err(error) => span
@@ -296,10 +296,12 @@ impl CodexExecutor {
         prompt: String,
     ) -> Result<Session> {
         let dirs = Dirs::create(&self.config.state_dir, &operation.to_string())?;
-        let (proxy, calls) = ResponsesProxy::start_reporting(
+        let (sender, calls) = mpsc::unbounded_channel();
+        let proxy = ResponsesProxy::start(
             self.config.upstream.clone(),
             self.meter.clone(),
             max_steps,
+            Some(sender),
         )
         .await?;
         let mcp = match &self.scope {

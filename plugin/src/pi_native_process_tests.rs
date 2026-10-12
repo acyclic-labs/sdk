@@ -93,7 +93,7 @@ impl Fixture {
         acyclic_native_runtime::initialize_native_io_services()
             .map_err(|cause| native_error(acyclic_fs::NativeTreeMaterializationError::Io(cause)))?;
         acyclic_fs::initialize_native_mount_services()
-            .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
+            .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
         let mut directory = FixtureRoot { directory: Some(tempfile::tempdir().map_err(io_error)?), publication_pending: false };
         let node = required_path("ACYCLIC_PI_TEST_NODE")?;
         let cli = required_path("ACYCLIC_PI_TEST_CLI")?;
@@ -221,7 +221,7 @@ impl Fixture {
         let plan = (TaskEffectPlan { provider: PI_NATIVE_PROVIDER.into(), effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
             guarantee: EffectGuarantee::AtMostOnce, request: request_file.0, result_schema: schema.0 }, request_file.1);
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
-        approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
+        approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi".into(), command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,
             reservation: Some(reservation) })
@@ -468,8 +468,8 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
     let original_header = fixture.work.clone();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)
-        .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await
-        .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
+        .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await
+        .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
     let unrelated_cancellation = CancellationToken::new();
     let unrelated_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &unrelated_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let unrelated_effects = fixture.effects(&original, &unrelated_work)?;
@@ -479,7 +479,7 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     assert_eq!(fixture.work.receipt().backend_write_operations, before.backend_write_operations);
     let foreign_header = unrelated_work.clone();
     let callback = acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &foreign_header)
-        .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
+        .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
     assert!(callback.await.is_err(), "an unrelated accounting header admitted the original task's source callback");
     assert_eq!(unrelated_work.receipt().backend_read_operations, 0);
     assert_eq!(unrelated_work.receipt().backend_write_operations, 0);

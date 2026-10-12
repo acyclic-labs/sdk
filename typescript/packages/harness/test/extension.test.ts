@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { NativeContracts, extensionIdentity, type ExtensionAdmission, type ExtensionConfiguration, type ExtensionDependency, type ExtensionIdentity, type ExtensionRecord, type ExtensionStateMigration } from "../src/index.js";
+import { NativeContracts, extensionIdentity, type ExtensionAdmission, type ExtensionConfiguration, type ExtensionDependency, type ExtensionRecord, type ExtensionStateMigration } from "../src/index.js";
 
 const contracts = await NativeContracts.create();
 

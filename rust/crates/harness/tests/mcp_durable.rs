@@ -320,7 +320,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             .open_interaction(
                 interaction,
                 Interaction::approval(
-                    "Install this exact MCP catalog",
+                    "Install this exact MCP catalog".into(),
                     operation,
                     catalog().installation_digest(None, 1, 8192)?,
                 )?,

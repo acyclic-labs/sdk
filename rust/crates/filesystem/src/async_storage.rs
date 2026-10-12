@@ -267,7 +267,7 @@ where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTas
     let WorkspaceForkCommit { lineage, destination, creation, retention, retained } = fork;
     let result = append_first_record(
         store, retention, retained, WorkCounters::UNCHARGED, budget, cancellation,
-    ).await.map_err(authority_to_fs);
+    ).await.map_err(|failure| failure.map_error(crate::FsError::from));
     if !accept_fork_step(result, &mut work, budget)? {
         return Ok(crate::FsReceipt { value: WorkspaceForkOutcome::RetentionConflict, work });
     }
@@ -281,10 +281,10 @@ where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTas
         ).await,
         (Some(source), None) => store.fork_generation_authority(
             source, destination, creation.operation_id, remaining, cancellation,
-        ).await.map_err(authority_to_fs),
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
         (None, None) => store.create_authority(
             destination, Epoch::GENESIS, remaining, cancellation,
-        ).await.map_err(authority_to_fs),
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
     };
     accept_fork_step(result, &mut work, budget)?;
     let remaining = work.remaining(budget).map_err(|error| (crate::FsError::from(error), work))?;
@@ -294,7 +294,7 @@ where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTas
         ).await,
         None => append_first_record(
             store, destination, creation, WorkCounters::UNCHARGED, remaining, cancellation,
-        ).await.map_err(authority_to_fs),
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
     };
     let value = if accept_fork_step(result, &mut work, budget)? {
         WorkspaceForkOutcome::Committed
@@ -385,16 +385,16 @@ where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
-    let remaining = remaining_authority(prior, budget).map_err(authority_to_fs)?;
+    let remaining = remaining_authority(prior, budget)?;
     let created = match guard.as_deref_mut() {
         Some(guard) => store.create_authority_guarded(
             authority, Epoch::GENESIS, remaining, cancellation, guard,
         ).await,
         None => store.create_authority(
             authority, Epoch::GENESIS, remaining, cancellation,
-        ).await.map_err(authority_to_fs),
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
     }.map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-    let mut work = add_authority(prior, created.work, budget).map_err(authority_to_fs)?;
+    let mut work = add_authority(prior, created.work, budget)?;
     let head = match created.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
@@ -408,12 +408,12 @@ where
             head.epoch,
             Head::genesis(head.epoch),
             commit,
-            remaining_authority(work, budget).map_err(authority_to_fs)?,
+            remaining_authority(work, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-    work = add_authority(work, appended.work, budget).map_err(authority_to_fs)?;
+    work = add_authority(work, appended.work, budget)?;
     let retry = matches!(
         &appended.value,
         AppendOutcome::AlreadyCommitted(_) | AppendOutcome::Conflict { .. }
@@ -429,12 +429,12 @@ where
                         records: 1,
                         payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
                     },
-                    remaining_authority(work, budget).map_err(authority_to_fs)?,
+                    remaining_authority(work, budget)?,
                     cancellation,
                 )
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, first.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, first.work, budget)?;
             first.value.first().is_some_and(|record| {
                 record.sequence == Sequence::new(1)
                     && (record.operation_id, record.fingerprint) == identity
@@ -456,58 +456,47 @@ where
 fn remaining_authority(
     work: WorkCounters,
     budget: WorkBudget,
-) -> Result<WorkBudget, crate::storage::AuthorityFailure> {
+) -> crate::MeasuredResult<WorkBudget, crate::FsError> {
     work.remaining(budget)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), work))
 }
 
 fn add_authority(
     work: WorkCounters,
     more: WorkCounters,
     budget: WorkBudget,
-) -> Result<WorkCounters, crate::storage::AuthorityFailure> {
+) -> crate::MeasuredResult<WorkCounters, crate::FsError> {
     let combined = work
         .checked_add(more)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))?;
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), work))?;
     combined
         .verify(budget)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), combined))?;
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), combined))?;
     Ok(combined)
 }
 
-fn authority_to_fs(
-    failure: crate::storage::AuthorityFailure,
-) -> crate::performance::OperationFailure<crate::facade::FsError> {
-    crate::performance::OperationFailure::new(failure.error.into(), *failure.work)
-}
-
 fn authority_projection<T>(result: crate::facade::FsResult<T>) -> AuthorityResult<T> {
-    result.map_err(|failure| {
-        let error = match failure.error {
+    result.map_err(|failure| failure.map_error(|error| match error {
             crate::facade::FsError::Authority(error) => error,
             crate::facade::FsError::Work(error) => error.into(),
-            crate::facade::FsError::Cancelled(_) => crate::storage::AuthorityStoreError::Cancelled,
-            crate::facade::FsError::WorkspaceDeleted => crate::storage::AuthorityStoreError::Retired,
             _ => unreachable!("unguarded authority engine cannot produce a guard failure"),
-        };
-        crate::storage::AuthorityFailure::new(error, *failure.work)
-    })
+        }))
 }
 
 async fn run_authority_guard<F, Fut>(
     guard: &mut F,
     work: &mut WorkCounters,
     budget: WorkBudget,
-) -> crate::facade::FsResult<()>
+) -> crate::MeasuredResult<(), crate::FsError>
 where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
-    let receipt = guard(remaining_authority(*work, budget).map_err(authority_to_fs)?)
+    let receipt = guard(remaining_authority(*work, budget)?)
         .await
         .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
-    *work = add_authority(*work, receipt.work, budget).map_err(authority_to_fs)?;
-    Ok(crate::facade::FsReceipt { value: (), work: *work })
+    *work = add_authority(*work, receipt.work, budget)?;
+    Ok(())
 }
 
 /// Nonblocking authority-store contract.
@@ -637,9 +626,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
             run_authority_guard(guard, &mut work, budget).await?;
             let receipt = self.fork_generation_authority(
                 source, destination_authority, operation_id,
-                remaining_authority(work, budget).map_err(authority_to_fs)?, cancellation,
+                remaining_authority(work, budget)?, cancellation,
             ).await.map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, receipt.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, receipt.work, budget)?;
             if matches!(&receipt.value, CreateAuthorityOutcome::Existing(_)) {
                 run_authority_guard(guard, &mut work, budget).await?;
             }
@@ -674,9 +663,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
             run_authority_guard(guard, &mut work, budget).await?;
             let receipt = self.create_authority(
                 authority_id, genesis_epoch,
-                remaining_authority(work, budget).map_err(authority_to_fs)?, cancellation,
+                remaining_authority(work, budget)?, cancellation,
             ).await.map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, receipt.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, receipt.work, budget)?;
             if matches!(&receipt.value, CreateAuthorityOutcome::Existing(_)) {
                 run_authority_guard(guard, &mut work, budget).await?;
             }

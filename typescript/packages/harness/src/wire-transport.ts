@@ -178,7 +178,7 @@ export class HttpSseWireTransport implements WireTransport {
     readonly maximumMessageBytes = Number.MAX_SAFE_INTEGER,
   ) {
     let endpoint: URL;
-    try { endpoint = new URL(withSlash(baseUrl)); }
+    try { endpoint = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`); }
     catch { throw new TypeError("Harness endpoint must be an absolute URL"); }
     const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && loopback)) ||
@@ -706,9 +706,6 @@ function utf8Exceeds(text: string, maximum: number): boolean {
     (text.length * 3 > maximum && utf8.encode(text).byteLength > maximum);
 }
 
-function withSlash(value: string): string {
-  return value.endsWith("/") ? value : `${value}/`;
-}
 
 async function httpWireError(response: Response, operation: string, maximum: number): Promise<WireError> {
   try {

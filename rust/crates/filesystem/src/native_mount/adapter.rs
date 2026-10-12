@@ -4546,7 +4546,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn read_sparse_range_with_meter(
+    fn read_sparse_range(
         &self, offset: u64, length: u32, work: &crate::NativeMaterializationWork,
     ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError> {
         let meter = work.native_read_meter();
@@ -4576,7 +4576,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn write_sparse_range_with_meter(
+    fn write_sparse_range(
         &self, offset: u64, range: (MountSparseRange, crate::NativeAllocation), work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         let original = work.clone();
@@ -4863,8 +4863,8 @@ where
         list_attributes_with_meter(cursor: Option<&[u8]>, maximum_entries: u32) -> (MountAttributePage, crate::NativeAllocation);
         write_attribute(name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode) -> ();
         remove_attribute(name: &[u8]) -> ();
-        read_sparse_range_with_meter(offset: u64, length: u32) -> (MountSparseRange, crate::NativeAllocation);
-        write_sparse_range_with_meter(offset: u64, range: (MountSparseRange, crate::NativeAllocation)) -> ();
+        read_sparse_range(offset: u64, length: u32) -> (MountSparseRange, crate::NativeAllocation);
+        write_sparse_range(offset: u64, range: (MountSparseRange, crate::NativeAllocation)) -> ();
     );
 
 }
@@ -5128,7 +5128,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
@@ -5165,7 +5165,7 @@ where
         }, meter.as_ref()).map_err(capture_io_error)?
     }
 
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
         let original = work.clone();
         if !range.1.work().shares_ledger(&original)
@@ -7451,7 +7451,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         A: 'static,
         O: 'static,
     {
-
+        let native_work = carrier.original_native_work().expect("capture uses its native invocation");
         let (effect, _allocation) = installed_changes(
             &candidate.base, &candidate.checkout, scope, carrier, cancellation,
         ).await?;
@@ -7510,6 +7510,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             ).await?;
         }
         let checkout = self.checkout.read_current_state().await;
+        let native_work = carrier.original_native_work().ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::MissingCustody,
+        ))?;
         let bytes = checkout.proof_data_bytes(&mut crate::kernel::allocation::KernelAccounting::native(
             &native_work, cancellation,
         )).map_err(|error| match error {
@@ -10875,26 +10878,26 @@ mod tests {
         from.allocate_range_with_meter(80, 8, MountRangeAllocation::ZeroRange { extend: false }, &invocation)?;
         let foreign = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &caller)
             .map_err(|(error, _)| error)?;
-        let foreign_input = from.read_sparse_range_with_meter(0, 128, &foreign)?;
+        let foreign_input = from.read_sparse_range(0, 128, &foreign)?;
         let prefix = work.receipt();
-        assert!(matches!(to.write_sparse_range_with_meter(0, foreign_input, &invocation),
+        assert!(matches!(to.write_sparse_range(0, foreign_input, &invocation),
             Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))));
         assert_eq!(work.receipt(), prefix, "foreign-root input is rejected before native work");
         let resource = work.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
         let retained_before_foreign = work.live_allocation_bytes();
-        let foreign_input = from.read_sparse_range_with_meter(0, 128, &resource)?;
+        let foreign_input = from.read_sparse_range(0, 128, &resource)?;
         let prefix = work.receipt();
-        assert!(matches!(to.write_sparse_range_with_meter(0, foreign_input, &invocation),
+        assert!(matches!(to.write_sparse_range(0, foreign_input, &invocation),
             Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))));
         let after = work.receipt();
         assert_eq!(after.allocation_operations, prefix.allocation_operations);
         assert_eq!(after.backend_read_operations, prefix.backend_read_operations);
         assert_eq!(work.live_allocation_bytes(), retained_before_foreign,
             "rejected payload and span metadata retire their separate original guards");
-        let sparse = from.read_sparse_range_with_meter(0, 128, &invocation)?;
+        let sparse = from.read_sparse_range(0, 128, &invocation)?;
         assert_eq!(sparse.0.logical_bytes, 128);
         assert!(sparse.1.bytes() >= (sparse.0.spans.capacity() * std::mem::size_of::<super::super::MountSparseSpan>()) as u64);
-        to.write_sparse_range_with_meter(0, sparse, &invocation)?;
+        to.write_sparse_range(0, sparse, &invocation)?;
         assert_eq!(to.seek_with_meter(0, MountSeekTarget::Data, &invocation)?, Some(64));
         assert_eq!(to.seek_with_meter(64, MountSeekTarget::Hole, &invocation)?, Some(71));
         assert_eq!(to.seek_with_meter(71, MountSeekTarget::Data, &invocation)?, Some(80));
@@ -10969,8 +10972,8 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-cancellation");
         let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
+        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
         source.runtime.block_on(|| async {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
@@ -11024,8 +11027,8 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-held");
         let created = boundary(source.cancellation(), |work| source.create_file(&path, metadata(), None, work))?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
+        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
         source.runtime.block_on(|| async {
             let held = detached.state.lock().await;
             let budget = WorkBudget::UNBOUNDED;
@@ -12039,8 +12042,10 @@ mod tests {
         source.write_range(&to, 0, Bytes::from_static(b"dense"))?;
         let from = source.detach_file(&from)?;
         let to = source.detach_file(&to)?;
-        let sparse = from.read_sparse_range(0, 128)?;
-        to.write_sparse_range(0, &sparse)?;
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+        let sparse = from.read_sparse_range(0, 128, &work)?;
+        to.write_sparse_range(0, sparse, &work)?;
         assert_eq!(to.lookup()?.node.logical_bytes, 128);
         assert_eq!(to.seek(0, MountSeekTarget::Data)?, Some(64));
         assert_eq!(to.seek(64, MountSeekTarget::Hole)?, Some(71));
@@ -12124,26 +12129,26 @@ mod tests {
         assert_eq!(open.seek_with_meter(0, MountSeekTarget::Data, &invocation)?, Some(0));
         let foreign = crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
             .map_err(|(error, _)| error)?;
-        let foreign_input = open.read_sparse_range_with_meter(0, 9, &foreign)?;
+        let foreign_input = open.read_sparse_range(0, 9, &foreign)?;
         let prefix = work.receipt();
-        assert!(matches!(open.write_sparse_range_with_meter(16, foreign_input, &invocation),
+        assert!(matches!(open.write_sparse_range(16, foreign_input, &invocation),
             Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))));
         assert_eq!(work.receipt(), prefix);
         let resource = work.native_volume_work(crate::performance::BOUNDARY_BUDGET)?;
         let retained_before_foreign = work.live_allocation_bytes();
-        let foreign_input = open.read_sparse_range_with_meter(0, 9, &resource)?;
+        let foreign_input = open.read_sparse_range(0, 9, &resource)?;
         let prefix = work.receipt();
-        assert!(matches!(open.write_sparse_range_with_meter(16, foreign_input, &invocation),
+        assert!(matches!(open.write_sparse_range(16, foreign_input, &invocation),
             Err(MountSourceError::NativeWork(crate::NativeTreeMaterializationError::InvalidLayout))));
         let after = work.receipt();
         assert_eq!(after.allocation_operations, prefix.allocation_operations);
         assert_eq!(after.backend_read_operations, prefix.backend_read_operations);
         assert_eq!(work.live_allocation_bytes(), retained_before_foreign);
-        let sparse = open.read_sparse_range_with_meter(0, 9, &invocation)?;
+        let sparse = open.read_sparse_range(0, 9, &invocation)?;
         assert_eq!(sparse.0.logical_bytes, 9);
         assert_eq!(sparse.0.spans[0].relative_offset, 0);
         assert_eq!(sparse.0.spans[0].bytes.as_ref(), b"live-open");
-        open.write_sparse_range_with_meter(16, sparse, &invocation)?;
+        open.write_sparse_range(16, sparse, &invocation)?;
         assert_eq!(source.read_range(&renamed, 16, 9)?.as_ref(), b"live-open");
         open.settle(&invocation)?;
         assert!(meter.lock().work.items_examined > 7);

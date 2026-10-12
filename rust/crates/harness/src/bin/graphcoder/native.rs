@@ -362,7 +362,7 @@ impl NativeSession {
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         self.runtime.poll_task_wake(task, None).await?;
-        self.runtime.task_host().pull_operation(worker, admission.operation_id).await
+        self.runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await
     }
 
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
@@ -566,7 +566,7 @@ impl HarnessWireApi for NativeSession {
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
-            }).await?;
+            }, None).await?;
             if page.events.is_empty() {
                 return Ok(Box::pin(stream::empty()) as BoxProviderStream<'static, Result<wire::Delivery>>);
             }

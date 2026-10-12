@@ -98,7 +98,6 @@ pub(crate) struct PiForkPlan {
     pub(crate) preparation: TaskAdmissionRecord,
     pub(crate) request: ResourcePreparationRequest,
     pub(crate) source: RecursiveSourceSnapshot,
-    pub(crate) caller_project: VolumeRef,
     pub(crate) frozen: LazySnapshotRef,
     pub(crate) project_creation: acyclic_fs::OperationId,
     pub(crate) history_limits: HistoryReadLimits,
@@ -111,7 +110,7 @@ impl PartialEq for PiForkPlan {
         self.original == other.original && self.commit == other.commit
             && self.preparation == other.preparation && self.request == other.request
             && self.source == other.source
-            && self.caller_project == other.caller_project && self.frozen == other.frozen
+            && self.frozen == other.frozen
             && self.project_creation == other.project_creation && self.history_limits == other.history_limits
     }
 }
@@ -120,7 +119,7 @@ pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider
     + crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "PiForkPlan", "original", "commit", "preparation", "request", "source_checkpoint", "source",
-        "caller_project", "frozen", "project_creation", "history_limits", "RetainedSpawnCommit",
+        "frozen", "project_creation", "history_limits", "RetainedSpawnCommit",
         "sdk_operation", "alias", "prompt", "caller", "source_task", "child", "launch",
         "TaskAdmissionRecord", "operation_id", "task", "machine", "input", "input_schema",
         "output_schema", "parent", "resource_proofs", "grants", "limits", "run_limits", "policy",
@@ -147,10 +146,8 @@ pub(crate) struct PreparedPiFork {
 }
 
 impl PreparedPiFork {
-    pub(crate) fn original_work(&self) -> &NativeMaterializationWork { self._metadata_custody.work() }
-
     pub(crate) fn into_native_shared(mut self) -> Result<Arc<Self>> {
-        let mut slot = self.original_work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = self._metadata_custody.work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self._metadata_custody.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(self))
@@ -392,7 +389,6 @@ impl PiForkCoordinator {
         } else { self.native_generation(context, owner, original_caller_project, work).await? };
         let caller_snapshot = self.native_source_snapshot(owner.task_id(), original_caller_project, &caller_generation.0,
             scratch, &private_generation.0, work)?;
-        let mut caller_project = original_caller_project.clone_with_native_work(work)?;
         let source_read = if commit.source_task != owner.task_id() {
             Some(self.authorize_selected_project_with_native_work(context, owner, commit.source_task,
                 source.clone(), frozen, operations.fork, limits.work, limits.bytes, work).await?)
@@ -443,8 +439,6 @@ impl PiForkCoordinator {
         let mut source_read_custody = source_read.map(|pair| pair.1);
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        request_custody.absorb(&mut caller_project.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let caller_project = caller_project.0;
         let input_read = self.owner.policy().journal.directory_read_capability_with_native_work(
             crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, work)?;
         if !context.scope().grants().contains(&input_read.0) { return Err(Error::NativeBoundary {
@@ -493,7 +487,7 @@ impl PiForkCoordinator {
             + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan { original, commit, preparation, request,
-            source: snapshot, caller_project, frozen, history_limits, project_creation,
+            source: snapshot, frozen, history_limits, project_creation,
             _input_allocations: Some(Arc::new(container)) };
         let allocations = Arc::get_mut(plan._input_allocations.as_mut().expect("new plan custody")).expect("unshared new plan");
         for part in [&mut fork_input.1, &mut launch_reference.1, &mut request_custody]
@@ -667,6 +661,11 @@ impl PiForkCoordinator {
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(owner.task_id(), &self.work).await?;
         let caller: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&admission.0.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
+        let caller_project = plan.commit.child.project_volumes.keys().next()
+            .and_then(|key| caller.0.binding.project_volumes.get(key))
+            .or_else(|| caller.0.binding.project_volumes.values().next())
+            .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi caller has no actual project binding" })?;
         let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
             caller.0.binding.agent_id, context.scope().grants(), work)?;
         let request: (ForkRequest, acyclic_fs::NativeAllocation) = self.native_copy(&plan.request.payload,
@@ -695,7 +694,7 @@ impl PiForkCoordinator {
         let provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
         let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
             self.filesystem.clone(), &self.stream, reducer, &verifier.0, &authority.0.2,
-            &plan.caller_project, &provider.0, request, plan.history_limits,
+            caller_project, &provider.0, request, plan.history_limits,
             source_read.as_ref().map(|pair| &pair.0), resolver, cancel, work).await?;
         let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
         let preparer = Arc::try_unwrap(restored.0.preparer).map_err(|_| Error::NativeBoundary {
@@ -1090,19 +1089,13 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                     return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                         reason: "Pi original Root was not its admitted bootstrap task" });
                 };
-                #[derive(Serialize)]
-                struct RootRequest<'b> { binding: &'b PiTaskBinding, root: &'b crate::pi_root::PiRootIntent }
-                let bytes = crate::pi_root_provider::canonical_pi_value(
-                    &RootRequest { binding: &original.0.binding, root }, maximum, work)?;
-                let request = crate::pi_root_provider::guarded_pi_decode::<crate::pi_root_inputs::PiRootRequest>(
-                    &bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
-                    crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
                 let actual_source = coordinator.runtime.runtime.readonly_task_context_with_native_work(self.selected, work).await?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
                 crate::pi_root_provider::prove_root_project_source_with_native_work(coordinator.owner.clone(),
                     &coordinator.resources, coordinator.filesystem.clone(), coordinator.stream.clone(),
-                    &request.0, &snapshot.project, self.frozen, actual_source.1.clone(), &actual_source.0, work).await?;
+                    &original.0.binding, root, &snapshot.project, self.frozen,
+                    actual_source.1.clone(), &actual_source.0, work).await?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
             }
             Ok(())

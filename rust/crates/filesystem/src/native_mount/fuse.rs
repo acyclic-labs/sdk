@@ -2954,7 +2954,7 @@ impl FusePhysicalSession {
             None => {
                 let loan = loan.as_ref().ok_or(NativeMountError::ControlPending)?;
                 loan.check_wait()?;
-                loan.original_work().clone()
+                loan.original_work()
             }
         };
         // Callbacks retain their original grants and cancellation.
@@ -4852,13 +4852,13 @@ fn copy_open_range(
             transferred
         };
         let chunk = u32::try_from(chunk).unwrap_or(DETACHED_COPY_CHUNK_BYTES);
-        let sparse = match source_open.file(work).and_then(|file| file.read_sparse_range_with_meter(source_offset + relative, chunk, work)) {
+        let sparse = match source_open.file(work).and_then(|file| file.read_sparse_range(source_offset + relative, chunk, work)) {
             Ok(sparse) => sparse,
             Err(error) if transferred == 0 => return Err(error.into()),
             Err(error) => { failure = Some(error.into()); break; }
         };
         let copied = sparse.0.logical_bytes;
-        if let Err(error) = projection.source_write(work, || destination_open.file(work)?.write_sparse_range_with_meter(destination_offset + relative, sparse, work)
+        if let Err(error) = projection.source_write(work, || destination_open.file(work)?.write_sparse_range(destination_offset + relative, sparse, work)
             .map_err(FuseRequestError::from))
         {
             if transferred == 0 {

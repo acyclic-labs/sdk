@@ -6,7 +6,7 @@ use super::codec::{
 use super::types::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, digest_object};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items};
+use super::file_read::{ReadOwned, reserve_decoded_items};
 use super::codec::ReadAllocationStep;
 
 const DOMAIN: &[u8; 8] = b"ACYFSEXT";
@@ -107,26 +107,11 @@ pub(crate) fn extent_page_encoded_length(
 pub(crate) fn decode_extent_page_with_accounting(
     bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(ExtentPage, u64, KernelOwnedAllocation), crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = accounting.native_work().is_some();
-    let decoded = super::file_read::decode_owned(accounting, |observe| decode_extent_page(bytes, limits, &mut |step| observe(step)));
-    let page = match decoded {
-        Ok(page) => page,
-        Err(error) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(match error.into_original_fs_error() {
-                    crate::FsError::Decode(error) => crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))),
-                    error => error,
-                });
-            }
-            return Err(match error {
-                ReadDecodeError::Canonical(error) => crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))),
-                ReadDecodeError::AllocationFailed(_) => crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(CanonicalDecodeError::AllocationFailed))),
-                ReadDecodeError::Accounting(error) => error,
-            });
-        }
-    };
+    let page = super::file_read::decode_owned(accounting, |observe| decode_extent_page(bytes, limits, &mut |step| observe(step)))
+        .map_err(|error| match error {
+            crate::FsError::Decode(error) => crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))),
+            error => error,
+        })?;
     let owner = ReadOwned { value: page.0, custody: page.1 };
     let bytes = match &owner.value {
         ExtentPage::Leaf(items) => items.capacity() * std::mem::size_of::<Extent>(),

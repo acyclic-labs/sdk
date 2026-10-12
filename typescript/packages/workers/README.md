@@ -22,7 +22,7 @@ contract. Import generated request and response schemas from the package or
 `@acyclic-labs/workers/proto`; `WorkersClient` supplies the transport.
 
 For Node/Bun gRPC, construct `WorkersClient` from
-`@acyclic-labs/workers/grpc` and provide `{ endpoint, token }`. Every generated
+`@acyclic-labs/workers` and provide `{ endpoint, token }`. Every generated
 RPC is exposed. The installed native Rust companion trusts the operating system's
 roots (on Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR`). Optional `caCertificate`
 is the **only** PEM trust for that connection, replacing ambient roots, and

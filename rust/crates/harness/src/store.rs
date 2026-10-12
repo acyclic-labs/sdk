@@ -897,7 +897,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             drop(event);
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
@@ -1334,7 +1334,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
                 .await?;
             let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-            let request = publication.request(&self.client, idempotency_key).await?;
+            let request = publication.request(&self.client, idempotency_key, &mut None).await?.0;
             let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
                 let verifier = self
                     .fork_verifier
@@ -1384,7 +1384,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             };
             let result = match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    if publication.verify(&envelope).is_err() {
+                    if publication.verify(&envelope, &mut None).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
                     match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
@@ -1506,7 +1506,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = ticket.validate_request_bytes_with_work(&bytes, scratch.work());
+            let validated = ticket.validate_request_bytes(&bytes, scratch.work()).and_then(|request| {
+                let measured = request.1;
+                drop(request);
+                scratch.work().as_deref_mut().map_or(Ok(()), |io| io.release_owned(measured))
+            });
             drop(bytes);
             let released = scratch.relinquish(claim);
             return match validated {
@@ -1541,16 +1545,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
-        scratch.adopt(request.measured_owned_bytes())?;
+        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
+        scratch.adopt(request.1)?;
         let (bytes, claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
             Some(outcome) => ticket.validate_decision_bytes(
-                request.request(), outcome, reference, &bytes, scratch.work()),
+                &request.0, outcome, reference, &bytes, scratch.work()),
             None => ticket.validate_answer_bytes(
-                request.request(), reference, &bytes, scratch.work()),
+                &request.0, reference, &bytes, scratch.work()),
         }
     }
 
@@ -1580,7 +1584,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1593,7 +1597,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1608,7 +1612,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -1823,7 +1827,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
         let read = match operations::stream(&self.client, &path, work) {
-            Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
+            Ok(stream) => operations::one_record(&self.client, stream.0.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
         };
@@ -1839,7 +1843,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(raw), None => Ok(()),
+            Some(observer) => observer.release_owned(raw), None => Ok(()),
         };
         let ((authority, event), event_retained) = match decoded {
             Ok(decoded) => { released_record?; decoded },
@@ -2134,14 +2138,14 @@ mod tests {
             maximum_bytes: 65_536,
         };
         assert_eq!(cursor.through_revision, 0);
-        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert!(reader.read_page(&cursor, limits, None).await?.events.is_empty());
         assert!(matches!(reader.pin(1, None).await, Err(Error::Invalid(_))));
         let future = HistoryCursor {
             through_revision: 1,
             ..cursor.clone()
         };
         assert!(matches!(
-            reader.read_page(&future, limits).await,
+            reader.read_page(&future, limits, None).await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
@@ -2151,10 +2155,10 @@ mod tests {
         );
         writer.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
-        assert!(reader.read_page(&cursor, limits).await?.events.is_empty());
+        assert!(reader.read_page(&cursor, limits, None).await?.events.is_empty());
         assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 0);
         let current = reader.pin(0, None).await?;
-        let page = reader.read_page(&current, limits).await?;
+        let page = reader.read_page(&current, limits, None).await?;
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.cursor.after_revision, 1);
         Ok(())
@@ -2935,15 +2939,15 @@ mod tests {
             maximum_events: 2,
             maximum_bytes: 131_072,
         };
-        let first = reader.read_page(&cursor, limits).await?;
+        let first = reader.read_page(&cursor, limits, None).await?;
         assert_eq!(first.events.len(), 2);
         assert_eq!(first.cursor.after_revision, 9_999);
-        let second = reader.read_page(&first.cursor, limits).await?;
+        let second = reader.read_page(&first.cursor, limits, None).await?;
         assert_eq!(second.events, vec![last.clone()]);
         assert_eq!(second.cursor.after_revision, 10_000);
         assert!(
             reader
-                .read_page(&second.cursor, limits)
+                .read_page(&second.cursor, limits, None)
                 .await?
                 .events
                 .is_empty()
@@ -2961,40 +2965,34 @@ mod tests {
         );
         for fault in [1, 2, 3, 4] {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(reader.read_page(&cursor, limits).await.is_err());
-            assert_eq!(reader.read_page(&cursor, limits).await?, first);
+            assert!(reader.read_page(&cursor, limits, None).await.is_err());
+            assert_eq!(reader.read_page(&cursor, limits, None).await?, first);
         }
         assert!(
             reader
-                .read_page(
-                    &cursor,
-                    HistoryReadLimits {
+                .read_page(&cursor, HistoryReadLimits {
                         maximum_bytes: 1,
                         ..limits
-                    }
-                )
+                    }, None)
                 .await
                 .is_err()
         );
         assert!(
             reader
-                .read_page(
-                    &cursor,
-                    HistoryReadLimits {
+                .read_page(&cursor, HistoryReadLimits {
                         maximum_events: 0,
                         ..limits
-                    }
-                )
+                    }, None)
                 .await
                 .is_err()
         );
         let mut invalid = cursor.clone();
         invalid.through_revision = 10_002;
-        assert!(reader.read_page(&invalid, limits).await.is_err());
+        assert!(reader.read_page(&invalid, limits, None).await.is_err());
         invalid = cursor;
         invalid.authority.id = "other".into();
         assert!(matches!(
-            reader.read_page(&invalid, limits).await,
+            reader.read_page(&invalid, limits, None).await,
             Err(Error::Unauthorized(_))
         ));
         assert_cold_operation_lookup(&reader, last).await?;
@@ -3020,16 +3018,25 @@ mod tests {
             allocation_operations: 8, peak_allocation_bytes: bytes,
             ..WorkBudget::default()
         };
+        let read = async |cursor: &HistoryCursor, limits: HistoryReadLimits,
+            budget: WorkBudget, cancellation: &CancellationToken| {
+            let mut work = HistoryWork::new(budget, cancellation);
+            let result = async {
+                work.preflight()?;
+                reader.read_page(cursor, limits, Some(&mut work)).await
+            }.await;
+            work.finish(result)
+        };
         let cancellation = CancellationToken::new();
-        let page = reader.read_page_measured(cursor, limits, budget, &cancellation).await
+        let page = read(cursor, limits, budget, &cancellation).await
             .map_err(|failure| failure.error)?;
         assert_eq!(&page.value, expected);
         for fault in 1..=6 {
             provider.history_read_fault.store(fault, Ordering::SeqCst);
-            assert!(reader.read_page_measured(cursor,
+            assert!(read(cursor,
                 HistoryReadLimits { maximum_bytes: bytes, ..limits }, budget, &cancellation,
             ).await.is_err());
-            assert_eq!(reader.read_page_measured(cursor, limits, budget, &cancellation).await
+            assert_eq!(read(cursor, limits, budget, &cancellation).await
                 .map_err(|failure| failure.error)?.value, *expected);
         }
         for narrow in [
@@ -3038,26 +3045,34 @@ mod tests {
             WorkBudget { output_bytes: 0, ..budget },
             WorkBudget { peak_allocation_bytes: 0, ..budget },
         ] {
-            assert!(reader.read_page_measured(cursor, limits, narrow, &cancellation).await.is_err());
+            assert!(read(cursor, limits, narrow, &cancellation).await.is_err());
         }
         let invalid = HistoryCursor {
             authority: Authority { id: "other".into(), ..cursor.authority.clone() }, ..cursor.clone()
         };
-        assert!(matches!(reader.read_page_measured(&invalid, limits, budget, &cancellation).await,
+        assert!(matches!(read(&invalid, limits, budget, &cancellation).await,
             Err(acyclic_fs::OperationFailure { error: Error::Unauthorized(_), .. })));
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        assert!(reader.pin_measured(0, budget, &cancelled).await.is_err());
-        assert!(reader.read_page_measured(cursor, limits, budget, &cancelled).await.is_err());
-        assert!(reader.pin_measured(0, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+        assert!(async {
+            let mut work = HistoryWork::new(budget, &cancelled);
+            work.preflight()?;
+            reader.pin(0, Some(&mut work)).await
+        }.await.is_err());
+        assert!(read(cursor, limits, budget, &cancelled).await.is_err());
+        assert!(async {
+            let mut work = HistoryWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            work.preflight()?;
+            reader.pin(0, Some(&mut work)).await
+        }.await.is_err());
         let terminal = HistoryCursor { after_revision: cursor.through_revision, ..cursor.clone() };
-        assert!(reader.read_page_measured(&terminal, limits, budget, &cancellation).await
+        assert!(read(&terminal, limits, budget, &cancellation).await
             .map_err(|failure| failure.error)?.value.events.is_empty());
         let during_tail = CancellationToken::new();
         *provider.history_cancel_after_tail.lock()
             .map_err(|_| Error::Storage("history cancellation fixture poisoned".into()))? =
             Some(during_tail.clone());
-        assert!(reader.read_page_measured(cursor, limits, budget, &during_tail).await.is_err());
+        assert!(read(cursor, limits, budget, &during_tail).await.is_err());
         Ok(())
     }
 
@@ -3197,13 +3212,10 @@ mod tests {
             let cursor = reader.pin(0, None).await?;
             assert!(
                 reader
-                    .read_page(
-                        &cursor,
-                        HistoryReadLimits {
+                    .read_page(&cursor, HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes: 65_536,
-                        }
-                    )
+                        }, None)
                     .await
                     .is_err()
             );
@@ -3651,7 +3663,7 @@ mod tests {
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
-        let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
+        let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
             "interactions/request.json", &published, "application/json", "request.json").await?;
@@ -3678,7 +3690,7 @@ mod tests {
         assert_eq!(claim, 0, "native carrier owns its claim, not the observer");
         let alias = bytes.clone();
         let empty_alias = alias.slice(0..0);
-        ticket.validate_request_bytes_with_work(&alias, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&alias, &mut Some(&mut io))?;
         drop(bytes);
         drop(alias);
         assert!(empty_alias.is_empty());
@@ -3724,7 +3736,7 @@ mod tests {
     -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let request =
-            Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
+            Interaction::question("secret prompt".into(), json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let answer_bytes = br#"{"type":"question","value":"yes"}"#;
@@ -4044,14 +4056,11 @@ mod tests {
         let loaded =
             checkpoints::load_with_work(&client, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), defaults, None, &mut None).await?;
         let suffix = HistoryReader::new(&client, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?
-            .read_page(
-                &HistoryCursor {
+            .read_page(&HistoryCursor {
                     authority: authority(),
                     after_revision: 64,
                     through_revision: 69,
-                },
-                defaults,
-            )
+                }, defaults, None)
             .await?;
         let suffix_bytes = suffix.events.iter().try_fold(0_u64, |sum, event| {
             Ok::<_, Error>(sum + encode_event(&authority(), event, &mut None)?.len() as u64)

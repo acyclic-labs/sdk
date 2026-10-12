@@ -49,19 +49,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let (identity, machine, tasks, machines) = test_registries::<Value>(
         implementation, schema.clone(), schema.clone(),
     )?;
-    let mut host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
-        stream.clone(),
-        payloads.clone(),
-        payloads,
-        authority,
-        signed,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        tasks.clone(),
-        machines,
-        Arc::new(SystemUnixMillisClock),
-    )?;
+    let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream.clone(), payloads.clone(), payloads, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?;
     if configured {
         host = host.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 2,

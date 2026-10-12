@@ -1768,7 +1768,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             Some(&fork.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/shared.txt".into(),
-                bytes: format!("sibling {index}").into_bytes().into(),
+                bytes: format!("sibling {index}").into_bytes(),
             }],
             &IdempotencyKey::new(format!("wide-write-{index}"))?,
         )

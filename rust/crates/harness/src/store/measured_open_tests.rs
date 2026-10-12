@@ -381,10 +381,13 @@ mod measured_open_tests {
 
         assert_eq!(receipt.work.items_returned, 3);
         let reader = HistoryReader::new(&provider, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
-        let read_work = reader.read_page_measured(
-            &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-            default_projection_read_limits(), budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?.work;
+        let mut page_work = HistoryWork::new(budget(), &cancellation);
+        let read = async {
+            page_work.preflight()?;
+            reader.read_page(&HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
+                default_projection_read_limits(), Some(&mut page_work)).await
+        }.await;
+        let read_work = page_work.finish(read).map_err(|failure| failure.error)?.work;
         assert!(receipt.work.bytes_encoded > read_work.bytes_encoded);
         assert!(receipt.work.bytes_hashed > read_work.bytes_hashed);
         assert!(receipt.work.peak_allocation_bytes > 0);

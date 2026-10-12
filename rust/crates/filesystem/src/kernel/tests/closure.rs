@@ -1,4 +1,5 @@
 use super::*;
+use crate::async_storage;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
