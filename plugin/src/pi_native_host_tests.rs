@@ -50,7 +50,7 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let host = native_host(&fixture, None).unwrap();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
@@ -88,7 +88,7 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let host = native_host(&fixture, None).unwrap();
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
@@ -120,7 +120,7 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         scheduler::{LeaseFence, ResourceSnapshot}};
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let original = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &fixture.fence,
+    let original = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         CancellationToken::new()).await.unwrap().unwrap();
     let task = original.binding.task_id;

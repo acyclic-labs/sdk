@@ -12,21 +12,7 @@ fn native_runtime() -> pi_native::PiNativeHostRuntime {
 }
 
 fn session(fixture: &Fixture) -> PiSession {
-    let pi_root::PiRootIntent::Project { context_id, root_id, paths } = &fixture.root_request.root else {
-        panic!("actual project Root fixture");
-    };
-    let mut binding = fixture.root_request.binding.clone();
-    binding.scratch.allocation = PiScratchAllocation::Created(fixture.root_allocation.scratch.clone());
-    let state = AdapterState {
-        task_binding: PluginTaskBinding::Pi(Box::new(binding)), version: ADAPTER_STATE_VERSION,
-        root_session_id: "fork-root".to_owned(), root_agent_id: "fork-root".to_owned(),
-        active: true, root_context_id: *context_id, root_id: *root_id, pending_root_registration: false,
-        roots: fixture.root_allocation.roots.iter().map(|(key, creation)| (key.clone(), RootBinding {
-            root_id: decode_fixed(key).unwrap(), path: PathBuf::from(&paths[key]),
-            allocation: RootAllocation::Created(creation.clone()),
-        })).collect(),
-        ..AdapterState::default()
-    };
+    let state = fixture.state();
     let directory = fixture.resources.session_directory(&state.root_session_id);
     let relative_directory = fixture.resources.private_session_data(&directory).unwrap().to_path_buf();
     let mut slots = StateSlots::read(&directory).unwrap().0;
@@ -65,7 +51,6 @@ async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_privat
     let (again, _again_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &work).unwrap();
     assert!(_commit_custody.work().shares_ledger(&work));
     assert!(_again_custody.work().shares_ledger(&work));
-    let again = again;
     assert!(same_spawn_commit(&commit, &again));
     assert_eq!(commit.alias, commit.launch.agent_alias);
     assert_eq!(commit.child.native_session_id, args["native_session_id"].as_str().unwrap());

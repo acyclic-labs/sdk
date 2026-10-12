@@ -489,14 +489,6 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     assert_eq!(fs::metadata(&path).unwrap().len(), MAXIMUM_OWNER_BYTES + 1);
 }
 
-fn replace_plain(session: &Path, plain: &[u8]) {
-    let protected = protection::protect(plain).unwrap();
-    let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
-    bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
-    bytes.extend_from_slice(&protected);
-    fs::write(session.join(OWNER_FILE), bytes).unwrap();
-}
-
 #[test]
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
@@ -530,7 +522,12 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
         invalids.push(value);
     }
     for value in invalids {
-        replace_plain(directory.path(), &serde_json::to_vec(&value).unwrap());
+        let plain = serde_json::to_vec(&value).unwrap();
+        let protected = protection::protect(&plain).unwrap();
+        let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
+        bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
+        bytes.extend_from_slice(&protected);
+        fs::write(directory.path().join(OWNER_FILE), bytes).unwrap();
         let before = fs::read(directory.path().join(OWNER_FILE)).unwrap();
         assert!(PiOwnerConfig::load(directory.path()).is_err());
         assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == before);
