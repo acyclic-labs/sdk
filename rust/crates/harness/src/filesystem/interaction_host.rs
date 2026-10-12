@@ -65,7 +65,6 @@ impl PreparationRecord for Interaction {
 }
 
 impl PreparationRecord for InteractionResponse {
-    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 {
         crate::contract::preparation_serde_diagnostic_label_bytes() + INTERACTION_DIAGNOSTIC_LABEL_BYTES
     }

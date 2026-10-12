@@ -950,16 +950,16 @@ async fn worker_restart_with_options(
             );
             let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
                 filesystem.clone(),
-                volume.clone(),
+                &volume,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &signed,
-                65_536,
+                65_536, None,
             )?);
             let reader = Arc::new(FilesystemContentVerifier::new(
                 filesystem.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                signed.clone(),
-                65_536,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &signed,
+                65_536, None,
             )?);
             if with_policy && !reopened {
                 Box::pin(async {
@@ -1142,7 +1142,7 @@ async fn worker_restart_with_options(
             .with_payload_store(payloads.clone());
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
-            assert!(!runtime.poll_task_wake(task).await?);
+            assert!(!runtime.poll_task_wake(task, None).await?);
             if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let cursor = discovery_cursor
                     .as_ref()
@@ -1189,7 +1189,7 @@ async fn worker_restart_with_options(
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
                 runtime.task_host().cancel(task).await?;
-                assert!(!runtime.poll_task_wake(task).await?);
+                assert!(!runtime.poll_task_wake(task, None).await?);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
                     runtime.task_host().outcome(task).await?,
@@ -1287,7 +1287,7 @@ async fn worker_restart_with_options(
                 let executed = tool.executed.load(Ordering::SeqCst);
                 assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
-                assert!(!runtime.poll_task_wake(task).await?);
+                assert!(!runtime.poll_task_wake(task, None).await?);
                 assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
                 assert_eq!(model.generated.load(Ordering::SeqCst), generated);
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), reconciled);
@@ -1310,14 +1310,14 @@ async fn worker_restart_with_options(
                             .and_then(|slot| slot.waiting_command),
                         Some(OperationId::from_bytes([27; 16]))
                     );
-                    assert!(!runtime.poll_task_wake(task).await?);
+                    assert!(!runtime.poll_task_wake(task, None).await?);
                     let file = payloads.stage(operation, "second-wait-mail", b"7").await?;
                     runtime
                         .task_host()
                         .send(task, task, OperationId::from_bytes([30; 16]), file)
                         .await?;
                     assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
-                    assert!(!runtime.poll_task_wake(task).await?);
+                    assert!(!runtime.poll_task_wake(task, None).await?);
                 }
                 let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
                 let woken = wake_projection
@@ -1412,7 +1412,7 @@ async fn worker_restart_with_options(
             {
                 assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
                 assert!(
-                    matches!(runtime.resume_task(old.clone(), &NoCommands, 1).await,
+                    matches!(runtime.resume_task(old.clone(), &NoCommands, 1, None).await,
                 TaskWorkerAttempt::Unresolved { lease: attempted, .. } if attempted == *old)
                 );
             }
@@ -1423,7 +1423,7 @@ async fn worker_restart_with_options(
         let outcome = if with_command {
             if !reopened {
                 assert!(
-                    matches!(runtime.resume_task(lease.clone(), &NoCommands, 0).await,
+                    matches!(runtime.resume_task(lease.clone(), &NoCommands, 0, None).await,
                     TaskWorkerAttempt::Unresolved { lease: retained, error: Error::Invalid(_) } if retained == lease)
                 );
                 assert!(
@@ -1715,7 +1715,7 @@ async fn worker_restart_with_options(
                         ContextPipeline::default(),
                         acyclic_harness::context::CompactionPolicy::default(),
                     ),
-                    2,
+                    2, None,
                 )
                 .await;
             match attempt {
@@ -1745,7 +1745,7 @@ async fn worker_restart_with_options(
                         ContextPipeline::default(),
                         acyclic_harness::context::CompactionPolicy::default(),
                     ),
-                    2,
+                    2, None,
                 )
                 .await
             {
@@ -2008,7 +2008,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
         private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
     ]));
-    let mut parent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    let mut parent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
     let driver = Arc::new(Driver(AtomicUsize::new(0)));
@@ -2021,10 +2021,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
         host.create_volume(&project).await?;
         host.create_volume(&private).await?;
-        let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+        let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
         host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
             &IdempotencyKey::new("base")?).await?;
-        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
         let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
         source_head = host.apply(&fork.workspace, Some(&fork.generation), &[WorkspaceMutation::PutFile {
@@ -2045,7 +2045,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
         assert_eq!(journal.admit(admission.clone()).await?, admission);
         let mut registry = MergeDriverRegistry::new();
         registry.register("review", driver.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -2066,7 +2066,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     for retry in 0..2 {
         let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
         assert_eq!(retained, admission);
         let records = journal.replay(0, 1).await?;
@@ -2074,10 +2074,10 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
         let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
-        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
         let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
-        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(), &denied, project.clone())?;
+        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
         let mut changed = candidate.clone();
         changed.plan.ours = candidate.plan.base;
@@ -2085,7 +2085,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let outcome = controller.apply_project_merge_candidate(&plan, operation, &candidate).await?;
         assert!(if retry == 0 { matches!(outcome, JoinOutcome::Applied(_)) } else { matches!(outcome, JoinOutcome::AlreadyApplied(_)) });
         if retry == 0 {
-            let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+            let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, VolumeOperation::Write)?;
             host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
                 &IdempotencyKey::new("concurrent")?).await?;
         }
@@ -2229,16 +2229,16 @@ async fn stock_restart_with_publication_fault(
         let stream = stream_provider.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
-            volume.clone(),
+            &volume,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
-            65_536,
+            65_536, None,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
             filesystem.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            signed.clone(),
-            65_536,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &signed,
+            65_536, None,
         )?);
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, reader.clone())
@@ -2392,7 +2392,7 @@ async fn stock_restart_with_publication_fault(
                 OperationId::from_bytes([8; 16]),
                 Model::new("test", "interrupted", "1", Value::Null)?,
                 model.clone(),
-                ContextPipeline::default(),
+                ContextPipeline::default(), None,
             )
             .await?
             .with_compaction_policy(compaction_policy.clone());
@@ -2433,7 +2433,7 @@ async fn stock_restart_with_publication_fault(
                         OperationId::from_bytes([8; 16]),
                         Model::new("test", "interrupted", "1", Value::Null)?,
                         model.clone(),
-                        ContextPipeline::default(),
+                        ContextPipeline::default(), None,
                     )
                     .await?
                     .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled);
@@ -2467,7 +2467,7 @@ async fn stock_restart_with_publication_fault(
                     OperationId::from_bytes([10; 16]),
                     Model::new("test", "interrupted", "1", Value::Null)?,
                     model.clone(),
-                    ContextPipeline::default(),
+                    ContextPipeline::default(), None,
                 )
                 .await?;
             assert_ne!(another.operation_id(), execution.operation_id());
@@ -2512,10 +2512,10 @@ async fn stock_restart_with_publication_fault(
                     execution.operation_id(),
                     OperationId::from_bytes([8; 16]),
                     filesystem.clone(),
-                    volume.clone(),
-                    issuer.verifier(&mut None).expect("verifier copy"),
-                    signed.clone(),
-                    65_536,
+                    &volume,
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &signed,
+                    65_536, None,
                 )?;
                 previous.execute(turn, &journal).await
             } else {
@@ -2757,10 +2757,10 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
-        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(), signed.clone(),
+        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
             scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, volume.clone(), &issuer.verifier(), &signed, 65536)?;
+        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
             acyclic_harness::context::CompactionPolicy::Disabled);
         if phase == 0 {
@@ -2789,7 +2789,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             retained_lease = Some(lease);
         }
         let lease = retained_lease.clone().unwrap();
-        let attempt = runtime.resume_task(lease.clone(), &commands, if phase == 3 { 4 } else { 1 }).await;
+        let attempt = runtime.resume_task(lease.clone(), &commands, if phase == 3 { 4 } else { 1 }, None).await;
         match phase {
             0 | 1 => assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))),
             2 => assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Indeterminate(_), .. }

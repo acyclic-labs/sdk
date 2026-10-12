@@ -172,16 +172,16 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         .await?;
     let verifier = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        1_024, None,
     )?);
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
-        volume.clone(),
+        &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
-        1_024,
+        1_024, None,
     )?);
     let stream = Arc::new(MemoryStream::default());
     let mut coordinator = DistributedCoordinator::open(&stream, verifier.clone())
