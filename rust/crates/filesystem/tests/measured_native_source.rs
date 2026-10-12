@@ -200,9 +200,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     for stage in 1..=4 {
         let operation = OperationId::new();
-        let prior = Fs::memory().create_workspace_with_operation(
-            "companion-fault", config, operation, budget, &CancellationToken::new(),
-        ).await?;
+        let prior = Fs::memory().create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>("companion-fault", config, operation, budget, &CancellationToken::new(), None).await?;
         let fs = Fs::memory();
         let store = FaultingCompanion::new(stage);
         let failure = async { let cancellation = &CancellationToken::new(); let budget = budget; let mut accounting = budget.accounting(cancellation); let result = LazyWorkspace::attach(&fs, "companion-fault", source.clone(), store.clone(), config, operation, &mut accounting).await; budget.finish(result, &accounting) }.await.err().ok_or("real companion fault did not fail attachment")?;

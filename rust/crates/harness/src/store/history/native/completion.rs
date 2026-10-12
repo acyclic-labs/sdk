@@ -262,16 +262,16 @@ impl HistoryIo for AcceptedCompletionIo {
             ..WorkCounters::default()
         })
     }
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
         match charge {
-            crate::contract::JsonCodecCharge::Work { bytes, items } => {
+            crate::executor::json::JsonCodecCharge::Work { bytes, items } => {
                 self.record_completed(WorkCounters {
                     bytes_encoded: bytes,
                     items_examined: items,
                     ..WorkCounters::default()
                 })
             }
-            crate::contract::JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            crate::executor::json::JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
             _ => Err(Self::unsupported()),
         }
     }

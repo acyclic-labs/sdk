@@ -46,13 +46,13 @@ pub(super) async fn read_receipt<P: StreamProvider>(
             Ok(bounds) => bounds,
             Err(error)
                 if matches!(
-                    crate::distributed::sdk_source(&error),
+                    &error,
                     StreamError::NotFound
                 ) =>
             {
                 return Ok(None);
             }
-            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
+            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, &observer)),
         };
     if !(1..=2).contains(&bounds.tail) {
         return Err(Error::Storage("invalid native receipt length".into()));
@@ -62,7 +62,7 @@ pub(super) async fn read_receipt<P: StreamProvider>(
     let mut records =
         crate::store::operations::read_records(&client, stream.0.path(), 0, limit, &mut observer)
             .await?
-            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
+            .map_err(|error| crate::store::operations::stream_error_with_work(error, &observer))?;
     let first = records
         .next(&mut observer)
         .await?

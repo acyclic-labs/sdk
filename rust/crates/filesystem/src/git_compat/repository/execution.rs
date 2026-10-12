@@ -14,7 +14,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
             .map_err(GitCompatRunError::Executor)?;
         match &command {
-            GitCommand::MergeContinue => return self.continue_join(workspace_tree, executor).await,
+            GitCommand::MergeContinue => {
+                return self.continue_join(workspace_tree, executor).await;
+            }
             GitCommand::MergeAbort => return self.abort_join(executor).await,
             GitCommand::Add { .. } => {
                 if let Some(pending) = self.pending_transition().await? {
@@ -48,12 +50,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         now_seconds: i64,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        self.run(
-            parse_argv(argv, default_author, now_seconds)?,
-            workspace_tree,
-            executor,
-        )
-        .await
+        let command = parse_argv(argv, default_author, now_seconds)?;
+        self.run(command, workspace_tree, executor).await
     }
 
     /// Replays the durable pending transition with its original operation identity.
@@ -187,11 +185,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         default_author: &str,
         now_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        self.execute(
-            parse_argv(argv, default_author, now_seconds)?,
-            workspace_tree,
-        )
-        .await
+        let command = parse_argv(argv, default_author, now_seconds)?;
+        self.execute(command, workspace_tree).await
     }
 
     async fn execute_validated(
@@ -205,8 +200,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::TransitionPending(pending.id));
             }
             let before = state.clone();
-            let output = execute_command(&mut state, command.clone(), workspace_tree)
-                .map_err(map_state_error)?;
+            let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
             let output = match output {
                 GitCommandOutput::Action(action) => {
                     prepare_transition(&mut state, action, GitPendingMutation::NoOp)
@@ -222,15 +216,14 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     async fn validate_workspace_tree(
         &self,
-        tree: GitTreeRef,
+        workspace_tree: GitTreeRef,
     ) -> Result<(), GitCompatError<S::Error>> {
-        if self
-            .load()
-            .await?
+        let state = self.load().await?;
+        if state
             .current()
             .map_err(|_| GitCompatError::InvalidState)?
             .workspace_id
-            != tree.workspace_id()
+            != workspace_tree.workspace_id()
         {
             return Err(GitCompatError::WorkspaceMismatch);
         }

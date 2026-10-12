@@ -161,7 +161,7 @@ where
         for snapshot in volumes {
             if let Some(io) = io {
                 io.codec_charge(
-                    crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 },
+                    crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 },
                     true,
                 )?;
             }

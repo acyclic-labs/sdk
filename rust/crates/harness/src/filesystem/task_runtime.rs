@@ -1198,7 +1198,7 @@ where
                         "approval tool differs from model request",
                     ));
                 }
-                let grant = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
+                let grant = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
                 let grant_hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;
@@ -2075,7 +2075,7 @@ where
         if retained.operation_id != admission.operation_id
             || retained.request_digest
                 != crate::executor::with_history_io(io, |work|
-                    crate::contract::canonical_json_digest(&admission,
+                    crate::executor::json::canonical_json_digest(&admission,
                         if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
             || retained.initial.machine != admission.machine
         {
@@ -2744,40 +2744,21 @@ where
         pipeline: &ContextPipeline,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
+        compaction: &crate::context::CompactionPolicy,
+        max_output_tokens: Option<u32>,
     ) -> Result<crate::executor::NativeStockExecutor> {
-        if !context.original_task_binding_matches(task, fence) {
+        if !context.original_task_binding_matches(task, fence) || !context.native_metadata_matches(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock model differs from original task binding",
             });
         }
-        let executor = crate::executor::StockExecutor::new_with_native_work(
-            model,
-            provider,
-            pipeline,
-            &self.tools,
-            work,
-        )?
-        .with_limits(context.scope().limits())
-        .with_task_context_with_native_work(
-            Arc::clone(context),
-            operation,
-            self.host.clone(),
-            task,
-            fence,
-            work,
-        )?
-        .with_tool_authority_with_native_work(
-            context.scope(),
-            self.policy.clone(),
-            work,
-        )?;
-        if self.interaction_owner.is_some() {
-            journal.supports_native_interactions(work)?;
-            executor.with_native_interactions(journal.clone(), work)
-        } else {
-            Ok(executor)
-        }
+        crate::executor::NativeStockExecutor::new(
+            model, provider, pipeline, &self.tools, Arc::clone(context), operation,
+            self.host.clone(), task, fence, self.policy.clone(),
+            self.interaction_owner.as_ref().map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
+            compaction, max_output_tokens,
+        )
     }
 
     /// Constructs stock execution with the task-owned journal and optional output volume.

@@ -10,7 +10,7 @@ impl ViewObserver for Recorded {
     }
 }
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-async fn recorded_view(
+pub(super) async fn recorded_view(
     source_root: &Path,
 ) -> Result<
     (
@@ -39,7 +39,7 @@ async fn recorded_view(
     view.observe_view(observer);
     Ok((demand, view, recorded))
 }
-async fn mounted_view(
+pub(super) async fn mounted_view(
     source: &Path,
     name: &str,
 ) -> Result<
@@ -75,7 +75,7 @@ pub(super) async fn native_source(
     .await?
     .value)
 }
-async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceStore>(
+pub(super) async fn mounted_view_of<D: DemandSource + 'static, S: LazyWorkspaceStore>(
     demand: Arc<D>,
     name: &str,
     store: S,
@@ -154,7 +154,7 @@ pub(super) async fn live_lazy_mount_of(
     destination: &Path,
     name: &str,
 ) -> Result<
-    super::super::LazyMount<
+    crate::LazyMount<
         impl AsyncAuthorityStore + Send + Sync + 'static,
         impl AsyncObjectStore + Send + Sync + 'static,
         crate::demand::native::NativeDemandSource,
@@ -202,7 +202,9 @@ pub(super) fn is_absent(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-async fn keeps_a_reused_identity_apart(watched: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn keeps_a_reused_identity_apart(
+    watched: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 
     let root = tempfile::tempdir()?;
@@ -266,7 +268,9 @@ async fn keeps_a_reused_identity_apart(watched: bool) -> Result<(), Box<dyn std:
 }
 
 #[cfg(unix)]
-async fn keeps_hard_links_one_file(watched: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) async fn keeps_hard_links_one_file(
+    watched: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
 
     let root = tempfile::tempdir()?;

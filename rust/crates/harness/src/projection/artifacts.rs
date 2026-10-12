@@ -42,7 +42,7 @@ pub(super) async fn read_invocation(
             .ok_or_else(|| {
                 stock_boundary(Some(io), Invalid, "tool identity ownership overflows")
             })?;
-        let argument_bytes = crate::contract::json_value_logical_owned_bytes(&arguments)?;
+        let argument_bytes = crate::executor::json::json_value_logical_owned_bytes(&arguments)?;
         let source = source_hold.expect("observed value ownership");
         let discarded = source
             .bytes()
@@ -174,7 +174,7 @@ fn validate_numbers(value: &Value, io: Option<&PreparationIo>) -> Result<()> {
 
 #[cfg(feature = "filesystem")]
 fn conversion_allowance<T: crate::filesystem::UploadRecord>(
-    shape: crate::contract::JsonValueShape,
+    shape: crate::executor::json::JsonValueShape,
     io: &PreparationIo,
 ) -> Result<u64> {
     use serde::__private229::de::Content;
@@ -192,7 +192,7 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
         .ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
     let (content, typed, boxes, strings) =
-        if T::json_value_schema() == crate::contract::JsonValueSchema::ToolResultContent {
+        if T::json_value_schema() == crate::executor::json::JsonValueSchema::ToolResultContent {
             let content_slot = size_of::<Content<'static>>()
                 .max(size_of::<(Content<'static>, Content<'static>)>())
                 as u64;
@@ -221,13 +221,14 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
             (0, 0, 0, 0)
         };
     // Closed serde label widths, including diagnostic punctuation.
-    let diagnostics = crate::contract::audited_serde_diagnostic_bytes(shape.input_bytes(), 1378)?;
+    let diagnostics =
+        crate::executor::json::audited_serde_diagnostic_bytes(shape.input_bytes(), 1378)?;
     [
         content,
         typed,
         boxes,
         strings,
-        crate::contract::json_owned_value_conversion_additional_bytes(shape)?,
+        crate::executor::json::json_owned_value_conversion_additional_bytes(shape)?,
         diagnostics,
         size_of::<T>() as u64,
     ]
@@ -248,16 +249,16 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     #[cfg(not(target_arch = "wasm32"))]
     let mut native = None;
     let input = source.0;
-    let shape = crate::contract::json_owned_value_shape_bounded(
+    let shape = crate::executor::json::json_owned_value_shape_bounded(
         &input,
-        crate::contract::JsonBounds {
+        crate::executor::json::JsonBounds {
             maximum_bytes,
             maximum_items: io.remaining()?.items_examined,
             maximum_depth,
         },
         T::json_value_schema(),
         &mut |charge| match charge {
-            crate::contract::JsonCodecCharge::Inspect { items } => {
+            crate::executor::json::JsonCodecCharge::Inspect { items } => {
                 crate::model::charge_items(Some(io), items)
             }
             _ => Err(stock_boundary(

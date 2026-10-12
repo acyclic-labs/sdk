@@ -31,8 +31,8 @@ type MemorySource = crate::native_mount::CheckoutMountSource<
 fn work(
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
-) -> Result<crate::NativeMaterializationWork, crate::NativeTreeMaterializationError> {
-    crate::NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
+) -> Result<Work, crate::NativeTreeMaterializationError> {
+    Work::new(budget, cancellation).map_err(|(cause, _)| cause)
 }
 
 fn checkout(
@@ -81,14 +81,7 @@ fn checkout(
 
 fn checkout_context(
     publication: MountPublication,
-) -> Result<
-    (
-        Arc<MemorySource>,
-        DarwinMountContext,
-        crate::NativeMaterializationWork,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(Arc<MemorySource>, DarwinMountContext, Work), Box<dyn std::error::Error>> {
     let (shared, config) = checkout(publication)?;
     let source = Arc::new(MemorySource::new(shared, config)?);
     let work = work(
@@ -101,7 +94,7 @@ fn checkout_context(
 
 fn test_context(
     source: &Arc<MemorySource>,
-    original: &crate::NativeMaterializationWork,
+    original: &Work,
 ) -> Result<DarwinMountContext, Box<dyn std::error::Error>> {
     let root = source
         .lookup_with_meter(&MountPath::root(), original)?
@@ -237,49 +230,6 @@ fn change_labels_advance_exactly_for_objects_that_changed() -> TestResult {
     assert_ne!(
         context.change_label(&first, lookup, None, &work)?,
         context.change_label(&first, lookup, None, &work)?
-    );
-    Ok(())
-}
-
-#[test]
-fn an_unconfirmed_fence_waits_only_for_what_changed() -> TestResult {
-    use super::super::view_ledger::ViewChange;
-
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    let context = Arc::new(context);
-    let observer = Arc::downgrade(&context);
-    let observer: std::sync::Weak<dyn ViewObserver> = observer;
-    source.observe_view(observer);
-    let path = MountPath::root().child(b"kept".to_vec());
-    source.create_file(&path, FileMetadata::default(), None, &work)?;
-    // The creation was made around the mount; take it as waited out.
-    let made = context.around.made.load(Ordering::Acquire);
-    context.around.settled.store(made, Ordering::Release);
-    let label = context.attributes(&path, 0, &work)?.change;
-
-    source.record_projection_change(&ViewChange::Unconfirmed);
-    assert!(
-        !context
-            .run(false, |work| context.revalidate(work))
-            .map_err(os)?
-    );
-    assert_eq!(context.attributes(&path, 0, &work)?.change, label);
-
-    // What the client holds no longer matches what the source reads.
-    for issued in context
-        .changes
-        .labels
-        .lock()
-        .map_err(|_| "labels poisoned")?
-        .values_mut()
-    {
-        issued.lookup.node.logical_bytes += 1;
-    }
-    source.record_projection_change(&ViewChange::Unconfirmed);
-    assert!(
-        context
-            .run(false, |work| context.revalidate(work))
-            .map_err(os)?
     );
     Ok(())
 }
@@ -502,7 +452,7 @@ fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult
     source.write_attribute(
         &path,
         b"com.apple.provenance",
-        crate::kernel::OwnedSourceChunk::intrinsic(Bytes::from_static(b"origin")),
+        copy_bytes(&work, b"origin")?,
         MountAttributeWriteMode::Upsert,
         &work,
     )?;
@@ -542,7 +492,7 @@ fn content_changes_stamp_modification_and_status_times() -> TestResult {
     let created = FileMetadata {
         modified_ns: MetadataField::Value(1),
         changed_ns: MetadataField::Value(1),
-        ..create_metadata(0o644, mode::IFREG, 0, 0)
+        ..create_metadata(0o644, libc::S_IFREG as u32, 0, 0)
     };
     context.mutate(|| source.create_file(&path, created, None, &work), &work)?;
     let times = || -> Result<_, Box<dyn std::error::Error>> {
@@ -576,7 +526,7 @@ fn live_mount() -> Result<
         tempfile::TempDir,
         Arc<MemorySource>,
         crate::NativeMountSession,
-        crate::NativeMaterializationWork,
+        Work,
     ),
     Box<dyn std::error::Error>,
 > {

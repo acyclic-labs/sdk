@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, mem::size_of};
 pub(super) fn charge(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
     }
     Ok(())
 }
@@ -110,7 +110,7 @@ pub fn created_resource_capability(
             "invalid created resource operation",
         ));
     }
-    let digest = crate::contract::canonical_json_digest(
+    let digest = crate::executor::json::canonical_json_digest(
         &(resource, operation),
         crate::store::default_projection_read_limits().maximum_bytes,
         work,

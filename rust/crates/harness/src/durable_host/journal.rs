@@ -188,7 +188,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
             crate::executor::with_history_io(io, |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     &self.admission.output_schema,
                     value,
                     "task output",

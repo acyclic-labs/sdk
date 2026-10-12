@@ -71,10 +71,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let name = io.capability(&allocation.request.volume, "harness-")?;
             name_hold = io.guard_owned(name.capacity() as u64)?;
             let read = crate::executor::with_history_io(Some(&io), |work| {
-                crate::contract::preparation_format(format_args!("volume:read:{}", &name["harness-".len()..]), work)
+                crate::executor::preparation_format(format_args!("volume:read:{}", &name["harness-".len()..]), work)
             })?;
             let write = crate::executor::with_history_io(Some(&io), |work| {
-                crate::contract::preparation_format(format_args!("volume:write:{}", &name["harness-".len()..]), work)
+                crate::executor::preparation_format(format_args!("volume:write:{}", &name["harness-".len()..]), work)
             })?;
             if !context.original_root().grants.contains(&read) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root content original admission does not declare Project or Scratch READ" });
@@ -82,7 +82,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let writable = allocation.publication_lease.is_some() && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
             let id = crate::executor::with_history_io(Some(&io), |work| {
-                crate::contract::preparation_format(format_args!("root-created:{name}"), work)
+                crate::executor::preparation_format(format_args!("root-created:{name}"), work)
             })?;
             drop(name);
             drop(name_hold);
@@ -163,9 +163,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io.retain_owned(capture)?;
         io.allocation_attempt(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64)?;
         let name = io.capability(&allocation.volume, "harness-")?;
-        let read = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("volume:read:{}", &name["harness-".len()..]), work))?;
-        let write = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("volume:write:{}", &name["harness-".len()..]), work))?;
-        let id = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("created:{}:{name}", proof.preparation), work))?;
+        let read = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("volume:read:{}", &name["harness-".len()..]), work))?;
+        let write = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("volume:write:{}", &name["harness-".len()..]), work))?;
+        let id = crate::executor::with_history_io(Some(io), |work| crate::executor::preparation_format(format_args!("created:{}:{name}", proof.preparation), work))?;
         io.retain_owned((2 * std::mem::size_of::<String>()) as u64)?;
         let capabilities = Capabilities::new([read, write]);
         let temporary =

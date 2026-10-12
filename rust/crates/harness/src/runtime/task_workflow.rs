@@ -5,7 +5,7 @@ pub(super) fn validate_task_transition(
     transition: &MachineTransition,
 ) -> Result<()> {
     if let MachineStatus::Completed { value } = &transition.status {
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             output_schema,
             value,
             "task output",
@@ -56,7 +56,7 @@ pub(super) fn inspect_task_metadata(
         observer.check_cancellation()?;
         crate::store::history::HistoryIo::codec_charge(
             &mut observer,
-            crate::contract::JsonCodecCharge::Inspect { items },
+            crate::executor::json::JsonCodecCharge::Inspect { items },
         )?;
     }
     #[cfg(not(feature = "filesystem"))]
@@ -195,7 +195,7 @@ pub(super) async fn validate_latest_task_transition(
         if let Some(transition) = &latest.0 {
             if let MachineStatus::Completed { value } = &transition.status {
                 crate::executor::with_history_io(io, |work| {
-                    crate::contract::validate_json_schema_value(schema, value, "task output", work)
+                    crate::executor::validate_json_schema_value(schema, value, "task output", work)
                 })?;
             }
         }
@@ -325,7 +325,7 @@ impl ResumableTaskSession {
                     |transition| {
                         crate::executor::with_history_io(Some(&io), |observer| {
                             if let MachineStatus::Completed { value } = &transition.status {
-                                crate::contract::validate_json_schema_value(
+                                crate::executor::validate_json_schema_value(
                                     schema,
                                     value,
                                     "task output",

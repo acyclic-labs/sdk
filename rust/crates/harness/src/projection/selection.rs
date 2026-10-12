@@ -165,7 +165,7 @@ pub fn validate_model_context_selection(
     let mut previous = 0;
     for (index, id) in selection.message_ids.iter().enumerate() {
         if let Some(observer) = work.as_deref_mut() {
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let message = conversation
             .message(*id)
@@ -206,7 +206,7 @@ pub fn validate_model_context_selection(
                 if let Some(reply) = message.reply_to {
                     for id in selection.message_ids[..index].iter().rev() {
                         if let Some(observer) = work.as_deref_mut() {
-                            observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+                            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                                 bytes: 0,
                                 items: 1,
                             })?;
