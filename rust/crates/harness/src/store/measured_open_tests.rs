@@ -85,7 +85,7 @@ mod measured_open_tests {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
+            &authority(), &event, encode_event(&authority(), &event, &mut None)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;

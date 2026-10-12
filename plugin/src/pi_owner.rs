@@ -561,7 +561,7 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
             reason: "Pi root allocation provider identity differs",
         });
     }
-    let mut providers = EffectRegistry::new_with_native_work(work)?
+    let mut providers = EffectRegistry::new(Some(work))?
         .with_result_resolver_with_native_work(content.clone(), work)?;
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;

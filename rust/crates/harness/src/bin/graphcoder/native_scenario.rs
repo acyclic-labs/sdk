@@ -696,7 +696,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     Ok(lease)
 }
 

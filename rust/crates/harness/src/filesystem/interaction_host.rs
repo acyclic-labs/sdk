@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: Arc<P>,
+    stream: acyclic_stream::StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -213,7 +213,7 @@ where
             }
             None => None,
         };
-        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
+        Ok(Self { stream: acyclic_stream::StreamClient::new(stream), host, authority, verifier, schemas, owner_scope, private_volume,
             maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
@@ -544,8 +544,7 @@ where
         };
         let request = match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
@@ -558,8 +557,7 @@ where
                 request
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 let bytes = self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?;
                 ticket.validate_request_bytes(&bytes)?
             }
@@ -596,13 +594,11 @@ where
     ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_bytes).await
             }
         }
@@ -671,7 +667,7 @@ where
                         &request, &resolution.outcome, detail, &response.0, &mut work)?;
                 }
                 None => ticket.validate_decision_bytes(
-                    &request, &resolution.outcome, detail, &bytes)?,
+                    &request, &resolution.outcome, detail, &bytes, &mut None)?,
             }
             drop(bytes);
             drop(detail_bytes_hold);
@@ -745,8 +741,7 @@ where
                 "application/json", &name, self.maximum_bytes, &key,
                 InternalContentClass::Interaction, io).await,
             None => {
-                let grant = ContentGrant::verify(
-                    &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
                     "application/json", &name, self.maximum_bytes, &key,
                     InternalContentClass::Interaction).await

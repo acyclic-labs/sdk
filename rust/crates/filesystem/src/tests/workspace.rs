@@ -1174,8 +1174,8 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
 
     workspace.write_text("/upstream", "one").await?;
     let mut transaction = workspace
-        .begin_transaction_at(&base, IdempotencyKey::new())
-        .await?;
+        .begin_transaction_at(&base, IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.write_text("/local", "two").await?;
     assert!(matches!(
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
@@ -1202,8 +1202,8 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
     let foreign = other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         workspace
-            .begin_transaction_at(&foreign, IdempotencyKey::new())
-            .await,
+            .begin_transaction_at(&foreign, IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::ForeignGeneration)
     ));
     Ok(())
@@ -1398,10 +1398,10 @@ async fn explicit_pin_is_exact_and_conflicting_reuse_fails_closed() -> Result<()
     let fs = Fs::memory();
     let workspace = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let first = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let pin = first.pin("deployment").await?;
+    let pin = first.pin("deployment", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(pin.0.as_str(), "deployment");
     assert_eq!(pin.1.id(), first.id());
-    assert_eq!(first.pin("deployment").await?.1.id(), first.id());
+    assert_eq!(first.pin("deployment", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.1.id(), first.id());
 
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.write_text("/changed", "yes").await?;
@@ -1409,7 +1409,7 @@ async fn explicit_pin_is_exact_and_conflicting_reuse_fails_closed() -> Result<()
         return Err("second generation did not commit".into());
     };
     assert!(matches!(
-        second.pin("deployment").await,
+        second.pin("deployment", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::RetentionConflict)
     ));
     Ok(())
@@ -3018,7 +3018,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
                 else {
                     return Err(WorkspaceError::manual_engine("churn fixture did not commit"));
                 };
-                generation.pin(format!("churn-{round}")).await?;
+                generation.pin(format!("churn-{round}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let agent = main
                     .fork(
                         &format!("agent-{round}"),
@@ -3665,7 +3665,7 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
     let TransactionCommit::Committed(committed) = first.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("initial original commit did not publish".into());
     };
-    let mut retry = workspace.begin_transaction_at(&base, key).await?;
+    let mut retry = workspace.begin_transaction_at(&base, key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     retry.write("/file", bytes::Bytes::from_static(b"same input")).await?;
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
