@@ -6019,13 +6019,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             key
         };
-        let outcome = crate::distributed::append_keyed(
+        let outcome = crate::distributed::append(
             (stream, &self.stream),
-            OwnedBytes::copy_from_slice(bytes),
-            expected_tail,
+            [OwnedBytes::copy_from_slice(bytes)],
+            0, expected_tail,
             key,
             operation_id,
-            "control identity", &mut None
+            &mut None
         )
         .await?;
         match outcome {

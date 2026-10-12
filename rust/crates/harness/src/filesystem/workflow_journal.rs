@@ -1294,9 +1294,9 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), body, Some(expected_revision), key,
-                    record.operation_id, "workflow retry identity", &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [body], 0, Some(expected_revision), key,
+                    record.operation_id, &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![body], Some(expected_revision), Some(key))
@@ -1441,9 +1441,8 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), body, Some(0), key, admission.operation_id,
-                    "workflow admission identity", &mut Some(&mut borrowed),
+                crate::distributed::append(
+                    (&stream, &self.stream), [body], 0, Some(0), key, admission.operation_id, &mut Some(&mut borrowed),
                 ).await
             }
             None => stream.append_batch(vec![body], Some(0), Some(key)).await.map_err(|error| match error {
