@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { Harness, NativeContracts, TaskDefinition, type AgentId } from "../src/index.js";
+import { Harness, NativeContracts, TaskDefinition, type AgentId, type VolumeClass, type VolumeRef } from "../src/index.js";
 import { create } from "@bufbuild/protobuf";
 import { MemoryObjectsV1, CreateBucketRequestSchema, DeleteObjectRequestSchema, GetObjectRequestSchema } from "@acyclic-labs/objects/v1";
-import { ObjectContentStore, type ObjectVolumeRef } from "../src/objects.js";
+import { ObjectContentStore } from "../src/objects.js";
 
 const contracts = await NativeContracts.create();
 const owner = "10101010-1010-1010-1010-101010101010" as AgentId;
@@ -11,7 +11,7 @@ const reader = "11111111-1111-1111-1111-111111111111" as AgentId;
 test("Objects content is content-addressed, owner-written, and delegably read", async () => {
   const objects = await MemoryObjectsV1.create();
   const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "harness-objects-test" }));
-  const volume: ObjectVolumeRef = {
+  const volume: VolumeRef<VolumeClass, "objects"> = {
     provider: { namespace: "local", family: "objects", version: "2" },
     id: bucket.bucket!.name, class: "agent_private", owner: { kind: "agent", id: owner },
   };
