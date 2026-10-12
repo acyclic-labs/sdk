@@ -31,7 +31,7 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     sync::Arc,
 };
 
@@ -42,8 +42,7 @@ struct ExecutionSummary {
     operation: Option<OperationId>,
     tail: u64,
     retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
-    prepared_contexts: HashSet<u32>,
-    compacted_contexts: HashSet<u32>,
+    contexts: BTreeMap<u32, bool>,
     models: BTreeMap<(u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>>,
     tools: BTreeMap<(u32, [u8; 32]), bool>,
 }
@@ -67,14 +66,13 @@ impl ExecutionSummary {
             }
             ExecutionEvent::ContextPrepared { step, .. } => {
                 self.tail > 0
-                    && !self.prepared_contexts.contains(step)
+                    && !self.contexts.contains_key(step)
                     && !self
                         .models
                         .contains_key(&(*step, crate::executor::ModelPurpose::Response))
             }
             ExecutionEvent::ContextCompacted { step, .. } => {
-                self.prepared_contexts.contains(step)
-                    && !self.compacted_contexts.contains(step)
+                self.contexts.get(step) == Some(&false)
                     && matches!(
                         self.models
                             .get(&(*step, crate::executor::ModelPurpose::Summary)),
@@ -126,9 +124,9 @@ impl ExecutionSummary {
     fn validate_next(
         &self, event: &ExecutionEvent, model: Option<&ModelEvent>,
         limits: Limits, io: Option<&PreparationIo>,
-    ) -> Result<Option<[u8; 32]>> {
+    ) -> Result<()> {
         if let Some(io) = io { io.check_cancellation()?; }
-        let tool_key = self.require_next(event, io)?;
+        self.require_next(event, io)?;
         if let ExecutionEvent::Model { step, purpose, .. } = event {
             self.models
                 .get(&(*step, *purpose))
@@ -141,7 +139,7 @@ impl ExecutionSummary {
                     limits, io,
                 )?;
         }
-        Ok(tool_key)
+        Ok(())
     }
 
     fn accept(
@@ -159,7 +157,7 @@ impl ExecutionSummary {
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                 "execution journal sequence or retry identity is invalid"));
         }
-        let tool_key = self.validate_next(&record.event, model, limits, io)?;
+        let tool_key = self.require_next(&record.event, io)?;
         let digest = match io {
             Some(io) => {
                 let encoded_hold;
@@ -172,7 +170,7 @@ impl ExecutionSummary {
                 drop(encoded);
                 drop(encoded_hold);
                 let extra = match &record.event {
-                    ExecutionEvent::ContextPrepared { .. } | ExecutionEvent::ContextCompacted { .. } => std::mem::size_of::<u32>(),
+                    ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
                     ExecutionEvent::ModelStarted { .. } => std::mem::size_of::<((u32, crate::executor::ModelPurpose), Option<ModelEventAdmission>)>(),
                     ExecutionEvent::ToolStarted { .. } => std::mem::size_of::<((u32, [u8; 32]), bool)>(),
                     _ => 0,
@@ -184,10 +182,10 @@ impl ExecutionSummary {
         };
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
-                self.prepared_contexts.insert(*step);
+                self.contexts.insert(*step, false);
             }
             ExecutionEvent::ContextCompacted { step, .. } => {
-                self.compacted_contexts.insert(*step);
+                self.contexts.insert(*step, true);
             }
             ExecutionEvent::ModelStarted { step, purpose, .. } => {
                 self.models
@@ -469,50 +467,44 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
 
-    /// Observes the same validated dispatch summary used by passive suspension.
-    pub(crate) async fn is_quiescent(&self) -> Result<bool>
-    {
-        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("quiescence requires a task-owned execution journal".into())
-        })?;
-        owner.verify(true, &mut None).await?;
-        let quiescent = {
-            let mut summary = self.verified.lock().await;
-            Box::pin(self.refresh_summary(*operation, &mut summary, None)).await?;
-            summary.quiescent(None)?
-        };
-        owner.verify(true, &mut None).await?;
-        Ok(quiescent)
+    /// Checks whether all model and tool dispatches have settled.
+    pub(crate) async fn is_quiescent(&self) -> Result<bool> {
+        self.quiescent(None).await
     }
 
     /// Checks settled dispatches on the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn is_quiescent_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, bool>>
-    {
+    ) -> Result<crate::NativeFutureBundle<'a, bool>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let (owner, operation) = self.owner.as_ref().ok_or_else(||
-                canonical_boundary(Some(&io), crate::wire::ErrorCode::Unsupported,
-                    "quiescence requires a task-owned execution journal"))?;
-            self.require_operation(*operation, Some(&io))?;
-            owner.verify_with_native_work(true, work).await?;
-            let quiescent = {
-                let before = io.owned_bytes()?;
-                let summary_hold;
-                let mut summary = ExecutionSummary::default();
-                self.refresh_summary(*operation, &mut summary, Some(&io)).await?;
-                summary_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| io.invalid("execution summary custody underflow"))?)?;
-                let quiescent = summary.quiescent(Some(&io))?;
-                drop(summary);
-                drop(summary_hold);
-                quiescent
-            };
-            owner.verify_with_native_work(true, work).await?;
-            Ok(quiescent)
+            self.quiescent(Some(&PreparationIo::from_native_work(work)?)).await
         })
+    }
+
+    async fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
+        let (owner, operation) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
+            io, crate::wire::ErrorCode::Unsupported, "quiescence requires a task-owned execution journal"))?;
+        self.require_operation(*operation, io)?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
+        owner.verify(true, &mut work).await?;
+        let quiescent = {
+            let mut shared = if io.is_none() { Some(self.verified.lock().await) } else { None };
+            let summary_hold;
+            let mut transient = ExecutionSummary::default();
+            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+            self.refresh_summary(*operation, summary, io).await?;
+            summary_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("execution summary custody underflow"))?)).transpose()?;
+            let quiescent = summary.quiescent(io)?;
+            drop(transient);
+            drop(summary_hold);
+            quiescent
+        };
+        owner.verify(true, &mut work).await?;
+        Ok(quiescent)
     }
 
     /// Releases only after both configured original journals prove passive workflow state and settled dispatches.
@@ -700,9 +692,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
             None => crate::contract::canonical_json_digest(event)?,
         };
-        let mut shared = self.verified.lock().await;
+        let mut shared = if io.is_none() { Some(self.verified.lock().await) } else { None };
         let mut transient = ExecutionSummary::default();
-        let summary = if io.is_some() { &mut transient } else { &mut *shared };
+        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
         loop {
             self.refresh_summary(operation_id, summary, io).await?;
             if let Some(owner) = owner {
@@ -754,7 +746,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         else {
             return Ok(());
         };
-        canonical_validate_file(limits, projection, io)?;
+        let mut history = io.map(PreparationIo::history_io);
+        limits.validate_file_with_work(projection, &mut history.as_mut().map(
+            |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_preparation_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
         crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
@@ -765,7 +759,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
             return Ok(());
         };
-        canonical_validate_file(limits, reference, io)?;
+        let mut history = io.map(PreparationIo::history_io);
+        limits.validate_file_with_work(reference, &mut history.as_mut().map(
+            |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_preparation_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
         envelope.validate_with_io(limits, io)?;
@@ -817,7 +813,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
-            canonical_validate_limits(limits, io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            limits.validate_with_work(&mut history.as_mut().map(
+                |history| history as &mut dyn crate::store::history::HistoryIo))?;
             self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
                 let association_hold;
@@ -977,7 +975,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let request = request.ok_or_else(|| canonical_boundary(io,
                 crate::wire::ErrorCode::Conflict, "canonical summary has no admitted request"))?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
-            canonical_validate_file(limits, &summary.output, io)?;
+            let mut history = io.map(PreparationIo::history_io);
+            limits.validate_file_with_work(&summary.output, &mut history.as_mut().map(
+                |history| history as &mut dyn crate::store::history::HistoryIo))?;
             let bytes = match io {
                 #[cfg(not(target_arch = "wasm32"))]
                 Some(io) if io.original_native_work().is_some() => {
@@ -1291,145 +1291,65 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    /// Resolves through the conversation-owned ledger with an exact responder grant.
+    /// Resolves an interaction with an authenticated responder grant.
     pub async fn resolve_interaction(
-        &self,
-        id: InteractionId,
-        response: InteractionResponse,
-        responder: &Scope,
-    ) -> Result<()>
-    {
+        &self, id: InteractionId, response: InteractionResponse, responder: &Scope,
+    ) -> Result<()> {
         let span = obs_span!(INFO, "acyclic.harness.journal.resolve_interaction");
-        traced(
-            span,
-            self.resolve_interaction_with_io(id, &response, responder, None),
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_lines, reason = "one ordered interaction resolution transaction")]
-    async fn resolve_interaction_with_io(
-        &self, id: InteractionId, response: &InteractionResponse, responder: &Scope,
-        io: Option<&PreparationIo>,
-    ) -> Result<()>
-    {
-        let host = self.interactions.as_ref().ok_or_else(|| super::interaction_host::interaction_boundary(
-            io, crate::wire::ErrorCode::Unsupported, "task execution has no conversation interaction owner"))?;
-        host.verify_responder_scope_with_io(id, responder, io)?;
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed.as_mut().map(
-            |work| work as &mut dyn crate::store::history::HistoryIo);
-        if let Some((owner, _)) = &self.owner {
-            owner.require_interaction_grant(&mut work)?;
-            owner.verify(true, &mut work).await?;
-        }
-        let records_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let record = host.read_with_io(id, io).await?;
-        records_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
-                crate::wire::ErrorCode::Invalid, "interaction record custody underflows"))?)).transpose()?;
-        let (ticket, prior) = record.ok_or_else(|| match io {
-            Some(io) => super::interaction_host::interaction_boundary(
-                Some(io), crate::wire::ErrorCode::NotFound, "interaction is not found"),
-            None => Error::NotFound(format!("interaction {id}")),
-        })?;
-        let request_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let request = host.read_request_with_io(id, io).await?.ok_or_else(||
-            super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
-                "admitted interaction has no request"))?;
-        request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
-                crate::wire::ErrorCode::Invalid, "interaction request custody underflows"))?)).transpose()?;
-        request.validate_response_with_work(response, &mut work)?;
-        if let Some(previous) = &prior && previous.outcome.is_terminal() {
-            let same = match (&previous.outcome, response) {
-                (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
-                | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => {
-                    let bytes_hold;
-                    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_decision_detail_with_io(id, io).await?.ok_or_else(||
-                        super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
-                            "admitted approval detail is missing"))?;
-                    bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                        .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
-                            crate::wire::ErrorCode::Invalid, "interaction detail custody underflows"))?)).transpose()?;
-                    let same = match io {
-                        Some(io) => {
-                            let original = io.decode_preparation::<InteractionResponse>(&bytes)?;
-                            &original.value == response
-                        }
-                        None => {
-                            let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
-                                .map_err(|error| Error::Storage(error.to_string()))?;
-                            &original == response
-                        }
-                    };
-                    drop(bytes);
-                    drop(bytes_hold);
-                    same
-                }
-                (InteractionOutcome::Answered { .. }, _) => {
-                    let bytes_hold;
-                    let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_answer_with_io(id, io).await?.ok_or_else(||
-                        super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
-                            "admitted answer is missing"))?;
-                    bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                        .ok_or_else(|| super::interaction_host::interaction_boundary(Some(io),
-                            crate::wire::ErrorCode::Invalid, "interaction answer custody underflows"))?)).transpose()?;
-                    let same = match io {
-                        Some(io) => {
-                            let original = io.decode_preparation::<InteractionResponse>(&bytes)?;
-                            &original.value == response
-                        }
-                        None => {
-                            let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
-                                .map_err(|error| Error::Storage(error.to_string()))?;
-                            &original == response
-                        }
-                    };
-                    drop(bytes);
-                    drop(bytes_hold);
-                    same
-                }
-                _ => false,
-            };
-            if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
-            return if same { Ok(()) } else {
-                Err(super::interaction_host::interaction_boundary(
-                    io, crate::wire::ErrorCode::Conflict, "interaction was already resolved"))
-            };
-        }
-        let expected_version = prior.as_ref().map_or(Ok(1_u64), |value|
-            value.expected_version.checked_add(1).ok_or_else(||
-                super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Invalid,
-                    "interaction version exhausted")))?;
-        let resolution_operation = interaction_resolution_operation(id, expected_version, io)?;
-        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
-        let staged = host.stage_answer_with_io(id, expected_version, resolution_operation, response, io).await?;
-        let (outcome, detail) = match response {
-            InteractionResponse::Approval { approved: true, .. } => (InteractionOutcome::Approved, Some(staged)),
-            InteractionResponse::Approval { approved: false, .. } => (InteractionOutcome::Declined, Some(staged)),
-            _ => {
-                if let Some(io) = io {
-                    io.claim(std::mem::size_of::<FileRef>() as u64)?;
-                    io.allocation_attempt(std::mem::size_of::<FileRef>() as u64)?;
-                }
-                (InteractionOutcome::Answered { answer: Box::new(staged) }, None)
+        traced(span, async {
+            let host = self.interactions()?;
+            host.verify_responder_scope_with_io(id, responder, None)?;
+            if let Some((owner, _)) = &self.owner {
+                owner.require_interaction_grant(&mut None)?;
+                owner.verify(true, &mut None).await?;
             }
-        };
-        host.resolve_with_io(resolution_operation, responder, InteractionResolution {
-            id: ticket.id, expected_version, outcome, detail,
-        }, io).await?;
-        if let Some((owner, _)) = &self.owner { owner.verify(true, &mut work).await?; }
-        drop(request);
-        drop(request_hold);
-        drop(prior);
-        drop(ticket);
-        drop(records_hold);
-        Ok(())
+            let (ticket, prior) = host.read_with_io(id, None).await?
+                .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
+            let request = host.read_request_with_io(id, None).await?
+                .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
+            request.validate_response_with_work(&response, &mut None)?;
+            if let Some(previous) = &prior && previous.outcome.is_terminal() {
+                let stored = match (&previous.outcome, &response) {
+                    (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
+                    | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => {
+                        Some(host.read_decision_detail_with_io(id, None).await?
+                            .ok_or_else(|| Error::Storage("admitted approval detail is missing".into()))?)
+                    }
+                    (InteractionOutcome::Answered { .. }, _) => {
+                        Some(host.read_answer_with_io(id, None).await?
+                            .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?)
+                    }
+                    _ => None,
+                };
+                let same = match stored {
+                    Some(bytes) => crate::contract::json_from_slice::<InteractionResponse>(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))? == response,
+                    None => false,
+                };
+                if let Some((owner, _)) = &self.owner { owner.verify(true, &mut None).await?; }
+                return if same { Ok(()) } else { Err(Error::Conflict("interaction was already resolved".into())) };
+            }
+            let expected_version = prior.as_ref().map_or(Ok(1_u64), |value|
+                value.expected_version.checked_add(1)
+                    .ok_or_else(|| Error::Invalid("interaction version exhausted".into())))?;
+            let digest = blake3::hash(format!("interaction:{}:resolve-{expected_version}",
+                uuid::Uuid::from_bytes(id.into_bytes()).hyphenated()).as_bytes());
+            let mut bytes = [0_u8; 16];
+            bytes.copy_from_slice(&digest.as_bytes()[..16]);
+            let operation = OperationId::from_bytes(bytes);
+            if let Some((owner, _)) = &self.owner { owner.verify(true, &mut None).await?; }
+            let staged = host.stage_answer_with_io(id, expected_version, operation, &response, None).await?;
+            let (outcome, detail) = match response {
+                InteractionResponse::Approval { approved: true, .. } => (InteractionOutcome::Approved, Some(staged)),
+                InteractionResponse::Approval { approved: false, .. } => (InteractionOutcome::Declined, Some(staged)),
+                _ => (InteractionOutcome::Answered { answer: Box::new(staged) }, None),
+            };
+            host.resolve_with_io(operation, responder, InteractionResolution {
+                id: ticket.id, expected_version, outcome, detail,
+            }, None).await?;
+            if let Some((owner, _)) = &self.owner { owner.verify(true, &mut None).await?; }
+            Ok(())
+        }).await
     }
 
     /// Refreshes the shared authoritative conversation reducer.
@@ -1710,6 +1630,23 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
         }
         Ok(result)
+    }
+
+    async fn records(
+        &self, operation: OperationId, after: u64, maximum: u32, io: Option<&PreparationIo>,
+    ) -> Result<Vec<ExecutionRecord>> {
+        let page_slots;
+        let page = self.replay_page(operation, after, maximum, io.is_none(), io).await?;
+        let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
+            .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution replay vector ownership overflow"))? as u64;
+        page_slots = io.map(|io| io.guard_owned(page_bytes)).transpose()?;
+        let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
+            .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution replay vector ownership overflow"))? as u64;
+        if let Some(io) = io { io.claim(output_bytes)?; io.allocation_attempt(output_bytes)?; }
+        let mut records = Vec::with_capacity(page.len());
+        for (record, _) in page { records.push(record); }
+        drop(page_slots);
+        Ok(records)
     }
 
     async fn verify_event_refs_with_io(&self, event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<Option<ModelEvent>>
@@ -2008,20 +1945,7 @@ where
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let _page_slots;
-            let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
-            let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-                .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
-            _page_slots = io.guard_owned(page_bytes)?;
-            let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
-                .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
-            io.claim(output_bytes)?;
-            io.allocation_attempt(output_bytes)?;
-            let mut records = Vec::with_capacity(page.len());
-            for (record, _) in page {
-                records.push(record);
-            }
-            drop(_page_slots);
+            let records = self.records(operation_id, after, maximum, Some(&io)).await?;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((records, custody))
@@ -2131,9 +2055,9 @@ where
             items = crate::obs::Empty
         );
         traced(span, async move {
-            let page = self.replay_page(operation_id, after, maximum, true, None).await?;
-            crate::obs::obs_record!("items" = page.len());
-            Ok(page.into_iter().map(|(record, _)| record).collect())
+            let records = self.records(operation_id, after, maximum, None).await?;
+            crate::obs::obs_record!("items" = records.len());
+            Ok(records)
         })
     }
     fn replay_measured<'a>(
@@ -2148,18 +2072,7 @@ where
             let io = PreparationIo::from_budget(budget, cancellation)
                 .map_err(|cause| acyclic_fs::OperationFailure::new(cause, Default::default()))?;
             let result = async {
-                let _page_slots;
-                let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
-                let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
-                _page_slots = io.guard_owned(page_bytes)?;
-                let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
-                io.claim(output_bytes)?;
-                io.allocation_attempt(output_bytes)?;
-                let mut records = Vec::with_capacity(page.len());
-                for (record, _) in page { records.push(record); }
-                drop(_page_slots);
+                let records = self.records(operation_id, after, maximum, Some(&io)).await?;
                 io.remaining()?;
                 Ok(records)
             }.await;
@@ -2583,6 +2496,35 @@ struct JournalSelectedResolver<'a, P, A, O> {
     maximum_attachments: usize,
 }
 
+impl<P, A, O> JournalSelectedResolver<'_, P, A, O>
+where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
+{
+    async fn manifest(&self, manifest: &FileRef, item_count: u32, io: Option<&PreparationIo>)
+        -> Result<Vec<crate::conversation::Attachment>> {
+        if item_count as usize > self.maximum_attachments {
+            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
+                "selected manifest exceeds attachment limit"));
+        }
+        self.journal.authorize_selected_file_with_io(manifest, io)?;
+        let items = match io {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(io) => {
+                let work = io.original_native_work().expect("native manifest reader preserves its original ledger");
+                let (items, custody) = self.inner.load_manifest_with_native_work(manifest, item_count, work)?.await?;
+                io.absorb_native_custody(custody)?;
+                items
+            }
+            _ => self.inner.load_manifest(manifest, item_count).await?,
+        };
+        if items.len() != item_count as usize {
+            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
+                "attachment manifest count is incomplete"));
+        }
+        for item in &items { self.journal.verify_input_file_with_io(&item.file, io).await?; }
+        Ok(items)
+    }
+}
+
 impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
@@ -2593,20 +2535,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     fn load_manifest<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
     ) -> BoxFuture<'a, Result<Vec<crate::conversation::Attachment>>> {
-        Box::pin(async move {
-            if item_count as usize > self.maximum_attachments {
-                return Err(super::interaction_host::interaction_boundary(None,
-                    crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
-            }
-            self.journal.authorize_selected_file_with_io(manifest, None)?;
-            let items = self.inner.load_manifest(manifest, item_count).await?;
-            if items.len() != item_count as usize {
-                return Err(super::interaction_host::interaction_boundary(None,
-                    crate::wire::ErrorCode::Invalid, "attachment manifest count is incomplete"));
-            }
-            for item in &items { self.journal.verify_input_file_with_io(&item.file, None).await?; }
-            Ok(items)
-        })
+        Box::pin(self.manifest(manifest, item_count, None))
     }
 
     fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
@@ -2623,20 +2552,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::conversation::Attachment>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            if item_count as usize > self.maximum_attachments {
-                return Err(super::interaction_host::interaction_boundary(Some(&io),
-                    crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
-            }
-            self.journal.authorize_selected_file_with_io(manifest, Some(&io))?;
-            let (items, custody) = self.inner.load_manifest_with_native_work(manifest, item_count, work)?.await?;
-            io.absorb_native_custody(custody)?;
-            if items.len() != item_count as usize {
-                return Err(super::interaction_host::interaction_boundary(Some(&io),
-                    crate::wire::ErrorCode::Invalid, "attachment manifest count is incomplete"));
-            }
-            for item in &items {
-                self.journal.verify_input_file_with_io(&item.file, Some(&io)).await?;
-            }
+            let items = self.manifest(manifest, item_count, Some(&io)).await?;
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((items, custody))
@@ -2670,22 +2586,6 @@ fn interaction_open_operation(id: InteractionId, io: Option<&PreparationIo>) -> 
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
     Ok(OperationId::from_bytes(bytes))
-}
-
-fn canonical_validate_limits(limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return limits.validate_with_native_work(work);
-    }
-    limits.validate()
-}
-
-fn canonical_validate_file(limits: Limits, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return limits.validate_file_with_native_work(file, work);
-    }
-    limits.validate_file(file)
 }
 
 fn canonical_push_text(
@@ -2748,35 +2648,6 @@ fn verify_summary_prefix_with_io(
     Ok(())
 }
 
-fn interaction_resolution_operation(
-    id: InteractionId, version: u64, io: Option<&PreparationIo>,
-) -> Result<OperationId> {
-    let mut source = [0_u8; 77];
-    source[..12].copy_from_slice(b"interaction:");
-    let mut encoded = [0_u8; 36];
-    source[12..48].copy_from_slice(uuid::Uuid::from_bytes(id.into_bytes())
-        .hyphenated().encode_lower(&mut encoded).as_bytes());
-    source[48..57].copy_from_slice(b":resolve-");
-    let mut decimal = [0_u8; 20];
-    let mut start = decimal.len();
-    let mut remainder = version;
-    loop {
-        start -= 1;
-        decimal[start] = b'0' + (remainder % 10) as u8;
-        remainder /= 10;
-        if remainder == 0 { break; }
-    }
-    let length = 57 + decimal.len() - start;
-    source[57..length].copy_from_slice(&decimal[start..]);
-    let hashed = acyclic_fs::WorkCounters { bytes_hashed: length as u64, ..Default::default() };
-    if let Some(io) = io { io.preflight(hashed)?; }
-    let digest = blake3::hash(&source[..length]);
-    if let Some(io) = io { io.charge(hashed)?; }
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    Ok(OperationId::from_bytes(bytes))
-}
-
 async fn project_canonical_delta_with_io<P, A, O>(
     journal: &FilesystemExecutionJournal<P, A, O>,
     loaded: Vec<crate::conversation::ConversationMessage>,
@@ -2829,35 +2700,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         conversation_revision: selection.conversation_revision, message_ids,
         checkpoint: selection.checkpoint.as_ref().map(|file| super::fork_preparer_io::clone_file(file, io)).transpose()?,
     };
-    let selected = match io {
-        Some(io) => {
-            let resolver = JournalSelectedResolver {
-                journal, inner: verifier, maximum_attachments: limits.attachments,
-            };
-            crate::projection::select_model_context(
-            &history,
-            selection.conversation_revision,
-            selection,
-            &resolver,
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
-            limits.attachments,
-            Some(io),
-        ).await?
-        }
-        None => select_model_context(
-            &history,
-            selection.conversation_revision,
-            selection,
-            verifier,
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
-            limits.attachments,
-            None,
-        ).await?,
-    };
+    let resolver = JournalSelectedResolver { journal, inner: verifier, maximum_attachments: limits.attachments };
+    let resolver: &dyn ContentResidencyVerifier = if io.is_some() { &resolver } else { verifier };
+    let selected = select_model_context(
+        &history, selection.conversation_revision, selection, resolver,
+        limits.context_messages, limits.attachments, limits.render_bytes, limits.attachments, io,
+    ).await?;
     let input = crate::model::model_content_clone_with_io(&selected.messages.last()
         .ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Invalid,
             "canonical input is missing"))?.content, io)?;
