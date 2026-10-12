@@ -4894,7 +4894,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 } else { crate::GenerationFork::Independent },
             }));
         }
-        let head = source.workspace.head_measured(accounting.remaining()?, cancellation).await;
+        let head = source.workspace.head(accounting.remaining()?, cancellation).await;
         let work = match &head { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
         let head = head.map_err(|failure| failure.error)?;

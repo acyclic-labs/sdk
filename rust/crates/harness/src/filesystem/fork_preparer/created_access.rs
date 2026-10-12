@@ -1110,11 +1110,11 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation)
                 .await.map_err(native_workspace_error)?
         } else {
-            io.receive(original_workspace.operation_generation_measured(
+            io.receive(original_workspace.operation_generation(
                 key, io.remaining()?, &io.cancellation).await)?
         };
         #[cfg(target_arch = "wasm32")]
-        let initial = io.receive(original_workspace.operation_generation_measured(
+        let initial = io.receive(original_workspace.operation_generation(
             key, io.remaining()?, &io.cancellation).await)?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;

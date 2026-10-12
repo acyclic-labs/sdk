@@ -191,7 +191,7 @@ async fn selected_frozen_native_baseline_is_not_an_empty_root_and_source_stays_i
     let frozen = workspace.snapshot().await?;
     workspace.workspace().write_text("/selected.txt", "imported-selected").await?;
     workspace.workspace().write_text("/unselected-authored.txt", "must-not-write-back").await?;
-    let imported = workspace.workspace().head().await?;
+    let imported = workspace.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authored_before = imported.id();
     let paths = vec!["/selected.txt".to_owned()];
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -302,7 +302,7 @@ async fn canonical_selected_import_preserves_metadata_source_and_destination_con
         modified_ns: acyclic_fs::kernel::MetadataField::Value(123_456),
         ..Default::default()
     }).await?;
-    metadata.commit().await?;
+    metadata.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     destination.workspace().write_text("/selected.txt", "destination-original").await?;
     destination.workspace().write_text("/outside.txt", "outside-original").await?;
     let frozen_source = source.snapshot().await?;
@@ -352,7 +352,7 @@ async fn canonical_selected_import_preserves_metadata_source_and_destination_con
                 Ok(acyclic_fs::OperationReceipt { value: (), work: Default::default() })
             }
         }).await?.value;
-    let exact = destination.workspace().generation(imported.authored_generation).await?;
+    let exact = destination.workspace().generation(imported.authored_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(exact.read("/selected.txt", 1024).await?.as_ref(), b"source-original");
     assert_eq!(exact.stat("/selected.txt").await?.metadata.modified_ns, Some(123_456));
     assert_eq!(exact.read("/outside.txt", 1024).await?.as_ref(), b"concurrent-outside");
@@ -417,7 +417,7 @@ async fn canonical_selected_directory_import_pins_nested_generation_and_metadata
     tree.set_metadata("/selected/nested/file.txt", acyclic_fs::kernel::FileMetadata {
         modified_ns: acyclic_fs::kernel::MetadataField::Value(123_456), ..Default::default()
     }).await?;
-    tree.commit().await?;
+    tree.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     destination.workspace().write_text("/outside.txt", "original-outside").await?;
     let frozen = source.snapshot().await?;
     let portable = acyclic_fs::path::PortablePath::parse("/selected", source.workspace().limits())?;
@@ -440,7 +440,7 @@ async fn canonical_selected_directory_import_pins_nested_generation_and_metadata
                 Ok(acyclic_fs::OperationReceipt { value: (), work: Default::default() })
             }
         }).await?.value;
-    let exact = destination.workspace().generation(imported.authored_generation).await?;
+    let exact = destination.workspace().generation(imported.authored_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(exact.read("/selected/nested/file.txt", 1024).await?.as_ref(), b"original-nested");
     assert_eq!(exact.stat("/selected").await?.metadata.modified_ns, Some(654_321));
     assert_eq!(exact.stat("/selected/nested/file.txt").await?.metadata.modified_ns, Some(123_456));
