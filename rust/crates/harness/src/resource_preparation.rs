@@ -712,13 +712,13 @@ impl CreatedResourceAccess {
                         if volume.provider() != &proof.provider {
                             return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created volume provider differs"));
                         }
-                        created_access_volume_capability(volume, crate::conversation::VolumeOperation::Read, work)?
+                        volume.capability(crate::conversation::VolumeOperation::Read, work)?
                     }
                     CreatedResourceOperation::WriteVolume(volume) => {
                         if volume.provider() != &proof.provider {
                             return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "created volume provider differs"));
                         }
-                        created_access_volume_capability(volume, crate::conversation::VolumeOperation::Write, work)?
+                        volume.capability(crate::conversation::VolumeOperation::Write, work)?
                     }
                 };
                 created_access_insert_label(&mut labels, label, work)?;
@@ -757,8 +757,8 @@ impl CreatedResourceAccess {
                         return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unauthorized, "scratch proof differs from created allocation"));
                     }
                 }
-                let read = created_access_volume_capability(&binding.volume, crate::conversation::VolumeOperation::Read, work)?;
-                let write = created_access_volume_capability(&binding.volume, crate::conversation::VolumeOperation::Write, work)?;
+                let read = binding.volume.capability(crate::conversation::VolumeOperation::Read, work)?;
+                let write = binding.volume.capability(crate::conversation::VolumeOperation::Write, work)?;
                 if !labels.contains(&read)
                     || binding.volume.provider() != &proof.provider
                     || content.iter().any(|existing| existing.volume == binding.volume)
@@ -956,17 +956,6 @@ pub fn created_resource_capability(
         return Err(Error::Invalid("created resource operation is invalid".into()));
     }
     created_access_canonical_capability(&(resource, operation), "resource:created:", work)
-}
-
-fn created_access_volume_capability(
-    volume: &crate::conversation::VolumeRef, operation: crate::conversation::VolumeOperation,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<String> {
-    let prefix = match operation {
-        crate::conversation::VolumeOperation::Read => "volume:read:",
-        crate::conversation::VolumeOperation::Write => "volume:write:",
-    };
-    created_access_canonical_capability(volume, prefix, work)
 }
 
 fn created_access_file_capability(
