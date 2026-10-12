@@ -79,25 +79,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .map_err(WorkspaceError::engine)?;
         let cancellation = CancellationToken::new();
-        let encoded = crate::kernel::encode::<FsError>(
-            WorkBudget::UNBOUNDED,
-            Some(&cancellation),
-            0,
-            |observe| {
-                crate::kernel::encode_file_metadata(
-                    metadata,
-                    observe,
-                    FsError::EncodedAllocationFailed,
-                )
-            },
-        )
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let (object, _) = self
-            .put_encoded(
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded = crate::kernel::codec::encode_owned(&mut accounting, |observe, error| {
+            crate::kernel::encode_file_metadata(metadata, observe, error)
+        })
+        .map_err(WorkspaceError::engine)?;
+        let object = self
+            .put_encoded_with_accounting(
                 ObjectKind::Metadata,
                 encoded,
-                WorkCounters::default(),
-                WorkBudget::UNBOUNDED,
+                &mut accounting,
                 &cancellation,
             )
             .await

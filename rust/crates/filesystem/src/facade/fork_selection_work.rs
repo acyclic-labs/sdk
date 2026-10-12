@@ -41,27 +41,6 @@ pub(super) fn fork_selection_grow<T>(
     Ok(())
 }
 
-pub(super) fn fork_file_table_search<T>(
-    values: &[T],
-    id: FileId,
-    mut key: impl FnMut(&T) -> FileId,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Result<usize, usize>, WorkspaceError> {
-    let mut start = 0;
-    let mut end = values.len();
-    while start < end {
-        fork_selection_items(accounting, cancellation)?;
-        let middle = start + (end - start) / 2;
-        match key(&values[middle]).cmp(&id) {
-            std::cmp::Ordering::Less => start = middle + 1,
-            std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-            std::cmp::Ordering::Greater => end = middle,
-        }
-    }
-    Ok(Err(start))
-}
-
 pub(super) async fn fork_selection_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     source: &crate::Generation<A, O>,
     accounting: &mut KernelAccounting<'_>,

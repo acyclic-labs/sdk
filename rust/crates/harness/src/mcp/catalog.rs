@@ -53,23 +53,6 @@ pub struct McpCatalog {
     /// Complete tool contracts.
     pub tools: Vec<McpToolDefinition>,
 }
-/// Signed authority and durable catalog approval.
-pub struct McpCatalogInstallation<'a> {
-    /// Installation operation.
-    pub operation: OperationId,
-    /// Approval interaction.
-    pub interaction: InteractionId,
-    /// Signed installation scope.
-    pub scope: &'a Scope,
-    /// Scope verifier.
-    pub verifier: &'a AuthorityVerifier,
-    /// Approval verifier.
-    pub approval: &'a dyn ToolApprovalVerifier,
-    /// Tool allowance.
-    pub maximum_tools: u32,
-    /// Byte allowance.
-    pub maximum_bytes: u32,
-}
 impl McpCatalog {
     /// Digests the replacement, predecessor and allowances.
     pub fn installation_digest(
@@ -105,14 +88,17 @@ impl McpCatalog {
         previous: Option<&Self>,
         transport: &Arc<dyn McpToolTransport>,
         projection: &Arc<dyn ToolProjection>,
-        installation: McpCatalogInstallation<'_>,
+        operation: OperationId,
+        interaction: InteractionId,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        approval: &dyn ToolApprovalVerifier,
+        maximum_tools: u32,
+        maximum_bytes: u32,
     ) -> Result<()> {
         self.validate_transport_binding(transport.as_ref())?;
-        installation
-            .verifier
-            .verify(installation.scope, &mut None)?;
-        if !installation
-            .scope
+        verifier.verify(scope, &mut None)?;
+        if !scope
             .capabilities()
             .contains(&format!("mcp:install:{}", self.server))
         {
@@ -120,22 +106,15 @@ impl McpCatalog {
                 "scope does not permit MCP catalog installation".into(),
             ));
         }
-        let digest = self.installation_digest(
-            previous,
-            installation.maximum_tools,
-            installation.maximum_bytes,
-        )?;
-        installation
-            .approval
-            .verify(installation.interaction, installation.operation, digest)
-            .await?;
+        let digest = self.installation_digest(previous, maximum_tools, maximum_bytes)?;
+        approval.verify(interaction, operation, digest).await?;
         self.install(
             registry,
             previous,
             transport,
             projection,
-            installation.maximum_tools,
-            installation.maximum_bytes,
+            maximum_tools,
+            maximum_bytes,
         )
     }
     /// Validates the complete catalog before mutation.

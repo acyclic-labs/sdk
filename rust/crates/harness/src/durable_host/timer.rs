@@ -16,7 +16,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Invalid("timer deadline is invalid".into()));
         }
         let owner = self.journal_owner(task, fence.clone()).await?;
-        if !owner.input_grants.contains("timer:wait") {
+        if !owner.admission.grants.contains("timer:wait") {
             return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
         }
         let path = acyclic_stream::StreamPath::new(format!("harness/v2/timers/{task}"))?;
@@ -64,8 +64,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     pub(super) fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/timers/{task_id}"))
+        acyclic_stream::Stream::new(self.stream.clone(), format!("harness/v2/timers/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 

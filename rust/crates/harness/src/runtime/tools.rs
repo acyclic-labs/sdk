@@ -1,7 +1,6 @@
 use super::*;
 
 /// An admission decision for one exact, schema-valid tool invocation.
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolPolicyDecision {
     /// The invocation may proceed under its existing capability grant.
@@ -19,7 +18,6 @@ pub enum ToolPolicyDecision {
 }
 
 /// Replaceable policy evaluated after schema and scope validation, before dispatch.
-
 pub trait ToolPolicy: acyclic_stream::ProviderPlatform {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
@@ -217,7 +215,6 @@ pub(super) fn validate_policy_identity_custody_with_native_work(
 }
 
 /// Shared SDK startup boundary for already-owned policy metadata.
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_policy_identity_with_native_work(
     identity: &ComponentIdentity,
@@ -289,7 +286,6 @@ pub(crate) fn tool_approval_binding(
 }
 
 /// A task context bound to one exact tool call identity.
-
 pub struct ToolContext {
     pub(super) task: Arc<TaskContext>,
     pub(super) operation_id: OperationId,

@@ -23,11 +23,15 @@ pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sd
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
 pub enum HistoryContentFuture<'a, T> {
+    /// An observed ordinary callback.
     Ordinary {
+        /// Callback frame.
         future: acyclic_stream::BoxProviderFuture<'a, Result<T>>,
+        /// Retained frame size.
         frame_bytes: u64,
     },
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    /// An originally funded native callback.
     Native(crate::NativeFutureBundle<'a, T>),
 }
 

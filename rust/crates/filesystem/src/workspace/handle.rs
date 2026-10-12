@@ -32,10 +32,6 @@ impl<A, O> Workspace<A, O> {
         self.id
     }
 
-    pub(crate) fn authority(&self) -> &A {
-        self.volume.fs.authority()
-    }
-
     pub(crate) const fn authority_id(&self) -> crate::AuthorityId {
         crate::kernel::volume_authority_id(self.id.volume_id())
     }
@@ -57,14 +53,13 @@ impl<A, O> Workspace<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
-    /// Returns the attached native source, when this handle was created by
+    /// Returns the attached native source.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-
     pub fn source(&self) -> Option<&crate::Source<A, O>> {
         self.source.as_ref()
     }
 
-    /// Captures all remaining source state and returns an independent exact
+    /// Captures the attached source and returns its exact generation.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub async fn seal(&self) -> Result<Generation<A, O>, crate::SourceError> {
         match &self.source {
