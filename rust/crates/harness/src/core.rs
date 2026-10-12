@@ -190,18 +190,10 @@ impl Scope {
             return Ok(self.clone());
         }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let cloned = self.copy_with_quota(&mut custody)?;
+        let id = native_custody::copy_text(&self.id, &mut custody)?;
+        let issuer = native_custody::copy_text(&self.issuer, &mut custody)?;
+        let capabilities = native_custody::copy_capabilities(&self.capabilities, &mut custody)?;
         custody.transfer();
-        Ok(cloned)
-    }
-
-    pub(crate) fn copy_with_quota(
-        &self, custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Self> {
-        if custody.work().is_none() { return Ok(self.clone()); }
-        let id = native_custody::copy_text(&self.id, custody)?;
-        let issuer = native_custody::copy_text(&self.issuer, custody)?;
-        let capabilities = native_custody::copy_capabilities(&self.capabilities, custody)?;
         Ok(Self { id, capabilities, agent: self.agent, issuer,
             parent_proof: self.parent_proof, proof: self.proof })
     }
@@ -301,11 +293,10 @@ impl AuthorityIssuer {
         let id = native_custody::copy_text(id, &mut quota)?;
         let capabilities = native_custody::copy_capabilities(capabilities, &mut quota)?;
         let issuer = native_custody::copy_text(&self.id, &mut quota)?;
-        let proof = scope_proof(
-            &self.key, &self.audience, &self.id, &id, &capabilities, agent, parent_proof, quota.work(),
-        )?;
+        let mut scope = Scope { id, capabilities, issuer, agent, parent_proof, proof: [0; 32] };
+        scope.proof = scope_proof(&self.key, &self.audience, &scope, quota.work())?;
         quota.transfer();
-        Ok(Scope { id, capabilities, issuer, agent, parent_proof, proof })
+        Ok(scope)
     }
 
     /// Issues a child grant that cannot widen its parent.
@@ -391,34 +382,16 @@ impl AuthorityIssuer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let provider = match custody.work().as_deref_mut() {
-            Some(work) => work.clone_text(&effect.provider)?,
-            None => effect.provider.clone(),
+        let mut observation = EffectAttestation {
+            provider: native_custody::copy_text(&effect.provider, &mut custody)?,
+            effect_id, attempt_id, request_digest: effect.request_digest,
+            guarantee: effect.guarantee, result_schema_digest: effect.result_schema_digest,
+            status, proof: [0; 32],
         };
-        custody.adopt(provider.capacity() as u64)?;
-        let proof = effect_attestation_proof_with_work(
-            &self.key,
-            &self.audience,
-            &effect.provider,
-            effect_id,
-            attempt_id,
-            effect.request_digest,
-            effect.guarantee,
-            effect.result_schema_digest,
-            &status,
-            custody.work(),
-        )?;
+        observation.proof = effect_attestation_proof(
+            &self.key, &self.audience, &observation, custody.work())?;
         custody.transfer();
-        Ok(EffectAttestation {
-            provider,
-            effect_id,
-            attempt_id,
-            request_digest: effect.request_digest,
-            guarantee: effect.guarantee,
-            result_schema_digest: effect.result_schema_digest,
-            status,
-            proof,
-        })
+        Ok(observation)
     }
 }
 
@@ -480,9 +453,7 @@ impl AuthorityVerifier {
         &self, audience: &Authority, scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let expected = scope_proof(
-            &self.key, audience, &scope.issuer, &scope.id,
-            &scope.capabilities, scope.agent, scope.parent_proof, work)?;
+        let expected = scope_proof(&self.key, audience, scope, work)?;
         if scope.issuer != self.id || scope.proof != expected {
             return Err(Error::Unauthorized("scope proof is invalid".into()));
         }
@@ -587,18 +558,7 @@ impl AuthorityVerifier {
         &self, observation: &EffectAttestation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let expected = effect_attestation_proof_with_work(
-            &self.key,
-            &self.audience,
-            &observation.provider,
-            observation.effect_id,
-            observation.attempt_id,
-            observation.request_digest,
-            observation.guarantee,
-            observation.result_schema_digest,
-            &observation.status,
-            work,
-        )?;
+        let expected = effect_attestation_proof(&self.key, &self.audience, observation, work)?;
         if observation.proof != expected {
             return Err(Error::Unauthorized(
                 "effect observation attestation is invalid".into(),
@@ -1659,7 +1619,6 @@ pub struct Reducer {
     configured_extensions: BTreeMap<ExtensionDependency, ExtensionConfiguration>,
     active_configurations: Vec<ExtensionConfiguration>,
     events: VecDeque<Event>,
-    operation_positions: BTreeMap<OperationId, u64>,
     resident_event_limit: usize,
     active_extension_revision: Option<u64>,
     effects: BTreeMap<EffectId, EffectState>,
@@ -1693,7 +1652,6 @@ impl Reducer {
             configured_extensions: BTreeMap::new(),
             active_configurations: Vec::new(),
             events: VecDeque::new(),
-            operation_positions: BTreeMap::new(),
             resident_event_limit: usize::MAX,
             active_extension_revision: None,
             effects: BTreeMap::new(),
@@ -1742,15 +1700,7 @@ impl Reducer {
     pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.original_work().is_some()
-            && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native reducer cloning requires explicit native work",
-            });
-        }
+        self.native_custody.require_work(work, "native reducer cloning requires explicit native work")?;
         native_custody::copy_reducer(self, work)
     }
 
@@ -2097,13 +2047,7 @@ impl Reducer {
     }
 
     fn event_for_operation(&self, operation_id: OperationId) -> Option<&Event> {
-        self.operation_positions
-            .get(&operation_id)
-            .and_then(|revision| {
-                let first = self.events.front()?.revision;
-                let position = usize::try_from(revision.checked_sub(first)?).ok()?;
-                self.events.get(position)
-            })
+        self.events.iter().rev().find(|event| event.operation_id == operation_id)
     }
 
     /// Returns the exact admitted request and its optional terminal resolution.
@@ -2213,11 +2157,8 @@ impl Reducer {
         while self.events.len() > self.resident_event_limit {
             if let Some(event) = self.events.pop_front() {
                 let revision = event.revision;
-                let operation = event.operation_id;
-                self.operation_positions.remove(&operation);
                 drop(event);
                 self.native_custody.remove(&NativeComponentKey::Event(revision));
-                self.native_custody.remove(&NativeComponentKey::OperationPosition(operation));
             }
         }
     }
@@ -2238,15 +2179,7 @@ impl Reducer {
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.original_work().is_some()
-            && !work.as_deref().is_some_and(native_custody::is_native)
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native reducer planning requires explicit native work",
-            });
-        }
+        self.native_custody.require_work(work, "native reducer planning requires explicit native work")?;
         self.verify_command_scope_with_work(command, work)?;
         let intent = crate::contract::canonical_json_digest_with_work(command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
         let mut retained_quota = 0;
@@ -2479,15 +2412,7 @@ impl Reducer {
         &mut self, event: Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ApplyResult> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.original_work().is_some()
-            && !work.as_deref().is_some_and(|io| io.original_native_work().is_some())
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native reducer mutation requires explicit native work",
-            });
-        }
+        self.native_custody.require_work(work, "native reducer mutation requires explicit native work")?;
         self.authority_verifier.verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
             if existing == &event {
@@ -2532,45 +2457,28 @@ impl Reducer {
         )?;
         validate_causal_parent_with_work(&self.authority, self.revision, event.causal_parent.as_ref(), work)?;
         if let Some(observer) = work.as_deref_mut().filter(|io| !native_custody::is_native(*io)) {
-            let reservation = snapshot::source_inventory(&event)?
-                .checked_add(std::mem::size_of::<(OperationId, u64)>() as u64)
-                .ok_or_else(|| Error::Invalid("committed event clone quota overflows".into()))?;
+            let reservation = snapshot::source_inventory(&event)?;
             if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
                 observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
             }
             observer.admit_owned(reservation)?;
             observer.retain_owned(reservation)?;
         }
-        let retired_position = self.native_custody.install(NativeComponentCustody::prepare(
-            &NativeComponentKey::OperationPosition(event.operation_id),
-            std::mem::size_of::<(OperationId, u64)>() as u64, work,
-        )?, work)?;
-        let copied = self.native_custody.produce(
+        let (cached, retired_event) = self.native_custody.produce(
             &NativeComponentKey::Event(event.revision), work,
             |quota| native_custody::copy_event(&event, quota),
-        );
-        let (cached, retired_event) = match copied {
-            Ok(copied) => copied,
-            Err(error) => {
-                drop(self.native_custody.rollback(&NativeComponentKey::OperationPosition(event.operation_id), retired_position));
-                return Err(error);
-            }
-        };
+        )?;
         let applied = Self::reserve_deque_buffer(&mut self.native_custody,
             NativeComponentKey::EventBuffer, &mut self.events, work)
             .and_then(|()| self.apply_payload_with_work(&event.payload, event.revision, work));
         if let Err(error) = applied {
             drop(cached);
             drop(self.native_custody.rollback(&NativeComponentKey::Event(event.revision), retired_event));
-            drop(self.native_custody.rollback(&NativeComponentKey::OperationPosition(event.operation_id), retired_position));
             return Err(error);
         }
         self.revision = event.revision;
-        self.operation_positions
-            .insert(event.operation_id, event.revision);
         self.events.push_back(cached);
         drop(retired_event);
-        drop(retired_position);
         self.trim_resident_events();
         Ok(ApplyResult::Applied { event })
     }
@@ -2623,15 +2531,7 @@ impl Reducer {
         &mut self, event: &Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.original_work().is_some()
-            && !work.as_deref().is_some_and(native_custody::is_native)
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native terminal indexing requires explicit native work",
-            });
-        }
+        self.native_custody.require_work(work, "native terminal indexing requires explicit native work")?;
         let EventPayload::EffectResolved { observation } = &event.payload else {
             return Ok(());
         };
@@ -4030,17 +3930,11 @@ fn validate_lifecycle(from: LifecycleState, to: LifecycleState) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments, reason = "the original closed signed-grant fields")]
 fn scope_proof(
-    key: &[u8; 32],
-    audience: &Authority,
-    issuer: &str,
-    id: &str,
-    capabilities: &Capabilities,
-    agent: Option<AgentId>,
-    parent_proof: Option<[u8; 32]>,
+    key: &[u8; 32], audience: &Authority, scope: &Scope,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
+    let Scope { id, capabilities, issuer, agent, parent_proof, .. } = scope;
     if let Some(work) = work.as_deref_mut() {
         let fixed = 1_u64.checked_add(8)
             .and_then(|bytes| bytes.checked_add(audience.id.len() as u64))
@@ -4085,7 +3979,7 @@ fn scope_proof(
     match parent_proof {
         Some(parent) => {
             hasher.update(&[1]);
-            hasher.update(&parent);
+            hasher.update(parent);
         }
         None => {
             hasher.update(&[0]);
@@ -4094,29 +3988,15 @@ fn scope_proof(
     Ok(*hasher.finalize().as_bytes())
 }
 
-#[allow(clippy::too_many_arguments, reason = "each argument is one field of the original attested proof preimage")]
-fn effect_attestation_proof_with_work(
-    key: &[u8; 32],
-    audience: &Authority,
-    provider: &str,
-    effect_id: EffectId,
-    attempt_id: EffectAttemptId,
-    request_digest: [u8; 32],
-    guarantee: EffectGuarantee,
-    result_schema_digest: [u8; 32],
-    status: &EffectStatus,
+fn effect_attestation_proof(
+    key: &[u8; 32], audience: &Authority, observation: &EffectAttestation,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let bytes = crate::store::history::canonical_bytes_with_work(&(
-        audience,
-        provider,
-        effect_id,
-        attempt_id,
-        request_digest,
-        guarantee,
-        result_schema_digest,
-        status,
+        audience, &observation.provider, observation.effect_id, observation.attempt_id,
+        observation.request_digest, observation.guarantee, observation.result_schema_digest,
+        &observation.status,
     ), crate::store::default_projection_read_limits().maximum_bytes, custody.work())?;
     custody.adopt(bytes.capacity() as u64)?;
     if let Some(work) = custody.work().as_deref_mut() {
@@ -4415,7 +4295,7 @@ mod tests {
             assert!(receipt.allocation_operations < 512 && receipt.bytes_copied < 1_048_576,
                 "one active transition must not materialize its 10k lifetime prefix");
             assert_eq!(state, reference, "canonical provider/effect state diverged at transition {index}");
-            assert!(state.events.len() <= 4 && state.operation_positions.len() <= 4);
+            assert!(state.events.len() <= 4);
             assert!(state.effects.len() <= 3 && state.indexed_terminal_effects.len() <= 2);
             assert_eq!(state.extension_states.len(), 1);
             recent.push_back((index, query));
