@@ -258,7 +258,7 @@ impl Flight {
                         let requested = capacity.checked_mul(size_of::<Waker>())
                             .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
                         replacement.allocation = Some(accounting.claim_owned(requested, 1)
-                            .map_err(crate::async_storage::sequential_read_error)?);
+                            .map_err(crate::async_storage::object_error)?);
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                         let actual = replacement.values.capacity().checked_mul(size_of::<Waker>())
@@ -266,7 +266,7 @@ impl Flight {
                         accounting.reconcile_owned(
                             replacement.allocation.as_mut().expect("native waiter buffer owns its backing"),
                             requested, actual,
-                        ).map_err(crate::async_storage::sequential_read_error)?;
+                        ).map_err(crate::async_storage::object_error)?;
                     } else {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
@@ -281,7 +281,7 @@ impl Flight {
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
                             .record_completed(WorkCounters::UNCHARGED)
-                            .map_err(crate::async_storage::sequential_read_error)?;
+                            .map_err(crate::async_storage::object_error)?;
                     }
                 }
                 waiters.values.push(context.waker().clone());
@@ -361,7 +361,7 @@ impl<T> BatchBuffer<T> {
                 .ok_or(ObjectStoreError::Work(crate::WorkError::Overflow))? as u64;
             let mut accounting = KernelAccounting::native(native, native.cancellation());
             let allocation = accounting.claim_owned(requested, u64::from(count != 0))
-                .map_err(crate::async_storage::sequential_read_error)?;
+                .map_err(crate::async_storage::object_error)?;
             let mut owner = Self { values: Vec::new(), allocation: Some(allocation) };
             owner.values.try_reserve_exact(count).map_err(|error| ObjectStoreError::Native(
                 crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
@@ -370,7 +370,7 @@ impl<T> BatchBuffer<T> {
             accounting.reconcile_owned(
                 owner.allocation.as_mut().expect("native batch buffer owns its backing"),
                 requested, actual,
-            ).map_err(crate::async_storage::sequential_read_error)?;
+            ).map_err(crate::async_storage::object_error)?;
             return Ok(owner);
         }
         let mut values = Vec::new();

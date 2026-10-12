@@ -2731,8 +2731,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         let copy = original.reserve_work(crate::WorkCounters { bytes_copied: requested, ..crate::WorkCounters::UNCHARGED })?;
         let before = original.receipt();
         let result = self.provider.read_range(
-            self.source, &self.path, self.version, self.offset, requested,
-            original, cancellation,
+            self.source, &self.path, self.version, self.offset, requested, original, cancellation,
         ).await;
         let after = original.receipt();
         if (after.source_bytes_read > before.source_bytes_read
@@ -13982,17 +13981,22 @@ mod tests {
         fn logical_owned_bytes(&self) -> u64 { 0 }
 
         fn read_range(
-            &self,
-            offset: u64,
-            length: u64,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            let value = meter.range(&self.0, offset, length)?;
-            meter.check(cancellation)?;
-            meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+            &self, offset: u64, length: u64, accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+            }
+            let budget = crate::demand::ordinary_source_budget(accounting)?;
+            let answer = (|| {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or_else(|| OperationFailure::before_work(DemandError::NativeWorkUnavailable))?;
+                let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                let value = meter.range(&self.0, offset, length)?;
+                meter.check(cancellation)?;
+                meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
+                meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+            })();
+            crate::demand::accept_source_result(answer, accounting)
         }
     }
 
