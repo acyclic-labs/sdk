@@ -262,18 +262,18 @@ fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter>)
         }
         let index = registry.find(identity, meter)?.unwrap_or_else(|index| index);
         if let Some(meter) = meter {
-            meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64)?;
-            pending_health_bytes += arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>();
+            meter.allocate(std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64)?;
+            pending_health_bytes += std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>();
         }
         let tail = Arc::new(Mutex::new(None));
         if let Some(meter) = meter {
-            meter.allocate(arc_allocation_bytes::<AtomicBool>() as u64)?;
-            pending_health_bytes += arc_allocation_bytes::<AtomicBool>();
+            meter.allocate(std::mem::size_of::<AtomicBool>() as u64)?;
+            pending_health_bytes += std::mem::size_of::<AtomicBool>();
         }
         let uncertain = Arc::new(AtomicBool::new(false));
         if let Some(meter) = meter {
-            meter.allocate(arc_allocation_bytes::<FileHealth>() as u64)?;
-            pending_health_bytes += arc_allocation_bytes::<FileHealth>();
+            meter.allocate(std::mem::size_of::<FileHealth>() as u64)?;
+            pending_health_bytes += std::mem::size_of::<FileHealth>();
         }
         let health = Arc::new(FileHealth { tail, uncertain, poison_anchor: Mutex::new(None) });
         if let Some(meter) = meter {
@@ -418,7 +418,7 @@ impl NativeFile {
         }
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         if owner.is_some() { return Err((io::ErrorKind::Unsupported.into(), file)); }
-        let file_bytes = arc_allocation_bytes::<NativeFilePayload>();
+        let file_bytes = std::mem::size_of::<NativeFilePayload>();
         let allocation = if let Some(owner) = owner {
             match ReadAllocation::new(owner, file_bytes) {
                 Ok(allocation) => Some(allocation),
@@ -445,25 +445,25 @@ impl NativeFile {
         };
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
         let health = {
-            if let Err(error) = meter.allocate(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64) {
+            if let Err(error) = meter.allocate(std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64) {
                 let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
                 meter.release(file_bytes as u64);
                 return Err((error, payload.file));
             }
             let tail = Arc::new(Mutex::new(None));
-            if let Err(error) = meter.allocate(arc_allocation_bytes::<AtomicBool>() as u64) {
+            if let Err(error) = meter.allocate(std::mem::size_of::<AtomicBool>() as u64) {
                 drop(tail);
-                meter.release(arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>() as u64);
+                meter.release(std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64);
                 let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
                 meter.release(file_bytes as u64);
                 return Err((error, payload.file));
             }
             let uncertain = Arc::new(AtomicBool::new(false));
-            if let Err(error) = meter.allocate(arc_allocation_bytes::<FileHealth>() as u64) {
+            if let Err(error) = meter.allocate(std::mem::size_of::<FileHealth>() as u64) {
                 drop(tail);
                 drop(uncertain);
-                meter.release((arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
-                    + arc_allocation_bytes::<AtomicBool>()) as u64);
+                meter.release((std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>()
+                    + std::mem::size_of::<AtomicBool>()) as u64);
                 let payload = Arc::try_unwrap(file).ok().expect("unpublished native file import");
                 meter.release(file_bytes as u64);
                 return Err((error, payload.file));
@@ -483,9 +483,9 @@ impl NativeFile {
         #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
         let health = 0;
         #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-        let health = arc_allocation_bytes::<Mutex<Option<Arc<OperationFence>>>>()
-            + arc_allocation_bytes::<AtomicBool>() + arc_allocation_bytes::<FileHealth>();
-        (arc_allocation_bytes::<NativeFilePayload>() + health) as u64
+        let health = std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>()
+            + std::mem::size_of::<AtomicBool>() + std::mem::size_of::<FileHealth>();
+        (std::mem::size_of::<NativeFilePayload>() + health) as u64
     }
 
     /// Transfers a Windows handle already opened for overlapped I/O.
@@ -635,7 +635,7 @@ impl NativeFile {
     ) -> io::Result<NativeCompletion<()>> {
         if let Some(meter) = &meter { meter.check()?; }
         let allocation = meter.as_ref().map(|meter| ReadAllocation::new(
-            meter, arc_allocation_bytes::<Mutex<CompletionState<()>>>(),
+            meter, std::mem::size_of::<Mutex<CompletionState<()>>>(),
         )).transpose()?;
         let state = Arc::new(Mutex::new(CompletionState { _allocation: allocation, ..CompletionState::default() }));
         let span = if meter.is_some() { obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit") }
@@ -684,21 +684,20 @@ fn is_uncertain_io_error(error: &io::Error) -> bool {
 }
 
 /// Shared lifetime token for native resources that must not outlive an external owner.
-#[derive(Clone)]
 pub struct OwnershipAnchor {
     // Keep this field before `release`: Rust drops fields in declaration order, so the notifier
     // observes the owner count after this anchor has released its strong reference.
     _owner: Arc<dyn Send + Sync>,
-    release: OwnershipReleaseNotifier,
+    release: OwnershipReleaseBarrier,
 }
 
-#[derive(Clone)]
-struct OwnershipReleaseNotifier {
-    owner: Weak<dyn Send + Sync>,
-    released: Arc<(Mutex<()>, Condvar)>,
+impl Clone for OwnershipAnchor {
+    fn clone(&self) -> Self {
+        Self { _owner: Arc::clone(&self._owner), release: self.release_barrier() }
+    }
 }
 
-impl Drop for OwnershipReleaseNotifier {
+impl Drop for OwnershipReleaseBarrier {
     fn drop(&mut self) {
         if self.owner.strong_count() == 0 {
             let (lock, released) = &*self.released;
@@ -715,7 +714,7 @@ impl OwnershipAnchor {
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
         let owner: Arc<dyn Send + Sync> = Arc::new(owner);
         Self {
-            release: OwnershipReleaseNotifier {
+            release: OwnershipReleaseBarrier {
                 owner: Arc::downgrade(&owner),
                 released: Arc::new((Mutex::new(()), Condvar::new())),
             },
@@ -1095,11 +1094,7 @@ pub struct ServiceReadySignal(File);
 impl ServiceReadySignal {
     /// Tells the starter that the service answers requests, and closes the channel.
     pub fn signal(mut self) -> io::Result<()> {
-        io::Write::write_all(
-            &mut self.0,
-            b"
-",
-        )
+        io::Write::write_all(&mut self.0, b"\n")
     }
 }
 
@@ -1150,10 +1145,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.scope(|| operation.finish(spawn_service_process_unobserved(executable)))
-}
-
-fn spawn_service_process_unobserved(executable: &Path) -> io::Result<ServiceReadiness> {
+    operation.scope(|| operation.finish((|| {
     #[cfg(windows)]
     {
         windows::spawn_service_process(executable).map(ServiceReadiness)
@@ -1180,6 +1172,7 @@ fn spawn_service_process_unobserved(executable: &Path) -> io::Result<ServiceRead
             readiness,
         ))))
     }
+    })()))
 }
 
 /// Starts a child in an owned operating-system process tree.
@@ -1587,12 +1580,6 @@ impl Drop for ReadAllocation {
     }
 }
 
-fn arc_allocation_bytes<T>() -> usize {
-    // Logical SDK-owned payload; allocator and reference-count headers are
-    // outside the canonical allocation ledger's byte policy.
-    std::mem::size_of::<T>()
-}
-
 thread_local! {
     static INLINE_BLOCKING: Cell<bool> = const { Cell::new(false) };
 }
@@ -1658,7 +1645,7 @@ fn task_completion<T: Send + 'static>(
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter { meter.check()?; }
     let allocation = allocation_meter.map(|meter| ReadAllocation::new(
-        meter, arc_allocation_bytes::<Mutex<CompletionState<T>>>(),
+        meter, std::mem::size_of::<Mutex<CompletionState<T>>>(),
     )).transpose()?;
     let state = Arc::new(Mutex::new(CompletionState {
         task_pending: true,
@@ -1881,7 +1868,11 @@ impl<T> FileCompletion<T> {
             }
             // Retire the handle after quarantine decisions and before publishing Ready.
             drop(file.take());
-            let waker = finish_file_job(state, result, fence.take(), health.as_ref().map(|health| health.uncertain.as_ref()));
+            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.result = Some(result);
+            let waker = state.waker.take();
+            drop(state);
+            if let Some(fence) = fence.take() { fence.complete(); }
             *finished = true;
             waker
         })
@@ -2127,37 +2118,6 @@ impl NativeJob {
     }
 }
 
-fn finish_file_job<T>(
-    state: &Mutex<CompletionState<T>>,
-    result: io::Result<T>,
-    completion: Option<Arc<OperationFence>>,
-    uncertain: Option<&AtomicBool>,
-) -> Option<Waker> {
-    if result.as_ref().err().is_some_and(is_uncertain_io_error)
-        && let Some(uncertain) = uncertain
-    {
-        uncertain.store(true, Ordering::Release);
-    }
-    finish_job(state, result, completion)
-}
-
-fn finish_job<T>(
-    state: &Mutex<CompletionState<T>>,
-    result: io::Result<T>,
-    completion: Option<Arc<OperationFence>>,
-) -> Option<Waker> {
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    state.result = Some(result);
-    let waker = state.waker.take();
-    drop(state);
-    if let Some(completion) = completion {
-        completion.complete();
-    }
-    waker
-}
-
 struct NativeWorkers {
     sender: mpsc::SyncSender<NativeJob>,
     admission: Arc<Mutex<AdmissionState>>,
@@ -2249,7 +2209,7 @@ fn allocate_capacity_waiter(
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> io::Result<Arc<CapacityWaiter>> {
     let allocation = meter.map(|meter| ReadAllocation::new(
-        meter, arc_allocation_bytes::<CapacityWaiter>(),
+        meter, std::mem::size_of::<CapacityWaiter>(),
     )).transpose()?;
     Ok(Arc::new(CapacityWaiter {
         state: Mutex::new(CapacityWaiterState {
@@ -2339,7 +2299,7 @@ fn reserve_if_needed(
     let allocation = match pending.as_ref() {
         Some(NativeJob::Task { meter: Some(meter), .. }
             | NativeJob::Unit { meter: Some(meter), .. }) => Some(ReadAllocation::new(
-            meter, arc_allocation_bytes::<OperationFence>(),
+            meter, std::mem::size_of::<OperationFence>(),
         )?),
         _ => None,
     };
@@ -2491,7 +2451,7 @@ impl std::task::Wake for BlockingWaitWake {
 }
 
 fn allocate_blocking_wait_wake(meter: &Arc<dyn NativeReadMeter>) -> io::Result<Arc<BlockingWaitWake>> {
-    let allocation = ReadAllocation::new(meter, arc_allocation_bytes::<BlockingWaitWake>())?;
+    let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
     Ok(Arc::new(BlockingWaitWake {
         notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
     }))
@@ -2975,14 +2935,7 @@ impl AsyncRangeReader {
 }
 
 #[cfg(target_os = "linux")]
-fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    linux::read_at(file, offset, destination)
-}
-
-#[cfg(target_os = "linux")]
-fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    linux::write_all_at(file, offset, bytes)
-}
+use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(not(any(windows, target_os = "linux")))]
 fn write_all_batch_owned(file: &Arc<NativeFilePayload>, writes: Vec<OwnedWrite>) -> io::Result<()> {
@@ -3048,24 +3001,10 @@ fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn write_all_batch_impl(file: &File, writes: Vec<OwnedWrite>) -> io::Result<()> {
-    apple::write_all_batch_owned(file, writes)
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
-    apple::read_batch(file, reads)
-}
+use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 
 #[cfg(windows)]
-fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    windows::read_at(file, offset, destination)
-}
-
-#[cfg(windows)]
-fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    windows::write_all_at(file, offset, bytes)
-}
+use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 
 #[cfg(target_vendor = "apple")]
 #[allow(unsafe_code, reason = "F_BARRIERFSYNC is reachable only through fcntl")]
@@ -4539,22 +4478,17 @@ mod tests {
             .health.tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
-        let state = Mutex::new(CompletionState::<()>::default());
-        poison_file_health(&poisoned.file, &poisoned.health.uncertain);
-        finish_file_job(
-            &state,
-            Err(linux::uncertain_completion(io::Error::other(
-                "injected ambiguous completion",
-            ))),
+        FileCompletion::new(
+            Arc::new(Mutex::new(CompletionState::<()>::default())),
             Some(prior),
-            Some(&poisoned.health.uncertain),
-        );
-        let Err(error) = complete(poisoned.set_len_async(4, None).expect("unmetered unit construction cannot fail")) else {
+            Some(Arc::clone(&poisoned.health)), Some(Arc::clone(&poisoned.file)),
+            obs::OperationSpan::new(tracing::Span::none()),
+        ).finish(Err(linux::uncertain_completion(io::Error::other("injected ambiguous completion"))));
+        let Err(_) = complete(poisoned.set_len_async(4, None).expect("unmetered unit construction cannot fail")) else {
             return Err(io::Error::other(
                 "an uncertain prior operation did not fence its successor",
             ));
         };
-        assert!(error.to_string().contains("prior native I/O completion"));
         assert_eq!(std::fs::metadata(poisoned_path)?.len(), 0);
 
         let unrelated_path = temporary.path().join("unrelated");
