@@ -993,7 +993,7 @@ pub(crate) fn verify_history_record_with_retained_quota(
             "history record position or byte bound is invalid"));
     }
     let ((record_authority, event), owned_event) =
-        crate::wire_codec::decode_event_with_work_and_custody(&record.value, work)?;
+        crate::wire_codec::decode_event(&record.value, work)?;
     let verification = (|| {
         let revision = sequence.checked_add(1)
             .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage, "history event revision overflows"))?;

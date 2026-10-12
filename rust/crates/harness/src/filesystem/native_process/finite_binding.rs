@@ -153,7 +153,8 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
-    let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
+    let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
+        &mut Some(&mut io.history_io()))?;
     let history = HistoryReader::new_with_work(
         &owner.stream(), authority.verifier.audience(), &authority.verifier, Some(&mut io.history_io()))?;
     let plan = arc(plan, &io)?;

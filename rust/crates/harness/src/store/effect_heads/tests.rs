@@ -49,7 +49,7 @@ async fn publish_lifecycle(
     let mut indexed = operations::IndexedPublication::new(
         reducer.authority(),
         &event,
-        crate::wire_codec::encode_event(reducer.authority(), &event)?,
+        crate::wire_codec::encode_event(reducer.authority(), &event, &mut None)?,
      &mut None)?;
     publication_with_work(
         client,

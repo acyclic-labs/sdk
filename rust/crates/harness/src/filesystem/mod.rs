@@ -2015,7 +2015,7 @@ where
                     "merge receipt belongs to another provider or retry identity".into(),
                 ));
             }
-            receipt.provider_proof.validate()?;
+            receipt.provider_proof.validate(&mut None)?;
             let source = workspace_ref(
                 self.host.provider.clone(),
                 &receipt.source_project.storage_name()?,
@@ -2784,12 +2784,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection_with_native_work(operation, authorization.source_task,
-                source, generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(operation, authorization.source_task,
+                source, generation, authorization.native_snapshot.as_ref(), Some(work))?;
             return handle.grant().require_with_io(source, VolumeOperation::Read, io);
         }
         handle.require_selection(operation, authorization.source_task, source,
-            generation, authorization.native_snapshot.as_ref())?;
+            generation, authorization.native_snapshot.as_ref(), None)?;
         handle.grant().require_with_io(source, VolumeOperation::Read, io)
     }
 

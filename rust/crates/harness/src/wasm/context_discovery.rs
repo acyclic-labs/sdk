@@ -262,7 +262,7 @@ pub async fn context_for_request(
     let current: DiscoveredContext = from_js(current)?;
     let reload: ContextReloadPolicy = from_js(reload)?;
     if reload == ContextReloadPolicy::Explicit {
-        current.validate().map_err(js_error)?;
+        current.validate(&mut None).map_err(js_error)?;
         return snapshot_to_js(&current);
     }
     let reader =

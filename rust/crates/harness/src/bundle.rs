@@ -1217,7 +1217,7 @@ mod tests {
         crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result", None)?;
         assert_eq!(result.value, json!("original"));
         let projection = tool.projection.project(&invocation, &result)?;
-        tool.definition.validate_projection(&projection)?;
+        tool.definition.validate_projection(&projection, crate::conversation::Limits::default(), None)?;
         assert_eq!(
             projection,
             json!({"kind":"json","value":{"echo":"original"}})

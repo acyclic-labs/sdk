@@ -218,7 +218,7 @@ where
             return Err(Error::Unauthorized("selected source approval belongs to another caller".into()));
         }
         source_read.require_selection(operation_id, selected, &authorization.project,
-            &authorization.generation, authorization.native_snapshot.as_ref())?;
+            &authorization.generation, authorization.native_snapshot.as_ref(), None)?;
         arguments.select_project(caller, selected, authorization.project.clone(),
             authorization.generation.clone(), config.limits, &mut request)?;
         request.authorized_source = Some(authorization.clone());
@@ -342,8 +342,8 @@ pub(crate) fn recursive_fork_request_with_native_work(
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source approval belongs to another caller" });
             }
-            handle.require_selection_with_native_work(operation, selected, &authorization.project,
-                &authorization.generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(operation, selected, &authorization.project,
+                &authorization.generation, authorization.native_snapshot.as_ref(), Some(work))?;
             Some(authorization.clone_with_work_and_custody(&mut observer)?.0)
         }
         None if selected != source.caller => return Err(Error::NativeBoundary {
@@ -536,7 +536,7 @@ where
             drop(history);
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            Some(crate::source_authorization::ProjectSourceReadHandle::seal_with_work(
+            Some(crate::source_authorization::ProjectSourceReadHandle::seal(
                 authorization, verifier, &mut observer,
             )?)
         }

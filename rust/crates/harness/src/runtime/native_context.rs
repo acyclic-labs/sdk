@@ -494,7 +494,9 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "tool context differs from its original native metadata ledger"));
         }
-        crate::tool::ToolInvocation::validate_call_id_with_native_work(call_id, work)?;
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        crate::executor::with_history_io(Some(&io), |work|
+            crate::tool::ToolInvocation::validate_identity(call_id, None, work))?;
         let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut output = work.display(call_id)

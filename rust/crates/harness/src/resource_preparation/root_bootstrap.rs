@@ -42,8 +42,7 @@ impl RootBootstrapContentRequest {
             self.evidence.logical_owned_bytes()?)?;
         bytes = created_access_add(bytes, self.generation.logical_owned_bytes()?)?;
         if let Some(snapshot) = &self.native_snapshot {
-            let owned = crate::tool::value_owned_bytes(snapshot)?;
-            bytes = created_access_add(bytes, owned - std::mem::size_of::<Value>() as u64)?;
+            bytes = created_access_add(bytes, crate::contract::json_value_logical_owned_bytes(snapshot)?)?;
         }
         Ok(bytes)
     }

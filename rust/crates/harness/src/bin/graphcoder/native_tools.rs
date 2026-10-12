@@ -230,7 +230,7 @@ impl super::native::NativeSession {
         };
         let provider = NativeProcessProvider::new(owner.clone(), operation, &configured.plan,
             view, configured.approval, authority, &work)?.await?.into_arc_with_native_work(&work)?;
-        let mut registry = EffectRegistry::new_with_native_work(&work)?;
+        let mut registry = EffectRegistry::new(Some(&work))?;
         registry.register_with_native_work(provider, &work)?;
         let (issuer, mut custody) = issuer.clone_with_native_work(&work)?;
         let (scope, mut scope_custody) = binding.scope.clone_with_native_work(&work)?;

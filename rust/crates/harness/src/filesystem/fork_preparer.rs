@@ -601,12 +601,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection_with_native_work(request.operation_id, authorization.source_task,
-                volume, generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(request.operation_id, authorization.source_task,
+                volume, generation, authorization.native_snapshot.as_ref(), Some(work))?;
             return Ok(handle.grant());
         }
         handle.require_selection(request.operation_id, authorization.source_task, volume, generation,
-            authorization.native_snapshot.as_ref())?;
+            authorization.native_snapshot.as_ref(), None)?;
         Ok(handle.grant())
     }
 

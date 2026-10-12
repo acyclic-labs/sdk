@@ -690,17 +690,18 @@ mod tests {
         assert_eq!(definition.projection_schema, selected.projection_schema);
         definition.validate_projection(
             &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
+            Limits::default(), None,
         )?;
         assert!(
             definition
-                .validate_projection(&json!({"kind":"json","value":{}}))
+                .validate_projection(&json!({"kind":"json","value":{}}), Limits::default(), None)
                 .is_err()
         );
         assert!(
             definition
                 .validate_projection(&json!({"kind":"parts","parts":[
                     {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
-                ]}))
+                ]}), Limits::default(), None)
                 .is_err()
         );
         let digest = selected.installation_digest(None, 8, 8192)?;

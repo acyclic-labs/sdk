@@ -838,8 +838,8 @@ where
             } = event
             {
                 let invocation = crate::tool::ToolInvocation::for_model_call(
-                    operation, step, call_id, name, arguments,
-                );
+                    operation, step, call_id, name, arguments, None,
+                )?;
                 let (_, records) = replay_execution(&journal, operation, 3, |event| {
                     matches!(event,
                         ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
@@ -950,7 +950,7 @@ where
         }
         for event in retained.events {
             if let crate::model::ModelEvent::ToolCall { call_id, name, arguments } = event {
-                let invocation = crate::tool::ToolInvocation::for_model_call_with_native_work(operation, step, call_id, name, arguments, work)?;
+                let invocation = crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments, Some(work))?;
                 let (_, records, custody) = crate::executor::replay_execution_with_native_work(
                     journal.as_ref(), operation, 3,
                     |event| matches!(event,

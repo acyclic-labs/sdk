@@ -81,7 +81,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
         1_000_000, 128 * 1_024 * 1_024).await?;
     assert_eq!(context.scope().grants(), &original);
-    handle.require_selection(operation, child, &project, &generation, None)?;
+    handle.require_selection(operation, child, &project, &generation, None, None)?;
     let attestation = &handle.authorization().policy_scope;
     assert_eq!(attestation.capabilities(), &Capabilities::new([attestation.id()]));
     assert!(!attestation.capabilities().contains(&project.capability(VolumeOperation::Read)?));
@@ -96,15 +96,15 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         budget.allocation_operations = 1;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("admitted original ledger with no remaining allocator attempt");
-        handle.require_selection_with_native_work(operation, child, &project, &generation, None, &work)?;
+        handle.require_selection(operation, child, &project, &generation, None, Some(&work))?;
         for (selected_operation, selected_task, selected_project, selected_generation) in [
             (OperationId::from_bytes([154;16]), child, &project, &generation),
             (operation, fixture.root, &project, &generation),
             (operation, child, &policy.bootstrap.project, &generation),
             (operation, child, &project, &initial_generation),
         ] {
-            assert!(matches!(handle.require_selection_with_native_work(
-                selected_operation, selected_task, selected_project, selected_generation, None, &work,
+            assert!(matches!(handle.require_selection(
+                selected_operation, selected_task, selected_project, selected_generation, None, Some(&work),
             ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Unauthorized, .. })));
         }
     }
@@ -141,7 +141,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         let sealed = sealed.expect("authentic retained foreign Project selection");
-        sealed.require_selection(operation, child, &project, &generation, None)?;
+        sealed.require_selection(operation, child, &project, &generation, None, None)?;
         assert!(custody.matches_work(&native));
         assert_eq!(context.scope().grants(), &original);
         drop(sealed);

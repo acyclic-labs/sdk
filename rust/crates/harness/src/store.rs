@@ -1435,7 +1435,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh page is not contiguous".into(),
                 ));
             }
-            let (authority, event) = decode_event(&record.value)?;
+            let ((authority, event), _) = decode_event(&record.value, &mut None)?;
             if &authority != self.reducer.authority()
                 || event.revision
                     != record.sequence.checked_add(1).ok_or_else(|| {
@@ -1699,7 +1699,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), result_schema, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = crate::effects::validate_effect_schema_bytes_with_work(
+            let validated = crate::effects::validate_schema_bytes(
                 result_schema, &bytes, scratch.work());
             drop(bytes);
             let released = scratch.relinquish(claim);
@@ -1725,7 +1725,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (schema_bytes, schema_claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), &effect.result_schema, scratch.work()).await?;
             scratch.adopt(schema_claim)?;
-            let validated = crate::effects::validate_effect_result_bytes_with_work(
+            let validated = crate::effects::validate_result_bytes(
                 &effect.result_schema, &schema_bytes, reference, &bytes, scratch.work());
             drop(schema_bytes);
             drop(bytes);
@@ -1782,9 +1782,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
-            Some(outcome) => ticket.validate_decision_for_request_with_work(
+            Some(outcome) => ticket.validate_decision_bytes(
                 request.request(), outcome, reference, &bytes, scratch.work()),
-            None => ticket.validate_answer_for_request_with_work(
+            None => ticket.validate_answer_bytes(
                 request.request(), reference, &bytes, scratch.work()),
         }
     }
@@ -1830,7 +1830,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let request_bytes = verifier.read(&ticket.request).await?;
             let request = ticket.validate_request_bytes(&request_bytes)?;
             let answer_bytes = verifier.read(answer).await?;
-            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
+            ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let Some(detail) = &resolution.detail
@@ -1845,7 +1845,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let request_bytes = verifier.read(&ticket.request).await?;
             let request = ticket.validate_request_bytes(&request_bytes)?;
             let detail_bytes = verifier.read(detail).await?;
-            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
+            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
         if let crate::core::Action::AppendCustom {
             schema,
@@ -1961,7 +1961,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             })?;
             verified_content_bytes(verifier.as_ref(), request, (request).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
             let schema_bytes = verifier.read(result_schema).await?;
-            validate_schema_bytes(result_schema, &schema_bytes)?;
+            validate_schema_bytes(result_schema, &schema_bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveEffect { observation } = action
             && let EffectStatus::Succeeded { result } = &observation.status
@@ -1975,8 +1975,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
             let bytes = verifier.read(result).await?;
             let schema_bytes = verifier.read(&effect.result_schema).await?;
-            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
-            validate_result_bytes(&schema, result, &bytes)?;
+            validate_result_bytes(&effect.result_schema, &schema_bytes, result, &bytes, &mut None)?;
         }
         if let crate::core::Action::PublishProjectMerge { receipt } = action {
             let verifier = self
@@ -2071,7 +2070,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Err(error) => { let _ = released_path; return Err(error); },
         }.ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::NotFound, "causal event"))?;
         let raw = operations::sdk_record_retained_bytes(&record, work);
-        let decoded = crate::wire_codec::decode_event_with_work_and_custody(&record.value, work);
+        let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
             Some(observer) => observer.release_record(raw), None => Ok(()),
@@ -2544,7 +2543,7 @@ mod tests {
         let publication = operations::IndexedPublication::new(
             &authority(),
             &event,
-            encode_event(&authority(), &event)?,
+            encode_event(&authority(), &event, &mut None)?,
          &mut None)?;
         *provider
             .message_head_race
@@ -2593,7 +2592,7 @@ mod tests {
             reducer.plan(&bind)?;
         incomplete
             .stream(authority().stream_path()?)?
-            .append(encode_event(&authority(), &event)?)
+            .append(encode_event(&authority(), &event, &mut None)?)
             .await?;
         let incomplete_reader = HistoryReader::new(&incomplete, &authority(), issuer().verifier())?;
         assert!(matches!(
@@ -3409,7 +3408,7 @@ mod tests {
         client
             .stream(authority().stream_path()?)?
             .append_batch(
-                vec![OwnedBytes::from(encode_event(&authority(), &event)?)],
+                vec![OwnedBytes::from(encode_event(&authority(), &event, &mut None)?)],
                 Some(0),
                 None,
             )
@@ -3449,7 +3448,7 @@ mod tests {
             client
                 .stream(authority().stream_path()?)?
                 .append_batch(
-                    vec![OwnedBytes::from(encode_event(&wire_authority, &event)?)],
+                    vec![OwnedBytes::from(encode_event(&wire_authority, &event, &mut None)?)],
                     Some(0),
                     None,
                 )
@@ -3557,7 +3556,7 @@ mod tests {
                 .any(|window| window == b"hello")
         );
         assert!(matches!(
-            decode_event(&records[0].value)?.1.payload,
+            decode_event(&records[0].value, &mut None)?.0.1.payload,
             crate::core::EventPayload::Custom { record } if record.content == content()?
         ));
         Ok(())
@@ -4350,7 +4349,7 @@ mod tests {
             )
             .await?;
         let suffix_bytes = suffix.events.iter().try_fold(0_u64, |sum, event| {
-            Ok::<_, Error>(sum + encode_event(&authority(), event)?.len() as u64)
+            Ok::<_, Error>(sum + encode_event(&authority(), event, &mut None)?.len() as u64)
         })?;
         let exact = HistoryReadLimits {
             maximum_events: 6,

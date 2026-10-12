@@ -3095,7 +3095,7 @@ pub(crate) async fn completed_tool_projection(
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
     match limits {
         Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection),
+        None => definition.validate_projection(&projection, Limits::default(), io),
     }
 }
 
@@ -3974,7 +3974,7 @@ impl ModelEventAdmission {
         }
         let mut calls = state.calls;
         for call_id in &calls {
-            ToolInvocation::validate_identity(call_id, "admitted.tool")?;
+            ToolInvocation::validate_identity(call_id, Some("admitted.tool"), &mut None)?;
         }
         calls.sort_unstable();
         calls.dedup();
@@ -4013,7 +4013,8 @@ impl ModelEventAdmission {
         }
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
-                ToolInvocation::validate_identity_with_io(call_id, name, io)?;
+                crate::executor::with_history_io(io, |work|
+                    ToolInvocation::validate_identity(call_id, Some(name), work))?;
                 if self.calls.len() >= limits.tool_calls_per_step {
                     return Err(stock_boundary(
                         io, crate::wire::ErrorCode::Invalid,
@@ -6108,7 +6109,8 @@ mod tests {
                 "call-1".into(),
                 "example.echo".into(),
                 json!({"value":"hello"}),
-            );
+                None,
+            )?;
             for _ in 0..2 {
                 assert!(
                     matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
@@ -6482,7 +6484,8 @@ mod tests {
             "call-1".into(),
             "example.echo".into(),
             json!({"value": "changed"}),
-        );
+            None,
+        )?;
         assert!(matches!(
             StockExecution::ordinary(&executor).resolve_tool_call(
                     &journal,
@@ -6927,7 +6930,8 @@ mod tests {
                 "call".into(),
                 definition.name.clone(),
                 json!({}),
-            );
+                None,
+            )?;
             let invocation_ref = stage_json(&journal, operation, "invocation", &invocation, None).await?;
             let result = stage_json(&journal, operation, "result", &ToolResult { value: canonical }, None)
             .await?;

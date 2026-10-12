@@ -14,7 +14,7 @@ use crate::{
     core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
-    extension::{ExtensionLeases, ExtensionRuntime},
+    extension::{ExtensionLease, ExtensionRuntime},
     interaction::{
         Interaction, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket, ResolutionReceipt,
@@ -3846,7 +3846,7 @@ impl RuntimeScope {
     pub fn with_extension_runtime(mut self, runtime: Arc<ExtensionRuntime>) -> Result<Self> {
         self.validate_extension_runtime(&runtime)?;
         if let Some(original) = &self.extension_runtime
-            && original.selected() != runtime.selected()
+            && !original.selected().eq(runtime.selected())
         {
             return Err(Error::Conflict(
                 "runtime scope cannot retarget linked extension implementations".into(),
@@ -3857,7 +3857,7 @@ impl RuntimeScope {
     }
 
     fn validate_extension_runtime(&self, runtime: &ExtensionRuntime) -> Result<()> {
-        runtime.validate_admission(self.extensions.as_ref())?;
+        runtime.validate_admission(self.extensions.as_ref(), &mut None)?;
         if let Some(schemas) = &self.extension_schemas {
             for identity in runtime.selected() {
                 if schemas.implementation_digest(&identity.name, identity.version)?
@@ -4007,7 +4007,7 @@ impl RuntimeScope {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let scope = scope.with_run_limits(admission.run_limits)?;
         if let Some(runtime) = &scope.extension_runtime {
-            runtime.validate_admission_with_work(scope.extensions.as_ref(), quota.work())?;
+            runtime.validate_admission(scope.extensions.as_ref(), quota.work())?;
             if let Some(schemas) = &scope.extension_schemas {
                 for identity in runtime.selected() {
                     if schemas.implementation_digest_with_work(
@@ -4210,7 +4210,7 @@ pub enum RuntimeTask<O> {
         /// Pinned schema for the task result.
         output_schema: Value,
         /// Native extension implementations retained by this admission.
-        extensions: Option<ExtensionLeases>,
+        extensions: Option<Vec<ExtensionLease>>,
     },
 }
 
@@ -4816,7 +4816,7 @@ fn tool_approval_binding_with_work(
         }
         _ => {
             validate_policy_identity(policy)?;
-            invocation.validate()?;
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
             crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?
         }
     };
@@ -5485,7 +5485,7 @@ impl AgentHarness {
     pub fn scoped_run_limits(self: &Arc<Self>, limits: TaskRunLimits) -> Result<Arc<Self>> {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.clone().with_run_limits(limits)?;
-        child.live = TaskGroup::new(child.scope.concurrency_bound(self.concurrency));
+        child.live = TaskGroup::new(child.scope.concurrency_bound(self.concurrency), None)?;
         child.fork_preparer = None;
         child.workspaces = None;
         Ok(Arc::new(child))
@@ -5839,12 +5839,12 @@ impl AgentHarness {
         }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let live = if let Some(io) = startup {
-            TaskGroup::new_with_native_work(concurrency, io.original_native_work().ok_or(Error::NativeBoundary {
+            TaskGroup::new(concurrency, Some(io.original_native_work().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
-            })?)?
-        } else { TaskGroup::new(concurrency) };
+            })?))?
+        } else { TaskGroup::new(concurrency, None)? };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let live = TaskGroup::new(concurrency);
+        let live = TaskGroup::new(concurrency, None)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let native_configuration_custody = if let Some(io) = startup {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -6123,7 +6123,7 @@ impl AgentHarness {
         let output_schema = definition.output_schema.clone();
         let runtime = Arc::clone(self);
         let context_group = group.clone();
-        let descendants = context_group.child(scope.concurrency_bound(self.concurrency));
+        let descendants = context_group.child(scope.concurrency_bound(self.concurrency), None)?;
         let (identity, receive_identity) = tokio::sync::oneshot::channel();
         let admitted = group
             .try_spawn_with_operation(operation_id.unwrap_or_default(), async move {
@@ -6696,8 +6696,8 @@ impl AgentHarness {
             ContextSource::Ordinary(_) => {
                 let admitted = host.resume_scope(task, operation).await?;
                 let scope = self.scope.resume_sealed(admitted, operation)?;
-                let group = self.live.child(scope.concurrency_bound(self.concurrency));
-                let descendants = group.child(scope.concurrency_bound(self.concurrency));
+                let group = self.live.child(scope.concurrency_bound(self.concurrency), None)?;
+                let descendants = group.child(scope.concurrency_bound(self.concurrency), None)?;
                 (scope, descendants, Arc::new((AtomicUsize::new(0), None)), None, None, IssuedContextPurpose::Read)
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -6748,8 +6748,8 @@ impl AgentHarness {
                 custody.absorb(&mut admitted.1)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let bound = admitted.0.concurrency_bound(self.concurrency);
-                let group = self.live.child_with_native_work(bound, work)?;
-                let descendants = group.child_with_native_work(bound, work)?;
+                let group = self.live.child(bound, Some(work))?;
+                let descendants = group.child(bound, Some(work))?;
                 let model_custody = work.claim(std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let model_steps = Arc::new((AtomicUsize::new(0), Some(model_custody)));
@@ -7171,7 +7171,7 @@ impl TaskContext {
         child.scope = self.scope.clone().with_run_limits(limits)?;
         child.descendants = self
             .descendants
-            .child(child.scope.concurrency_bound(self.harness.concurrency));
+            .child(child.scope.concurrency_bound(self.harness.concurrency), None)?;
         Ok(child)
     }
 
@@ -8386,7 +8386,8 @@ impl TaskContext {
             harness: Arc::clone(&self.harness),
             group: self
                 .descendants
-                .child(self.scope.concurrency_bound(self.harness.concurrency)),
+                .child(self.scope.concurrency_bound(self.harness.concurrency), None)
+                .expect("ordinary task group"),
             scope: self.scope.clone(),
             policy_overrides: self.policy_overrides.clone(),
             durable_parent: self.durable_task,
@@ -8682,7 +8683,7 @@ impl AgentHarness {
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<Option<ExtensionLeases>> {
+    ) -> Result<Option<Vec<ExtensionLease>>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8696,15 +8697,15 @@ impl AgentHarness {
             .extension_runtime
             .as_ref()
             .ok_or_else(|| Error::Unsupported("task requires a native extension runtime".into()))?;
-        runtime.validate_admission(scope.extensions())?;
-        Ok(Some(runtime.retain_for_task(requirements)?))
+        runtime.validate_admission(scope.extensions(), &mut None)?;
+        Ok(Some(runtime.retain(requirements, false)?))
     }
 
     fn retain_task_extensions_existing<I, O>(
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<ExtensionLeases> {
+    ) -> Result<Vec<ExtensionLease>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8712,13 +8713,13 @@ impl AgentHarness {
             .cloned()
             .collect::<Vec<_>>();
         if requirements.is_empty() {
-            return Ok(ExtensionLeases::empty());
+            return Ok(Vec::new());
         }
         let runtime = self.extension_runtime.as_ref().ok_or_else(|| {
             Error::Unsupported("retained task requires a native extension runtime".into())
         })?;
-        runtime.validate_admission(scope.extensions())?;
-        runtime.retain_for_existing(requirements)
+        runtime.validate_admission(scope.extensions(), &mut None)?;
+        runtime.retain(requirements, true)
     }
 }
 
@@ -9125,7 +9126,7 @@ pub struct AdmissionBatch<O> {
     pub entries: Vec<BatchEntry<RuntimeTask<O>>>,
     policy: BatchGroupPolicy,
     spawner: Arc<dyn TaskSpawner>,
-    extensions: Option<ExtensionLeases>,
+    extensions: Option<Vec<ExtensionLease>>,
 }
 
 /// Ordered outcome of all observable batch slots.
@@ -10273,7 +10274,7 @@ mod tests {
             harness,
             task_id: OperationId::new(),
             durable_task: None,
-            descendants: TaskGroup::new(2),
+            descendants: TaskGroup::new(2, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -10667,7 +10668,7 @@ mod tests {
             harness,
             task_id: OperationId::new(),
             durable_task: None,
-            descendants: TaskGroup::new(1),
+            descendants: TaskGroup::new(1, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -11062,7 +11063,7 @@ mod tests {
         else {
             return Err(Error::Conflict("local admission changed task kind".into()));
         };
-        assert!(matches!(handle.result_owned().await,
+        assert!(matches!(handle.result().await,
             Outcome::Succeeded(Ok((id, value))) if id == operation && value == 7));
         Ok(())
     }
@@ -11905,7 +11906,7 @@ mod tests {
             )?,
             task_id: OperationId::from_bytes([41; 16]),
             durable_task: Some(task),
-            descendants: TaskGroup::new(1),
+            descendants: TaskGroup::new(1, None).unwrap(),
             scope,
             policy_overrides: Vec::new(),
             owned_interactions: None,
@@ -11931,7 +11932,8 @@ mod tests {
             "provider-call-name".into(),
             definition.name.clone(),
             serde_json::json!({"text":"hello"}),
-        );
+            None,
+        )?;
         let approval = context
             .policy_approval(&policy, &definition, &invocation)
             .await?
@@ -12000,7 +12002,8 @@ mod tests {
                     invocation.call_id.clone(),
                     invocation.name.clone(),
                     invocation.arguments.clone(),
-                ),
+                    None,
+                )?,
             ),
         ] {
             assert_ne!(

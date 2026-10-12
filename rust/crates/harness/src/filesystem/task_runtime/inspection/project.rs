@@ -81,9 +81,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
+        self.handle.require_selection(
             selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
+            selected.native_snapshot.as_ref(), Some(work),
         )?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;

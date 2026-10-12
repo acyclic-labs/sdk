@@ -6,7 +6,7 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, Result,
     context::{
         ContextDiscovery, ContextDiscoveryLimits, ContextDiscoveryPolicy, ContextInput,
-        ContextPipeline, ContextPlacement, ContextReloadPolicy, ContextRoot, InstructionScope,
+        ContextPipeline, ContextPlacement, ContextReloadPolicy, ContextRoot, ContextSource, InstructionScope,
         parse_skill_metadata,
     },
     conversation::{
@@ -431,7 +431,12 @@ async fn malformed_frontmatter_has_explicit_outcomes() -> Result<()> {
         .first_mut()
         .ok_or_else(|| Error::NotFound("forged skill".into()))?
         .name = "Invalid".into();
-    assert!(forged.messages().is_err());
+    assert!(forged.load(&ContextInput {
+        input: ModelContent::Text("inspect".into()),
+        selected_context: None,
+        step: 0,
+        prior_messages: Vec::new(),
+    }, Limits::default()).await.is_err());
     forged
         .skills
         .first_mut()

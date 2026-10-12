@@ -662,7 +662,7 @@ fn validate_projection_tool_identity(
         return Ok(());
     }
     let _ = io;
-    ToolInvocation::validate_identity(call_id, name)
+    ToolInvocation::validate_identity(call_id, Some(name), &mut None)
 }
 
 struct ProjectionIndex<'a, T> {
