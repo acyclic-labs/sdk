@@ -28,3 +28,20 @@ console.log(fork.name);
 `await openBrowserOperationWindowCoordinator(filesystem)` binds durable leases to the authority of an opened browser filesystem. Pass the returned lease to `transaction.commit(lease)` or `checkout.commit(operationId, lease)` to fence publication by closed, superseded or expired owners. The lease check and authority publication share one strict IndexedDB transaction. Construction acquires no lease; begin, close and reconciliation use the existing Rust coordinator. OPFS accelerates immutable objects in tabs and workers while IndexedDB retains authority. Control records have a 64 KiB storage ceiling. Opening older database schemas fails; use a fresh database name for this format. Atomicity covers that database, without a cross-volume or mixed-provider guarantee.
 
 See the [browser example](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/filesystem/examples/browser.mjs), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/filesystem/src), and [Filesystem protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem).
+
+## Public gRPC calls
+
+Node/Bun callers can use `createFilesystemGrpcClient` from `@acyclic-labs/fs/grpc` for the full public filesystem v2 service, including streaming import/export, mount credentials and operation observation/cancellation. Requests and responses use `@acyclic-labs/fs/proto`; the client forwards generation and operation identities without retrying mutations.
+
+```ts
+import { createFilesystemGrpcClient } from "@acyclic-labs/fs/grpc";
+
+const client = createFilesystemGrpcClient({ endpoint: "https://filesystem.example", token });
+try {
+  const result = await client.filesystem.observe({ workspace, operationId });
+} finally {
+  client.close();
+}
+```
+
+The transport requires HTTPS, accepts an optional private CA, and bounds protobuf messages. Per-call deadlines and cancellation use Connect call options. The descriptor matches Cloud's pinned SDK `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`.
