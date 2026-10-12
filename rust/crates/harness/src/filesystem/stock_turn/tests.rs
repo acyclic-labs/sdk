@@ -42,13 +42,13 @@ fn stock_turn_runtime_requires_original_model_grant_before_work() -> Result<()> 
     tasks.register(machine.definition()?)?;
     let mut missing = Bindings::local();
     missing.tasks = tasks.clone();
-    assert!(matches!(missing.build(), Err(Error::Invalid(message))
+    assert!(matches!(missing.build(None), Err(Error::Invalid(message))
         if message == "unsatisfied task requirement: model"));
 
     let mut available = Bindings::local();
     available.tasks = tasks;
     available.scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
-    let runtime = available.build()?;
+    let runtime = available.build(None)?;
     runtime.task::<Value, TurnOutput>("acyclic.stock_turn@1")?;
     Ok(())
 }
