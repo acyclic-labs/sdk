@@ -140,8 +140,7 @@ pub(super) fn assemble<P: StreamProvider>(
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id(owner.task_binding().0, command,
         &mut Some(&mut io.history_io()))?;
-    let history = HistoryReader::new_with_work(
-        &owner.stream(), authority.verifier.audience(), &authority.verifier, Some(&mut io.history_io()))?;
+    let history = HistoryReader::new(&owner.stream(), authority.verifier.audience(), &authority.verifier, &mut Some(&mut io.history_io()))?;
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;

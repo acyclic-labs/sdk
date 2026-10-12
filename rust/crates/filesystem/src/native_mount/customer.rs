@@ -1844,7 +1844,7 @@ where
         &self, options: &crate::MaterializeOptions,
         work: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<crate::MaterializationReceipt, MountLifecycleError> {
+    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
         let original = work.clone();
         let mut frame_custody = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(

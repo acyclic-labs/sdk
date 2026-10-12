@@ -48,8 +48,7 @@ mod measured_open_tests {
             .expect("original accounting state");
         let prefix = native.receipt();
         let mut io = history::native_work_io(&native).expect("empty custody");
-        assert!(matches!(HistoryReader::new_with_work(
-            &provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), Some(&mut io)),
+        assert!(matches!(HistoryReader::new(&provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), &mut Some(&mut io)),
             Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                     counter: "bytes_copied", ..
@@ -60,8 +59,7 @@ mod measured_open_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original accounting state");
         let mut io = history::native_work_io(&native).expect("empty custody");
-        let reader = HistoryReader::new_with_work(
-            &provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), Some(&mut io))?;
+        let reader = HistoryReader::new(&provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), &mut Some(&mut io))?;
         let custody = io.into_custody();
         assert!(custody.bytes() >= authority().stream_path(&mut None)?.len() as u64);
         assert!(native.receipt().bytes_copied >= authority().stream_path(&mut None)?.len() as u64);
@@ -82,8 +80,7 @@ mod measured_open_tests {
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original finite ledger");
         let mut io = history::native_work_io(&native).expect("original reader custody");
-        let reader = HistoryReader::new_with_work(
-            &provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), Some(&mut io))?;
+        let reader = HistoryReader::new(&provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), &mut Some(&mut io))?;
         let reader_custody = io.into_custody();
         provider.reset_io();
         let (cursor, cursor_custody) = reader.pin_with_native_work(64, &native).await?;
@@ -151,8 +148,7 @@ mod measured_open_tests {
         let auth_work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original authentication ledger");
         let mut io = history::native_work_io(&auth_work).expect("original reader custody");
-        let wrong_reader = HistoryReader::new_with_work(
-            &provider, &authority(), &wrong_issuer.verifier(&mut None).expect("verifier copy"), Some(&mut io))?;
+        let wrong_reader = HistoryReader::new(&provider, &authority(), &wrong_issuer.verifier(&mut None).expect("verifier copy"), &mut Some(&mut io))?;
         let wrong_custody = io.into_custody();
         provider.reset_io();
         assert!(wrong_reader.read_page_with_native_work(
@@ -384,7 +380,7 @@ mod measured_open_tests {
         assert_eq!(receipt.work.authority_bytes_read, provider.io_snapshot().read_bytes);
 
         assert_eq!(receipt.work.items_returned, 3);
-        let reader = HistoryReader::new(&provider, &authority(), issuer().verifier(&mut None).expect("verifier copy"))?;
+        let reader = HistoryReader::new(&provider, &authority(), &(issuer().verifier(&mut None).expect("verifier copy")), &mut None)?;
         let read_work = reader.read_page_measured(
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
             default_projection_read_limits(), budget(), &cancellation,

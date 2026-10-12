@@ -572,8 +572,6 @@ pub struct MaterializationReceipt {
     pub logical_file_bytes: u64,
     /// Bytes physically written for content and allocated-zero spans.
     pub written_bytes: u64,
-    /// Complete canonical-engine and host-movement work.
-    pub work: WorkCounters,
 }
 
 /// How a materialized host path replaces its current destination.
@@ -727,10 +725,11 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                         .map_err(|_| GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()))?;
                     validate_bounds(options)
                         .map_err(|error| GenerationFailure::new(error, receipt.work()))?;
-                    materialize_checkout_source_on_receipt(
+                    materialize_source(
                         GenerationSource::Standalone(checkout), std::slice::from_ref(&root), options,
                         MaterializeMode::DurableOutput, receipt,
-                    ).await.map_err(Into::into)
+                        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+                    ).await
                 },
                 GenerationReceipt::new(budget, cancellation)?,
             ),
@@ -760,7 +759,6 @@ where
     match result {
         Ok(mut receipt) => {
             receipt.work = work;
-            receipt.value.work = work;
             Ok(receipt)
         }
         Err((error, _)) => Err((error, work)),
@@ -796,9 +794,10 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
                     return Err(OperationFailure::before_work(MaterializeError::InvalidOptions));
                 }
                 let receipt = GenerationReceipt::new(budget, cancellation)?;
-                materialize_checkout_source_on_receipt(
+                materialize_source(
                     GenerationSource::Standalone(checkout), paths, options, MaterializeMode::DurableOutput, receipt,
-                ).await.map_err(OperationFailure::from)
+                    None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+                ).await.map_err(|(error, work)| OperationFailure::new(error, work))
             },
         )
         .await,
@@ -816,8 +815,7 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
     reader: &PinnedReader<A, O>,
     options: &MaterializeOptions,
     work: &crate::NativeMaterializationWork,
-) -> Result<MaterializationReceipt, MaterializeError> {
-    let mode = MaterializeMode::DurableOutput;
+) -> Result<OperationReceipt<MaterializationReceipt>, MaterializeError> {
     let receipt = GenerationReceipt::from_work(work)?;
     let validated = reader.validate_native_work(receipt.custody.work());
     receipt.original_result(validated)?;
@@ -825,10 +823,11 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
         let root = NamespacePath::new(Vec::new(), reader.volume_config().limits)
             .map_err(|_| GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()))?;
         validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
-        materialize_checkout_source_on_receipt(
-            GenerationSource::Original(reader), std::slice::from_ref(&root), options, mode, receipt,
-        ).await.map_err(Into::into)
-    }, receipt).await.map(|receipt| receipt.value).map_err(|failure| failure.0)
+        materialize_source(
+            GenerationSource::Original(reader), std::slice::from_ref(&root), options, MaterializeMode::DurableOutput, receipt,
+            None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+        ).await
+    }, receipt).await.map_err(|failure| failure.0)
 }
 
 pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -837,7 +836,7 @@ pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObj
     options: &MaterializeOptions,
     mode: MaterializeMode,
     work: &crate::NativeMaterializationWork,
-) -> Result<MaterializationReceipt, MaterializeError> {
+) -> Result<OperationReceipt<MaterializationReceipt>, MaterializeError> {
     let receipt = GenerationReceipt::from_work(work)?;
     let validated = reader.validate_native_work(receipt.custody.work());
     receipt.original_result(validated)?;
@@ -847,25 +846,14 @@ pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObj
     {
         return Err(MaterializeError::InvalidOptions);
     }
-    materialize_checkout_source_on_receipt(
+    materialize_source(
         GenerationSource::Original(reader), paths, options, mode, receipt,
-    ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-}
-
-#[allow(clippy::too_many_arguments, reason = "ordinary SDK boundary supplies no task authorization policy")]
-async fn materialize_checkout_source_on_receipt<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    source: GenerationSource<'_, A, O>, paths: &[NamespacePath],
-    options: &MaterializeOptions,
-    mode: MaterializeMode, receipt: GenerationReceipt,
-) -> Result<OperationReceipt<MaterializationReceipt>, GenerationFailure> {
-    materialize_checkout_source_guarded_on_receipt(
-        source, paths, options, mode, receipt,
-        None::<&mut fn(NativeMaterializationActionPhase) -> std::future::Ready<Result<(), MaterializeError>>>,
-    ).await.map_err(Into::into)
+        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+    ).await.map_err(|(error, _)| error)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines, reason = "one canonical traversal dispatches ordinary or original-native source leaves")]
-async fn materialize_checkout_source_guarded_on_receipt<A, O, E, F, Fut>(
+async fn materialize_source<A, O, E, F, Fut>(
     mut source: GenerationSource<'_, A, O>,
     paths: &[NamespacePath],
     options: &MaterializeOptions,
@@ -1061,7 +1049,6 @@ where
         ).await?;
     }
     let work = receipt.work();
-    receipt.value.work = work;
     Ok(OperationReceipt { value: receipt.value, work })
 }
 
@@ -1072,7 +1059,7 @@ pub(crate) async fn materialize_checkout_host_paths_with_work_guarded<A, O, E, F
     options: &MaterializeOptions,
     work: &crate::NativeMaterializationWork,
     before_effect: &mut F,
-) -> Result<MaterializationReceipt, E>
+) -> Result<OperationReceipt<MaterializationReceipt>, E>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -1096,11 +1083,11 @@ where
                 .map_err(|error| GenerationFailure::new(MaterializeError::NativeWork(error), receipt.work()))?;
             paths.0.push(path.0);
         }
-                materialize_checkout_source_guarded_on_receipt(
+        materialize_source(
             GenerationSource::Original(reader), &paths.0, options,
             MaterializeMode::DurableOutput, receipt, Some(before_effect),
         ).await
-    }, receipt).await.map(|receipt| receipt.value).map_err(|failure| failure.0)
+    }, receipt).await.map_err(|failure| failure.0)
 }
 
 async fn materialize_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1111,9 +1098,10 @@ async fn materialize_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<OperationReceipt<MaterializationReceipt>, GenerationFailure> {
     validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
     let path = generation_namespace_from_host(relative, checkout.volume_config(), &mut receipt)?;
-    materialize_checkout_source_on_receipt(
+    materialize_source(
         GenerationSource::Standalone(checkout), std::slice::from_ref(&path.0), options, MaterializeMode::DurableOutput, receipt,
-    ).await
+        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+    ).await.map_err(GenerationFailure::from)
 }
 
 fn generation_namespace_from_host(

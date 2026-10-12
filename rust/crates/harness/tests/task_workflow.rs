@@ -1548,7 +1548,7 @@ async fn worker_restart_with_options(
                     let (stock, legacy) = tokio::join!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), probe, 1),
+                            .poll_timer(task, &fence, probe, 1, None),
                         runtime.task_host().wait_until(task, probe, 1)
                     );
                     assert!(stock?);
@@ -1560,7 +1560,7 @@ async fn worker_restart_with_options(
                     assert!(matches!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), probe, 0)
+                            .poll_timer(task, &fence, probe, 0, None)
                             .await,
                         Err(Error::Invalid(_))
                     ));
@@ -1568,12 +1568,7 @@ async fn worker_restart_with_options(
                         assert!(
                             !runtime
                                 .task_host()
-                                .poll_timer(
-                                    task,
-                                    fence.clone(),
-                                    OperationId::from_bytes([index; 16]),
-                                    200
-                                )
+                                .poll_timer(task, &fence, OperationId::from_bytes([index; 16]), 200, None)
                                 .await?
                         );
                     }
@@ -1581,19 +1576,19 @@ async fn worker_restart_with_options(
                     assert!(
                         !runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .poll_timer(task, &fence, timer_operation, 200, None)
                             .await?
                     );
                     assert!(
                         !runtime
                             .task_host()
-                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .poll_timer(task, &fence, timer_operation, 200, None)
                             .await?
                     );
                     assert!(matches!(
                         runtime
                             .task_host()
-                            .poll_timer(task, fence, timer_operation, 201)
+                            .poll_timer(task, &fence, timer_operation, 201, None)
                             .await,
                         Err(Error::Conflict(_))
                     ));
@@ -1866,12 +1861,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .poll_timer(
-                            task,
-                            LeaseFence::from(&old.reservation),
-                            OperationId::from_bytes([26; 16]),
-                            200
-                        )
+                        .poll_timer(task, &LeaseFence::from(&old.reservation), OperationId::from_bytes([26; 16]), 200, None)
                         .await
                         .is_err()
                 );

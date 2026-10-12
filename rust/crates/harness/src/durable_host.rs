@@ -2057,8 +2057,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-
-
     /// Authenticates operation controls against this task owner's trust root.
     pub async fn authorize_operation_control(
         &self,
@@ -2423,37 +2421,26 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(WorkPull::Claimed(lease))
     }
 
-    /// Durably retains one timer identity without holding a waiting future.
     #[cfg(feature = "filesystem")]
+    /// Durably retains one timer identity under its original owner and work.
     pub async fn poll_timer(
-        self: &Arc<Self>,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        operation: OperationId,
-        deadline_unix_ms: u64,
+        self: &Arc<Self>, task: TaskId, fence: &crate::scheduler::LeaseFence,
+        operation: OperationId, deadline_unix_ms: u64, native: crate::NativeWork<'_>,
     ) -> Result<bool> {
-        let owner = self.journal_owner(task, fence).await?;
-        self.poll_timer_with_work(&owner, operation, deadline_unix_ms, &mut None).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn poll_timer_with_native_work(
-        self: &Arc<Self>, task: TaskId, fence: crate::scheduler::LeaseFence,
-        operation: OperationId, deadline_unix_ms: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
-        let owner = self.journal_owner_with_native_work(task, &fence, work).await?;
-        let mut io = crate::store::history::native_work_io(work)?;
-        let result = self.poll_timer_with_work(&owner, operation, deadline_unix_ms, &mut Some(&mut io)).await;
-        drop(owner);
-        result
-    }
-
-    #[cfg(feature = "filesystem")]
-    async fn poll_timer_with_work(
-        &self, owner: &TaskJournalOwner<P>, operation: OperationId, deadline_unix_ms: u64,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<bool> {
-        let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = if let Some(native) = native {
+            self.journal_owner_with_native_work(task, fence, native).await?
+        } else { self.journal_owner(task, fence.clone()).await? };
+        #[cfg(target_arch = "wasm32")]
+        let owner = self.journal_owner(task, fence.clone()).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(target_arch = "wasm32")]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
+        let _ = native;
+        let mut custody = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
         if deadline_unix_ms == 0 {
             return Err(admission_boundary(custody.work(), crate::wire::ErrorCode::Invalid,
@@ -2986,10 +2973,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .await?;
         Ok(())
     }
-
-
-
-
 
     /// Delivers input into the exact owner-authorized workflow resume slot.
     pub async fn resume_workflow(
@@ -3894,10 +3877,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(operation.cancellation_requested)
     }
 
-
-
-
-
     /// Cancels when the original admitted deadline has elapsed.
     pub async fn expire_task_deadline(
         &self, task: TaskId, fence: Option<&crate::scheduler::LeaseFence>,
@@ -4050,7 +4029,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         parent_fence: Option<crate::scheduler::LeaseFence>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Admission<TaskId>> {
-        admission.validate_with_work(work)?;
+        admission.validate(work)?;
         if !admission.resource_proofs.is_empty() && parent_fence.is_none()
             && self.retained_declaration_with_work(admission.operation_id, work).await?.is_none()
         {
@@ -4702,7 +4681,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "committed task admission content is missing"),
             other => other,
         })?;
-        let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(value, work)?;
+        let (admission, added) = TaskAdmissionRecord::from_canonical_value(value, work)?;
         let held = held.checked_add(added).ok_or_else(|| admission_boundary(
             work, crate::wire::ErrorCode::Invalid, "task admission custody overflows",
         ))?;
@@ -4850,8 +4829,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         Ok(())
     }
-
-
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
         acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v3/mail/by-recipient/{task_id}"))
@@ -5004,7 +4981,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&request.input_schema),
             &request.output_schema,
             None,
-         &mut None,)?;
+            &mut None,
+        )?;
         if request.scope.resource_proofs().is_empty() {
             self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
                 .with_run_limits(request.scope.run_limits(), &mut None)?;
@@ -5029,7 +5007,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch extensions differ from owner bindings".into(),
             ));
         }
-        validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
+        validate_task_schemas(&request.input_schema, &request.output_schema, true, &mut None)?;
         let input = crate::contract::compile_json_schema(&request.input_schema, "batch input", None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
@@ -5046,8 +5024,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ))
         .map_err(|error| Error::Invalid(error.to_string()))
     }
-
-
 
     /// Resolves only the authenticated donor's exact immutable parcel bytes.
     async fn read_mail_source(
