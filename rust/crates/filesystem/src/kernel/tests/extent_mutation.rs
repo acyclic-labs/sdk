@@ -898,7 +898,7 @@ async fn flatten_extent_tree(
         ExtentPage::Internal(children) => {
             let mut extents = Vec::new();
             for child in children {
-                extents.extend(Box::pin(flatten_extent_tree(store, child.page).await).await?);
+                extents.extend(Box::pin(flatten_extent_tree(store, child.page)).await?);
             }
             extents
         }
