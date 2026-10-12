@@ -455,25 +455,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(report)
     }
 
-    /// Publishes a fork report under the admitted owner's atomic fence.
-    #[cfg(feature = "filesystem")]
-    pub async fn publish_fork_report_measured(
-        &mut self,
-        report: ForkReport,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<ApplyResult>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.publish_fork_report(
-                report, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
     /// Publishes a captured fork through the parent append.
     pub async fn publish_fork_report(
         &mut self, report: ForkReport, scope: Scope,
@@ -552,26 +533,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.bind_published_child(parent, &seed, child_scope, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         Ok(seed)
-    }
-
-    /// Binds only the exact child of an authenticated canonical parent fork.
-    #[cfg(feature = "filesystem")]
-    pub async fn bind_published_child_measured(
-        &mut self,
-        parent: &Self,
-        seed: &ForkSeed,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.bind_published_child(
-                parent, seed, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
     }
 
     /// Binds a child to its exact published parent seed.
@@ -985,7 +946,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
     pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
         self.set_resident_event_limit(maximum)?;
@@ -1126,7 +1086,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         owned.transfer();
         Ok(Some((ApplyResult::Replayed { event }, original_owned)))
     }
-
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
@@ -1406,7 +1365,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }.await)
     }
 
-
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
@@ -1437,7 +1395,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_admission_content(&command.action).await?;
         self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
-
 
     #[cfg(feature = "filesystem")]
     async fn validate_task_admission_content_with_work(
@@ -1752,8 +1709,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         Ok(())
     }
-
-
 
     /// Reconciles a possibly committed append without issuing another append.
     #[cfg_attr(
@@ -4030,7 +3985,6 @@ mod tests {
         }
         Ok(())
     }
-
 
     #[tokio::test]
     async fn default_cold_projection_enforces_bounds_and_recovers_failed_observations() -> Result<()>

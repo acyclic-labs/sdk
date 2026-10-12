@@ -1823,34 +1823,28 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Invalid,
-                    reason:"workflow record exceeds canonical Stream byte bound"});
-            }
-            return Err(Error::Invalid("workflow record exceeds canonical Stream byte bound".into()));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Invalid,
+                "workflow record exceeds canonical Stream byte bound"));
         }
         let class = if admission {
             "workflow-admissions"
         } else {
             "workflows"
         };
-        let mut path_text = String::new();
-        let mut uuid = [0; 36];
-        let operation = uuid::Uuid::from_bytes(self.operation_id().into_bytes()).hyphenated().encode_lower(&mut uuid);
-        let length = "harness/v2/".len() + class.len() + 1 + operation.len();
+        const PREFIX: &[u8] = b"harness/v2/";
+        let mut path_text = [0; b"harness/v2/workflow-admissions/".len() + 36];
+        let operation_start = PREFIX.len() + class.len() + 1;
+        let length = operation_start + 36;
         if let Some(io) = work.as_deref_mut() {
             io.admit_copy(length as u64)?;
-            io.reserve_text(&mut path_text, length)?;
             io.copy_bytes(length as u64)?;
-        } else {
-            path_text.reserve_exact(length);
         }
-        path_text.push_str("harness/v2/");
-        path_text.push_str(class);
-        path_text.push('/');
-        path_text.push_str(operation);
-        let temporary_capacity = path_text.capacity() as u64;
+        path_text[..PREFIX.len()].copy_from_slice(PREFIX);
+        path_text[PREFIX.len()..operation_start - 1].copy_from_slice(class.as_bytes());
+        path_text[operation_start - 1] = b'/';
+        uuid::Uuid::from_bytes(self.operation_id().into_bytes()).hyphenated()
+            .encode_lower(&mut path_text[operation_start..length]);
+        let path_text = std::str::from_utf8(&path_text[..length]).expect("canonical ASCII workflow path");
         if let Some(io) = work.as_deref_mut() {
             io.admit_owned(length as u64)?;
             io.admit_allocation(length as u64)?;
@@ -1858,7 +1852,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.retain_owned(length as u64)?;
         }
         let path = acyclic_stream::StreamPath::new(path_text)?;
-        if let Some(io) = work.as_deref_mut() { io.release_owned(temporary_capacity)?; }
         let result = self.append(
             path,
             expected_tail,
