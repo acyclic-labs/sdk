@@ -915,7 +915,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         let mut records = super::operations::read_records_with_work(
             &self.client, &self.stream, cursor.after_revision, count, &mut work,
-        ).await?.map_err(|error| error.into_error(&work))?;
+        ).await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         loop {

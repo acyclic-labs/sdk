@@ -802,7 +802,7 @@ impl DurableContextProvider {
             .map_err(native_context_decode_storage)?.into_retained();
         let canonical_guard;
         let canonical = io.encode_json(&stored, MAX_RECORD_BYTES as u64, true)?;
-        canonical_guard = io.guard_owned(canonical.capacity() as u64)?;
+        canonical_guard = io.guard_bytes(&canonical)?;
         if canonical.as_slice() != record.value.as_ref() || stored.format_version != 5 || stored.revision != revision
             || stored.source != self.source || stored.source_revision != self.source_revision
         {
@@ -829,7 +829,7 @@ impl DurableContextProvider {
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
         let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
-        context_canonical_guard = io.guard_owned(context_canonical.capacity() as u64)?;
+        context_canonical_guard = io.guard_bytes(&context_canonical)?;
         if context_canonical.as_slice() != payload.as_ref() {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
                 "context payload is not canonical"));

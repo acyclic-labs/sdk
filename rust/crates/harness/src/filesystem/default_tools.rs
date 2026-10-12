@@ -237,7 +237,7 @@ pub struct RecursiveMergeToolBinding<P, A, O> {
 }
 
 /// Full original fork provenance is retained before ordinary task admission.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecursiveForkToolPlan {
     /// Exact model-supplied id/msg/source, including default-source provenance.
@@ -338,7 +338,7 @@ fn definition(kind: Kind, maximum: u64) -> Result<ToolDefinition> {
     Ok(value)
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "plan", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Plan { Fork(Box<RecursiveForkToolPlan>), Merge(Box<RecursiveMergeToolPlan>) }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1089,7 +1089,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "native source selector differs from original caller/effect" });
                     }
-                    let kind = io.clone_text(FORK_SOURCE_STAGE)?;
+                    let kind = crate::filesystem::fork_preparer_io::clone_text(FORK_SOURCE_STAGE, Some(&io))?;
                     let pin = SourcePin { intent: selected.0, command: WorkflowCommand {
                         operation_id: recursive_derived(invocation.operation_id, "source-stage", Some(&io))?,
                         kind, payload: payload.0,
@@ -1372,7 +1372,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     recursive_derived(context.operation_id(), "preparation-payload", Some(&io))?,
                     "preparation-payload", &encoded.0, self.maximum_request_bytes, work).await?;
                 drop(encoded);
-                let command_kind = io.clone_text(FORK_PREPARE_TASK_COMMAND_KIND)?;
+                let command_kind = crate::filesystem::fork_preparer_io::clone_text(FORK_PREPARE_TASK_COMMAND_KIND, Some(&io))?;
                 let checkpoint = {
                     let mut history = io.history_io();
                     binding.0.source_checkpoint.clone_with_work(&mut Some(&mut history))?
@@ -1479,7 +1479,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             stage.label(), &payload.0, self.maximum_request_bytes, work).await?;
         drop(payload);
         let mut kind = {
-            let value = io.clone_text(stage.kind())?;
+            let value = crate::filesystem::fork_preparer_io::clone_text(stage.kind(), Some(&io))?;
             let custody = io.take_native_custody(io.owned_bytes()?)?;
             (value, custody)
         };
@@ -1573,7 +1573,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let request = recursive_decode_with_native_work::<ForkRequest>(&fork.request.payload, work)?;
         let intent = RecursiveForkSourceIntent {
             arguments: ForkToolArguments { id: fork.arguments.id,
-                msg: io.clone_text(&fork.arguments.msg)?, source: fork.arguments.source },
+                msg: crate::filesystem::fork_preparer_io::clone_text(&fork.arguments.msg, Some(&io))?, source: fork.arguments.source },
             caller: fork.caller, source_task: fork.arguments.source.unwrap_or(fork.caller),
             child_operation_id: fork.request.child.operation_id,
             allocation_digest: fork.allocation_digest, request: request.0,
@@ -1653,8 +1653,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 })?;
                 let io = super::PreparationIo::from_native_work(work)?;
                 let fence = LeaseFence {
-                    reservation_id: io.clone_text(&owner.fence.reservation_id)?,
-                    placement: io.clone_text(&owner.fence.placement)?,
+                    reservation_id: crate::filesystem::fork_preparer_io::clone_text(&owner.fence.reservation_id, Some(&io))?,
+                    placement: crate::filesystem::fork_preparer_io::clone_text(&owner.fence.placement, Some(&io))?,
                 };
                 let command = {
                     let mut history = io.history_io();
@@ -1700,7 +1700,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 }
                 drop(retained);
                 let outcome = owner.runtime.task_host().outcome_with_native_work(
-                    fork.preparation.task_id(), work)?.await?;
+                    fork.preparation.task_id(), work).await?;
                 match outcome.0 {
                     Some(Outcome::Succeeded(value)) => {
                         let report = recursive_decode_with_native_work::<ForkReport>(&value, work)?;
@@ -1754,7 +1754,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let receipt_copy = {
             let mut history = io.history_io();
-            receipt.clone_with_work(&mut Some(&mut history))?
+            receipt.clone_with_work_and_custody(&mut Some(&mut history))?.0
         };
         let receipt_copy = recursive_box(receipt_copy, Some(&io))?;
         let key = recursive_text_with_native_io(&io, "recursive-merge-publication:".len() + 36,
@@ -2006,7 +2006,7 @@ impl ToolProjection for RecursiveProjection {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
+        work.admit(acyclic_fs::WorkCounters::default())
             .map_err(Error::from)
     }
 

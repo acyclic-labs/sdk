@@ -168,7 +168,7 @@ impl<'a> RootBootstrapContentContext<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn from_verified_original_root_with_native_work<P: acyclic_stream::StreamProvider>(
         host: &'a crate::durable_host::CoordinatorTaskHost<P>,
-        original: &'a crate::distributed::OriginalReservationProof,
+        original: &'a (crate::scheduler::OperationSpec, crate::scheduler::LeaseFence),
         original_root: &'a TaskAdmissionRecord,
         binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -177,7 +177,7 @@ impl<'a> RootBootstrapContentContext<'a> {
             original, original_root, binding, work,
         )?;
         Self::from_authenticated_source_with_native_work(
-            original_root, original.declaration().owner.authority(), binding, work,
+            original_root, original.0.owner.authority(), binding, work,
         )
     }
 

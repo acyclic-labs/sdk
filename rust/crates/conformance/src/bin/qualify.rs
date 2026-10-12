@@ -676,7 +676,7 @@ async fn filesystem_demand(root: std::path::PathBuf) -> Result<(), String> {
     }
     std::fs::write(root.join("wanted"), b"0123456789").map_err(|error| error.to_string())?;
     let source =
-        NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default())
+        NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default(), None, None)
             .await
             .map_err(|error| error.to_string())?;
     let wanted = PortablePath::parse("/wanted", VolumeLimits::default())

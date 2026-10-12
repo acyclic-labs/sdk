@@ -251,7 +251,7 @@ impl SelectedModelContext {
     }
 
     /// Checks selection provenance and its final current user input.
-    pub fn validate_for_input(
+    pub(crate) fn validate_for_input(
         &self, input: &ModelContent, io: Option<&crate::context::ContextPreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

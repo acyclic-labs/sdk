@@ -440,7 +440,8 @@ impl EffectRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&Arc<dyn EffectProvider>> {
         self.require_native_metadata(work)?;
-        work.visit(1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "effect provider is not registered",

@@ -106,7 +106,7 @@ fn validate_task_plan<P: StreamProvider>(
         owner.validate_input_file_with_native_work(&plan.request, native)?;
         return owner.validate_input_file_with_native_work(&plan.result_schema, native);
     }
-    owner.require_effect_grants(&plan.provider, planning)?;
+    owner.require_effect_grants(&plan.provider, planning, &mut None)?;
     owner.validate_input_file(&plan.request)?;
     owner.validate_input_file(&plan.result_schema)
 }
@@ -120,7 +120,7 @@ async fn verify_owner<P: StreamProvider>(
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
         return owner.verify_with_native_work(settlement, native).await;
     }
-    owner.verify(settlement).await
+    owner.verify(settlement, &mut None).await
 }
 
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {

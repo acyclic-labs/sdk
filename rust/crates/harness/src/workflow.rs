@@ -365,7 +365,7 @@ impl MachineRegistry {
     }
 
     /// Resolves pinned metadata on the optional history observer.
-    pub fn resolve(
+    pub(crate) fn resolve(
         &self, identity: &MachineIdentity,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<&Arc<dyn ResumableMachine>>> {
@@ -515,7 +515,7 @@ impl MachineRegistry {
     }
 
     /// Checks the checkpoint against its pinned machine schema.
-    pub fn validate_checkpoint(
+    pub(crate) fn validate_checkpoint(
         &self, checkpoint: &MachineCheckpoint, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1439,10 +1439,8 @@ fn validate_workflow_key(
 fn workflow_label(value: &str, field: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        use crate::store::history::HistoryIo as _;
-        let mut observer = io.history_io();
-        observer.check_cancellation()?;
-        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+        io.check_cancellation()?;
+        io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 }, false)?;
         return if crate::contract::is_valid_component_label(value) {
             Ok(())
         } else {

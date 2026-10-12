@@ -4,7 +4,7 @@ use crate::kernel::file_table_mutation::FileTableFormat;
 use crate::kernel::persistent_btree::Child;
 use crate::kernel::tree_mutation::TreeFormat;
 use crate::kernel::{
-    FileKind, FilePayload, FileRecord, FileTableChild, FileTablePage, LogicalName, NameEncoding,
+    FileKind, FilePayload, FileRecord, FileTablePage, LogicalName, NameEncoding,
     TreeEntry, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
