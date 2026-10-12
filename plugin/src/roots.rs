@@ -576,8 +576,15 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             transfer_bytes: 8 * 1024 * 1024,
         };
         let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_workspace_generation(
-            workspace,
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
+        let from_generation = workspace.generation(from, &work, &cancellation).await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let to_generation = workspace.generation(to, &work, &cancellation).await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        acyclic_fs::publish_native_generation_transition(
+            &from_generation,
+            &to_generation,
             &self.state,
             acyclic_fs::NativeWorkspacePublication {
                 root: &physical.path,
@@ -590,10 +597,10 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 options: &options,
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,
-            },
+            }, work, || std::future::ready(Ok(())),
         )
         .await
-        .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
         Ok(())
     }
 
