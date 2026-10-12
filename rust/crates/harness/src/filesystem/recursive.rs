@@ -374,60 +374,6 @@ pub(crate) fn recursive_fork_request_with_native_work(
     Ok((request, io.into_native_custody(retained)?))
 }
 
-/// Opens a native ordinary recursive fork at the actual caller's authenticated cut.
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(clippy::too_many_arguments, reason = "original provider, source and authority identities stay explicit")]
-pub async fn recursive_fork_source_with_native_work<P, A, O>(
-    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &Arc<P>,
-    parent: crate::core::Reducer, verifier: &crate::core::AuthorityVerifier,
-    signed: &crate::core::Scope, context: &crate::runtime::TaskContext,
-    source: &RecursiveSourceSnapshot, stream_provider: &crate::resources::ProviderRef,
-    operation: OperationId, arguments: &ForkToolArguments, config: &RecursiveForkConfig,
-    source_read: Option<&crate::source_authorization::ProjectSourceReadHandle>,
-    resolver: Arc<dyn crate::conversation::ContentResidencyVerifier>,
-    cancellation: &acyclic_fs::CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>
-where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
-    work.remaining()?;
-    cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-    if context.durable_task_id() != Some(source.task) || !context.scope().grants().contains("fork:publish") {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native fork caller/source authority differs" });
-    }
-    if context.scope().current_created_authority_with_native_work(work)?
-        .is_some_and(|authority| authority != parent.authority())
-        || context.scope().current_created_private_volume_with_native_work(work)?
-            .is_some_and(|volume| volume != &source.private_volume)
-    {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native descendant source differs from its original created caller" });
-    }
-    let io = super::PreparationIo::from_native_work(work)?;
-    {
-        let mut history = io.history_io();
-        verifier.verify_scope_for_with_work(parent.authority(), signed, &mut Some(&mut history))?;
-    }
-    for volume in [&source.project, &source.private_volume] {
-        if !io.contains_capability(context.scope().grants(), volume, "volume:read:")? {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native caller lacks selected source read authority" });
-        }
-        crate::conversation::ContentGrant::verify_original_volume_with_io(
-            verifier, signed, volume, VolumeOperation::Read, &io)?;
-    }
-    let request = recursive_fork_request_with_native_work(&parent, RecursiveForkSourceView {
-        caller: source.task, scope: signed, project: &source.project,
-        project_generation: &source.project_generation, private_volume: &source.private_volume,
-        private_generation: &source.private_generation,
-    }, RecursiveForkAllocationView { child: &config.child, project: &config.child_project,
-        private_volume: &config.child_private, result_volume: config.child_result_volume.as_ref(),
-        limits: config.limits, inherited_messages: config.inherited_messages,
-        inherited_bytes: config.inherited_bytes, inherited_references: config.inherited_references,
-    }, stream_provider, operation, arguments, source_read, work)?;
-    restore_recursive_fork_source_with_native_work(filesystem, stream, parent, verifier, signed,
-        &source.project, stream_provider, request, config.history_limits, source_read,
-        resolver, cancellation, work).await
-}
 
 /// Rebinds one supported original request to its exact authenticated parent checkpoint.
 #[allow(clippy::too_many_arguments, reason = "original owner/provider/source identities stay explicit")]
@@ -636,8 +582,6 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 pub struct ForkPreparationMachine {
     identity: MachineIdentity,
     schema: Value,
-    #[cfg(not(target_arch = "wasm32"))]
-    _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -698,30 +642,7 @@ impl ForkPreparationMachine {
             identity: MachineIdentity { name: "acyclic.fork_preparation".into(), version: "1".into(),
                 digest: preparation_implementation_digest(None).expect("static preparation implementation") },
             schema: serde_json::from_slice(PREPARATION_STATE_SCHEMA).expect("static preparation state schema"),
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody: None,
         }
-    }
-
-    /// Constructs the genuine machine on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let mut metadata;
-        let mut custody;
-        let bytes = std::mem::size_of::<Self>() as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
-        let identity = MachineIdentity {
-            name: crate::filesystem::fork_preparer_io::clone_text("acyclic.fork_preparation", Some(&io))?,
-            version: crate::filesystem::fork_preparer_io::clone_text("1", Some(&io))?,
-            digest: preparation_implementation_digest(Some(&io))?,
-        };
-        let schema;
-        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
-        metadata = io.take_native_custody(io.owned_bytes()?)?;
-        custody.absorb(&mut metadata).map_err(Error::from)?;
-        Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
     }
 
     /// The exact request is ordinary task input, not an out-of-band authority bag.
