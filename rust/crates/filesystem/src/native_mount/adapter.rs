@@ -13229,9 +13229,9 @@ fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
             | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Cancelled(_)) => MountSourceError::Cancelled,
+        crate::CaptureError::Kernel(crate::FsError::SourceSnapshotStale) => MountSourceError::Stale,
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
-        crate::CaptureError::Cancelled => MountSourceError::Cancelled,
-        crate::CaptureError::StaleVersion => MountSourceError::Stale,
         error => engine_error(error),
     }
 }
