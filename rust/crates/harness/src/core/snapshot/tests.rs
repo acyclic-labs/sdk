@@ -13,9 +13,9 @@ fn recomputing_public_digest_cannot_authenticate_forged_projection() -> Result<(
     let original = reducer.snapshot(usize::MAX, &mut None)?.0;
     let mut forged = original.copy(&mut None)?; forged.projection.lifecycle = LifecycleState::Completed;
     forged.state_digest = forged.digest_with_work(&mut None)?;
-    assert!(matches!(Reducer::restore(forged, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()), Err(Error::Unauthorized(_))));
+    assert!(matches!(Reducer::restore(forged, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None), Err(Error::Unauthorized(_))));
     let mut cache = original; cache.revision = 50; cache.state_digest = cache.digest_with_work(&mut None)?;
-    assert!(matches!(Reducer::restore(cache, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()), Err(Error::Unauthorized(_))));
+    assert!(matches!(Reducer::restore(cache, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None), Err(Error::Unauthorized(_))));
     Ok(())
 }
 
@@ -27,10 +27,10 @@ fn checkpoint_proof_binds_issuer_key_identity_audience_and_format() -> Result<()
         AuthorityIssuer::new("other-owner", [23; 32], reducer.authority),
         AuthorityIssuer::new("checkpoint-owner", [23; 32], Authority { kind: AggregateKind::Agent, id: "other-agent".into() })] {
         assert!(matches!(Reducer::restore(snapshot.copy(&mut None)?, other.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new()), Err(Error::Unauthorized(_))));
+            SchemaRegistry::new(), &mut None), Err(Error::Unauthorized(_))));
     }
     let mut old = snapshot; old.format_version = 2;
-    assert!(matches!(Reducer::restore(old, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()), Err(Error::Unsupported(_))));
+    assert!(matches!(Reducer::restore(old, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None), Err(Error::Unsupported(_))));
     Ok(())
 }
 
@@ -41,7 +41,7 @@ fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Resul
         [], Some(json!({"type":"object"})))?;
     let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
     assert!(matches!(Reducer::restore(snapshot.copy(&mut None)?, owner.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new()), Err(Error::Unsupported(_))));
+        SchemaRegistry::new(), &mut None), Err(Error::Unsupported(_))));
     for edit in 0..5 {
         let mut changed = reducer.schemas.clone();
         let binding = Arc::make_mut(changed.schemas.as_mut().expect("fixture registry"))
@@ -53,11 +53,11 @@ fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Resul
             3 => { binding.dependencies.insert(ExtensionDependency { name: "example.dependency".into(), version: 1 }); }
             _ => binding.configuration_schema = Some(json!({"type":"string"})),
         }
-        assert!(matches!(Reducer::restore(snapshot.copy(&mut None)?, owner.verifier(&mut None).expect("verifier copy"), changed), Err(Error::Conflict(_))));
+        assert!(matches!(Reducer::restore(snapshot.copy(&mut None)?, owner.verifier(&mut None).expect("verifier copy"), changed, &mut None), Err(Error::Conflict(_))));
     }
     let mut expanded = reducer.schemas.clone();
     expanded.register("example.additional", 1, json!({"type":"string"}), [9; 32], ExtensionForkPolicy::Reset, [], None)?;
-    let restored = Reducer::restore(snapshot, owner.verifier(&mut None).expect("verifier copy"), expanded.clone())?;
+    let restored = Reducer::restore(snapshot, owner.verifier(&mut None).expect("verifier copy"), expanded.clone(), &mut None)?;
     reducer.schemas = expanded;
     assert_eq!(restored, reducer);
     Ok(())
@@ -92,7 +92,10 @@ fn native_original_cold_decoder_preserves_digest_and_issuer_mac_rejection() -> R
         let mut io = crate::store::history::native_work_io(&source).expect("decoder observer");
         let decoded = Snapshot::decode(&bytes, 4_194_304, &mut Some(&mut io))?;
         drop(io);
-        let result = Reducer::restore_native(decoded, owner.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &source);
+        let mut io = crate::store::history::native_work_io(&source).map_err(Error::from)?;
+        let verifier = owner.verifier(&mut Some(&mut io))?;
+        let result = Reducer::restore(decoded, verifier, SchemaRegistry::new(), &mut Some(&mut io));
+        drop(io);
         if kind == 2 { assert!(matches!(result, Err(Error::Invalid(_)))); }
         else { assert!(matches!(result, Err(Error::Unauthorized(_)))); }
         source.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())

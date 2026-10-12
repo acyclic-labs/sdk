@@ -1,5 +1,11 @@
 //! seed fork protocol.
 use super::*;
+pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
+    crate::core::copy_owned(source, quota, |source, work| {
+        source.validate(work)?;
+        crate::core::owned_seed(source)
+    })
+}
 /// Immutable, validated child environment published by the parent aggregate.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

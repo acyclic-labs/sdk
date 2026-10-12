@@ -29,7 +29,10 @@ use super::*;
         drop(io);
         let copy_receipt = copy.receipt();
         let metadata = NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new()).expect("restore metadata ledger");
-        let mut restored = Reducer::restore_native(input, issuer.verifier(&mut None)?, reducer.schemas.clone(), &metadata)?;
+        let mut io = crate::store::history::native_work_io(&metadata).map_err(Error::from)?;
+        let verifier = issuer.verifier(&mut Some(&mut io))?;
+        let mut restored = Reducer::restore(input, verifier, reducer.schemas.clone(), &mut Some(&mut io))?;
+        drop(io);
         restored.set_resident_event_limit(maximum_events)?;
         assert_eq!(&restored, reducer);
         assert_eq!(copy.receipt(), copy_receipt);
@@ -198,7 +201,7 @@ use super::*;
     }
 
     pub(in crate::core) fn command(operation_id: OperationId, expected_revision: u64, action: Action) -> Command {
-        let capabilities = Capabilities::new([
+        let mut capabilities: Vec<String> = [
             "event:append",
             "lifecycle:manage",
             "effect:run",
@@ -210,8 +213,7 @@ use super::*;
             "conversation:bind",
             "conversation:append",
             "conversation:select_context",
-        ]);
-        let mut capabilities: Vec<String> = capabilities.iter().map(str::to_owned).collect();
+        ].into_iter().map(str::to_owned).collect();
         if let Action::PublishFork { seed } = &action {
             for resource in &seed.resources {
                 if let crate::fork::ResourceRevision::PrivateVolume { volume, .. }
@@ -226,11 +228,8 @@ use super::*;
             }
         }
         let capabilities = Capabilities::new(capabilities);
-        let scope = if matches!(&action, Action::PublishFork { .. }) {
-            issuer().issue("root", &capabilities, Some(crate::AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof")
-        } else {
-            issuer().issue("root", &capabilities, None, None, &mut None).expect("scope proof")
-        };
+        let agent = matches!(&action, Action::PublishFork { .. }).then_some(crate::AgentId::from_bytes([1; 16]));
+        let scope = issuer().issue("root", &capabilities, agent, None, &mut None).expect("scope proof");
         Command {
             operation_id,
             idempotency_key: IdempotencyKey(format!("key-{operation_id}")),

@@ -172,7 +172,26 @@ impl ForkRequest {
     }
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copy_request(self, quota))
+        CodecQuota::produce(work, |quota| crate::core::copy_owned(self, quota, |source, work| {
+            source.validate(work)?;
+            source.logical_owned_bytes()
+        }))
     }
-
+    pub(in crate::fork) fn logical_owned_bytes(&self) -> Result<u64> {
+        use crate::core::{owned_buffer, owned_sum, owned_vector, owned_revision};
+        let preparation = &self.preparation;
+        owned_sum([
+            self.parent.id.capacity() as u64, self.child.id.capacity() as u64,
+            self.authorized_source.as_ref().map(|source| source.logical_owned_bytes()).transpose()?.unwrap_or(0),
+            owned_buffer::<AgentId>(self.attached_agents.capacity())?,
+            owned_vector(&self.selections, |selection| owned_revision(&selection.revision))?,
+            preparation.child_project_volume.logical_owned_bytes()?,
+            preparation.child_private_volume.logical_owned_bytes()?,
+            preparation.child_result_volume.as_ref().map(VolumeRef::logical_owned_bytes).transpose()?.unwrap_or(0),
+            preparation.summary.as_ref().map(|summary| summary.checkpoint.logical_owned_bytes()).transpose()?.unwrap_or(0),
+            self.boundary.as_ref().map(|boundary| owned_sum([
+                boundary.provider.logical_owned_bytes()?, boundary.evidence.capacity() as u64,
+            ])).transpose()?.unwrap_or(0),
+        ])
+    }
 }

@@ -105,68 +105,50 @@ impl Reducer {
             (authority.id.capacity() as u64).checked_add(verifier.logical_owned_bytes()?)
                 .ok_or_else(|| Error::Invalid("effect metadata custody overflows".into()))?
         } else { 0 };
-        let mut retained = 0_u64;
+        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, metadata_owned);
         let mut projection = Self::new(authority, verifier, SchemaRegistry::default());
         let mut previous = 0;
-        let result = (|| {
         for event in events {
             if event.revision <= previous || event_effect_id(&event.payload) != Some(effect_id) {
                 return Err(Error::Storage(
                     "effect projection has invalid identity or order".into(),
                 ));
             }
-            projection.authority_verifier.verify_event(event, work)?;
+            projection.authority_verifier.verify_event(event, quota.work())?;
             projection.authorize(
                 (&event.scope.id, &event.scope.capabilities),
                 event.scope.agent(),
                 event.operation_id,
                 event.payload.admission(),
                 None,
-                work,
+                quota.work(),
             )?;
             validate_causal_parent_with_work(
                 &projection.authority,
                 event.revision - 1,
-                event.causal_parent.as_ref(), work,
+                event.causal_parent.as_ref(), quota.work(),
             )?;
-            if let Some(work) = work.as_deref_mut().filter(|io| !copying::is_native(&**io)) {
+            if quota.work().as_deref().is_some_and(|io| !copying::is_native(io)) {
                 let owned = inventory::source_inventory(event)?;
-                let next_retained = retained.checked_add(owned)
+                let next_retained = quota.retained().checked_add(owned)
                     .ok_or_else(|| Error::Invalid("effect projected custody overflows".into()))?;
-                work.admit_owned(owned)?;
-                work.retain_owned(owned)?;
-                retained = next_retained;
+                quota.replace(next_retained)?;
             }
-            projection.apply_payload_with_work(&event.payload, event.revision, work)?;
+            projection.apply_payload_with_work(&event.payload, event.revision, quota.work())?;
             previous = event.revision;
         }
         let effect = projection.effects.remove(&effect_id)
             .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            retained = projection.native_custody.transfer_effect(effect_id, io)?;
+        if let Some(io) = quota.work().as_deref_mut().filter(|io| io.original_native_work().is_some()) {
+            let retained = projection.native_custody.transfer_effect(effect_id, io)?;
+            quota.adopt(retained)?;
         }
-        Ok(effect)
-        })();
         drop(projection);
-        let released_metadata = match work.as_deref_mut() {
-            Some(work) => work.release_owned(metadata_owned),
-            None => Ok(()),
-        };
-        match result {
-            Err(error) => {
-                if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
-                Err(error)
-            }
-            Ok(effect) => match released_metadata {
-                Ok(()) => Ok((effect, retained)),
-                Err(error) => {
-                    drop(effect);
-                    if let Some(work) = work.as_deref_mut() { let _ = work.release_owned(retained); }
-                    Err(error)
-                }
-            },
-        }
+        quota.relinquish(metadata_owned)?;
+        let retained = quota.retained();
+        quota.transfer();
+        Ok((effect, retained))
     }
 
     /// Returns the current resident effect status.
@@ -176,4 +158,3 @@ impl Reducer {
     }
 
 }
-

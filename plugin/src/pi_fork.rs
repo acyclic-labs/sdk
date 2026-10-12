@@ -714,17 +714,16 @@ impl PiForkCoordinator {
             })?, work,
         ).await?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let snapshot = Snapshot::decode_with_native_work(checkpoint.as_ref(), plan.request.maximum_bytes, work)?;
+        let mut restore_io = acyclic_harness::store::history::native_work_io(work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let snapshot = Snapshot::decode(checkpoint.as_ref(), plan.request.maximum_bytes, &mut Some(&mut restore_io))?;
         if snapshot.authority != request.0.parent || snapshot.revision != request.0.parent_revision {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi original checkpoint differs from its canonical parent revision" });
         }
-        let verifier = {
-            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-            let value = authority.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
-        };
-        let reducer = Reducer::restore_native(snapshot, verifier.0, SchemaRegistry::new(), work)?;
+        let verifier = authority.0.1.verifier(&mut Some(&mut restore_io))?;
+        let reducer = Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut Some(&mut restore_io))?;
+        drop(restore_io);
         let source_read = match &request.0.authorized_source {
             Some(authorization) => Some(owner.restore_project_source_authorization_with_native_work(
                 context, authorization, work)?.await?),

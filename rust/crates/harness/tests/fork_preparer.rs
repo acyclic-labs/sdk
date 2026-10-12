@@ -236,7 +236,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let restored_parent = Reducer::restore(
         aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
+        SchemaRegistry::new(), &mut None,
     )?;
     assert!(matches!(
         restored_parent.events_after(0, 2),

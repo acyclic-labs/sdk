@@ -43,7 +43,7 @@ fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
     assert_eq!(reducer.interaction(&ticket.id).and_then(|(_, outcome)| outcome.as_ref()), Some(&resolution));
     assert!(matches!(reducer.plan(&resolve(22, 4, resolution)), Err(Error::Conflict(_))));
     let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0,
-        issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
+        issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut None)?;
     assert!(restored.interaction(&ticket.id).and_then(|(_, outcome)| outcome.as_ref()).is_some());
     Ok(())
 }
@@ -78,7 +78,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
     assert!(matches!(reducer.plan(&command(operation(4), 3, Action::SelectModelContext {
         selection: ModelContextSelection { conversation_revision: 0, ..selection.clone() },
     })), Err(Error::Conflict(_))));
-    let mut canonical = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier.clone(), schemas())?;
+    let mut canonical = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier.clone(), schemas(), &mut None)?;
     assert_eq!(canonical.conversation(), reducer.conversation());
     assert_eq!(canonical.resident_context_selections().collect::<Vec<_>>(), reducer.resident_context_selections().collect::<Vec<_>>());
     reducer.set_resident_event_limit(1)?;
@@ -91,7 +91,7 @@ fn conversation_binding_and_messages_replay_through_snapshot() -> Result<()> {
     }
     assert!(reducer.context_selection_for_operation(operation(3)).is_none());
     assert_eq!(reducer.context_selection_for_operation(operation(68)), Some(&selection));
-    let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier, schemas())?;
+    let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, verifier, schemas(), &mut None)?;
     assert_eq!(restored.resident_context_selections().count(), 1);
     assert_eq!(restored.context_selection_for_operation(operation(68)), Some(&selection));
     Ok(())

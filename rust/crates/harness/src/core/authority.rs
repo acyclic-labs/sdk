@@ -62,29 +62,26 @@ impl Authority {
             AggregateKind::Turn => "turns",
             AggregateKind::Task => "tasks",
         };
+        let bytes = "harness/v2/".len().checked_add(segment.len())
+            .and_then(|bytes| bytes.checked_add(1))
+            .and_then(|bytes| bytes.checked_add(self.id.len()))
+            .ok_or_else(|| Error::Invalid("aggregate path length overflows".into()))?;
+        let mut path = String::new();
         if let Some(work) = work.as_deref_mut() {
-            let bytes = "harness/v2/".len().checked_add(segment.len())
-                .and_then(|bytes| bytes.checked_add(1))
-                .and_then(|bytes| bytes.checked_add(self.id.len()))
-                .ok_or_else(|| Error::Invalid("aggregate path length overflows".into()))?;
-            let mut path = String::new();
             work.reserve_text(&mut path, bytes)?;
             work.copy_bytes(bytes as u64)?;
-            path.push_str("harness/v2/");
-            path.push_str(segment);
-            path.push('/');
-            path.push_str(&self.id);
-            Ok(path)
         } else {
-            Ok(format!("harness/v2/{segment}/{}", self.id))
+            path.reserve(bytes);
         }
+        path.push_str("harness/v2/");
+        path.push_str(segment);
+        path.push('/');
+        path.push_str(&self.id);
+        Ok(path)
     }
 }
 
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
-    #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
-
 /// Immutable authorization scope captured at admission.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,10 +91,12 @@ pub struct Scope {
     /// Effective capabilities after policy intersection.
     pub(in crate::core) capabilities: Capabilities,
     /// Host-attested agent on whose behalf this operation runs, if any.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub(in crate::core) agent: Option<AgentId>,
     /// Trusted issuer identity.
     pub(in crate::core) issuer: String,
     /// Parent proof, present for attenuated scopes.
+    #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     pub(in crate::core) parent_proof: Option<[u8; 32]>,
     /// Keyed proof over the complete grant.
     pub(in crate::core) proof: [u8; 32],
@@ -513,21 +512,17 @@ impl AuthorityVerifier {
     }
 }
 
-pub(in crate::core) fn scope_proof(
+fn scope_proof(
     key: &[u8; 32], audience: &Authority, scope: &Scope,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let Scope { id, capabilities, issuer, agent, parent_proof, .. } = scope;
+    let strings = || [audience.id.as_str(), issuer.as_str(), id.as_str()]
+        .into_iter().chain(capabilities.iter());
     if let Some(work) = work.as_deref_mut() {
-        let fixed = 1_u64.checked_add(8)
-            .and_then(|bytes| bytes.checked_add(audience.id.len() as u64))
-            .and_then(|bytes| bytes.checked_add(8 + issuer.len() as u64))
-            .and_then(|bytes| bytes.checked_add(8 + id.len() as u64))
-            .and_then(|bytes| bytes.checked_add(1 + u64::from(agent.is_some()) * 16))
-            .and_then(|bytes| bytes.checked_add(1 + u64::from(parent_proof.is_some()) * 32))
-            .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))?;
-        let bytes = capabilities.iter().try_fold(fixed, |total, capability| {
-            total.checked_add(8 + capability.len() as u64)
+        let fixed = 3 + u64::from(agent.is_some()) * 16 + u64::from(parent_proof.is_some()) * 32;
+        let bytes = strings().try_fold(fixed, |total, text| {
+            total.checked_add(8).and_then(|total| total.checked_add(text.len() as u64))
                 .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
         })?;
         work.hashed_bytes(bytes)?;
@@ -540,38 +535,18 @@ pub(in crate::core) fn scope_proof(
         AggregateKind::Turn => 4,
         AggregateKind::Task => 5,
     }]);
-    hasher.update(&(audience.id.len() as u64).to_le_bytes());
-    hasher.update(audience.id.as_bytes());
-    for value in [issuer, id] {
+    for value in strings() {
         hasher.update(&(value.len() as u64).to_le_bytes());
         hasher.update(value.as_bytes());
     }
-    for capability in capabilities.iter() {
-        hasher.update(&(capability.len() as u64).to_le_bytes());
-        hasher.update(capability.as_bytes());
-    }
-    match agent {
-        Some(agent) => {
-            hasher.update(&[1]);
-            hasher.update(&agent.into_bytes());
-        }
-        None => {
-            hasher.update(&[0]);
-        }
-    }
-    match parent_proof {
-        Some(parent) => {
-            hasher.update(&[1]);
-            hasher.update(parent);
-        }
-        None => {
-            hasher.update(&[0]);
-        }
-    }
+    hasher.update(&[u8::from(agent.is_some())]);
+    if let Some(agent) = agent { hasher.update(&agent.into_bytes()); }
+    hasher.update(&[u8::from(parent_proof.is_some())]);
+    if let Some(parent) = parent_proof { hasher.update(parent); }
     Ok(*hasher.finalize().as_bytes())
 }
 
-pub(in crate::core) fn effect_attestation_proof(
+fn effect_attestation_proof(
     key: &[u8; 32], audience: &Authority, observation: &EffectAttestation,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {

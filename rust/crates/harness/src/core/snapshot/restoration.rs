@@ -2,20 +2,7 @@
 use super::*;
 impl Reducer {
     /// Restores authenticated state without replaying transitions.
-    pub fn restore(snapshot: Snapshot, verifier: AuthorityVerifier, schemas: SchemaRegistry) -> Result<Self> {
-        Self::restore_with_work(snapshot, verifier, schemas, &mut None)
-    }
-    /// Restores under the supplied native metadata ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn restore_native(snapshot: Snapshot, verifier: AuthorityVerifier, schemas: SchemaRegistry,
-        native: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        let mut io = crate::store::history::native_work_io(native).map_err(Error::from)?;
-        let bytes = verifier.logical_owned_bytes()?;
-        io.admit_owned(bytes)?;
-        io.retain_owned(bytes)?;
-        Self::restore_with_work(snapshot, verifier, schemas, &mut Some(&mut io))
-    }
-    pub(crate) fn restore_with_work(mut snapshot: Snapshot, authority_verifier: AuthorityVerifier,
+    pub fn restore(mut snapshot: Snapshot, authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         snapshot.require_work(work)?;
         snapshot.verify(&authority_verifier, &schemas, work)?;

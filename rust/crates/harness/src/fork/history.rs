@@ -44,29 +44,18 @@ impl InheritedConversationPrefix {
                 "too many attached agents for inherited context".into(),
             ));
         }
-        let mut readers = BTreeSet::new();
-        for reader in attached_agents {
+        for (index, reader) in attached_agents.iter().enumerate() {
             owned.checkpoint()?;
-            if !readers.contains(reader) {
-                owned.slots::<AgentId>(1)?;
-                readers.insert(*reader);
+            for prior in &attached_agents[..index] {
+                owned.checkpoint()?;
+                if prior == reader {
+                    return Err(owned.invalid("inherited attached agents are invalid"));
+                }
             }
         }
-        if readers.len() != attached_agents.len() {
-            return Err(Error::Invalid(
-                "inherited attached agents are invalid".into(),
-            ));
-        }
         let message_digest = conversation.history_prefix_digest(through_sequence, &mut None)?;
-        let attached_bytes = attached_agents.len() as u64 * std::mem::size_of::<AgentId>() as u64;
-        if !attached_agents.is_empty() && let Some(observer) = owned.work().as_deref_mut() {
-            observer.admit_allocation(attached_bytes)?;
-            observer.copy_bytes(attached_bytes)?;
-        }
-        let attached_agents = attached_agents.to_vec();
-        if let Some(observer) = owned.work().as_deref_mut() {
-            observer.retain_owned(attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
-        }
+        let attached_agents = crate::core::copy_copy_vector(attached_agents, &mut owned)?;
+        owned.transfer();
         Ok(Self {
             format_version: 3,
             parent,

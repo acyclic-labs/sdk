@@ -171,22 +171,15 @@ pub fn new(
             return Ok(((receipt.target_project.storage_name(work)?,
                 receipt.provider_operation_id.clone()), 0));
         }
-        let digest = crate::contract::canonical_json_digest_with_work(
+        crate::contract::validate_trusted_json_byte_bound(
             &receipt.target_project, acyclic_stream::MAX_RECORD_BYTES as u64, work,
         )?;
-        let hex = blake3::Hash::from_bytes(digest).to_hex();
-        let mut name = String::new();
-        let mut operation = Vec::new();
-        let io = work.as_deref_mut().expect("native merge observer");
-        io.reserve_text(&mut name, "harness-".len() + hex.len())?;
-        io.copy_bytes(("harness-".len() + hex.len()) as u64)?;
-        name.push_str("harness-");
-        name.push_str(hex.as_str());
-        io.reserve_bytes(&mut operation, receipt.provider_operation_id.len())?;
-        io.copy_bytes(receipt.provider_operation_id.len() as u64)?;
-        operation.extend_from_slice(&receipt.provider_operation_id);
-        let owned = (name.capacity() as u64).checked_add(operation.capacity() as u64)
-            .ok_or_else(|| Error::Invalid("merge key custody overflows".into()))?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let name = receipt.target_project.storage_name(quota.work())?;
+        quota.adopt(name.capacity() as u64)?;
+        let operation = copying::copy_copy_vector(&receipt.provider_operation_id, &mut quota)?;
+        let owned = quota.retained();
+        quota.transfer();
         Ok(((name, operation), owned))
     }
 

@@ -717,7 +717,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "snapshot authority does not match requested aggregate".into(),
                 ));
             }
-            Reducer::restore_with_work(snapshot, authority_verifier, schemas, work)?
+            Reducer::restore(snapshot, authority_verifier, schemas, work)?
         } else {
             Reducer::new(authority, authority_verifier, schemas)
         };

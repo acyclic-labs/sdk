@@ -140,7 +140,10 @@ impl ResourceRevision {
     }
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        crate::wire_codec::CodecQuota::produce(work, |quota| copy_revision(self, quota))
+        CodecQuota::produce(work, |quota| crate::core::copy_owned(self, quota, |source, work| {
+            source.validate(work)?;
+            crate::core::owned_revision(source)
+        }))
     }
 
 }

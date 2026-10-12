@@ -66,7 +66,7 @@ impl ExtensionRecord {
     }
 }
 
-pub(in crate::core) fn extension_name_valid(name: &str) -> bool {
+fn extension_name_valid(name: &str) -> bool {
     name.contains('.')
         && !name.starts_with("acyclic.")
         && !name.split('.').any(str::is_empty)
@@ -181,24 +181,15 @@ impl ExtensionAdmission {
 
     pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if work.is_none() { return Ok(self.clone()); }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let cloned = self.copy_with_quota(&mut quota)?;
-        quota.transfer();
-        Ok(cloned)
-    }
-
-    pub(crate) fn copy_with_quota(
-        &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Self> {
-        if quota.work().is_none() { return Ok(self.clone()); }
-        let source = copying::copy_reference(&self.source, quota)?;
-        let selected = copying::copy_vector(
-            &self.selected, quota, copying::copy_dependency)?;
-        let configurations = copying::copy_vector(
-            &self.configurations, quota, copying::copy_configuration)?;
-        Ok(Self { source, selected, configurations })
+    ) -> Result<(Self, u64)> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            if quota.work().is_none() { return Ok(self.clone()); }
+            Ok(Self {
+                source: copying::copy_reference(&self.source, quota)?,
+                selected: copying::copy_vector(&self.selected, quota, copying::copy_dependency)?,
+                configurations: copying::copy_vector(&self.configurations, quota, copying::copy_configuration)?,
+            })
+        })
     }
 
     /// Exact committed selection event that supplied these bindings.

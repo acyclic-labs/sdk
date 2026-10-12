@@ -75,10 +75,7 @@ pub(crate) fn resource_preparation_owned_bytes(
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         return Ok(bytes);
     }
-    let slot = CloneInventory::SLOT
-        .max(std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
-        .max(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>() as u64);
-    let mut inventory = CloneInventory { bytes: Some(0), slot_bytes: Some(slot), ..Default::default() };
+    let mut inventory = CloneInventory { bytes: Some(0), ..Default::default() };
     request.serialize(&mut inventory).map_err(|_| crate::fork::boundary_error(
         work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?;
     if let Some(observer) = work.as_deref_mut() {
@@ -89,23 +86,18 @@ pub(crate) fn resource_preparation_owned_bytes(
         work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))
 }
 
-/// Copies the concrete proof fields physically; the caller owns its Vec shell.
-pub(crate) fn resource_creation_proof_clone_with_custody(
-    proof: &crate::resource_preparation::ResourceCreationProofRef,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(crate::resource_preparation::ResourceCreationProofRef, u64)> {
-    if work.is_none() { return Ok((proof.clone(), 0)); }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
-    let provider = super::copy_provider(&proof.provider, &mut quota)?;
-    let resource = super::copy_resource(&proof.resource, &mut quota)?;
-    let evidence = super::copy_resource(&proof.evidence, &mut quota)?;
-    let copied = crate::resource_preparation::ResourceCreationProofRef {
-        provider, preparation: proof.preparation, resource, evidence,
-    };
-    let retained = quota.retained();
-    quota.transfer();
-    Ok((copied, retained))
+impl crate::resource_preparation::ResourceCreationProofRef {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+        if work.is_none() { return Ok((self.clone(), 0)); }
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
+            Ok(Self {
+                provider: super::copy_provider(&self.provider, quota)?, preparation: self.preparation,
+                resource: super::copy_resource(&self.resource, quota)?,
+                evidence: super::copy_resource(&self.evidence, quota)?,
+            })
+        })
+    }
 }
 
 #[cfg(feature = "filesystem")]
@@ -124,4 +116,3 @@ pub(crate) fn resource_creation_clone_reservation(
     if let Some(work) = work.as_deref_mut() { work.retain_owned(bytes)?; }
     Ok(bytes)
 }
-

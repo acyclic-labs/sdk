@@ -108,19 +108,6 @@ pub(crate) async fn release_fork_guard_with_work(
     release_frame(result, bytes, work)
 }
 
-macro_rules! fork_provider_dispatcher {
-    ($name:ident, $operation:ident, $input:ident : $input_type:ty, $output:ty $(, $context:ident : $context_type:ty)?) => {
-        pub(in crate::fork) async fn $name(verifier: &dyn ForkSeedVerifier, $($context: &$context_type,)?
-            $input: &$input_type, work: &mut Option<&mut dyn HistoryIo>) -> Result<$output> {
-            let future = verifier.$operation($($context,)? $input, work)?;
-            let bytes = frame_bytes(&future);
-            let result = future.await;
-            release_frame(result, bytes, work)
-        }
-    };
-}
-pub(in crate::fork) use fork_provider_dispatcher;
-
 pub(crate) struct ObservedForkPublicationGuard {
     pub(crate) guard: Box<dyn ForkPublicationGuard>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -145,12 +132,6 @@ pub(in crate::fork) async fn acquire_fork_fence(verifier: &dyn ForkSeedVerifier,
     }
     Ok(guard)
 }
-
-fork_provider_dispatcher!(verify_fork_provider_with_work, verify, seed: ForkSeed, ());
-
-fork_provider_dispatcher!(verify_fork_file_with_work, verify_file, file: FileRef, (), seed: ForkSeed);
-
-fork_provider_dispatcher!(verify_fork_boundary_with_work, verify_boundary, boundary: AttestedBoundary, ());
 
 pub(in crate::fork) async fn read_fork_manifest(verifier: &dyn ForkSeedVerifier, seed: &ForkSeed,
     manifest: &FileRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<(acyclic_stream::OwnedBytes, u64)> {

@@ -19,7 +19,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(())
     }
 
-    pub(super) fn retain(&mut self, bytes: u64) -> Result<()> {
+    pub(crate) fn retain(&mut self, bytes: u64) -> Result<()> {
         if self.work().is_none() { return Ok(()); }
         let retained = self.retained().checked_add(bytes)
             .ok_or_else(|| self.invalid("fork validation storage overflows"))?;

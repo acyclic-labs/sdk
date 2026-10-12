@@ -122,7 +122,7 @@ pub(in crate::core) fn effect_request_digest_with_work(
     )
 }
 
-pub(in crate::core) fn validate_effect_result(status: &EffectStatus) -> Result<()> {
+fn validate_effect_result(status: &EffectStatus) -> Result<()> {
     if let EffectStatus::Succeeded { result } = status {
         result.validate(&mut None)?;
         if result.descriptor().media_type() != "application/json" {

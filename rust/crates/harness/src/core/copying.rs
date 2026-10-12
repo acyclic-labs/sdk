@@ -1,6 +1,5 @@
 //! Funded copies of main reducer records.
 use super::*;
-use crate::fork::copy_seed;
 /// Copies text into the supplied quota.
 pub(crate) fn copy_text(
     source: &str, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,

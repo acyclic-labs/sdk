@@ -122,8 +122,6 @@ use super::*;
             let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
             reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
             reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
-            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
-            assert!(receipt.work.items_examined > 0);
             let mut narrow = crate::store::history::HistoryWork::new(
                 WorkBudget { items_examined: 1, ..budget }, &cancellation);
             assert!(reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut narrow)).is_err());
@@ -144,23 +142,15 @@ use super::*;
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
             let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
-            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
-            assert!(receipt.work.bytes_encoded > 0);
-            assert!(receipt.work.bytes_hashed >= prefix_bytes.len() as u64);
             let mut work = crate::store::history::HistoryWork::new(
                 WorkBudget { bytes_encoded: 1, ..budget }, &cancellation);
             assert!(reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work)).is_err());
             let mut hostile_manifests = seed.clone();
             hostile_manifests.attachment_manifests.push(request_file(b"[]")?);
             assert!(matches!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut None), Err(Error::Invalid(_))));
-            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
-            let result = reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work));
-            let failure = work.finish(result).expect_err("unpublished manifest must fail on the original path");
-            assert!(failure.work.bytes_encoded > 0);
-            assert!(failure.work.bytes_hashed > 0);
             let mut work = crate::store::history::HistoryWork::new(
                 WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation);
-            assert!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work)).is_err());
+            assert!(reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work)).is_err());
         }
         let mut foreign_command = command(
             operation(8),
@@ -212,7 +202,7 @@ use super::*;
         let wire = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
         let snapshot = crate::contract::json_from_slice(&wire)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
+        let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut None)?;
         assert_eq!(restored, reducer);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;

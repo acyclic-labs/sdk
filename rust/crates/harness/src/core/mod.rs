@@ -38,14 +38,12 @@ mod ownership;
 use native_custody::NativeComponentCustody;
 use native_key::NativeComponentKey;
 pub(in crate::core) use crate::fork::copy_seed;
-pub(in crate::core) use reducer::copy_reducer;
 pub use snapshot::Snapshot;
 pub(crate) use inventory::{
     source_inventory,
     source_metadata_inspection_with_work,
 };
 pub(crate) use resource_metadata::{
-    resource_creation_proof_clone_with_custody,
     resource_preparation_owned_bytes,
 };
 #[cfg(feature = "filesystem")]
@@ -73,9 +71,7 @@ pub use registry::{SchemaRegistry};
 
 pub use reducer::{Reducer};
 pub(crate) use effects::{settled_effect, event_effect_id};
-pub(in crate::core) use effects::{ effect_request_digest_with_work, validate_effect_result, validate_effect_dispatch, validate_effect_observation};
+pub(in crate::core) use effects::{effect_request_digest_with_work, validate_effect_dispatch, validate_effect_observation};
 pub(crate) use extension_types::validate_extension_name;
-pub(in crate::core) use extension_types::extension_name_valid;
 pub(in crate::core) use registry::{ExtensionBinding};
 pub(in crate::core) use records::{Subject, validate_interaction_transition, validate_interaction_operation, require_capability, validate_causal_parent_with_work, validate_lifecycle};
-pub(in crate::core) use authority::{scope_proof, effect_attestation_proof};

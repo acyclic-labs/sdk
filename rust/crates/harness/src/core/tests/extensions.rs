@@ -66,7 +66,7 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
     assert_eq!(reducer.extension_admission()?, Some(admitted));
     let wire = crate::contract::canonical_json_bytes(&snapshot)?;
     let restored = Reducer::restore(crate::contract::json_from_slice(&wire)
-        .map_err(|error| Error::Invalid(error.to_string()))?, owner.verifier(&mut None).expect("verifier copy"), registry)?;
+        .map_err(|error| Error::Invalid(error.to_string()))?, owner.verifier(&mut None).expect("verifier copy"), registry, &mut None)?;
     assert_eq!(restored.active_configurations(), reducer.active_configurations());
     assert_eq!(restored.extension_admission()?, reducer.extension_admission()?);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -123,7 +123,7 @@ fn agent_extension_selection_replays_and_does_not_retarget_old_events() -> Resul
     assert!(matches!(reducer.apply(select.clone())?, ApplyResult::Applied { .. }));
     assert_eq!(reducer.active_extensions(), &[base, feature]);
     let mut restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0,
-        owner.verifier(&mut None).expect("verifier copy"), registry)?;
+        owner.verifier(&mut None).expect("verifier copy"), registry, &mut None)?;
     assert_eq!(restored.active_extensions(), reducer.active_extensions());
     assert!(matches!(restored.apply(select.clone())?, ApplyResult::Replayed { .. }));
     restored.apply(agent_command(&owner, 62, 1, Action::SelectExtensions { roots: Vec::new() }))?;
@@ -164,7 +164,7 @@ fn extension_state_version_change_requires_exact_migration_event() -> Result<()>
     reducer.apply_committed(event, &mut None)?;
     assert!(matches!(reducer.apply(migrate)?, ApplyResult::Replayed { .. }));
     assert_eq!(reducer.extension_state("example.message").map(|(_, state)| state.version), Some(2));
-    let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, owner.verifier(&mut None).expect("verifier copy"), registry)?;
+    let restored = Reducer::restore(reducer.snapshot(usize::MAX, &mut None)?.0, owner.verifier(&mut None).expect("verifier copy"), registry, &mut None)?;
     assert_eq!(restored.extension_state("example.message"), reducer.extension_state("example.message"));
     assert_eq!(restored.events_after(0, 10)?.len(), 2);
     Ok(())

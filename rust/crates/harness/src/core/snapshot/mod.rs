@@ -68,13 +68,11 @@ impl Snapshot {
     }
     fn verify(&self, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
         work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        let bytes = ownership::owned_buffer::<OperationId>(self.events.len())?;
-        let mut scratch = crate::wire_codec::CodecQuota::new(work, bytes)?;
         if self.format_version != 6 { return Err(Error::Unsupported(format!("snapshot format {}", self.format_version))); }
-        verifier.verify_audience(&self.authority, scratch.work())?;
-        if self.digest_with_work(scratch.work())? != self.state_digest { return Err(Error::Invalid("snapshot digest mismatch".into())); }
+        verifier.verify_audience(&self.authority, work)?;
+        if self.digest_with_work(work)? != self.state_digest { return Err(Error::Invalid("snapshot digest mismatch".into())); }
         if verifier.canonical_proof(b"harness/v6/reducer-checkpoint\0",
-            &(&verifier.id, &verifier.audience, self.state_digest), scratch.work())? != self.attestation {
+            &(&verifier.id, &verifier.audience, self.state_digest), work)? != self.attestation {
             return Err(Error::Unauthorized("snapshot admission attestation is invalid".into()));
         }
         for (index, id) in self.projection.indexed_terminal_effects.iter().enumerate() {
@@ -83,13 +81,19 @@ impl Snapshot {
                 return Err(Error::Invalid("snapshot indexed terminal effects are invalid".into()));
             }
         }
-        let mut identities = BTreeSet::new();
         let mut previous = None;
-        for event in &self.events {
-            verifier.verify_event(event, scratch.work())?;
+        for (index, event) in self.events.iter().enumerate() {
+            verifier.verify_event(event, work)?;
+            for prior in &self.events[..index] {
+                if let Some(io) = work.as_deref_mut() {
+                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                }
+                if prior.operation_id == event.operation_id {
+                    return Err(Error::Invalid("snapshot event suffix is invalid".into()));
+                }
+            }
             if event.revision == 0 || event.revision > self.revision
-                || previous.is_some_and(|revision: u64| revision.checked_add(1) != Some(event.revision))
-                || !identities.insert(event.operation_id) {
+                || previous.is_some_and(|revision: u64| revision.checked_add(1) != Some(event.revision)) {
                 return Err(Error::Invalid("snapshot event suffix is invalid".into()));
             }
             previous = Some(event.revision);
@@ -99,9 +103,9 @@ impl Snapshot {
             return Err(Error::Invalid("snapshot extension activation revision is invalid".into()));
         }
         for (extension, expected) in &self.projection.bindings {
-            let binding = schemas.pinned_binding(&extension.name, extension.version, None, scratch.work())?;
+            let binding = schemas.pinned_binding(&extension.name, extension.version, None, work)?;
             if crate::contract::canonical_json_digest_with_work(binding,
-                crate::store::default_projection_read_limits().maximum_bytes, scratch.work())? != *expected {
+                crate::store::default_projection_read_limits().maximum_bytes, work)? != *expected {
                 return Err(Error::Conflict("snapshot extension binding mismatch".into()));
             }
         }

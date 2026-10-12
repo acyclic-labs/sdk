@@ -105,7 +105,7 @@ proptest::proptest! {
             let restored = Reducer::restore(
                 decoded,
                 authority.clone(),
-                schemas(),
+                schemas(), &mut None,
             )
             .map_err(fail)?;
             let mut replayed = Reducer::new(reducer.authority().clone(), authority, schemas());

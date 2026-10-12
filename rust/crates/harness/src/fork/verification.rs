@@ -2,7 +2,7 @@
 use super::*;
 /// Exhaustive provider dispatcher.
 pub struct CompositeForkVerifier {
-    pub(in crate::fork) providers: BTreeMap<ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>>,
+    pub(in crate::fork) providers: Vec<(ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>)>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::fork) _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -30,16 +30,17 @@ impl CompositeForkVerifier {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Self> {
         let mut owned = CodecQuota::observed(work)?;
-        let mut providers = BTreeMap::new();
+        let mut providers = crate::core::reserve_copy_vector::<(ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>)>(verifiers.len(), &mut owned)?;
         for verifier in verifiers {
             owned.checkpoint()?;
             verifier.provider().validate(owned.work())?;
-            if providers.contains_key(verifier.provider()) {
-                return Err(owned.invalid("fork provider verifier is registered twice"));
+            for (prior, _) in &providers {
+                owned.checkpoint()?;
+                if prior == verifier.provider() {
+                    return Err(owned.invalid("fork provider verifier is registered twice"));
+                }
             }
-            owned.slots::<(ProviderRef, std::sync::Arc<dyn ForkSeedVerifier>)>(1)?;
-            let provider = crate::core::copy_provider(verifier.provider(), &mut owned)?;
-            providers.insert(provider, std::sync::Arc::clone(verifier));
+            providers.push((crate::core::copy_provider(verifier.provider(), &mut owned)?, std::sync::Arc::clone(verifier)));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _native_metadata = {
@@ -111,8 +112,7 @@ impl CompositeForkVerifier {
     ) -> Result<()> {
         seed.validate(work)?;
         let mut owned = CodecQuota::observed(work)?;
-        let mut required = BTreeSet::new();
-        let providers = std::iter::once(seed.child_private_volume.provider())
+        let providers = || std::iter::once(seed.child_private_volume.provider())
             .chain(seed.inherited_context.iter().map(|file| file.volume().provider()))
             .chain(seed.reference_grants.iter().map(|grant| grant.file.volume().provider()))
             .chain(seed.attachment_manifests.iter().map(|file| file.volume().provider()))
@@ -120,20 +120,25 @@ impl CompositeForkVerifier {
                 capture.source.provider(), capture.revision.provider(),
             ]))
             .chain(seed.boundary.iter().map(|boundary| &boundary.provider));
-        for provider in providers {
-            owned.checkpoint()?;
-            if !required.contains(provider) {
-                owned.slots::<&ProviderRef>(1)?;
-                required.insert(provider);
+        for provider in providers() { self.provider(provider, &mut owned)?; }
+        for (identity, verifier) in &self.providers {
+            let mut required = false;
+            for provider in providers() {
+                owned.checkpoint()?;
+                required |= provider == identity;
             }
-        }
-        for provider in required {
-            let verifier = self.provider(provider, &mut owned)?;
-            verify_fork_provider_with_work(verifier.as_ref(), seed, owned.work()).await?;
+            if !required { continue; }
+            let future = verifier.verify(seed, owned.work())?;
+            let bytes = frame_bytes(&future);
+            let result = future.await;
+            release_frame(result, bytes, owned.work())?;
             if let Some(boundary) = &seed.boundary
-                && &boundary.provider == verifier.provider()
+                && &boundary.provider == identity
             {
-                verify_fork_boundary_with_work(verifier.as_ref(), boundary, owned.work()).await?;
+                let future = verifier.verify_boundary(boundary, owned.work())?;
+                let bytes = frame_bytes(&future);
+                let result = future.await;
+                release_frame(result, bytes, owned.work())?;
             }
         }
         self.verify_references(seed, &mut owned).await
@@ -144,9 +149,12 @@ impl CompositeForkVerifier {
         provider: &ProviderRef,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<&'a std::sync::Arc<dyn ForkSeedVerifier>> {
-        owned.checkpoint()?;
-        self.providers.get(provider).ok_or_else(|| boundary_error(owned.work(),
-            crate::wire::ErrorCode::Unsupported, "fork resource has no exact provider verifier"))
+        for (identity, verifier) in &self.providers {
+            owned.checkpoint()?;
+            if identity == provider { return Ok(verifier); }
+        }
+        Err(boundary_error(owned.work(), crate::wire::ErrorCode::Unsupported,
+            "fork resource has no exact provider verifier"))
     }
 
     /// Verifies direct references and complete attachment manifests after provider-wide resource capture has been attested.
@@ -188,7 +196,10 @@ impl CompositeForkVerifier {
             verified_files.insert(capability);
             let verifier = self.provider(file.volume().provider(), owned)?;
             reserve_reference_bytes(reference_bytes, verifier.as_ref(), file, owned)?;
-            verify_fork_file_with_work(verifier.as_ref(), seed, file, owned.work()).await?;
+            let future = verifier.verify_file(seed, file, owned.work())?;
+            let bytes = frame_bytes(&future);
+            let result = future.await;
+            release_frame(result, bytes, owned.work())?;
         }
         Ok(())
     }
@@ -208,7 +219,10 @@ impl CompositeForkVerifier {
                 owned.slots::<[u8; 32]>(1)?;
                 verified_files.insert(manifest_capability);
                 reserve_reference_bytes(reference_bytes, verifier.as_ref(), manifest, owned)?;
-                verify_fork_file_with_work(verifier.as_ref(), seed, manifest, owned.work()).await?;
+                let future = verifier.verify_file(seed, manifest, owned.work())?;
+                let bytes = frame_bytes(&future);
+                let result = future.await;
+                release_frame(result, bytes, owned.work())?;
             }
             let (bytes, retained) = read_fork_manifest(
                 verifier.as_ref(), seed, manifest, owned.work()).await?;
@@ -244,7 +258,10 @@ impl CompositeForkVerifier {
                     verified_files.insert(item_capability);
                     let member_verifier = self.provider(item.file.volume().provider(), owned)?;
                     reserve_reference_bytes(reference_bytes, member_verifier.as_ref(), &item.file, owned)?;
-                    verify_fork_file_with_work(member_verifier.as_ref(), seed, &item.file, owned.work()).await?;
+                    let future = member_verifier.verify_file(seed, &item.file, owned.work())?;
+                    let bytes = frame_bytes(&future);
+                    let result = future.await;
+                    release_frame(result, bytes, owned.work())?;
                 }
             }
 

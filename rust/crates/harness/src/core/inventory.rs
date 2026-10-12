@@ -7,7 +7,6 @@ pub(super) struct CloneInventory<'w> {
     pub(super) failure: Option<Error>,
     pub(super) depth: u16,
     pub(super) slots: u64,
-    pub(super) slot_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -75,7 +74,7 @@ impl CloneInventory<'_> {
     fn slot(&mut self) -> std::result::Result<(), InventoryError> {
         if self.bytes.is_none() { return self.visit(); }
         self.slots = self.slots.checked_add(1).ok_or(InventoryError)?;
-        self.add(self.slot_bytes.unwrap_or(Self::SLOT))
+        self.add(Self::SLOT)
     }
     fn enter(&mut self) -> std::result::Result<(), InventoryError> {
         self.visit()?;
