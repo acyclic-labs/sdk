@@ -1,4 +1,6 @@
 
+use crate::{AdapterState, ADAPTER_STATE_VERSION, PluginTaskBinding, RootBinding, RootAllocation};
+use std::path::PathBuf;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
@@ -53,6 +55,8 @@ async fn replace(
         &authority.signed,
         &owner.policy.journal,
         VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
     )
     .unwrap();
     filesystem
@@ -65,7 +69,7 @@ async fn replace(
             &format!("{name}.json"),
             owner.policy.maximum_payload_bytes,
             &IdempotencyKey::new(format!("fixture-replacement-{name}")).unwrap(),
-        )
+         None, None)
         .await
         .unwrap()
 }
@@ -90,11 +94,12 @@ async fn alter_command(
         &authority.signed,
         &owner.policy.journal,
         ROOT_INPUT_DIRECTORY,
+        &mut None,
     )
     .unwrap();
     let mut plan: TaskEffectPlan = serde_json::from_slice(
         &filesystem
-            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes)
+            .read_content(&command.payload, &read, owner.policy.maximum_payload_bytes, None)
             .await
             .unwrap(),
     )
@@ -189,7 +194,7 @@ impl Fixture {
 
     async fn head(&self) -> acyclic_fs::GenerationId {
         let observation = work();
-        self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
+        self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name(&mut None).unwrap(),
             &observation, observation.cancellation()).await.unwrap()
             .head(&observation, observation.cancellation()).await.unwrap().id()
     }
@@ -310,7 +315,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         assert!(
             fixture
                 .raw
-                .open_workspace_with_native_work(&volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
+                .open_workspace_with_native_work(&volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
                 .await
                 .is_err()
         );

@@ -130,7 +130,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
     let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
     for operation in [acyclic_harness::conversation::VolumeOperation::Read,
         acyclic_harness::conversation::VolumeOperation::Write] {
-        owner.require_volume_grant_with_native_work(project, operation, &work).unwrap();
+        owner.require_volume_grant(project, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).unwrap())).unwrap();
     }
     for io in [PiBuiltinIo::Write { content: "no physical Root write".into() },
         PiBuiltinIo::EditRead { maximum_bytes: 16 },
@@ -150,11 +150,11 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         PiBuiltinIo::EditWrite { content: "requires original WRITE".into(), expected_sha256: "00".repeat(32) }] {
         assert!(require_builtin_mapping_access(&readonly, &io).is_err());
     }
-    let unrelated = VolumeRef::new(project.provider().clone(), "outside-project", VolumeClass::Project,
-        VolumeOwner::Project("outside".into())).unwrap();
+    let unrelated = VolumeRef::new(project.provider().clone(), "outside-project".into(), VolumeClass::Project,
+        VolumeOwner::Project("outside".into()), &mut None).unwrap();
     for operation in [acyclic_harness::conversation::VolumeOperation::Read,
         acyclic_harness::conversation::VolumeOperation::Write] {
-        assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
+        assert!(owner.require_volume_grant(&unrelated, operation, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).unwrap())).is_err());
     }
     fixture.runtime.runtime.task_host().cancel(owner.task_id(), None).await.unwrap();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());

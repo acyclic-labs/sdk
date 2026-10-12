@@ -19,44 +19,36 @@ pub struct FilesystemContentPublisher<A, O> {
 }
 
 impl<A, O> FilesystemContentPublisher<A, O> {
-    /// Binds write authority and copies configuration with optional accounting.
+    /// Binds authenticated write authority with optional preparation accounting.
     pub fn new(
         host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
         verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
         io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
             return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                 "content publication limit must be positive and finite"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut history = io.map(PreparationIo::history_io);
-        let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, maximum_bytes, &mut work)?;
-        let volume = volume.copy(&mut work)?;
+        let (volume, grant) = crate::executor::with_history_io(io, |work| -> Result<_> {
+            let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, maximum_bytes, work)?;
+            Ok((volume.copy(work)?, grant))
+        })?;
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "content publisher custody underflows"))?)?)
+                    .ok_or_else(|| io.invalid("content publisher custody underflows"))?)?)
             }
             None => None,
         };
-        Ok(Self { host, volume, grant, maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))] _native_metadata })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
-        if !self._native_metadata.as_ref().is_some_and(|custody| work.shares_ledger(custody.work())) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native publisher sharing requires original metadata custody" });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
+        Ok(Arc::new(Self { host, volume, grant, maximum_bytes,
+            #[cfg(not(target_arch = "wasm32"))] _native_metadata }))
     }
 }
 
@@ -144,7 +136,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: Option<&'a PreparationIo>,
         publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a {
         async move {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
         let mut history = io.map(PreparationIo::history_io);
@@ -200,7 +192,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>,
         publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+    ) -> impl std::future::Future<Output = Result<FileRef>> + acyclic_stream::ProviderTask + 'a {
         async move {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]

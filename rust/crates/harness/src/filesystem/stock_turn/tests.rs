@@ -17,15 +17,15 @@ fn command() -> Result<WorkflowCommand> {
         payload: FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("stock-turn-test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-            )?,
-            "commands/model.json",
-            "immutable-command",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "model.json",
-        )?,
+             &mut None)?,
+            "commands/model.json".into(),
+            "immutable-command".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "model.json".into(),
+         &mut None)?,
     })
 }
 

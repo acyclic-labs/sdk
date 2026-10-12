@@ -1,11 +1,11 @@
 //! Credential-free, explicitly trusted local qualification input producer.
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
+use acyclic_harness::runtime::TaskSpawner as _;
 
-use super::native::{AuthorityBinding, Config, ForkSourceConfig};
+use super::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
 use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
-use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, Limits, MessageKind,
@@ -14,7 +14,7 @@ use acyclic_harness::{
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
     filesystem::{FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
-        FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider, FilesystemTaskRuntime,
+        FilesystemProjectMergeVerifier, FilesystemResourceCreationProvider,
         ForkPreparationLimits, ForkPreparationMachine, ForkToolArguments, RecursiveForkConfig,
         RecursiveSourceSnapshot, StockTurnMachine, StreamHistoryForkVerifier,
         fork_preparation_request, recursive_fork_source, workspace_ref,
@@ -23,7 +23,7 @@ use acyclic_harness::{
     model::ModelContent,
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
-    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskAdmissionRecord, TaskDefinition,
+    runtime::{RuntimeScope, RuntimeTask, TaskAdmissionRecord, TaskDefinition,
         TaskRegistry, TaskRunLimits},
     scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, StreamAggregate},
@@ -39,9 +39,6 @@ const ISSUER: &str = "graphcoder-explicit-trusted-local-qualification";
 // Public test authority, deliberately not production authentication or a secret.
 const TEST_KEY: [u8; 32] = [91; 32];
 const PAYLOAD_BYTES: u64 = super::terminal::MAX_FRAME_BYTES as u64;
-
-type Files = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
-type Runtime = FilesystemTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 
 struct Caller {
     task: TaskId,
@@ -83,9 +80,6 @@ pub async fn prepare(root: &Path, cancellation: &acyclic_fs::CancellationToken) 
 
 async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<PathBuf>,
     cancellation: &acyclic_fs::CancellationToken) -> Result<PathBuf> {
-    if !root.is_absolute() {
-        return Err(Error::Invalid("scenario root must be an absolute path".into()));
-    }
     tokio::fs::create_dir_all(root).await.map_err(|error| Error::Storage(error.to_string()))?;
     let root = tokio::fs::canonicalize(root).await.map_err(|error| Error::Storage(error.to_string()))?;
     // Never mix qualification identities with a previous or caller-owned store.
@@ -97,8 +91,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
-    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
+    let filesystem_provider = ProviderRef::new(deployment.clone(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(deployment.clone(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
@@ -173,7 +167,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         let bytes = serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         let file = files.put_content(&project, &project_writer, &format!(".qualification-inputs/{label}.json"),
             &bytes, "application/json", "model-input.json", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("planned-input-{label}"))?).await?;
+            &IdempotencyKey::new(format!("planned-input-{label}"))?, None, None).await?;
         artifact_grants.push(file.read_capability()?);
         let command = WorkflowCommand { operation_id: OperationId::new(), kind: MODEL_TASK_COMMAND_KIND.into(),
             payload: file };
@@ -246,7 +240,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
-        "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
+        "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?, None, None).await?;
     producer.references.insert("merge_notice".into(), notice_file.clone());
     let notice_sequence = left.aggregate.reducer().conversation()
         .ok_or_else(|| Error::Invalid("merge caller conversation is missing".into()))?
@@ -397,14 +391,14 @@ impl Producer {
         let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let request_file = self.files.put_content(&caller.private, &writer, "command/request.json",
             &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
-            "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?).await?;
+            "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?, None, None).await?;
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
-            "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?).await?;
+            "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?, None, None).await?;
         let digest = request.approval_digest(caller.task, operation)?;
         let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
-            "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;
+            "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?, None, None).await?;
         let interactions = FilesystemInteractionHost::new(self.stream.clone(), self.files.clone(),
             &caller.binding.authority, &verifier, &SchemaRegistry::default(), &caller.binding.scope,
             &caller.private, PAYLOAD_BYTES, None)?;
@@ -425,13 +419,13 @@ impl Producer {
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-scratch"))?).await?;
+            &IdempotencyKey::new(format!("{label}-scratch"))?, None, None).await?;
         self.references.insert(format!("{label}_scratch"), scratch);
         for index in 0..messages {
             let file = self.files.put_content(&caller.private, &writer, &format!("messages/{label}-{index}.txt"),
                 format!("{label} ORIGINAL CALLER transcript marker {index}\n").as_bytes(),
                 "text/plain", "transcript.txt", PAYLOAD_BYTES,
-                &IdempotencyKey::new(format!("{label}-message-{index}"))?).await?;
+                &IdempotencyKey::new(format!("{label}-message-{index}"))?, None, None).await?;
             if index == 0 { self.references.insert(format!("{label}_transcript"), file.clone()); }
             let sequence = caller.aggregate.reducer().conversation()
                 .ok_or_else(|| Error::Invalid("caller conversation was not initialized".into()))?
@@ -449,10 +443,10 @@ impl Producer {
             &caller.project, VolumeOperation::Write, u64::MAX, &mut None)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-project-baseline"))?).await?;
+            &IdempotencyKey::new(format!("{label}-project-baseline"))?, None, None).await?;
         let after = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project selected generation\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-project-selected"))?).await?;
+            &IdempotencyKey::new(format!("{label}-project-selected"))?, None, None).await?;
         self.references.insert(format!("{label}_project_before"), before);
         self.references.insert(format!("{label}_project_after"), after);
         self.references.insert(format!("{label}_project"), self.references[&format!("{label}_project_after")].clone());
@@ -498,7 +492,7 @@ impl Producer {
                     native_snapshot: None,
                 }, 16 * 1024 * 1024, 16 * 1024 * 1024).await?)
         } else { None };
-        let binding = recursive_fork_source(&self.runtime, self.files.clone(), &self.stream,
+        let binding = recursive_fork_source(self.files.clone(), &self.stream,
             &parent.aggregate, verifier, parent.binding.scope.clone(), &context,
             RecursiveSourceSnapshot {
                 task: parent.task, project: parent.project.clone(),
@@ -645,14 +639,14 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
-    let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
+    let content = FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
+        FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
     let mut aggregate = StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
-        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)));
+        .with_merge_verifier(FilesystemProjectMergeVerifier::new(files, None)?);
     aggregate.set_limits(config.limits)?;
     Ok(aggregate)
 }

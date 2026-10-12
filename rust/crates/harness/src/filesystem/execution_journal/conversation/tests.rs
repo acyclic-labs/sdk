@@ -84,10 +84,8 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
             action: Action::BindConversation { agent },
         }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
-    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope, 262_144, None)?);
-    let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?);
+    let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?;
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?;
     let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, &volume,
         &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(), &scope, 262_144, None)?.with_input_verifier(reader.clone()));
     let instructions = Context {

@@ -1,4 +1,5 @@
 
+use acyclic_harness::filesystem::NativeProcessView;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Passive;
@@ -107,8 +108,8 @@ impl Fixture {
         let provider = ProviderRef::new("pi-native-provider-test".into(), "filesystem".into(), "1".into(), &mut None)?;
         let agent = AgentId::from_bytes([21; 16]);
         let task = TaskId::from_bytes([22; 16]);
-        let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-        let results_volume = VolumeRef::new(provider.clone(), "results", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let scratch = VolumeRef::new(provider.clone(), "scratch".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
+        let results_volume = VolumeRef::new(provider.clone(), "results".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let command = OperationId::from_bytes([23; 16]);
         let approval = InteractionId::from_bytes([24; 16]);
         let grants = Capabilities::new([
@@ -116,8 +117,8 @@ impl Fixture {
             "task:spawn:pi-native-provider-qualification@1".into(), "effect:plan".into(), "effect:run".into(),
             format!("effect:provider:{PI_NATIVE_PROVIDER}"), "interaction:open".into(), "interaction:resolve".into(),
             format!("interaction:respond:{approval}"), "interaction:route".into(), "conversation:bind".into(),
-            scratch.capability(VolumeOperation::Read)?, scratch.capability(VolumeOperation::Write)?,
-            results_volume.capability(VolumeOperation::Read)?, results_volume.capability(VolumeOperation::Write)?,
+            scratch.capability(VolumeOperation::Read, &mut None)?, scratch.capability(VolumeOperation::Write, &mut None)?,
+            results_volume.capability(VolumeOperation::Read, &mut None)?, results_volume.capability(VolumeOperation::Write, &mut None)?,
         ]);
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
         let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
@@ -137,12 +138,12 @@ impl Fixture {
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier(&mut None).unwrap().audience().clone(), issuer.verifier(&mut None).unwrap(), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
-        let grant = ContentGrant::verify(&issuer.verifier(&mut None).unwrap(), &scope, &scratch, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&issuer.verifier(&mut None).unwrap(), &scope, &scratch, VolumeOperation::Write, u64::MAX, &mut None)?;
         let cancellation = CancellationToken::new();
         let budget = super::super::native_root_source::budget();
         let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let initial_id = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+        let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name(&mut None)?)?).await?;
+        let initial_id = filesystem.open_workspace_with_native_work(&scratch.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let native = directory.path().join("native");
         let operation_directory = directory.path().join("preparation");
@@ -162,11 +163,14 @@ impl Fixture {
             sha256: hex::encode(Sha256::digest(source_json.as_bytes())), entries_json: source_json };
         let bytes = format!("{}\n{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":cwd}), source_entries[0]);
         source.validate_session("child", &cwd, bytes.as_bytes(), 16, 65_536, &work)?;
-        files.put_content_with_native_work(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
-            "application/x-ndjson", "Pi child session", 65_536,
-            &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
-        let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+        {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            files.put_content(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
+                "application/x-ndjson", "Pi child session", 65_536,
+                &IdempotencyKey::new("pi-native-child-session")?, None, Some(&io)).await?;
+        }
+        let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name(&mut None)?)?).await?;
+        let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?;
         let generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(selected.generation.as_resource().key().try_into()
             .map_err(|_| invalid("actual selected filesystem generation is not a digest"))?));
@@ -174,15 +178,19 @@ impl Fixture {
         let reservation = owner.native_view_owner().reserve_publication(&workspace, &scratch, generation,
             acyclic_fs::OperationId::from_bytes(command.into_bytes()), &work, &cancellation, &CancellationToken::new()).await?;
         let namespace = NativeVolumeNamespace::MaterializedDirectory;
-        let scratch_verifier = issuer.verifier_with_native_work(&work)?;
+        let scratch_verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let callback_guard = context.volume_callback_guard_with_native_work(&owner, &work).await?;
         let callback_guards = [callback_guard];
-        let view = NativeVolumeView::prepare_with_native_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
+        let view = NativeVolumeView::prepare(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
-                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &work)?.await?
+                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &[None], &work)?.await?
             .into_arc_with_native_work(&work)?;
-        let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name()?)?).await?;
-        let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name()?, &work, &cancellation).await
+        let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name(&mut None)?)?).await?;
+        let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let binding = PiTaskBinding { native_session_id: "child".into(), task_id: task, agent_id: agent, project_volumes: BTreeMap::new(),
             scratch: super::super::PiScratchBinding { volume: scratch, allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {
@@ -207,8 +215,9 @@ impl Fixture {
             control_timeout_ms: capture.control_timeout_ms, cancellation_poll_ms: capture.cancellation_poll_ms,
             maximum_output_bytes: capture.maximum_output_bytes, maximum_result_bytes: capture.maximum_result_bytes };
         let request = invocation.request_with_work(&binding, view.manifest(), &work)?;
-        let results = Arc::new(FilesystemContentPublisher::new(files.clone(), results_volume.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576)?);
-        let content = Arc::new(FilesystemContentVerifier::new(files.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None)?, &scope, 1_048_576, Some(&io))?;
+        let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None)?, &scope, 1_048_576, Some(&io))?;
         let bytes = crate::pi_root_provider::guarded_pi_bytes(&request.0, 1_048_576, &work)?;
         let mut request_file = results.stage_once_with_native_work(
             native_artifact_operation(command, "request", &work)?,
@@ -220,7 +229,7 @@ impl Fixture {
         request_file.1.absorb(&mut schema.1).map_err(native_error)?;
         let plan = (TaskEffectPlan { provider: PI_NATIVE_PROVIDER.into(), effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
             guarantee: EffectGuarantee::AtMostOnce, request: request_file.0, result_schema: schema.0 }, request_file.1);
-        let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let approvals = FilesystemExecutionJournal::new(stream.clone(), files.clone(), &results_volume, &issuer.verifier(&mut None)?, &SchemaRegistry::new(), &scope, 1_048_576, Some(&io))?.into_native_shared(&work)?;
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi".into(), command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,
@@ -228,7 +237,11 @@ impl Fixture {
     }
 
     fn authority(&self, work: &NativeMaterializationWork) -> Result<NativeProcessAuthority> {
-        let verifier = self.issuer.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = self.issuer.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         Ok(NativeProcessAuthority { verifier: verifier.0, history_limits: HistoryReadLimits { maximum_events: 512, maximum_bytes: 16 * 1024 * 1024 },
             content: self.content.clone(), result_content: self.content.clone(), results: self.results.clone(), approvals: self.approvals.clone(),
             authority_custody: Some(verifier.1) })
@@ -239,7 +252,7 @@ impl Fixture {
     }
     fn effects(&self, provider: &Arc<NativeProcessProvider<LocalStream>>, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
         let mut registry = acyclic_harness::effects::EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(self.content.clone(), work)?;
+            .with_result_resolver(self.content.clone());
         registry.register_with_native_work(provider.clone(), work)?;
         let audience_id = work.display("pi-native-provider-test").map_err(native_error)?;
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);
@@ -248,7 +261,12 @@ impl Fixture {
         let mut issuer = (AuthorityIssuer::new(issuer_id.0, [25; 32],
             Authority { kind: AggregateKind::Conversation, id: issuer_audience_id.0 }), issuer_id.1);
         issuer.1.absorb(&mut issuer_audience_id.1).map_err(native_error)?;
-        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", self.scope.capabilities(), work)?;
+        let mut scope = {
+            let mut io = acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let scope = issuer.0.issue("owner", self.scope.capabilities(), Some(self.binding.agent_id), None, &mut Some(&mut io))?;
+            (scope, io.into_custody())
+        };
         let mut authorization = ((audience.0, issuer.0, scope.0), audience.1);
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;
@@ -465,7 +483,7 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     assert!(failed.is_err(), "changed retry bytes reused the original actual upload operation");
     let original = fixture.provider().await?;
     let sealed_guard = fixture.context.volume_callback_guard_with_native_work(&fixture.owner, &fixture.work).await?;
-    let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
+    let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?.0;
     let original_header = fixture.work.clone();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)
         .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await

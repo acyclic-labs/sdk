@@ -92,7 +92,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
-        owner.retain_root_binding(proof)?;
+        owner.retain_root_binding(proof, None)?;
         drop(gate);
         Ok(result)
     }
@@ -213,8 +213,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 return Err(error);
             },
         }
-        let (cloned, returned_owned) = crate::core::native_event_clone_with_custody(
-            &event, transient.work())?;
+        let (cloned, returned_owned) = crate::wire_codec::CodecQuota::produce(transient.work(), |copy_quota| crate::core::copy_event(&event, copy_quota))?;
         transient.adopt(returned_owned)?;
         let applied = self.reducer.apply_committed(cloned, transient.work())
             .and_then(|result| self.reducer.mark_indexed_terminal_effect_with_work(

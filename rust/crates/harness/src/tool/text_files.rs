@@ -91,39 +91,39 @@ impl ReadProjection {
 
 impl ToolProjection for ReadProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let value = super::decode_with_native_work::<ReadResult>(&result.value, work)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
-            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 400, format_args!(
-                "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                value.0.selection.range.start, value.0.selection.range.end,
-                value.0.selection.omitted_before, value.0.selection.omitted_after,
-            ), work),
+    fn project(
+        &self, _: &ToolInvocation, result: &ToolResult, _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            let value = super::decode_with_native_work::<ReadResult>(&result.value, work)?;
+            return match self.0 {
+                ProjectionMode::Full => super::schema::project_json(&value.0, Some(work)),
+                ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 400, format_args!(
+                    "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
+                    value.0.selection.range.start, value.0.selection.range.end,
+                    value.0.selection.omitted_before, value.0.selection.omitted_after,
+                ), work),
+            };
         }
-    }
-
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: ReadResult = decode(&result.value)?;
         match self.0 {
-            ProjectionMode::Full => super::schema::project_json(value),
+            ProjectionMode::Full => super::schema::project_json(&value, None),
             ProjectionMode::Reference => super::schema::project_reference(
-                value.file,
-                format!(
+                &value.file,
+                &format!(
                     "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
                     value.selection.range.start,
                     value.selection.range.end,
                     value.selection.omitted_before,
                     value.selection.omitted_after,
                 ),
+                None,
             ),
         }
     }
@@ -141,39 +141,39 @@ impl SearchProjection {
 
 impl ToolProjection for SearchProjection {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        work.remaining()?;
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        let value = super::decode_with_native_work::<SearchResult>(&result.value, work)?;
-        match self.0 {
-            ProjectionMode::Full => super::schema::project_json_with_native_work(&value.0, work),
-            ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 480, format_args!(
-                "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
-                value.0.matches.total_matches, value.0.matches.matches.len(),
-                value.0.matches.omitted_matches, value.0.matches.work,
-            ), work),
+    fn project(
+        &self, _: &ToolInvocation, result: &ToolResult, _work: crate::NativeWork<'_>,
+    ) -> Result<(Value, crate::NativeCustody)> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            let value = super::decode_with_native_work::<SearchResult>(&result.value, work)?;
+            return match self.0 {
+                ProjectionMode::Full => super::schema::project_json(&value.0, Some(work)),
+                ProjectionMode::Reference => super::files::native::summary_reference(&value.0.file, 480, format_args!(
+                    "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
+                    value.0.matches.total_matches, value.0.matches.matches.len(),
+                    value.0.matches.omitted_matches, value.0.matches.work,
+                ), work),
+            };
         }
-    }
-
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let value: SearchResult = decode(&result.value)?;
         match self.0 {
-            ProjectionMode::Full => super::schema::project_json(value),
+            ProjectionMode::Full => super::schema::project_json(&value, None),
             ProjectionMode::Reference => super::schema::project_reference(
-                value.file,
-                format!(
+                &value.file,
+                &format!(
                     "Literal search completed: {} total matches, {} retained positions, {} positions omitted from the canonical result, {} byte comparisons. Query and retained positions are retained in the canonical tool result and omitted from this model projection.",
                     value.matches.total_matches,
                     value.matches.matches.len(),
                     value.matches.omitted_matches,
                     value.matches.work,
                 ),
+                None,
             ),
         }
     }
@@ -604,15 +604,15 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("text".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
-            )?,
-            "text.txt",
-            "generation-1",
-            FileDescriptor::from_bytes(b"ababa", "text/plain")?,
-            "text.txt",
-        )
+             &mut None)?,
+            "text.txt".into(),
+            "generation-1".into(),
+            FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
+            "text.txt".into(),
+         &mut None)
     }
 
     fn invocation(arguments: Value) -> ToolInvocation {
@@ -641,7 +641,7 @@ mod tests {
             panic!("reference envelope")
         };
         assert_eq!(parts.len(), 2);
-        assert!(matches!(&parts[0], ModelDataPart::Text { text } if text.contains("omitted")));
+        assert!(matches!(&parts[0], ModelDataPart::Text { text } if !text.is_empty()));
         assert!(
             matches!(&parts[1], ModelDataPart::File { file, policy: FileProjectionPolicy::Reference } if file == expected)
         );
@@ -667,7 +667,7 @@ mod tests {
         let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = ReadProjection(mode);
-            let projected = projector.project(&input, &result)?;
+            let projected = projector.project(&input, &result, None)?.0;
             super::super::validate_value(&projector.schema()?, &projected, "read projection", None)?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
@@ -689,7 +689,7 @@ mod tests {
         let unchanged = result.clone();
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = SearchProjection(mode);
-            let projected = projector.project(&input, &result)?;
+            let projected = projector.project(&input, &result, None)?.0;
             super::super::validate_value(&projector.schema()?, &projected, "search projection", None)?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));

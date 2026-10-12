@@ -184,9 +184,22 @@ impl ResumableTool {
         &self,
         context: &ToolContext,
         invocation: &ToolInvocation,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<WorkflowAdmission> {
-        self.validate(None)?;
-        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
+        #[cfg(feature = "filesystem")]
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
+        #[cfg(not(feature = "filesystem"))]
+        let native = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = native {
+            if !context.native_metadata_matches(work) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "resumable tool context lacks original native custody" });
+            }
+        }
+        self.validate(native)?;
+        crate::executor::with_history_io(io, |work|
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
         if invocation.name != self.definition.name {
             return Err(Error::Conflict("resumable tool invocation names another definition".into()));
         }
@@ -199,27 +212,53 @@ impl ResumableTool {
             ));
         }
         let scope = context.effective_scope();
-        let required = capability::tool_call(&self.definition.name);
+        let required = crate::contract::preparation_format(format_args!("tool:call:{}", self.definition.name), io)?;
+        #[cfg(feature = "filesystem")]
+        let _required = io.map(|io| io.guard_owned(required.capacity() as u64)).transpose()?;
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
-        let initial = MachineCheckpoint {
-            machine: self.machine.identity().clone(),
-            revision: 0,
-            state: self.machine.initialize(&invocation.arguments)?,
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let identity = match native {
+            Some(work) => self.machine.identity_with_native_work(work)?,
+            None => self.machine.identity(),
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let identity = self.machine.identity();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let state = match native {
+            Some(work) => {
+                let (state, custody) = self.machine.initialize_with_native_work(&invocation.arguments, work)?;
+                io.expect("original funding").absorb_native_custody(custody)?;
+                io.expect("original funding").retain_owned(
+                    (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
+                state
+            }
+            None => self.machine.initialize(&invocation.arguments)?,
+        };
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let state = self.machine.initialize(&invocation.arguments)?;
+        let initial = MachineCheckpoint {
+            machine: crate::workflow::MachineIdentity {
+                name: crate::executor::stock_string_copy(&identity.name, io)?,
+                version: crate::executor::stock_string_copy(&identity.version, io)?,
+                digest: identity.digest,
+            },
+            revision: 0,
+            state,
+        };
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", io)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
-            request_digest: crate::contract::canonical_json_digest(&(
+            request_digest: crate::executor::preparation_digest(&(
                 context.task().durable_task_id(), scope.grants(), scope.limits(),
                 scope.run_limits(), scope.extensions(), &self.definition,
-                invocation, self.machine.identity(),
-            ))?,
+                invocation, identity,
+            ), io)?,
             initial,
         };
-        admission.validate(None)?;
+        admission.validate(io)?;
         Ok(admission)
     }
 
@@ -230,7 +269,7 @@ impl ResumableTool {
         invocation: ToolInvocation,
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<ResumableToolSession> {
-        let admission = self.workflow_admission(&context, &invocation)?;
+        let admission = self.workflow_admission(&context, &invocation, None)?;
         if let Some(operation) = context.task().authorize_tool(&self.definition, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }
@@ -255,7 +294,7 @@ impl ResumableTool {
         identity: &crate::workflow::MachineIdentity,
         io: &crate::executor::PreparationIo,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(ToolPayload<WorkflowAdmission>, MachineRegistry, acyclic_fs::NativeAllocation)> {
+    ) -> Result<((WorkflowAdmission, acyclic_fs::NativeAllocation), MachineRegistry, acyclic_fs::NativeAllocation)> {
         crate::executor::with_history_io(Some(io), |work| self.definition.validate(work))?;
         crate::executor::with_history_io(Some(io), |work|
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
@@ -308,10 +347,10 @@ impl ResumableTool {
             context.task().durable_task_id(), scope.grants(), scope.limits(),
             scope.run_limits(), scope.extensions(), &self.definition, invocation, identity,
         ), Some(io))?;
-        let admission = ToolPayload::native(WorkflowAdmission {
+        let admission = (WorkflowAdmission {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
-        admission.value.validate(Some(io))?;
+        admission.0.validate(Some(io))?;
         Ok((admission, registry, registry_custody))
     }
 
@@ -341,19 +380,19 @@ impl ResumableTool {
                 return Err(Error::Indeterminate(operation));
             }
             let copied_custody;
-            let (copied, hold) = clone_admission_with_native_work(&built.0.value, work)?;
+            let (copied, hold) = clone_admission_with_native_work(&built.0.0, work)?;
             copied_custody = hold;
             let (observed, observed_custody) = journal.admit_with_native_work(copied, work)?.await?;
-            let observed = ToolPayload::native(observed, observed_custody);
+            let observed = (observed, observed_custody);
             drop(copied_custody);
-            if observed.value != built.0.value {
+            if observed.0 != built.0.0 {
                 return Err(tool_error(Some(&io), crate::wire::ErrorCode::Conflict,
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
             let metadata_custody = work.claim(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let host = DurableWorkflowHost::open_with_native_work(
-                built.1, built.0.value.initial, journal, work).await?;
+                built.1, built.0.0.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
                 definition: &self.definition, invocation, host,
                 registry_custody: built.2, metadata_custody,
@@ -428,20 +467,20 @@ impl NativeResumableToolSession<'_> {
         input_custody: acyclic_fs::NativeAllocation,
         work: &'b acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'b, (MachineTransition, acyclic_fs::NativeAllocation)>> {
-        let input = ToolPayload::native((idempotency_key, input), input_custody);
+        let input = ((idempotency_key, input), input_custody);
         if !self.metadata_custody.work().shares_ledger(work)
             || !self.registry_custody.work().shares_ledger(work)
-            || !input.custody.as_ref().is_some_and(|guard| guard.work().shares_ledger(work))
+            || !input.1.work().shares_ledger(work)
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native resumable input belongs to another work" });
         }
         let required = (std::mem::size_of::<Value>() as u64)
-            .checked_add(crate::contract::json_value_logical_owned_bytes(&input.value.1)?)
-            .and_then(|bytes| bytes.checked_add(input.value.0.0.capacity() as u64)).ok_or(
+            .checked_add(crate::contract::json_value_logical_owned_bytes(&input.0.1)?)
+            .and_then(|bytes| bytes.checked_add(input.0.0.0.capacity() as u64)).ok_or(
                 Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native resumable input ownership overflow" })?;
-        if !input.custody.as_ref().is_some_and(|guard| guard.bytes() >= required) {
+        if input.1.bytes() < required {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native resumable input or retry key has no paid custody" });
         }
@@ -450,14 +489,14 @@ impl NativeResumableToolSession<'_> {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let output_schema = &self.definition.output_schema;
             let result = self.host.step_checked_with_native_work(
-                operation_id, input.value.0, input.value.1, work, |transition| {
+                operation_id, input.0.0, input.0.1, work, |transition| {
                     if let MachineStatus::Completed { value } = &transition.status {
                         crate::contract::validate_json_schema_value(output_schema, value, "tool output", Some(&io))?;
                     }
                     Ok(())
                 },
             ).await;
-            drop(input.custody);
+            drop(input.1);
             result
         })
     }
@@ -513,52 +552,32 @@ pub struct DurableToolRunner {
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-// Owned data precedes its original-ledger guard, including on early error.
-struct ToolPayload<T> {
-    value: T,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl<T> ToolPayload<T> {
-    fn ordinary(value: T) -> Self {
-        Self { value, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] custody: None }
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native(value: T, custody: acyclic_fs::NativeAllocation) -> Self {
-        Self { value, custody: Some(custody) }
-    }
-}
-
 impl DurableToolRunner {
     /// Pins the registered definitions and the owner-bound ref-only journal.
-    pub fn new(tools: ToolRegistry, journal: Arc<dyn ExecutionJournal>) -> Self {
-        Self {
-            tools, journal, limits: Limits::default(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
-        }
-    }
-
-    /// Pins those same registered provider objects with paid SDK metadata.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
+    pub fn new(
         tools: &ToolRegistry,
         journal: Arc<dyn ExecutionJournal>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        _work: crate::NativeWork<'_>,
     ) -> Result<Self> {
-        if !journal.supports_native_execution(work)? {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "tool journal has no native execution producer" });
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            if !journal.supports_native_execution(work)? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "tool journal has no native execution producer" });
+            }
+            let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
+            let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut tools_custody;
+            let (tools, hold) = tools.clone_with_native_work(work)?;
+            tools_custody = hold;
+            custody.absorb(&mut tools_custody)?;
+            return Ok(Self { tools, journal, limits: Limits::default(), native_custody: Some(custody) });
         }
-        let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
-        let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-        let mut tools_custody;
-        let (tools, hold) = tools.clone_with_native_work(work)?;
-        tools_custody = hold;
-        custody.absorb(&mut tools_custody)?;
-        Ok(Self { tools, journal, limits: Limits::default(), native_custody: Some(custody) })
+        Ok(Self {
+            tools: tools.clone(), journal, limits: Limits::default(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        })
     }
 
     /// Narrows the maximum artifact and projection bytes before publication.
@@ -585,11 +604,11 @@ impl DurableToolRunner {
     ) -> Result<Outcome<Value>> {
         let tool = self.tools.get_version(&definition.name, &definition.revision, None)?
             .ok_or_else(|| Error::NotFound(format!("tool {}@{}", definition.name, definition.revision)))?;
-        let invocation = ToolPayload::ordinary(ToolInvocation {
+        let invocation = (ToolInvocation {
             operation_id, call_id: operation_id.to_string(), name: definition.name.clone(), arguments,
-        });
+        }, None);
         Ok(self.run_engine(task_id, operation_id, &definition, invocation, &context,
-            tool, None, false).await?.value)
+            tool, None, false).await?.0)
     }
 
     /// Runs the canonical dispatch/reconciliation engine on the original work.
@@ -639,7 +658,7 @@ impl DurableToolRunner {
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
                 reason: "admitted tool revision is not registered" })?;
         tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(work)?;
+        tool.projection.supports_native_projection(Some(work))?;
         if !self.journal.supports_native_execution(work)? {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                 reason: "tool journal has no native execution producer" });
@@ -660,13 +679,12 @@ impl DurableToolRunner {
             let (arguments, hold) = crate::tool::clone_value(arguments, None, work)?;
             arguments_hold = hold;
             custody.absorb(&mut arguments_hold)?;
-            let invocation = ToolPayload::native(
-                ToolInvocation { operation_id, call_id, name, arguments }, custody);
+            let invocation = (ToolInvocation { operation_id, call_id, name, arguments }, Some(custody));
             let result = self.run_engine(task_id, operation_id, definition, invocation,
                 context, tool, Some(&io), reconcile_only).await?;
-            let guard = result.custody.ok_or(Error::NativeBoundary {
+            let guard = result.1.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage, reason: "native tool outcome has no custody" })?;
-            Ok((result.value, guard))
+            Ok((result.0, guard))
         })
     }
 
@@ -674,10 +692,10 @@ impl DurableToolRunner {
         reason = "one canonical ordered durable tool state machine")]
     async fn run_engine(
         &self, task_id: TaskId, operation_id: OperationId, definition: &ToolDefinition,
-        invocation: ToolPayload<ToolInvocation>, context: &ToolContext, tool: &crate::tool::Tool,
+        invocation: (ToolInvocation, crate::NativeCustody), context: &ToolContext, tool: &crate::tool::Tool,
         io: Option<&crate::executor::PreparationIo>, reconcile_only: bool,
-    ) -> Result<ToolPayload<Outcome<Value>>> {
-        let invocation = &invocation.value;
+    ) -> Result<(Outcome<Value>, crate::NativeCustody)> {
+        let invocation = &invocation.0;
         if tool.definition != *definition {
             return Err(tool_error(io, crate::wire::ErrorCode::Conflict,
                 "durable tool definition changed after admission"));
@@ -711,7 +729,7 @@ impl DurableToolRunner {
             let mut dispatched = false;
             let mut completed = None;
             let mut failed = None;
-            for record in &records.value {
+            for record in &records.0 {
                 match &record.event {
                     ExecutionEvent::Started { request_digest }
                         if !started && !dispatched && completed.is_none()
@@ -724,7 +742,7 @@ impl DurableToolRunner {
                                 "durable tool invocation exceeds admitted descriptor limit"));
                         }
                         let pinned = self.load::<ToolInvocation>(reference, io).await?;
-                        if pinned.value != *invocation {
+                        if pinned.0 != *invocation {
                             return Err(tool_error(io, crate::wire::ErrorCode::Conflict,
                                 "durable tool call identity changed"));
                         }
@@ -749,14 +767,14 @@ impl DurableToolRunner {
                 }
                 let result = self.load::<ToolResult>(result, io).await?;
                 let projection = self.load::<Value>(projection, io).await?;
-                if let Err(error) = tool_json_bound(&result.value, content_limit, io)
-                    .and_then(|()| tool_json_bound(&projection.value, projection_limit, io))
+                if let Err(error) = tool_json_bound(&result.0, content_limit, io)
+                    .and_then(|()| tool_json_bound(&projection.0, projection_limit, io))
                 {
                     if tool_propagate(&error, io) { return Err(error); }
                     return Err(Error::Conflict("durable tool history exceeds admitted limits".into()));
                 }
-                crate::contract::validate_json_schema_value(&definition.output_schema, &result.value.value, "tool output", io)?;
-                tool_validate_projection(definition, &projection.value, projection_limits, io)?;
+                crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", io)?;
+                tool_validate_projection(definition, &projection.0, projection_limits, io)?;
                 return tool_success(result, io);
             }
             if let Some(reason) = failed {
@@ -775,7 +793,7 @@ impl DurableToolRunner {
             if !dispatched {
                 let reference = self.stage(operation_id, "tool:invocation", invocation, io).await?;
                 let current = self.replay(operation_id, io).await?;
-                if matches!(current.value.as_slice(), [record]
+                if matches!(current.0.as_slice(), [record]
                     if matches!(&record.event, ExecutionEvent::Started { request_digest }
                         if *request_digest == digest))
                 {
@@ -783,9 +801,9 @@ impl DurableToolRunner {
                     let call = tool_string(&invocation.call_id, io)?;
                     let _event_metadata = tool_metadata::<ExecutionEvent>(io)?;
                     let event = ExecutionEvent::ToolStarted {
-                        step: 0, call_id: call.value, invocation: reference.value,
+                        step: 0, call_id: call.0, invocation: reference.0,
                     };
-                    match self.append_tail(operation_id, 1, &key.value, &event, io).await {
+                    match self.append_tail(operation_id, 1, &key.0, &event, io).await {
                         Ok(true) => claimed = true,
                         Ok(false) => continue,
                         Err(error) if tool_propagate(&error, io) => return Err(error),
@@ -793,7 +811,7 @@ impl DurableToolRunner {
                             Outcome::Indeterminate { operation_id }, None, io),
                         Err(error) => return Err(error),
                     }
-                } else if !matches!(current.value.get(1).map(|record| &record.event),
+                } else if !matches!(current.0.get(1).map(|record| &record.event),
                     Some(ExecutionEvent::ToolStarted { step: 0, call_id, .. })
                         if *call_id == invocation.call_id)
                 {
@@ -830,28 +848,28 @@ impl DurableToolRunner {
                 }
             };
             if let Err(error) = crate::contract::validate_json_schema_value(
-                &definition.output_schema, &result.value.value, "tool output", io)
+                &definition.output_schema, &result.0.value, "tool output", io)
             {
                 if tool_propagate(&error, io) { return Err(error); }
                 fail!(ToolFailureKind::InvalidOutput);
             }
-            if let Err(error) = tool_json_bound(&result.value, content_limit, io) {
+            if let Err(error) = tool_json_bound(&result.0, content_limit, io) {
                 if tool_propagate(&error, io) { return Err(error); }
                 fail!(ToolFailureKind::PublicationRejected);
             }
-            let projection = match tool_project(tool, invocation, &result.value, io) {
+            let projection = match tool_project(tool, invocation, &result.0, io) {
                 Ok(projection) => projection,
                 Err(error) if tool_propagate(&error, io) => return Err(error),
                 Err(_) => { fail!(ToolFailureKind::ProjectionRejected); }
             };
             if let Err(error) = tool_validate_projection(
-                definition, &projection.value, projection_limits, io)
-                .and_then(|()| tool_json_bound(&projection.value, projection_limit, io))
+                definition, &projection.0, projection_limits, io)
+                .and_then(|()| tool_json_bound(&projection.0, projection_limit, io))
             {
                 if tool_propagate(&error, io) { return Err(error); }
                 fail!(ToolFailureKind::ProjectionRejected);
             }
-            let result_ref = match self.stage(operation_id, "tool:result", &result.value, io).await {
+            let result_ref = match self.stage(operation_id, "tool:result", &result.0, io).await {
                 Ok(reference) => reference,
                 Err(error) if tool_propagate(&error, io) => return Err(error),
                 Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => return tool_outcome(
@@ -859,7 +877,7 @@ impl DurableToolRunner {
                 Err(_) => { fail!(ToolFailureKind::PublicationRejected); }
             };
             let projection_ref = match self.stage(
-                operation_id, "tool:projection", &projection.value, io).await
+                operation_id, "tool:projection", &projection.0, io).await
             {
                 Ok(reference) => reference,
                 Err(error) if tool_propagate(&error, io) => return Err(error),
@@ -871,9 +889,9 @@ impl DurableToolRunner {
             let call = tool_string(&invocation.call_id, io)?;
             let _event_metadata = tool_metadata::<ExecutionEvent>(io)?;
             let event = ExecutionEvent::ToolCompleted {
-                step: 0, call_id: call.value, result: result_ref.value, projection: projection_ref.value,
+                step: 0, call_id: call.0, result: result_ref.0, projection: projection_ref.0,
             };
-            match self.append_tail(operation_id, 2, &key.value, &event, io).await {
+            match self.append_tail(operation_id, 2, &key.0, &event, io).await {
                 Ok(true) => return tool_success(result, io),
                 Ok(false) => continue,
                 Err(error) if tool_propagate(&error, io) => return Err(error),
@@ -921,47 +939,47 @@ impl DurableToolRunner {
 
     async fn replay(
         &self, operation_id: OperationId, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ToolPayload<Vec<crate::executor::ExecutionRecord>>> {
+    ) -> Result<(Vec<crate::executor::ExecutionRecord>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (_, records, custody) = crate::executor::replay_execution_with_native_work(
                 self.journal.as_ref(), operation_id, 4, |_| true, work)?.await?;
-            return Ok(ToolPayload::native(records, custody));
+            return Ok((records, Some(custody)));
         }
         let (_, records) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, None).await?;
-        Ok(ToolPayload::ordinary(records))
+        Ok((records, None))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     async fn load<T: crate::executor::PreparationRecord + crate::filesystem::UploadRecord + Send>(
         &self, reference: &crate::conversation::FileRef, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ToolPayload<T>> {
+    ) -> Result<(T, crate::NativeCustody)> {
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (value, custody) = crate::executor::load_json_with_native_work(
                 self.journal.as_ref(), reference, work)?.await?;
-            return Ok(ToolPayload::native(value, custody));
+            return Ok((value, Some(custody)));
         }
-        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.0))
+        Ok((load_json::<T>(self.journal.as_ref(), reference, None).await?.0, None))
     }
 
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     async fn load<T: crate::executor::PreparationRecord + Send>(
         &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ToolPayload<T>> {
-        Ok(ToolPayload::ordinary(load_json::<T>(self.journal.as_ref(), reference, None).await?.0))
+    ) -> Result<(T, crate::NativeCustody)> {
+        Ok((load_json::<T>(self.journal.as_ref(), reference, None).await?.0, None))
     }
 
     async fn stage<T: serde::Serialize + Sync>(
         &self, operation_id: OperationId, key: &str, value: &T,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ToolPayload<crate::conversation::FileRef>> {
+    ) -> Result<(crate::conversation::FileRef, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (reference, custody) = crate::executor::stage_json_with_native_work(
                 self.journal.as_ref(), operation_id, key, value, work)?.await?;
-            return Ok(ToolPayload::native(reference, custody));
+            return Ok((reference, Some(custody)));
         }
-        Ok(ToolPayload::ordinary(stage_json(self.journal.as_ref(), operation_id, key, value, None).await?))
+        Ok((stage_json(self.journal.as_ref(), operation_id, key, value, None).await?, None))
     }
 
     async fn append(
@@ -989,36 +1007,36 @@ impl DurableToolRunner {
     async fn invoke(
         &self, tool: &crate::tool::Tool, invocation: &ToolInvocation, context: &ToolContext,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ToolPayload<ToolResult>> {
+    ) -> Result<(ToolResult, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (result, custody) = tool.executor.execute_with_native_context(context, invocation, work)?.await?;
-            return Ok(ToolPayload::native(result, custody));
+            return Ok((result, Some(custody)));
         }
-        Ok(ToolPayload::ordinary(tool.executor.execute_with_context(context.clone(), invocation.clone()).await?))
+        Ok((tool.executor.execute_with_context(context.clone(), invocation.clone()).await?, None))
     }
 
     async fn reconcile(
         &self, tool: &crate::tool::Tool, invocation: &ToolInvocation, context: &ToolContext,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<ToolPayload<ToolResult>>> {
+    ) -> Result<Option<(ToolResult, crate::NativeCustody)>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             let (result, custody) = tool.executor.reconcile_with_native_context(context, invocation, work)?.await?;
-            return Ok(result.map(|result| ToolPayload::native(result, custody)));
+            return Ok(result.map(|result| (result, Some(custody))));
         }
         Ok(tool.executor.reconcile_with_context(context.clone(), invocation.clone()).await?
-            .map(ToolPayload::ordinary))
+            .map(|result| (result, None)))
     }
 
     async fn fail(
         &self, operation_id: OperationId, invocation: &ToolInvocation, reason: ToolFailureKind,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<ToolPayload<Outcome<Value>>>> {
+    ) -> Result<Option<(Outcome<Value>, crate::NativeCustody)>> {
         let key = tool_label("tool:failed", io)?;
         let call = tool_string(&invocation.call_id, io)?;
-        let event = ExecutionEvent::ToolFailed { step: 0, call_id: call.value, reason };
-        match self.append_tail(operation_id, 2, &key.value, &event, io).await {
+        let event = ExecutionEvent::ToolFailed { step: 0, call_id: call.0, reason };
+        match self.append_tail(operation_id, 2, &key.0, &event, io).await {
             Ok(true) => tool_outcome(Outcome::Failed { message: String::new() }, Some(reason), io).map(Some),
             Ok(false) => Ok(None),
             Err(error) if tool_propagate(&error, io) => Err(error),
@@ -1037,12 +1055,13 @@ fn tool_propagate(error: &Error, io: Option<&crate::executor::PreparationIo>) ->
     { let _ = error; false }
 }
 
-fn tool_metadata<T>(io: Option<&crate::executor::PreparationIo>) -> Result<ToolPayload<()>> {
+// Tuple values precede their allocation guards, including on early error.
+fn tool_metadata<T>(io: Option<&crate::executor::PreparationIo>) -> Result<((), crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return Ok(ToolPayload::native((), work.claim(std::mem::size_of::<T>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
+        return Ok(((), Some(work.claim(std::mem::size_of::<T>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)));
     }
-    Ok(ToolPayload::ordinary(()))
+    Ok(((), None))
 }
 
 fn tool_native(io: Option<&crate::executor::PreparationIo>) -> bool {
@@ -1095,40 +1114,42 @@ fn tool_validate_projection(
 fn tool_project(
     tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<ToolPayload<Value>> {
+) -> Result<(Value, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
-        return Ok(ToolPayload::native(value, custody));
+        let (value, custody) = tool.projection.project(invocation, result, Some(work))?;
+        let custody = custody.ok_or_else(|| tool_error(io, crate::wire::ErrorCode::Unsupported,
+            "tool projection has no native producer"))?;
+        return Ok((value, Some(custody)));
     }
-    Ok(ToolPayload::ordinary(tool.projection.project(invocation, result)?))
+    tool.projection.project(invocation, result, None)
 }
 
-fn tool_string(value: &str, io: Option<&crate::executor::PreparationIo>) -> Result<ToolPayload<String>> {
+fn tool_string(value: &str, io: Option<&crate::executor::PreparationIo>) -> Result<(String, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
         let (value, custody) = work.display(value)?;
-        return Ok(ToolPayload::native(value, custody));
+        return Ok((value, Some(custody)));
     }
-    Ok(ToolPayload::ordinary(value.into()))
+    Ok((value.into(), None))
 }
 
-fn tool_label(prefix: &str, io: Option<&crate::executor::PreparationIo>) -> Result<ToolPayload<String>> {
+fn tool_label(prefix: &str, io: Option<&crate::executor::PreparationIo>) -> Result<(String, crate::NativeCustody)> {
     let id = OperationId::new();
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
         let (value, custody) = work.display(&format_args!("{prefix}:{id}"))?;
-        return Ok(ToolPayload::native(value, custody));
+        return Ok((value, Some(custody)));
     }
-    Ok(ToolPayload::ordinary(format!("{prefix}:{id}")))
+    Ok((format!("{prefix}:{id}"), None))
 }
 
 fn tool_success(
-    mut result: ToolPayload<ToolResult>, io: Option<&crate::executor::PreparationIo>,
-) -> Result<ToolPayload<Outcome<Value>>> {
+    mut result: (ToolResult, crate::NativeCustody), io: Option<&crate::executor::PreparationIo>,
+) -> Result<(Outcome<Value>, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let guard = result.custody.as_mut().ok_or(Error::NativeBoundary {
+        let guard = result.1.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage, reason: "native tool result has no custody" })?;
         if !guard.work().shares_ledger(work) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1138,15 +1159,15 @@ fn tool_success(
         guard.resize_retained(guard.bytes().checked_add(metadata).ok_or(
             Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native tool outcome ownership overflow" })?)?;
-        return Ok(ToolPayload { value: Outcome::Succeeded(result.value.value), custody: result.custody });
+        return Ok((Outcome::Succeeded(result.0.value), result.1));
     }
-    Ok(ToolPayload::ordinary(Outcome::Succeeded(result.value.value)))
+    Ok((Outcome::Succeeded(result.0.value), None))
 }
 
 fn tool_outcome(
     mut outcome: Outcome<Value>, failure: Option<ToolFailureKind>,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<ToolPayload<Outcome<Value>>> {
+) -> Result<(Outcome<Value>, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
         let mut custody = work.claim(std::mem::size_of::<Outcome<Value>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
@@ -1155,10 +1176,10 @@ fn tool_outcome(
             custody.absorb(&mut hold)?;
             outcome = Outcome::Failed { message };
         }
-        return Ok(ToolPayload::native(outcome, custody));
+        return Ok((outcome, Some(custody)));
     }
     if let Some(reason) = failure { outcome = Outcome::Failed { message: reason.message().into() }; }
-    Ok(ToolPayload::ordinary(outcome))
+    Ok((outcome, None))
 }
 
 #[cfg(test)]

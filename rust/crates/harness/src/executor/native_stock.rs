@@ -141,7 +141,7 @@ pub(crate) fn stock_vec_push<T>(values: &mut Vec<T>, value: T, io: Option<&Prepa
             let bytes = std::mem::size_of::<T>() as u64;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
-                let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+                let mut custody = work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::default())?;
                 values.try_reserve_exact(1).map_err(Error::Allocation)?;
                 let actual = (values.capacity() - before).checked_mul(std::mem::size_of::<T>())
                     .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "stock vector capacity overflow" })?;
@@ -178,7 +178,7 @@ pub(crate) fn stock_string_push(text: &mut String, suffix: &str, io: Option<&Pre
             let extra = target - before;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
-                let mut custody = work.claim(extra as u64, u64::from((extra as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+                let mut custody = work.claim(extra as u64, u64::from((extra as u64) != 0), acyclic_fs::WorkCounters::default())?;
                 text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
                 let completed = custody.reconcile_capacity((text.capacity() - before) as u64);
                 io.absorb_native_custody(custody)?;
@@ -300,23 +300,7 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
 
 #[cfg(feature = "filesystem")]
 pub(super) const fn stock_serde_diagnostic_label_bytes() -> u64 {
-    crate::model::model_serde_diagnostic_label_bytes() + concat!(
-        "ExecutionEvent", "kind", "started", "context_prepared", "context_compacted",
-        "model_started", "model", "tool_started", "tool_completed", "tool_failed",
-        "request_digest", "step", "projection", "accounting", "compaction",
-        "purpose", "request", "event", "call_id", "invocation",
-        "result", "reason", "ModelPurpose", "response", "summary",
-        "ToolFailureKind", "executor_rejected", "invalid_output", "projection_rejected", "publication_rejected",
-        "TurnInput", "operation_id", "input", "selected_context", "max_steps",
-        "SelectedModelContext", "selection", "messages", "ModelContextSelection", "conversation_revision",
-        "message_ids", "checkpoint", "LeaseFence", "reservation_id", "placement",
-        "CompactionRetention", "roles", "native_media", "CompactionPolicy", "kind",
-        "config", "disabled", "threshold", "ThresholdCompaction", "response_reserve_tokens",
-        "recent_tokens", "retention", "ModelTokenCount", "request_digest", "fixed_tokens",
-        "message_tokens", "ComponentIdentity", "name", "version", "digest",
-        "ContextAccounting", "capacity", "count", "ModelContextCapacity", "context_tokens",
-        "output_tokens",
-    ).len() as u64 + 71 * 4
+    crate::model::model_serde_diagnostic_label_bytes() + 1098
 }
 
 #[cfg(feature = "filesystem")]
@@ -345,7 +329,7 @@ pub(crate) fn replay_execution_with_native_work<'a>(journal: &'a dyn ExecutionJo
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(std::mem::size_of::<Vec<ExecutionRecord>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        io.absorb_native_custody(work.claim(std::mem::size_of::<Vec<ExecutionRecord>>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
         let (tail, records) = replay_execution(journal, operation, maximum, select, Some(&io)).await?;
         let mut retained = native_size_add(std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
             (records.capacity() as u64).checked_mul(std::mem::size_of::<ExecutionRecord>() as u64)
@@ -434,7 +418,7 @@ impl StockExecutor {
         }
         pipeline.validate(Some(&PreparationIo::from_native_work(work)?))?;
         let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(std::mem::size_of::<NativeStockExecutor>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        io.absorb_native_custody(work.claim(std::mem::size_of::<NativeStockExecutor>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
         let model = crate::model::clone_model(model, Some(&io))?;
         let pipeline = pipeline.copy(Some(&io))?;
         let (tools, tools_custody) = tools.clone_with_native_work(work)?;
@@ -663,7 +647,7 @@ pub(super) fn native_progress<'a>(
 ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(std::mem::size_of::<StockTurnProgress>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        io.absorb_native_custody(work.claim(std::mem::size_of::<StockTurnProgress>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
         let progress = {
             let session = native_session(stock, context, input.operation_id, &io, reconcile, interactions);
             session.execute_progress(input, journal).await?
@@ -734,7 +718,7 @@ pub(super) fn stock_tool_support(tool: &crate::tool::Tool, io: Option<&Preparati
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(work)?;
+        tool.projection.supports_native_projection(Some(work))?;
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = (tool, io);
@@ -793,13 +777,17 @@ pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvo
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
+        let (value, custody) = tool.projection.project(invocation, result, Some(work))?;
+        let custody = custody.ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "tool projection has no native producer",
+        })?;
         io.absorb_native_custody(custody)?;
         let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
-    let value = tool.projection.project(invocation, result)?;
+    let value = tool.projection.project(invocation, result, None)?.0;
     let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));
@@ -950,7 +938,7 @@ impl StockExecutor {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock composition is unavailable" });
         }
         let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(std::mem::size_of::<NativeStockExecutor>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        io.absorb_native_custody(work.claim(std::mem::size_of::<NativeStockExecutor>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
         let model = crate::model::clone_model(&self.model, Some(&io))?;
         let context = self.context.copy(Some(&io))?;
         let (tools, custody) = self.tools.clone_with_native_work(work)?;
@@ -996,7 +984,7 @@ pub(crate) fn retained_model_step_with_native_work<'a>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        io.absorb_native_custody(work.claim(std::mem::size_of::<RetainedModelStep>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        io.absorb_native_custody(work.claim(std::mem::size_of::<RetainedModelStep>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
         let retained = retained_model_step(journal, records, step, purpose, limits, Some(&io)).await?;
         let mut bytes = std::mem::size_of::<RetainedModelStep>() as u64;
         if let Some(request) = &retained.request {

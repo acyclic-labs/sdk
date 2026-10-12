@@ -1,5 +1,6 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
+use serde_json::json;
 use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::{
@@ -97,18 +98,20 @@ impl ToolExecutor for PendingTool {
     }
 }
 impl ToolProjection for PendingTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        if let Some(work) = work {
+            #[derive(serde::Serialize)]
+            struct Projection<'a> { kind: &'static str, value: &'a Value }
+            return crate::tool::value(&Projection { kind: "json", value: &result.value },
+                work.remaining()?.bytes_encoded, work)
+                .map(|(value, custody)| (value, Some(custody)));
+        }
+        Ok((json!({"kind":"json","value":result.value}), None))
     }
-    fn supports_native_projection(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.supports_native_execution(work)
-    }
-    fn project_with_native_work(
-        &self, _: &ToolInvocation, result: &ToolResult, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        #[derive(serde::Serialize)]
-        struct Projection<'a> { kind: &'static str, value: &'a Value }
-        crate::tool::value(&Projection { kind: "json", value: &result.value }, work.remaining()?.bytes_encoded, work)
+    fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
+        if let Some(work) = work { self.supports_native_execution(work)?; }
+        Ok(())
     }
 }
 
@@ -145,12 +148,9 @@ impl ResumableMachine for Machine {
         let (state, custody) = crate::tool::clone_value(state, None, work)?;
         io.absorb_native_custody(custody)?;
         let command = {
-            let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
-            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
             let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
-            drop(encoded_hold);
             command
         };
         io.retain_owned(std::mem::size_of::<MachineTransition>().saturating_sub(std::mem::size_of::<Value>()) as u64)?;
@@ -190,7 +190,7 @@ impl Fixture {
         let provider = ProviderRef::new("deadline-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([101; 16]);
-        let volume = VolumeRef::new(provider, "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider, "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         filesystem.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("deadline-control", [102; 32], Authority {
             kind: AggregateKind::Task,
@@ -286,7 +286,7 @@ impl Fixture {
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         self.native_lease_command(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
             &super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-        )?, work).await
+        ).map_err(|error| Error::Invalid(error.to_string()))?, work).await
     }
 
     async fn native_lease_command(
@@ -858,7 +858,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         mailbox_operation: None,
     };
     let (lease, custody) = fixture.native_lease_command(
-        &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input)?, &work,
+        &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?, &work,
     ).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -911,7 +911,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
         selected_output_volume: Some(fixture.volume.clone()),
         mailbox_operation: None,
     };
-    let payload = serde_json::to_value(input)?;
+    let payload = serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });

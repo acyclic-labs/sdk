@@ -1093,7 +1093,7 @@ impl StockExecutor {
     }
     /// Appends one validated context stage to the existing ordered pipeline.
     pub fn with_context_stage(mut self, stage: Arc<dyn crate::context::ContextStage>) -> Result<Self> {
-        stage.validate()?;
+        stage.validate(None)?;
         self.context = self.context.with(stage);
         Ok(self)
     }
@@ -2967,7 +2967,7 @@ impl Executor for StockExecutor {
         native_execution_supported(self, context, journal, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.claim(std::mem::size_of::<TurnOutput>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+            io.absorb_native_custody(work.claim(std::mem::size_of::<TurnOutput>() as u64, 0, acyclic_fs::WorkCounters::default())?)?;
             let output = {
                 let session = native_session(self, context, input.operation_id, &io, self.reconciliation_only, None);
                 session.execute_progress(input, journal).await?.into_output()?
@@ -3124,7 +3124,7 @@ fn validate_model_content_scope(
     if let Some(scope) = scope {
         crate::executor::with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
-    let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
+    let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
     for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
@@ -4395,9 +4395,10 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             _: Limits,
-        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
             let revision = self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 Ok(vec![
                     ModelMessage {
                         role: ModelRole::System,
@@ -5198,8 +5199,10 @@ mod tests {
     struct Projection;
 
     impl crate::tool::ToolProjection for Projection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(serde_json::json!({"kind":"json","value":result.value}))
+        fn project(&self, _: &ToolInvocation, result: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
+            Ok((serde_json::json!({"kind":"json","value":result.value}), None))
         }
     }
 
@@ -5260,9 +5263,10 @@ mod tests {
             &'a self,
             _: &'a ContextInput,
             _: Limits,
-        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
             let read = self.0.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 Ok(vec![ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Text(format!("source revision {read}")),
@@ -5513,16 +5517,17 @@ mod tests {
         fn name(&self) -> &str {
             "once"
         }
-        fn contract(&self) -> Value {
-            json!({"revision": "1"})
+        fn contract(&self, _: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+            Ok(json!({"revision": "1"}))
         }
         fn apply<'a>(
             &'a self,
             _: &'a ContextInput,
             context: crate::context::Context,
             _: Limits,
-        ) -> BoxFuture<'a, Result<crate::context::Context>> {
-            Box::pin(async move {
+            io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::context::Context>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 if self.0.fetch_add(1, Ordering::SeqCst) != 0 {
                     return Err(Error::NotFound("source removed after admission".into()));
                 }
@@ -6688,6 +6693,12 @@ mod tests {
         struct DispatchObserver {
             claims: AtomicUsize,
             owned: std::sync::atomic::AtomicBool,
+        }
+        impl crate::runtime::TaskSpawner for DispatchObserver {
+            fn policy_identity(&self) -> Option<ComponentIdentity> { None }
+            fn admit<'a>(&'a self, _: crate::runtime::TaskAdmissionRecord) -> BoxFuture<'a, Result<crate::Admission<TaskId>>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
         }
         impl DurableTaskHost for DispatchObserver {
             fn verify_execution_owner<'a>(

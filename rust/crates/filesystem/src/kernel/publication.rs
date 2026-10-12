@@ -439,9 +439,7 @@ where
         }
     };
     let mut dispatch = |request: GuardedAppend, allowance: Option<WorkBudget>| {
-        let future = authority.compare_and_append_guarded(
-            request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,
-        );
+        let future =async move { let __authority_args = (request, allowance.expect("the ordinary engine supplies its remaining budget"), cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) };
         async move {
             future.await.map(|receipt| (
                 PublicationAppend {
@@ -513,9 +511,7 @@ where
     let mut dispatch = move |request: GuardedAppend, _: Option<WorkBudget>| {
         let mut owner = owned_owner.clone();
         async move {
-            let (outcome, allocation) = authority.compare_and_append_guarded_with_native_owner(
-                request, original, cancellation, &mut owner,
-            ).await.map_err(|error| PublicationStepFailure {
+            let (outcome, allocation) =(async { let __authority_args = (request, original, cancellation, &mut owner,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = authority.compare_and_append(__authority_args.0, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.3).clone()))).await.map_err(|error| error.into_error(NativePublicationOwnerFailure::Authority)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }.await).map_err(|error| PublicationStepFailure {
                 cause: match error {
                     NativePublicationOwnerFailure::Owner(error) => error,
                     NativePublicationOwnerFailure::Authority(error) => E::from(native_authority_error(error)),

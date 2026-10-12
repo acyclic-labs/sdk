@@ -1,4 +1,4 @@
-//! Linux: one inotify instance watching exactly the directories the source
+//! Native source change notifications.
 
 #![allow(unsafe_code, reason = "watches through the Linux inotify API")]
 
@@ -35,7 +35,7 @@ const READ_BUFFER_BYTES: usize = 64 * 1024;
 /// `struct inotify_event` before its name.
 const EVENT_HEADER_BYTES: usize = 16;
 
-pub(super) struct PlatformWatch {
+pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
     thread: Mutex<Option<libc::pthread_t>>,
 }
@@ -446,13 +446,13 @@ fn owned(descriptor: i32) -> Result<OwnedFd, DemandError> {
     Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
 }
 
-impl PlatformWatch {
-    pub(super) fn start(
+impl NativeSourceWatch {
+    pub(crate) fn start_platform(
         directory: &crate::native_host::HostRoot,
         delivery: Arc<Delivery>,
     ) -> io::Result<Self> {
         let cancellation = crate::cancellation::CancellationToken::new();
-        Self::start_with_work(
+        Self::start_driver(
             directory, delivery, &mut DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
         ).map_err(|error| match error {
             DemandError::Io(error) => error,
@@ -460,7 +460,7 @@ impl PlatformWatch {
         })
     }
 
-    pub(super) fn start_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn start_driver<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, delivery: Arc<Delivery>, work: &mut W,
     ) -> Result<Self, DemandError> {
         let mut cleanup = StartupCleanup::reserve(work)?;
@@ -647,55 +647,55 @@ impl PlatformWatch {
         }
     }
 
-    pub(super) fn admit(&self, directory: &Path) -> bool {
+    pub(crate) fn admit(&self, directory: &Path) -> bool {
         let cancellation = crate::cancellation::CancellationToken::new();
         self.admit_with_work(directory, &mut DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))
             .unwrap_or(false)
     }
 
-    pub(super) fn admit_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn admit_with_work<W: SourceDemandReadWork>(
         &self, directory: &Path, work: &mut W,
     ) -> Result<bool, DemandError> {
         self.shared.admit_with_work(directory, work)
     }
 
-    pub(super) fn unadmit_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn unadmit_with_work<W: SourceDemandReadWork>(
         &self, directory: &Path, work: &mut W,
     ) -> Result<(), DemandError> {
         self.shared.unadmit_with_work(directory, work)
     }
 
-    pub(super) fn fence(&self) -> io::Result<()> {
+    pub(crate) fn fence(&self) -> io::Result<()> {
         self.shared.read_and_deliver()
     }
 
-    pub(super) fn fence_events_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn fence_events_with_work<W: SourceDemandReadWork>(
         &self, timeout: std::time::Duration, work: &mut W,
     ) -> Result<bool, DemandError> {
         self.shared.read_events_and_deliver_with_work(timeout, work)
     }
 
-    pub(super) fn delivery(&self) -> &Delivery {
+    pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
 
     /// Actual SDK payload only.
-    pub(super) fn logical_owned_bytes(&self) -> u64 {
+    pub(crate) fn platform_owned_bytes(&self) -> u64 {
         arc_control_bytes::<Shared>()
             + self.shared.retained_variable_bytes.load(Ordering::Acquire)
     }
 
-    pub(super) fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.shared.completed.load(Ordering::Acquire)
     }
 
-    pub(super) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<(), DemandError> {
         self.stop(work, None, false)
     }
 
-    pub(super) fn stop_with_cleanup_wait(
+    pub(crate) fn stop_with_cleanup_wait(
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         // Only the original owner carries credits accepted before native birth. The caller's token controls waiting, never that owner's authority.
@@ -706,7 +706,7 @@ impl PlatformWatch {
         Ok(())
     }
 
-    pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
+    pub(crate) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), None, true)
@@ -839,7 +839,7 @@ impl PlatformWatch {
 
     /// Holds delivery back while the returned guard lives.
     #[cfg(test)]
-    pub(super) fn paused(&self) -> impl Sized + '_ {
+    pub(crate) fn paused(&self) -> impl Sized + '_ {
         self.shared
             .reading
             .lock()
@@ -847,7 +847,7 @@ impl PlatformWatch {
     }
 }
 
-impl Drop for PlatformWatch {
+impl Drop for NativeSourceWatch {
     fn drop(&mut self) {
         if self.shared.delivery.original.is_some() {
             if self.shared.delivery.ensure_stop_available().is_err() {
@@ -1035,7 +1035,6 @@ impl Shared {
             |path| path.capacity() as u64,
             |work| self.record_cleanup(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, work),
         ));
-
 
         let buffer_bytes = reading.buffer.capacity() as u64;
         reading.buffer = Vec::new();
@@ -1651,8 +1650,8 @@ mod admission_tests {
         ) -> Result<(), DemandError> { work.check() }
     }
 
-    fn watcher(root: &Path) -> io::Result<PlatformWatch> {
-        PlatformWatch::start(
+    fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
+        NativeSourceWatch::start_platform(
             &crate::native_host::HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(Arc::new(Ignored))),
         )
@@ -1775,7 +1774,7 @@ mod admission_tests {
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
-        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
         let paused = watch.paused();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1847,7 +1846,7 @@ mod admission_tests {
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
-        let watch = Arc::new(PlatformWatch::start_with_work(&host, delivery, &mut work)?);
+        let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !watch.shared.polling.load(Ordering::Acquire)
             && std::time::Instant::now() < deadline
@@ -1931,7 +1930,7 @@ mod admission_tests {
         });
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
-        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
         let retained_control = original.lock().live_allocation_bytes()
             - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
         std::fs::write(root.path().join("reported"), b"changed")?;
@@ -2002,7 +2001,7 @@ mod admission_tests {
         });
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
-        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
         let paused = watch.paused();
         std::fs::write(root.path().join("reported"), b"changed")?;
@@ -2046,7 +2045,7 @@ mod admission_tests {
     fn original_last_controller_drop_in_callback_retires_the_actual_reader()
     -> Result<(), Box<dyn std::error::Error>> {
         struct Retires {
-            watch: Mutex<Option<PlatformWatch>>,
+            watch: Mutex<Option<NativeSourceWatch>>,
             original: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
             invoked: AtomicBool,
         }
@@ -2078,7 +2077,7 @@ mod admission_tests {
         });
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
-        let watch = PlatformWatch::start_with_work(&host, delivery, &mut work)?;
+        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
         let reader = Arc::downgrade(&watch.shared);
         *sink.watch.lock().unwrap_or_else(PoisonError::into_inner) = Some(watch);
         drop(original);
