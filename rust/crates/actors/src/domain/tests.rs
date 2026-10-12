@@ -37,7 +37,7 @@ fn typescript_export_includes_error_roots_with_esm_imports() {
 
 #[test]
 fn typescript_export_names_follow_nested_ts_rs_metadata() {
-    let names = typescript_export_names(&Config::default());
+    let names = export::typescript_export_names(&Config::default());
 
     assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
     for name in [
