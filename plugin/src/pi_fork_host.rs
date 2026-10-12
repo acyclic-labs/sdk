@@ -1,6 +1,6 @@
 //! Native Pi fork controls over the one retained catalog and task journal.
 use crate::{AdapterState, PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
-    pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation_with_native_work, derived_with_native_work},
+    pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation, derived},
     pi_native_host::{PiNativeCommandHost, PiNativeRuntime, PiNativeFilesystem},
     pi_owner::PiOwnerConfig, pi_root_inputs::PiRootRequest, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
@@ -309,7 +309,7 @@ impl<'a> PiForkHost<'a> {
             tool_use_id: &plan.commit.sdk_operation, active_root_id: Some(root),
             expires_at_millis: crate::now_millis().saturating_add(2 * 60 * 1_000),
             workspace_name: &workspace.0,
-            fork_key: PiForkOperations::new_with_native_work(plan.original, work)?.fork.into_bytes(),
+            fork_key: PiForkOperations::new(plan.original, work)?.fork.into_bytes(),
             roots: BTreeMap::new(), mount_path: &paths.0.view_root, lifecycle: PendingSpawnLifecycle::Preparing };
         let (value, custody) = self.decode(&pending, PENDING_DIAGNOSTIC_LABEL_BYTES, work)?;
         Ok((value, custody))
@@ -370,8 +370,8 @@ impl<'a> PiForkHost<'a> {
         let actual = self.context(shared, &fence, work).await?;
         let (shared, owner, caller) = &actual.0;
         let context = shared.context();
-        let original = original_operation_with_native_work(self.protected.policy().root_task, owner.task_id(), &input.commit.sdk_operation, &work)?;
-        let operations = PiForkOperations::new_with_native_work(original, &work)?;
+        let original = original_operation(self.protected.policy().root_task, owner.task_id(), &input.commit.sdk_operation, &work)?;
+        let operations = PiForkOperations::new(original, &work)?;
         if command.operation_id != original || input.commit.caller != owner.task_id()
             || input.commit.launch.source.parent_session_id != caller.binding.native_session_id {
             return Err(unauthorized("Pi fork control changed its original caller/SDK operation"));
@@ -452,9 +452,9 @@ impl<'a> PiForkHost<'a> {
         let actual_context = self.context(shared, &fence, work).await?;
         let (shared, owner, caller) = &actual_context.0;
         let context = shared.context();
-        let original = original_operation_with_native_work(self.protected.policy().root_task, input.caller, &input.sdk_operation, &work)?;
+        let original = original_operation(self.protected.policy().root_task, input.caller, &input.sdk_operation, &work)?;
         if owner.task_id() != self.protected.policy().root_task || input.sdk_operation.is_empty()
-            || command.operation_id != derived_with_native_work(original, "observe-root-source", &work)? {
+            || command.operation_id != derived(original, "observe-root-source", &work)? {
             return Err(unauthorized("Pi Root observer changed its actual owner or original SDK operation"));
         }
         crate::pi_inspection::authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,

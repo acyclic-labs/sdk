@@ -946,12 +946,10 @@ pub(crate) fn canonical_pi_value<T: Serialize + ?Sized>(
 
 /// The exact existing BLAKE3 identity over those canonical bytes.
 pub(crate) fn digest_pi_value<T: Serialize + ?Sized>(
-    value: &T, work: &NativeMaterializationWork,
+    value: &T, maximum: u64, work: &NativeMaterializationWork,
 ) -> Result<(String, NativeAllocation)> {
     let native_error = |cause| Error::NativeWork { cause, custody: None };
-    let maximum = work.remaining().map_err(native_error)?.bytes_encoded;
-    let (bytes, custody) = canonical_pi_value(value, maximum, work)?;
-    let bytes = (bytes, custody);
+    let bytes = canonical_pi_value(value, maximum, work)?;
     work.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::default() })
         .map_err(native_error)?;
     let digest = blake3::hash(&bytes.0);
