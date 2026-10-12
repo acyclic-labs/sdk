@@ -1120,7 +1120,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let receipt = receipt.as_deref();
                 let stage = command_stage(&command, report, io)?;
                 validate_plan(&plan, &invocation.arguments, io)?;
-                if io.is_some_and(super::PreparationIo::uses_native_work) { check_command(&command, stage, &plan, io)?; }
+                if io.is_some_and(|io| io.original_native_work().is_some()) { check_command(&command, stage, &plan, io)?; }
                 if command.operation_id != derived(invocation.operation_id, stage, io)? {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                         "recursive outbox operation differs from original effect"));
@@ -1274,7 +1274,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 authorized_source, notice: binding.notice }, io)?)
         };
         validate_plan(&plan, arguments, io)?;
-        if !io.is_some_and(super::PreparationIo::uses_native_work) {
+        if !io.is_some_and(|io| io.original_native_work().is_some()) {
             crate::contract::validate_json_byte_bound(&plan, self.maximum_request_bytes.min(context.scope().limits().file_bytes))?;
         }
         Ok(plan)
@@ -1598,7 +1598,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 match progress {
                     TaskCommandProgress::Ready(value) => {
-                        if io.is_some_and(super::PreparationIo::uses_native_work) {
+                        if io.is_some_and(|io| io.original_native_work().is_some()) {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                                 "native recursive command reply lacks its original payload custody"));
                         }
@@ -1661,7 +1661,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Some(Outcome::Succeeded(value)) => Ok(Some(value)),
             Some(Outcome::Failed { message }) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io.filter(|io| io.uses_native_work()) {
+                if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
                     let custody = io.take_native_custody(io.owned_bytes()?)?;
                     return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Conflict, message, custody });
                 }
@@ -1773,7 +1773,7 @@ async fn retained_payload(
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
 ) -> Result<Value> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let work = io.original_native_work().expect("native payload reads preserve their original ledger");
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
         if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
@@ -1791,7 +1791,7 @@ async fn retained_payload(
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>) -> Result<FileRef> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let work = io.original_native_work().expect("native staging preserves its original ledger");
         let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
         let _path;
@@ -2009,7 +2009,7 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
 fn recursive_effective_scope<'a>(
     context: &'a ToolContext, io: Option<&super::PreparationIo>,
 ) -> &'a RuntimeScope {
-    if io.is_some_and(super::PreparationIo::uses_native_work) {
+    if io.is_some_and(|io| io.original_native_work().is_some()) {
         context.effective_scope()
     } else { context.scope() }
 }

@@ -1030,7 +1030,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             _ => unreachable!("execution authority validated before assembly"),
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let _native_metadata = io.filter(|io| io.uses_native_work())
+        let _native_metadata = io.filter(|io| io.original_native_work().is_some())
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
@@ -1059,7 +1059,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         scope: &Scope, private_volume: &VolumeRef, io: Option<&PreparationIo>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             let guard = self._native_metadata.as_mut().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native interaction binding requires original journal custody",

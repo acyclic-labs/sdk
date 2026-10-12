@@ -30,7 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    if io.uses_native_work() { return Ok(None); }
+    if io.original_native_work().is_some() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -561,7 +561,7 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                if !io.uses_native_work() {
+                if io.original_native_work().is_none() {
                     reference.validate(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {

@@ -2581,7 +2581,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let authorization = handle.authorization();
         if context.durable_task_id() != Some(authorization.caller_task) {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some_and(PreparationIo::uses_native_work) {
+            if io.is_some_and(|io| io.original_native_work().is_some()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "selected project import belongs to another original caller" });
             }
