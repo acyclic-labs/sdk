@@ -354,7 +354,7 @@ pub use s3_http::{
 };
 #[cfg(feature = "memory")]
 pub use simulation::{
-    ScheduledSimulationFault, SimulatedAuthorityStore, SimulatedObjectStore, Simulation,
+    ScheduledSimulationFault, SimulatedStore, Simulation,
     SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
