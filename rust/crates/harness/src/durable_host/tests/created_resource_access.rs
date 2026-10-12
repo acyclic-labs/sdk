@@ -487,7 +487,7 @@ impl CreationFixture {
             },
             schema: schema.clone(),
         });
-        let (task, machine, tasks, machines) = test_registries(
+        let (task, machine, tasks, machines) = test_registries::<Value>(
             implementation, schema.clone(), schema.clone(),
         )?;
         let creator = Arc::new(SandboxCreator {

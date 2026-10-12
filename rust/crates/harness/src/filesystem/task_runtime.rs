@@ -1535,7 +1535,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?)
+            crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?)
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -1899,7 +1899,7 @@ where
                         });
                     }
                     let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                    let payload = crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?);
+                    let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?);
                     drop(body);
                     commands.execute_with_native_work(
                         Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

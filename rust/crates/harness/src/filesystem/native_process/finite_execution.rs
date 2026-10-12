@@ -46,7 +46,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             let bytes = {
                 let io = crate::filesystem::PreparationIo::from_native_work(original)?;
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
-                let decoded = io.decode_preparation::<serde_json::Value>(
+                let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>,
                     &bytes, crate::wire::ErrorCode::Invalid)?;
                 crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);

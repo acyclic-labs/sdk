@@ -1666,7 +1666,7 @@ impl SchemaRegistry {
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
+                decoded = io.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.0
             }
             _ => {
@@ -4625,7 +4625,10 @@ mod tests {
                         },
                     ),
                 };
-                match reducer.plan(&next) {
+                let before = reducer.copy(&mut None).map_err(fail)?;
+                let planned = reducer.plan(&next);
+                prop_assert_eq!(&reducer, &before);
+                match planned {
                     Ok(ApplyResult::Applied { event }) => {
                         prop_assert_eq!(event.revision, revision + 1);
                         let committed = reducer.apply_committed(event.clone(), &mut None).map_err(fail)?;
@@ -4637,7 +4640,6 @@ mod tests {
                         prop_assert!(false, "fresh operation replayed");
                     }
                     Err(_) => {
-                        let before = reducer.copy(&mut None).map_err(fail)?;
                         prop_assert!(reducer.apply(next).is_err());
                         prop_assert_eq!(&reducer, &before);
                     }
@@ -5053,6 +5055,11 @@ mod tests {
         );
         schemas
     }
+    fn reducer_fixture() -> Reducer {
+        let owner = issuer();
+        Reducer::new(owner.audience.clone(), owner.verifier(&mut None).expect("verifier copy"), schemas())
+    }
+
     fn command(operation_id: OperationId, expected_revision: u64, action: Action) -> Command {
         let capabilities = Capabilities::new([
             "event:append",
@@ -5136,14 +5143,7 @@ mod tests {
     #[test]
     fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         use crate::interaction::{Interaction, InteractionKind, InteractionOutcome};
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         let request = Interaction::approval("approve exact effect", operation(12), [3; 32])?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -5262,50 +5262,6 @@ mod tests {
                 .and_then(|(_, outcome)| outcome.as_ref())
                 .is_some()
         );
-        Ok(())
-    }
-
-    #[test]
-    fn exact_replay_is_idempotent_and_conflicting_reuse_is_rejected() -> Result<()> {
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
-        let append = command(
-            operation(1),
-            0,
-            Action::AppendCustom {
-                schema: "example.message".into(),
-                version: 1,
-                content: request_file(br#"{"text":"hello"}"#)?,
-            },
-        );
-        assert!(matches!(
-            reducer.apply(append.clone())?,
-            ApplyResult::Applied { .. }
-        ));
-        assert!(matches!(
-            reducer.apply(append)?,
-            ApplyResult::Replayed { .. }
-        ));
-        assert_eq!(reducer.revision(), 1);
-        let conflicting = command(
-            operation(1),
-            1,
-            Action::AppendCustom {
-                schema: "example.message".into(),
-                version: 1,
-                content: request_file(br#"{"text":"different"}"#)?,
-            },
-        );
-        assert!(matches!(
-            reducer.apply(conflicting),
-            Err(Error::Conflict(_))
-        ));
         Ok(())
     }
 
@@ -5532,14 +5488,7 @@ mod tests {
         let effect_id = EffectId::from_bytes([9; 16]);
         let first_attempt = EffectAttemptId::from_bytes([10; 16]);
         let retry_attempt = EffectAttemptId::from_bytes([11; 16]);
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         reducer.apply(command(
             operation(1),
             0,
@@ -5628,14 +5577,7 @@ mod tests {
     fn at_most_once_effect_is_never_redispatched_after_uncertainty() -> Result<()> {
         let effect_id = EffectId::from_bytes([20; 16]);
         let attempt_id = EffectAttemptId::from_bytes([21; 16]);
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         reducer.apply(command(
             operation(20),
             0,
@@ -5690,14 +5632,7 @@ mod tests {
     fn forged_or_malformed_effect_observations_are_rejected() -> Result<()> {
         let effect_id = EffectId::from_bytes([30; 16]);
         let attempt_id = EffectAttemptId::from_bytes([31; 16]);
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         reducer.apply(command(
             operation(30),
             0,
@@ -5798,14 +5733,7 @@ mod tests {
 
     #[test]
     fn malformed_admission_metadata_is_rejected() -> Result<()> {
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         let mut empty_key = command(
             operation(30),
             0,
@@ -5835,30 +5763,6 @@ mod tests {
             reducer.apply(future_cause),
             Err(Error::Invalid(_))
         ));
-        Ok(())
-    }
-
-    #[test]
-    fn planning_does_not_advance_authoritative_state() -> Result<()> {
-        let reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
-        let planned = reducer.plan(&command(
-            operation(1),
-            0,
-            Action::AppendCustom {
-                schema: "example.message".into(),
-                version: 1,
-                content: request_file(br#"{"text":"hello"}"#)?,
-            },
-        ))?;
-        assert!(matches!(planned, ApplyResult::Applied { .. }));
-        assert_eq!(reducer.revision(), 0);
         Ok(())
     }
 
@@ -5909,40 +5813,6 @@ mod tests {
             source: extension.clone(),
             revision: extension,
         });
-        for (policy, allowed) in [
-            (ExtensionForkPolicy::Inherit, true),
-            (ExtensionForkPolicy::Reset, false),
-            (ExtensionForkPolicy::Reject, false),
-        ] {
-            let mut bindings = SchemaRegistry::new();
-            bindings.register(
-                "example.message",
-                1,
-                json!({"type": "object"}),
-                [9; 32],
-                policy,
-            )?;
-            let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None).expect("verifier copy"), bindings);
-            candidate.apply(command(
-                operation(1),
-                0,
-                Action::BindConversation {
-                    agent: crate::AgentId::from_bytes([1; 16]),
-                },
-            ))?;
-            let result = candidate.plan(&command(
-                operation(8),
-                1,
-                Action::PublishFork {
-                    seed: Box::new(extension_seed.clone()),
-                },
-            ));
-            assert_eq!(
-                result.is_ok(),
-                allowed,
-                "fork policy {policy:?}: {result:?}"
-            );
-        }
         let mut reset_seed = extension_seed.clone();
         if let ResourceRevision::Extension { reference, .. } = &mut reset_seed.resources[3].revision
         {
@@ -5953,38 +5823,23 @@ mod tests {
                 Some("immutable-1".into()),
             )?;
         }
-        for (policy, allowed) in [
-            (ExtensionForkPolicy::Inherit, false),
-            (ExtensionForkPolicy::Reset, true),
+        for (policy, selected_seed, allowed) in [
+            (ExtensionForkPolicy::Inherit, &extension_seed, true),
+            (ExtensionForkPolicy::Reset, &extension_seed, false),
+            (ExtensionForkPolicy::Reject, &extension_seed, false),
+            (ExtensionForkPolicy::Inherit, &reset_seed, false),
+            (ExtensionForkPolicy::Reset, &reset_seed, true),
         ] {
             let mut bindings = SchemaRegistry::new();
-            bindings.register(
-                "example.message",
-                1,
-                json!({"type": "object"}),
-                [9; 32],
-                policy,
-            )?;
+            bindings.register("example.message", 1, json!({"type": "object"}), [9; 32], policy)?;
             let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None).expect("verifier copy"), bindings);
-            candidate.apply(command(
-                operation(1),
-                0,
-                Action::BindConversation {
-                    agent: crate::AgentId::from_bytes([1; 16]),
-                },
-            ))?;
-            let result = candidate.plan(&command(
-                operation(8),
-                1,
-                Action::PublishFork {
-                    seed: Box::new(reset_seed.clone()),
-                },
-            ));
-            assert_eq!(
-                result.is_ok(),
-                allowed,
-                "reset policy {policy:?}: {result:?}"
-            );
+            candidate.apply(command(operation(1), 0, Action::BindConversation {
+                agent: crate::AgentId::from_bytes([1; 16]),
+            }))?;
+            let result = candidate.plan(&command(operation(8), 1, Action::PublishFork {
+                seed: Box::new((*selected_seed).clone()),
+            }));
+            assert_eq!(result.is_ok(), allowed, "fork policy {policy:?}: {result:?}");
         }
         let mut mismatched = extension_seed;
         if let ResourceRevision::Extension {
@@ -6013,14 +5868,7 @@ mod tests {
             )),
             Err(Error::Conflict(_))
         ));
-        let mut reducer = Reducer::new(
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "conversation-1".into(),
-            },
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-        );
+        let mut reducer = reducer_fixture();
         reducer.apply(command(
             operation(1),
             0,

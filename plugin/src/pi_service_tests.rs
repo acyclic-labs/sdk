@@ -43,7 +43,7 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
     .await
     .unwrap();
     let admission = runtime
-        .admit_root_with_native_work(request.binding.clone(), request.root.clone(), command.0, &native_work)
+        .admit_root(&request.binding, &request.root, &command.0, &native_work)
         .await
         .unwrap();
     drop(admission);

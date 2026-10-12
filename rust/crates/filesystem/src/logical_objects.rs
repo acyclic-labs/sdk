@@ -6,7 +6,7 @@ use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
     ObjectStoreError, ObjectWrite, object_digest,
 };
-use acyclic_objects::v1::{Error, NativeBatchObjects, Object, wire};
+use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
@@ -145,10 +145,11 @@ fn service_read_error(error: Error) -> ObjectStoreError {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_objects_error(error: acyclic_objects::v1::NativeObjectsError) -> ObjectStoreError {
-    match error {
-        acyclic_objects::v1::NativeObjectsError::Service(error) => service_read_error(error),
-        acyclic_objects::v1::NativeObjectsError::Unsupported => ObjectStoreError::NativeUnavailable,
-        error => ObjectStoreError::NativeObjects(error),
+    use acyclic_objects::v1::NativeObjectsCause;
+    match &error.cause {
+        NativeObjectsCause::Service(service) if !error.has_payload() => service_read_error(*service),
+        NativeObjectsCause::Unsupported if !error.has_payload() => ObjectStoreError::NativeUnavailable,
+        _ => ObjectStoreError::NativeObjects(error),
     }
 }
 
@@ -170,17 +171,18 @@ fn native_request<T>(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) -> Result<u64, WorkError> {
-    use acyclic_objects::v1::NativeObjectsError;
-    match error {
-        NativeObjectsError::ReadFailure(failure) => [
-            failure.object.as_ref().map_or(0, |value| value.body().len() as u64),
-            failure.secondary_object.as_ref().map_or(0, |value| value.body().len() as u64),
-            failure.partial.as_ref().map_or(0, |bytes| bytes.len() as u64),
-            failure.transport_chunk.as_ref().map_or(0, |bytes| bytes.len() as u64),
-        ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow)),
-        NativeObjectsError::SharedFailure(failure) => native_completed_read_bytes(failure.error()),
-        _ => Ok(0),
+    use acyclic_objects::v1::NativeObjectsCause;
+    if !error.has_payload() {
+        return match &error.cause {
+            NativeObjectsCause::SharedFailure(failure) => native_completed_read_bytes(failure.error()),
+            _ => Ok(0),
+        };
     }
+    [
+        error.object.as_ref().map_or(0, |value| value.body().len() as u64),
+        error.secondary_object.as_ref().map_or(0, |value| value.body().len() as u64),
+        error.transport_chunk.as_ref().map_or(0, |bytes| bytes.len() as u64),
+    ].into_iter().try_fold(0_u64, |total, bytes| total.checked_add(bytes).ok_or(WorkError::Overflow))
 }
 
 fn completed_read_bytes(result: &Result<Object, ObjectStoreError>) -> Result<u64, WorkError> {
@@ -252,7 +254,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { if let Err(error) = value { return native_objects_error(error).into(); } }
+                for value in values { if let Err(error) = value { return native_objects_error(error).into(); } }
             }
         }
         fallback
@@ -292,7 +294,7 @@ impl LogicalReadResults {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(values) => {
-                for value in values.into_results() { visit(value.map_err(native_objects_error))?; }
+                for value in values { visit(value.map_err(native_objects_error))?; }
             }
         }
         Ok(())
@@ -301,15 +303,10 @@ impl LogicalReadResults {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_error_code(error: &acyclic_objects::v1::NativeObjectsError) -> Option<wire::ErrorCode> {
-    use acyclic_objects::v1::{NativeObjectsCause, NativeObjectsError};
-    match error {
-        NativeObjectsError::Service(error) => Some(error.code),
-        NativeObjectsError::SharedFailure(error) => native_error_code(error.error()),
-        NativeObjectsError::ReadFailure(failure) => match &failure.cause {
-            NativeObjectsCause::Service(error) => Some(error.code),
-            NativeObjectsCause::SharedFailure(error) => native_error_code(error.error()),
-            _ => None,
-        },
+    use acyclic_objects::v1::NativeObjectsCause;
+    match &error.cause {
+        NativeObjectsCause::Service(error) => Some(error.code),
+        NativeObjectsCause::SharedFailure(error) => native_error_code(error.error()),
         _ => None,
     }
 }
@@ -377,7 +374,7 @@ impl LogicalPutResults {
     }
 }
 
-impl<P: NativeBatchObjects> LogicalObjectStore<P> {
+impl<P: ObjectsProvider> LogicalObjectStore<P> {
     async fn fetch(
         &self, request: GetRequest, custody: KernelOwnedAllocation,
         accounting: &mut KernelAccounting<'_>,
@@ -748,7 +745,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             ).await,
             #[cfg(not(target_arch = "wasm32"))]
             LogicalPutResults::Native(results) => self.finish_put_many_results(
-                results.into_results().map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
+                results.map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
         };
@@ -797,7 +794,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
 
 }
 
-impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
+impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     async fn put(
         &self,
         object_id: ObjectId,
@@ -1193,7 +1190,7 @@ mod tests {
         acyclic_stream::PreparedOwnedBytes::new(data, allocation, Arc::clone(meter))
             .map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => error.into(),
-                _ => acyclic_objects::v1::NativeObjectsError::Admission(std::io::ErrorKind::InvalidData.into()),
+                _ => acyclic_objects::v1::NativeObjectsError::from(std::io::Error::from(std::io::ErrorKind::InvalidData)),
             })
     }
 
@@ -1228,81 +1225,6 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[async_trait::async_trait]
     impl acyclic_objects::v1::ObjectsProvider for ObservedProvider {
-        async fn create_bucket(&self, q: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> { self.inner.create_bucket(q).await }
-        async fn head_bucket(&self, q: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> { self.inner.head_bucket(q).await }
-        async fn delete_bucket(&self, q: wire::DeleteBucketRequest) -> Result<wire::DeleteBucketResponse, Error> { self.inner.delete_bucket(q).await }
-        async fn put(&self, q: wire::PutObjectHeader, b: OwnedBytes) -> Result<wire::ObjectInfo, Error> {
-            use std::sync::atomic::Ordering::SeqCst;
-            self.calls.fetch_add(1, SeqCst);
-            assert_eq!(self.original.receipt().backend_write_operations, 1);
-            assert!(self.original.receipt().bytes_copied > 0);
-            let result = self.inner.put(q, b).await;
-            if self.cancel { self.original.cancellation().cancel(); }
-            if self.error { Err(wire::ErrorCode::Unavailable.into()) } else { result }
-        }
-
-        fn put_native(
-            &self, request: acyclic_objects::v1::ObjectsNativeRequest<PutRequest>,
-            meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> Result<acyclic_objects::v1::ObjectsNativeFuture<'_, acyclic_objects::v1::ObjectsPutReceipt>,
-            acyclic_objects::v1::NativeObjectsError> {
-            let future = self.inner.put_native(request, Arc::clone(&meter))?;
-            acyclic_objects::v1::native_future(meter, async move {
-                let result = future.await;
-                if self.original.receipt().backend_write_operations != 0 {
-                    self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
-                if self.cancel { self.original.cancellation().cancel(); }
-                if self.error { Err(Error::from(wire::ErrorCode::Unavailable).into()) } else { result }
-            })
-        }
-        async fn get(&self, q: wire::GetObjectRequest, maximum: u64) -> Result<Object, Error> {
-            use std::sync::atomic::Ordering::SeqCst;
-            self.calls.fetch_add(1, SeqCst);
-            self.maximum.store(maximum, SeqCst);
-            assert_eq!(self.original.receipt().backend_read_operations, 1);
-            assert!(self.original.receipt().peak_allocation_bytes >=
-                crate::NativeMaterializationWork::accounting_state_bytes()
-                + q.bucket.as_ref().map_or(0, |bucket| bucket.name.len() as u64)
-                + q.object_key.len() as u64 + maximum);
-            assert_eq!(q.object_key, object_key(native_test_id()));
-            assert!(!self.panic, "provider boundary panic");
-            if self.error { return Err(wire::ErrorCode::Unavailable.into()); }
-            if self.cancel { self.original.cancellation().cancel(); }
-            Ok(Object::new(wire::GetObjectHeader::default(), OwnedBytes::from_static(b"body")))
-        }
-
-        fn get_native(
-            &self, request: acyclic_objects::v1::ObjectsNativeRequest<wire::GetObjectRequest>,
-            maximum: u64, meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> Result<acyclic_objects::v1::ObjectsNativeFuture<'_, Object>, acyclic_objects::v1::NativeObjectsError> {
-            acyclic_objects::v1::native_future(Arc::clone(&meter), async move {
-                let prepared = prepare_observed_body(&meter)?;
-                meter.admit_read(0)?;
-                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                self.maximum.store(maximum, std::sync::atomic::Ordering::SeqCst);
-                assert_eq!(request.data().object_key, object_key(native_test_id()));
-                assert!(!self.panic, "provider boundary panic");
-                if self.error { return Err(Error::from(wire::ErrorCode::Unavailable).into()); }
-                let value = observed_body(prepared, &meter)?;
-                if self.cancel { self.original.cancellation().cancel(); }
-                drop(request);
-                Ok(value)
-            })
-        }
-        async fn head(&self, q: wire::HeadObjectRequest) -> Result<wire::HeadObjectResponse, Error> { self.inner.head(q).await }
-        async fn delete(&self, q: wire::DeleteObjectRequest) -> Result<wire::DeleteObjectResponse, Error> { self.inner.delete(q).await }
-        async fn list(&self, q: wire::ListObjectsRequest) -> Result<wire::ListObjectsResponse, Error> { self.inner.list(q).await }
-        async fn create_multipart(&self, q: wire::CreateMultipartRequest) -> Result<wire::MultipartUpload, Error> { self.inner.create_multipart(q).await }
-        async fn upload_part(&self, q: wire::UploadPartHeader, b: OwnedBytes) -> Result<wire::UploadedPart, Error> { self.inner.upload_part(q, b).await }
-        async fn list_parts(&self, q: wire::ListPartsRequest) -> Result<wire::ListPartsResponse, Error> { self.inner.list_parts(q).await }
-        async fn complete_multipart(&self, q: wire::CompleteMultipartRequest) -> Result<wire::ObjectInfo, Error> { self.inner.complete_multipart(q).await }
-        async fn abort_multipart(&self, q: wire::AbortMultipartRequest) -> Result<wire::AbortMultipartResponse, Error> { self.inner.abort_multipart(q).await }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[async_trait::async_trait]
-    impl NativeBatchObjects for ObservedProvider {
         async fn put_batch(&self, q: Vec<PutRequest>) -> Vec<Result<wire::ObjectInfo, Error>> {
             use std::sync::atomic::Ordering::SeqCst;
             self.calls.fetch_add(1, SeqCst);
@@ -1451,7 +1373,80 @@ mod tests {
                 acyclic_objects::v1::ObjectsBatch::new(results, allocation)
             })
         }
+
+        async fn create_bucket(&self, q: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> { self.inner.create_bucket(q).await }
+        async fn head_bucket(&self, q: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> { self.inner.head_bucket(q).await }
+        async fn delete_bucket(&self, q: wire::DeleteBucketRequest) -> Result<wire::DeleteBucketResponse, Error> { self.inner.delete_bucket(q).await }
+        async fn put(&self, q: wire::PutObjectHeader, b: OwnedBytes) -> Result<wire::ObjectInfo, Error> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.calls.fetch_add(1, SeqCst);
+            assert_eq!(self.original.receipt().backend_write_operations, 1);
+            assert!(self.original.receipt().bytes_copied > 0);
+            let result = self.inner.put(q, b).await;
+            if self.cancel { self.original.cancellation().cancel(); }
+            if self.error { Err(wire::ErrorCode::Unavailable.into()) } else { result }
+        }
+
+        fn put_native(
+            &self, request: acyclic_objects::v1::ObjectsNativeRequest<PutRequest>,
+            meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        ) -> Result<acyclic_objects::v1::ObjectsNativeFuture<'_, acyclic_objects::v1::ObjectsPutReceipt>,
+            acyclic_objects::v1::NativeObjectsError> {
+            let future = self.inner.put_native(request, Arc::clone(&meter))?;
+            acyclic_objects::v1::native_future(meter, async move {
+                let result = future.await;
+                if self.original.receipt().backend_write_operations != 0 {
+                    self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                if self.cancel { self.original.cancellation().cancel(); }
+                if self.error { Err(Error::from(wire::ErrorCode::Unavailable).into()) } else { result }
+            })
+        }
+        async fn get(&self, q: wire::GetObjectRequest, maximum: u64) -> Result<Object, Error> {
+            use std::sync::atomic::Ordering::SeqCst;
+            self.calls.fetch_add(1, SeqCst);
+            self.maximum.store(maximum, SeqCst);
+            assert_eq!(self.original.receipt().backend_read_operations, 1);
+            assert!(self.original.receipt().peak_allocation_bytes >=
+                crate::NativeMaterializationWork::accounting_state_bytes()
+                + q.bucket.as_ref().map_or(0, |bucket| bucket.name.len() as u64)
+                + q.object_key.len() as u64 + maximum);
+            assert_eq!(q.object_key, object_key(native_test_id()));
+            assert!(!self.panic, "provider boundary panic");
+            if self.error { return Err(wire::ErrorCode::Unavailable.into()); }
+            if self.cancel { self.original.cancellation().cancel(); }
+            Ok(Object::new(wire::GetObjectHeader::default(), OwnedBytes::from_static(b"body")))
+        }
+
+        fn get_native(
+            &self, request: acyclic_objects::v1::ObjectsNativeRequest<wire::GetObjectRequest>,
+            maximum: u64, meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        ) -> Result<acyclic_objects::v1::ObjectsNativeFuture<'_, Object>, acyclic_objects::v1::NativeObjectsError> {
+            acyclic_objects::v1::native_future(Arc::clone(&meter), async move {
+                let prepared = prepare_observed_body(&meter)?;
+                meter.admit_read(0)?;
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.maximum.store(maximum, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(request.data().object_key, object_key(native_test_id()));
+                assert!(!self.panic, "provider boundary panic");
+                if self.error { return Err(Error::from(wire::ErrorCode::Unavailable).into()); }
+                let value = observed_body(prepared, &meter)?;
+                if self.cancel { self.original.cancellation().cancel(); }
+                drop(request);
+                Ok(value)
+            })
+        }
+        async fn head(&self, q: wire::HeadObjectRequest) -> Result<wire::HeadObjectResponse, Error> { self.inner.head(q).await }
+        async fn delete(&self, q: wire::DeleteObjectRequest) -> Result<wire::DeleteObjectResponse, Error> { self.inner.delete(q).await }
+        async fn list(&self, q: wire::ListObjectsRequest) -> Result<wire::ListObjectsResponse, Error> { self.inner.list(q).await }
+        async fn create_multipart(&self, q: wire::CreateMultipartRequest) -> Result<wire::MultipartUpload, Error> { self.inner.create_multipart(q).await }
+        async fn upload_part(&self, q: wire::UploadPartHeader, b: OwnedBytes) -> Result<wire::UploadedPart, Error> { self.inner.upload_part(q, b).await }
+        async fn list_parts(&self, q: wire::ListPartsRequest) -> Result<wire::ListPartsResponse, Error> { self.inner.list_parts(q).await }
+        async fn complete_multipart(&self, q: wire::CompleteMultipartRequest) -> Result<wire::ObjectInfo, Error> { self.inner.complete_multipart(q).await }
+        async fn abort_multipart(&self, q: wire::AbortMultipartRequest) -> Result<wire::AbortMultipartResponse, Error> { self.inner.abort_multipart(q).await }
     }
+
+
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
@@ -1510,7 +1505,7 @@ mod tests {
             });
             let error = store.put_many_with_native_work(&writes, &work, &cancellation).await
                 .err().ok_or("unbounded response was accepted")?;
-            assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError::Admission(_))
+            assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
                 | ObjectStoreError::Work(_) | ObjectStoreError::Native(_)));
             assert_eq!(work.receipt().object_bytes_written, 0);
             assert_eq!(store.provider.calls.load(SeqCst), 0);
@@ -1709,7 +1704,7 @@ mod tests {
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let error = store.read_with_native_work(native_test_id(), 100, &work, &cancellation).await
             .err().ok_or("unfunded native controls reached the provider")?;
-        assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError::Admission(_))
+        assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
             | ObjectStoreError::Native(_) | ObjectStoreError::Work(_)));
         assert_eq!(store.provider.maximum.load(SeqCst), 0);
         assert_eq!(store.provider.calls.load(SeqCst), 0);
