@@ -4,9 +4,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "bun:test";
 import { invokePi } from "./pi-fixture.ts";
-
-// Pi's own deterministic provider exercises the installed CLI without network
-// requests, credentials, or a substitute session/tool runner.
 const provider = `
 import { fauxProvider, fauxAssistantMessage, getCurrentTools, Type } from "@earendil-works/pi-ai";
 export default function (pi) {

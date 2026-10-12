@@ -44,7 +44,7 @@ impl Default for MailboxModelMachine {
     }
 }
 
-fn command_result(input: &Value, command: &WorkflowCommand) -> Result<Value> {
+pub(super) fn command_result(input: &Value, command: &WorkflowCommand) -> Result<Value> {
     let results = input["commands"].as_array()
         .ok_or_else(|| Error::Invalid("mailbox machine requires a command result".into()))?;
     let [result] = results.as_slice() else {

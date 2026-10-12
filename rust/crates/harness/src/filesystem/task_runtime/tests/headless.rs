@@ -2,11 +2,11 @@ use super::*;
 use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
-    FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), fixture.issuer.verifier(),
-        fixture.signed.clone(), fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(),
-        fixture.tools.clone(), SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
-        1, 65_536, fixture.clock.clone(),
+    FilesystemTaskRuntime::open(
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &fixture.issuer.verifier(),
+        &fixture.signed, &fixture.scope, &fixture.tasks, &fixture.machines,
+        &fixture.tools, SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 },
+        1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
     ).await
 }
 
@@ -117,10 +117,10 @@ async fn direct_child_pages_use_the_owner_index_and_invalidate_changed_revision(
     });
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     let signed = foreign_issuer.root_for_agent(agent, "owner", fixture.signed.capabilities().clone());
-    let foreign = FilesystemTaskRuntime::open_with_clock(
-        fixture.stream.clone(), fixture.filesystem.clone(), fixture.volume.clone(), foreign_issuer.verifier(),
-        signed, fixture.scope.clone(), fixture.tasks.clone(), fixture.machines.clone(), fixture.tools.clone(),
-        SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(),
+    let foreign = FilesystemTaskRuntime::open(
+        fixture.stream.clone(), fixture.filesystem.clone(), &fixture.volume, &foreign_issuer.verifier(),
+        &signed, &fixture.scope, &fixture.tasks, &fixture.machines, &fixture.tools,
+        SessionLimits { active_tasks: 8, total_tasks: 16, depth: 4, model_steps: 8 }, 1, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
     ).await?;
     assert!(foreign.children(parent, None, None, 1).await.is_err());
     assert!(foreign.inspect_source(parent, parent).await.is_err());
@@ -155,6 +155,18 @@ impl ModelProvider for ModelFixture {
 #[tokio::test]
 async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retargeting() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let fs = Fs::memory();
+    fixture.filesystem = Arc::new(FilesystemHost::new(fs.clone(), fixture.volume.provider().clone())?);
+    fixture.filesystem.create_volume(&fixture.volume).await?;
+    let project = VolumeRef::new(fixture.volume.provider().clone(), "restore-project", VolumeClass::Project,
+        VolumeOwner::Project("restore".into()))?;
+    fixture.filesystem.create_volume(&project).await?;
+    let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
+    fixture.signed = fixture.issuer.root_for_agent(agent, "owner", Capabilities::new(
+        fixture.signed.capabilities().iter().chain([
+            project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        ].iter().map(String::as_str)),
+    ));
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
     let runtime = runtime(&fixture).await?;
     let lease = fixture.admit(&runtime).await?;
@@ -179,6 +191,108 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     stale.reservation_id = "wrong-fence".into();
     assert!(runtime.stock_execution(task, stale, OperationId::new(), Model::new("fixture", "headless", "1", json!({}))?,
         provider.clone(), ContextPipeline::default()).await.is_err());
+    assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+    use acyclic_fs::{TransactionCommit, WorkspaceRestore};
+    use crate::core::{Action, Command};
+    use crate::conversation::{ConversationMessage, MessageKind};
+    use crate::filesystem::{FilesystemContentVerifier, FilesystemForkPreparer, FilesystemForkVerifier};
+    use crate::fork::{CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision, StreamHistoryForkVerifier};
+    use crate::store::StreamAggregate;
+
+    let authority = Authority { kind: AggregateKind::Conversation, id: "restore-history".into() };
+    let issuer = AuthorityIssuer::new("restore", [132; 32], authority.clone());
+    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(
+        fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
+    ));
+    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), issuer.verifier(), signed.clone(), 65_536)?);
+    let stream_provider = ProviderRef::new("restore", "stream", "2")?;
+    let forks = Arc::new(CompositeForkVerifier::new(vec![
+        Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
+        Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
+    ])?);
+    let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(), SchemaRegistry::new()).await?
+        .with_content_verifier(reader.clone()).with_fork_verifier(forks.clone());
+    history.execute(Command { operation_id: OperationId::from_bytes([133; 16]), idempotency_key: IdempotencyKey::new("restore-bind")?,
+        expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+    let message = put(&fixture, &fixture.volume, "restore/history.txt", b"original conversation", "restore-history").await?;
+    history.execute(Command { operation_id: OperationId::from_bytes([134; 16]), idempotency_key: IdempotencyKey::new("restore-message")?,
+        expected_revision: 1, scope: signed.clone(), causal_parent: None, action: Action::AppendConversationMessage {
+            message: Box::new(ConversationMessage { id: uuid::Uuid::from_bytes([134; 16]), sequence: 1, kind: MessageKind::User,
+                content: message.clone(), attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
+        } }).await?;
+    let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
+    let original_revision = history.reducer().revision();
+    let workspace = fs.open_workspace(project.storage_name()?).await.map_err(|e| Error::Storage(e.to_string()))?;
+    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write)?;
+    let restricted = fixture.issuer.root_for_agent(agent, "read-only", Capabilities::new([project.capability(VolumeOperation::Read)?]));
+    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write).is_err());
+    put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
+    let selected = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    put(&fixture, &project, "src/a.txt", b"new", "restore-new").await?;
+    let observed = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    put(&fixture, &project, "concurrent.txt", b"user edit", "restore-concurrent").await?;
+    let paths = vec!["src/a.txt".into()];
+    assert!(matches!(workspace.restore_paths_from(&selected, &paths, observed.id(), acyclic_fs::IdempotencyKey::from_bytes([135; 16]))
+        .await.map_err(|e| Error::Storage(e.to_string()))?, TransactionCommit::Conflict { .. }));
+    let current = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    assert!(matches!(workspace.restore_paths_from(&selected, &paths, current.id(), acyclic_fs::IdempotencyKey::from_bytes([136; 16]))
+        .await.map_err(|e| Error::Storage(e.to_string()))?, TransactionCommit::Committed(_)));
+    let saved = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    put(&fixture, &project, "src/a.txt", b"later", "restore-later").await?;
+    assert!(matches!(workspace.restore_generation(&saved, saved.id(), acyclic_fs::IdempotencyKey::from_bytes([137; 16]))
+        .await.map_err(|e| Error::Storage(e.to_string()))?, WorkspaceRestore::Stale(_)));
+    let current = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    let restore_key = acyclic_fs::IdempotencyKey::from_bytes([138; 16]);
+    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key).await.map_err(|e| Error::Storage(e.to_string()))?,
+        WorkspaceRestore::Restored(_)));
+    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key).await.map_err(|e| Error::Storage(e.to_string()))?,
+        WorkspaceRestore::AlreadyRestored(_)));
+    let selected_generation = fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &project.storage_name()?)?).await?.generation;
+    let inspection = runtime.inspect_source(task, task).await?;
+    assert_eq!(inspection.read_path(&project, "", "src/a.txt", &selected_generation).await?.1.as_ref(), b"old");
+    assert_eq!(inspection.read_path(&project, "", "concurrent.txt", &selected_generation).await?.1.as_ref(), b"user edit");
+    assert_eq!(history.reducer().revision(), original_revision);
+    assert_eq!(history.reducer().conversation().map(|state| state.messages().to_vec()), original_history);
+    assert_eq!(execution.model_step(&input, 0, &[]).await?, events);
+
+    let child_agent = AgentId::from_bytes([139; 16]);
+    let child_authority = Authority { kind: AggregateKind::Conversation, id: "restore-new-conversation".into() };
+    let child_project = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::Project, project.owner().clone())?;
+    let child_private = VolumeRef::new(project.provider().clone(), "restore-child", VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
+    let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), history.reducer().clone(), issuer.verifier(), signed.clone(),
+        project.clone(), stream_provider.clone(), reader)?;
+    let request = ForkRequest { authorized_source: None, operation_id: OperationId::from_bytes([140; 16]), parent: authority.clone(),
+        parent_revision: original_revision, child: child_authority.clone(), child_agent, attached_agents: Vec::new(), boundary: None,
+        preparation: ForkPreparation { child_result_volume: None, summary: None, child_project_volume: child_project.clone(),
+            child_private_volume: child_private.clone(), inherited_through_sequence: 1, maximum_inherited_messages: 1,
+            maximum_inherited_bytes: 65_536, maximum_inherited_references: 8 },
+        selections: vec![
+            ForkSelection { required: true, revision: ResourceRevision::Project { volume: project.clone(), generation: selected_generation.clone() } },
+            ForkSelection { required: true, revision: ResourceRevision::PrivateVolume { volume: fixture.volume.clone(),
+                generation: fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &fixture.volume.storage_name()?)?).await?.generation,
+                paths: Vec::new() } },
+            ForkSelection { required: true, revision: ResourceRevision::History(crate::resources::StreamRef::new(stream_provider,
+                authority.stream_path()?.into_bytes(), Some(original_revision.to_string()))?) },
+        ] };
+    let report = history.prepare_fork(&preparer, request).await?;
+    let child_issuer = AuthorityIssuer::new("restore", [132; 32], child_authority.clone());
+    let child_scope = child_issuer.root_for_agent(child_agent, "child", Capabilities::new([
+        "conversation:bind".into(), child_private.capability(VolumeOperation::Read)?, child_private.capability(VolumeOperation::Write)?,
+        child_project.capability(VolumeOperation::Read)?, child_project.capability(VolumeOperation::Write)?,
+    ]));
+    let mut child = StreamAggregate::open(&fixture.stream, child_authority, child_issuer.verifier(), SchemaRegistry::new()).await?
+        .with_fork_verifier(forks);
+    let seed = child.spawn_from_report(&mut history, report, signed, child_scope).await?;
+    assert_eq!(seed.parent, authority);
+    assert!(!seed.inherited_context.is_empty());
+    assert_eq!(history.reducer().conversation().map(|state| state.messages().to_vec()), original_history);
+    assert_eq!(child.reducer().conversation().and_then(|state| state.agent), Some(child_agent));
+    assert_eq!(fixture.filesystem.read(&crate::filesystem::workspace_ref(project.provider().clone(), &child_project.storage_name()?)?, None, "/src/a.txt", 128).await?.as_ref(), b"old");
+    let reopened = self::runtime(&fixture).await?;
+    let replay = reopened.stock_execution(task, LeaseFence::from(&lease.reservation), input.operation_id,
+        Model::new("fixture", "headless", "1", json!({}))?, provider.clone(), ContextPipeline::default()).await?
+        .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
+    assert_eq!(replay.model_step(&input, 0, &[]).await?, events);
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     Ok(())
 }
