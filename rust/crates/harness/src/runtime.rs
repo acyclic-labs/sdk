@@ -7083,11 +7083,26 @@ impl TaskContext {
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
-    pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
+    pub async fn observe_staged_file_once(&self, operation_id: OperationId, io: Option<&crate::executor::PreparationIo>) -> Result<Option<FileRef>> {
+        #[cfg(feature = "filesystem")]
+        let writer = match io {
+            Some(io) => self.bound_content_writer_measured(self.content_binding(None), &self.scope, io)?,
+            None => self.bound_content_writer(self.content_binding(None))?,
+        };
+        #[cfg(not(feature = "filesystem"))]
         let writer = self.bound_content_writer(self.content_binding(None))?;
-        let (file, _hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, None)?.await?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        let (file, hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, io)?.await?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        if let Some(hold) = hold { hold.into_retained(); }
         if let Some(file) = &file {
-            self.scope.limits.validate_file(file, &mut None)?;
+            #[cfg(feature = "filesystem")]
+            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+            #[cfg(feature = "filesystem")]
+            let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+            #[cfg(not(feature = "filesystem"))]
+            let mut work = None;
+            self.scope.limits.validate_file(file, &mut work)?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
             }

@@ -35,7 +35,7 @@ macro_rules! command_record {
 }
 
 command_record!(
-    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand,
+    TimerTaskCommand, TaskObserveCommand, TaskCancelCommand, CommittedMailResult,
     TaskAdmitCommand => TaskAdmitCommand,
     PreparedTaskAdmitCommand => PreparedTaskAdmitCommand,
     ModelTaskCommand => ModelTaskCommand,
@@ -933,9 +933,7 @@ where
             let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
             let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
             let _path = io.guard_owned(copy_path.capacity() as u64)?;
-            let retained = context.context().observe_staged_file_once_with_native_work(copy_operation, work).await?;
-            io.absorb_native_custody(retained.1)?;
-            let copy = match retained.0 {
+            let copy = match context.context().observe_staged_file_once(copy_operation, Some(io)).await? {
                 Some(file) => file,
                 None if reconciliation_only => return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Storage,
@@ -1126,7 +1124,7 @@ where
             let item = self.committed_mail_input(task, &fence, turn, receive, &context, None).await?;
             let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
             let copy_path = format!("mailbox/{receive}/parcel");
-            let copy = match context.observe_staged_file_once(copy_operation).await? {
+            let copy = match context.observe_staged_file_once(copy_operation, None).await? {
                 Some(file) => file,
                 None if reconciliation_only => return Err(Error::Storage(
                     "started steered model has no retained receiver parcel".into())),

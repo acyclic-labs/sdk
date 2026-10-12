@@ -2558,7 +2558,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream_text_with_work(&owner.stream(), &path, &mut work)?;
+        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
         let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
@@ -2621,7 +2621,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let event: MailEvent = mail::decode(&record.value, io)?;
         let mut message = [0; 36];
         let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
-        if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
+        if record.sequence.checked_add(1) != Some(item.sequence) || &*message != item.message_id || event.payload != item.payload
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
             return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "parcel differs from its retained mailbox item"));
@@ -3562,10 +3562,19 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(crate) async fn readonly_journal_owner_with_native_work(
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) async fn readonly_journal_owner(
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskJournalOwner<P>> {
+        #[cfg(not(feature = "native-execution"))]
+        {
+            let _ = task;
+            work.remaining()?;
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "protected native preparation requires native-execution" });
+        }
+        #[cfg(feature = "native-execution")]
+        {
         let witness = self.task_admission_readonly_witness_with_native_work(task, work).await?;
         let observation = crate::filesystem::observe_preparation(&witness, work)?.await?;
         let Some(recorded) = observation else {
@@ -3585,6 +3594,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             task, std::borrow::Cow::Borrowed(&recorded.original_fence),
             Some(original), &mut Some(&mut io),
         ).await
+        }
     }
 
     #[cfg(feature = "filesystem")]
