@@ -1,21 +1,23 @@
 //! Linux FUSE projection over the common callback contract.
 
-#![allow(unsafe_code, reason = "FUSE mount, descriptor transfer and recovery syscalls")]
+#![allow(
+    unsafe_code,
+    reason = "FUSE mount, descriptor transfer and recovery syscalls"
+)]
 
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
-    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
-    system_time_ns,
+    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use fuser::{
-    BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr,
-    FileHandle as FuseFileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags,
-    KernelConfig, LockOwner, Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow, WriteFlags,
+    BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
+    FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,
+    Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyWrite, ReplyXattr,
+    Request, TimeOrNow, WriteFlags,
 };
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -30,26 +32,40 @@ use std::sync::{
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
-static TEST_WRITE_GATE: OnceLock<Mutex<Option<(
-    std::sync::mpsc::SyncSender<()>, std::sync::mpsc::Receiver<()>,
-)>>> = OnceLock::new();
+static TEST_WRITE_GATE: OnceLock<
+    Mutex<
+        Option<(
+            std::sync::mpsc::SyncSender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+> = OnceLock::new();
 
 /// Pauses one FUSE write after handle admission.
 #[cfg(test)]
-pub(super) fn pause_next_write_after_admission()
-    -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::SyncSender<()>) {
+pub(super) fn pause_next_write_after_admission() -> (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::mpsc::SyncSender<()>,
+) {
     let (admitted_send, admitted_receive) = std::sync::mpsc::sync_channel(0);
     let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
-    *TEST_WRITE_GATE.get_or_init(|| Mutex::new(None)).lock()
+    *TEST_WRITE_GATE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
         .unwrap_or_else(PoisonError::into_inner) = Some((admitted_send, release_receive));
     (admitted_receive, release_send)
 }
 
 #[cfg(test)]
 fn pause_test_write() {
-    let Some((admitted, release)) = TEST_WRITE_GATE.get_or_init(|| Mutex::new(None))
-        .lock().unwrap_or_else(PoisonError::into_inner).take()
-    else { return; };
+    let Some((admitted, release)) = TEST_WRITE_GATE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+    else {
+        return;
+    };
     let _ = admitted.send(());
     let _ = release.recv_timeout(Duration::from_secs(10));
 }
@@ -63,10 +79,11 @@ const REQUESTED_CAPABILITIES: InitFlags = InitFlags::FUSE_DO_READDIRPLUS
     .union(InitFlags::FUSE_PARALLEL_DIROPS)
     .union(InitFlags::FUSE_AUTO_INVAL_DATA)
     .union(InitFlags::FUSE_CACHE_SYMLINKS);
-use libc::{RENAME_NOREPLACE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+use libc::{
+    RENAME_NOREPLACE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
+};
 const DETACHED_COPY_CHUNK_BYTES: u32 = 1024 * 1024;
 const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
-
 
 mod budget;
 use budget::*;
@@ -87,8 +104,8 @@ use invalidation::*;
 mod state;
 use state::*;
 mod core;
-use core::*;
 pub(super) use core::FuseStartupMeterScope;
+use core::*;
 mod retirement;
 use retirement::*;
 mod errors;
@@ -98,11 +115,11 @@ use lookup::*;
 mod mount;
 use mount::*;
 mod session;
-use session::*;
 pub(super) use session::FuseSession;
+use session::*;
 mod lifecycle;
-use lifecycle::*;
 pub(super) use lifecycle::FuseRecoveryControl;
+use lifecycle::*;
 mod write;
 use write::*;
 mod xattr;
@@ -131,7 +148,6 @@ macro_rules! respond {
 }
 
 mod callbacks;
-
 
 fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
     if size == 0 {

@@ -28,14 +28,22 @@ impl PageStores {
         !self.in_flight.contains_key(&file_id) && !self.claims.contains_key(&file_id)
     }
 
-    pub(super) fn begin(&mut self, file_id: crate::FileId, stamp: ViewStamp,
-        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
-    {
+    pub(super) fn begin(
+        &mut self,
+        file_id: crate::FileId,
+        stamp: ViewStamp,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         fuse_item(work)?;
         debug_assert!(self.may_begin(file_id));
-        let storage = work.claim(std::mem::size_of::<(crate::FileId, (ViewStamp, crate::NativeAllocation))>() as u64,
-            1, crate::WorkCounters::UNCHARGED)?;
-        self.in_flight.try_reserve(1).map_err(NativeMountError::Allocation)?;
+        let storage = work.claim(
+            std::mem::size_of::<(crate::FileId, (ViewStamp, crate::NativeAllocation))>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        self.in_flight
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
         self.in_flight.insert(file_id, (stamp, storage));
         Ok(())
     }
@@ -44,17 +52,24 @@ impl PageStores {
         self.in_flight.remove(&file_id);
     }
 
-    pub(super) fn claim(&mut self, file_id: crate::FileId, work: &crate::NativeMaterializationWork)
-        -> Result<(), NativeMountError>
-    {
+    pub(super) fn claim(
+        &mut self,
+        file_id: crate::FileId,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         fuse_item(work)?;
         debug_assert!(!self.in_flight.contains_key(&file_id));
         if let Some(claims) = self.claims.get_mut(&file_id) {
             claims.0 = claims.0.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         } else {
-            let storage = work.claim(std::mem::size_of::<(crate::FileId, (u64, crate::NativeAllocation))>() as u64,
-                1, crate::WorkCounters::UNCHARGED)?;
-            self.claims.try_reserve(1).map_err(NativeMountError::Allocation)?;
+            let storage = work.claim(
+                std::mem::size_of::<(crate::FileId, (u64, crate::NativeAllocation))>() as u64,
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )?;
+            self.claims
+                .try_reserve(1)
+                .map_err(NativeMountError::Allocation)?;
             self.claims.insert(file_id, (1, storage));
         }
         Ok(())
@@ -84,7 +99,11 @@ pub(super) struct PageStore {
 }
 
 impl FuseProjection {
-    pub(super) fn read_link(&self, inode: u64, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
+    pub(super) fn read_link(
+        &self,
+        inode: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
@@ -92,7 +111,9 @@ impl FuseProjection {
         let target = source.read_link(&path, work)?;
         let target = fuse_owned_source_chunk(target, work)?;
         // The kernel keeps the target it receives.
-        self.core.state()?.admit_attributes(source, inode, stamp, work)?;
+        self.core
+            .state()?
+            .admit_attributes(source, inode, stamp, work)?;
         Ok(target)
     }
 
@@ -102,10 +123,17 @@ impl FuseProjection {
         mut open_flags: FopenFlags,
         work: &crate::NativeMaterializationWork,
     ) -> FopenFlags {
-        let Some(store) = store else { return open_flags; };
+        let Some(store) = store else {
+            return open_flags;
+        };
         let stored = (|| -> Result<bool, NativeMountError> {
-            let Some(notifier) = self.core.notifier.get() else { return Ok(false); };
-            let bytes = store.open_file.file(work)?.read_up_to_with_meter(0, store.length, work)?;
+            let Some(notifier) = self.core.notifier.get() else {
+                return Ok(false);
+            };
+            let bytes = store
+                .open_file
+                .file(work)?
+                .read_up_to_with_meter(0, store.length, work)?;
             let bytes = fuse_owned_source_chunk(bytes, work)?;
             let delta = crate::WorkCounters {
                 backend_write_operations: 1,
@@ -114,11 +142,16 @@ impl FuseProjection {
             };
             work.admit(delta)?;
             work.charge(crate::WorkCounters {
-                backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
             })?;
             let result = notifier.store(INodeNo(store.inode), 0, &bytes.bytes);
             work.record_admitted(crate::WorkCounters {
-                output_bytes: if result.is_ok() { delta.output_bytes } else { 0 },
+                output_bytes: if result.is_ok() {
+                    delta.output_bytes
+                } else {
+                    0
+                },
                 ..crate::WorkCounters::UNCHARGED
             })?;
             result.map_err(NativeMountError::Io)?;
@@ -135,7 +168,10 @@ impl FuseProjection {
         state.page_stores.land(store.file_id);
         self.core.page_stored.notify_all();
         let admitted = match state.admissible(
-            self.core.source.as_ref(), &store.path, Some(store.file_id), Some(store.stamp),
+            self.core.source.as_ref(),
+            &store.path,
+            Some(store.file_id),
+            Some(store.stamp),
             work,
         ) {
             Ok(admitted) => admitted,
@@ -146,7 +182,10 @@ impl FuseProjection {
         };
         if !admitted {
             match fuse_reserve(&mut state.invalidation.deferred, 1, work) {
-                Ok(()) => state.invalidation.deferred.push(KernelCacheItem::Inode(store.inode)),
+                Ok(()) => state
+                    .invalidation
+                    .deferred
+                    .push(KernelCacheItem::Inode(store.inode)),
                 Err(error) => self.core.record_handler_failure(work, error),
             }
         }
@@ -155,14 +194,28 @@ impl FuseProjection {
         open_flags
     }
 
-    pub(super) fn read_through(&self, inode: u64, handle: u64, offset: u64, size: u32, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
-        let read = self.with_handle(inode, handle, Access::Read, |opened| {
-            self.read_handle(inode, opened, offset, size, work)
-        }, work);
+    pub(super) fn read_through(
+        &self,
+        inode: u64,
+        handle: u64,
+        offset: u64,
+        size: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
+        let read = self.with_handle(
+            inode,
+            handle,
+            Access::Read,
+            |opened| self.read_handle(inode, opened, offset, size, work),
+            work,
+        );
         match read {
-            Err(ref error) if handle == 0 && self.skips_open
-                && (matches!(error, NativeMountError::Source(MountSourceError::Stale))
-                    || matches!(error, NativeMountError::Io(error) if error.raw_os_error() == Some(libc::ESTALE))) => {
+            Err(ref error)
+                if handle == 0
+                    && self.skips_open
+                    && (matches!(error, NativeMountError::Source(MountSourceError::Stale))
+                        || matches!(error, NativeMountError::Io(error) if error.raw_os_error() == Some(libc::ESTALE))) =>
+            {
                 let Some(stale) = self.core.state()?.implicit.get(&inode).map(|held| held.0) else {
                     return Err(libc::ESTALE.into());
                 };
@@ -176,14 +229,22 @@ impl FuseProjection {
         }
     }
 
-    pub(super) fn read_handle(&self, inode: u64, handle: u64, offset: u64, size: u32, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
+    pub(super) fn read_handle(
+        &self,
+        inode: u64,
+        handle: u64,
+        offset: u64,
+        size: u32,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, NativeMountError> {
         let open_file = self.core.state()?.open_handle(inode, handle, work)?;
-        let bytes = open_file.file(work)?.read_up_to_with_meter(offset, size, work)?;
+        let bytes = open_file
+            .file(work)?
+            .read_up_to_with_meter(offset, size, work)?;
         let bytes = fuse_owned_source_chunk(bytes, work)?;
         if self.core.stopping.load(Ordering::Acquire) {
             return Err(libc::ENODEV.into());
         }
         Ok(bytes)
     }
-
 }

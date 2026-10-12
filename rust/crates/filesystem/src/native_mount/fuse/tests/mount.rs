@@ -7,7 +7,9 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
     let (mounted_source, around) = shared_sources()?;
     let mounted_source = Arc::new(mounted_source);
     let file = name("file");
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&file, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(&file, FileMetadata::default(), None, work)
+    })?;
     around.write_range(&file, 0, Bytes::from_static(b"first"))?;
     let temporary = tempfile::tempdir()?;
     let mut session = mount(
@@ -24,14 +26,18 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 
     // Same length, same (unavailable) times: only invalidation can tell.
     around.write_range(&file, 0, Bytes::from_static(b"other"))?;
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("added"), FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(&name("added"), FileMetadata::default(), None, work)
+    })?;
     session.revalidate()?;
     assert_eq!(std::fs::read(&mounted)?, b"other");
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
 
     // Without the barrier the change still arrives, promptly.
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.remove(&name("added"), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.remove(&name("added"), None, work)
+    })?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while added.exists() {
         assert!(
@@ -84,11 +90,7 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
     let (inner, _) = shared_sources()?;
     let volume_id = inner.volume_id()?;
     let temporary = tempfile::tempdir()?;
-    let mut session = mount(
-        Arc::new(inner),
-        volume_id,
-        temporary.path(),
-    )?;
+    let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
     let written = temporary.path().join("written");
     std::fs::write(&written, b"first")?;
     for body in [b"second write".as_slice(), b"third".as_slice()] {
@@ -104,15 +106,25 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn linux_listings_resume_across_pages_and_readers()
+-> Result<(), Box<dyn std::error::Error>> {
     let (inner, around) = shared_sources()?;
     let volume_id = inner.volume_id()?;
-    crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name("many"), FileMetadata::default(), work))?;
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_directory(&name("many"), FileMetadata::default(), work)
+    })?;
     let mut expected = (0..700)
         .map(|index| format!("entry-{index:04}"))
         .collect::<Vec<_>>();
     for entry in &expected {
-        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&name("many").child(entry.as_bytes().to_vec()) , FileMetadata::default(), None, work))?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+            inner.create_file(
+                &name("many").child(entry.as_bytes().to_vec()),
+                FileMetadata::default(),
+                None,
+                work,
+            )
+        })?;
     }
     let temporary = tempfile::tempdir()?;
     let mut session = mount(
@@ -141,7 +153,14 @@ pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     // A change around the mount reaches the cached listing.
-    crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("many").child(b"added".to_vec()) , FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+        around.create_file(
+            &name("many").child(b"added".to_vec()),
+            FileMetadata::default(),
+            None,
+            work,
+        )
+    })?;
     session.revalidate()?;
     expected.push("added".to_owned());
     expected.sort();
@@ -151,8 +170,8 @@ pub(super) fn linux_listings_resume_across_pages_and_readers() -> Result<(), Box
 }
 
 #[test]
-pub(super) fn only_folding_volumes_with_case_variants_fold_names() -> Result<(), Box<dyn std::error::Error>>
-{
+pub(super) fn only_folding_volumes_with_case_variants_fold_names()
+-> Result<(), Box<dyn std::error::Error>> {
     use crate::model::{CaseSensitivity, FilesystemProfile, Lifecycle, VolumeConfig};
     let folds = |profile, case_sensitivity| -> Result<bool, Box<dyn std::error::Error>> {
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
@@ -188,7 +207,8 @@ pub(super) fn only_folding_volumes_with_case_variants_fold_names() -> Result<(),
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_folded_names_stay_exact_through_the_mount() -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn linux_folded_names_stay_exact_through_the_mount()
+-> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
 
     let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
@@ -200,7 +220,9 @@ pub(super) fn linux_folded_names_stay_exact_through_the_mount() -> Result<(), Bo
         "a folding volume keys every spelling alike"
     );
     let volume_id = source.volume_id()?;
-    crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&name("foo"), FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(source.cancellation(), |work| {
+        source.create_file(&name("foo"), FileMetadata::default(), None, work)
+    })?;
     let temporary = tempfile::tempdir()?;
     let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
     let at = |name: &str| temporary.path().join(name);
@@ -237,7 +259,9 @@ pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn st
         .enable_all()
         .build()?;
     let file = name("file");
-    crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&file, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(writer.cancellation(), |work| {
+        writer.create_file(&file, FileMetadata::default(), None, work)
+    })?;
     writer.write_range(&file, 0, Bytes::from_static(b"first"))?;
     writer.sync()?;
     runtime.block_on(reader.advance_to_head_async())?;
@@ -254,7 +278,9 @@ pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn st
     assert_eq!(listing(temporary.path())?, ["file"]);
 
     writer.write_range(&file, 0, Bytes::from_static(b"other"))?;
-    crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&name("added"), FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(writer.cancellation(), |work| {
+        writer.create_file(&name("added"), FileMetadata::default(), None, work)
+    })?;
     writer.sync()?;
     runtime.block_on(reader.advance_to_head_async())?;
     session.revalidate()?;
@@ -359,14 +385,19 @@ impl MountFilesystem for GatedSource {
     }
 
     fn lookup_with_meter(
-        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Option<MountLookup>, MountSourceError> {
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_with_meter(path, work)
     }
     fn lookup_pinned_with_meter(
-        &self, path: &MountPath, work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<(MountLookup, Option<crate::native_mount::MountContentPin>)>, MountSourceError> {
+        &self,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<(MountLookup, Option<crate::native_mount::MountContentPin>)>, MountSourceError>
+    {
         self.pass(path, &self.gated_lookup);
         self.inner.lookup_pinned_with_meter(path, work)
     }
@@ -376,15 +407,24 @@ impl MountFilesystem for GatedSource {
         self.inner.lookup(path)
     }
 
-    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
+    fn create_directory(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError> {
         self.pass(path, &self.gated_directory);
         self.inner.create_directory(path, metadata, work)
     }
 
-    fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+    fn read_attribute(
+        &self,
+        path: &MountPath,
+        name: &[u8],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
         self.inner.read_attribute(path, name, work)
     }
-
 }
 
 pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send + 'static) -> bool {
@@ -403,10 +443,14 @@ pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
     let (inner, _) = shared_sources()?;
     let volume_id = inner.volume_id()?;
     for directory in ["slow", "busy", "free"] {
-        crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_directory(&name(directory), FileMetadata::default(), work))?;
+        crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+            inner.create_directory(&name(directory), FileMetadata::default(), work)
+        })?;
     }
     let present = name("free").child(b"present".to_vec());
-    crate::native_mount::adapter::boundary(inner.cancellation(), |work| inner.create_file(&present, FileMetadata::default(), None, work))?;
+    crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
+        inner.create_file(&present, FileMetadata::default(), None, work)
+    })?;
     inner.write_range(&present, 0, Bytes::from_static(b"present"))?;
     let (entered, entries) = sync_channel(4);
     let (release, released) = sync_channel(4);

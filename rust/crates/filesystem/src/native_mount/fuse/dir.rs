@@ -2,7 +2,9 @@ use super::*;
 
 pub(super) fn confirm_name(
     names: &mut HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
-    file_id: crate::FileId, mut name: FuseOwned<MountPath>, stamp: Option<ViewStamp>,
+    file_id: crate::FileId,
+    mut name: FuseOwned<MountPath>,
+    stamp: Option<ViewStamp>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     for ((known_id, known_name), held) in names.iter_mut() {
@@ -12,7 +14,10 @@ pub(super) fn confirm_name(
             return Ok(());
         }
     }
-    name.claim(std::mem::size_of::<((crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>)>() as u64, work)?;
+    name.claim(
+        std::mem::size_of::<((crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>)>() as u64,
+        work,
+    )?;
     names.try_reserve(1).map_err(NativeMountError::Allocation)?;
     names.insert((file_id, name), stamp);
     Ok(())
@@ -20,7 +25,9 @@ pub(super) fn confirm_name(
 
 pub(super) fn name_is_bound(
     names: &HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>,
-    source: &dyn MountFilesystem, file_id: crate::FileId, name: &MountPath,
+    source: &dyn MountFilesystem,
+    file_id: crate::FileId,
+    name: &MountPath,
     work: &crate::NativeMaterializationWork,
 ) -> Result<bool, NativeMountError> {
     for ((known_id, known_name), stamp) in names {
@@ -64,12 +71,20 @@ impl DirectoryStreams {
         Some(stream)
     }
 
-    pub(super) fn prepare_park(&mut self, stream: &mut DirectoryStream,
-        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
-    {
+    pub(super) fn prepare_park(
+        &mut self,
+        stream: &mut DirectoryStream,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         fuse_item(work)?;
-        let storage = work.claim(std::mem::size_of::<((u64, u64), DirectoryStream)>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
-        self.waiting.try_reserve(1).map_err(NativeMountError::Allocation)?;
+        let storage = work.claim(
+            std::mem::size_of::<((u64, u64), DirectoryStream)>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        self.waiting
+            .try_reserve(1)
+            .map_err(NativeMountError::Allocation)?;
         let mut oldest = None;
         if self.waiting.len() >= MAXIMUM_DIRECTORY_STREAMS {
             for (key, candidate) in &self.waiting {
@@ -84,17 +99,21 @@ impl DirectoryStreams {
         Ok(())
     }
 
-    pub(super) fn park(&mut self, inode: u64, mut stream: DirectoryStream)
-    {
-        if let Some(key) = stream.park_replacement.take() { drop(self.waiting.remove(&key)); }
+    pub(super) fn park(&mut self, inode: u64, mut stream: DirectoryStream) {
+        if let Some(key) = stream.park_replacement.take() {
+            drop(self.waiting.remove(&key));
+        }
         self.parked = self.parked.wrapping_add(1);
         stream.parked = self.parked;
         self.waiting.insert((inode, stream.emitted), stream);
     }
 
-    pub(super) fn rename_prefix(&mut self, source: &MountPath, destination: &MountPath,
-        work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError>
-    {
+    pub(super) fn rename_prefix(
+        &mut self,
+        source: &MountPath,
+        destination: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         for (key, stream) in &self.waiting {
             fuse_item(work)?;
@@ -104,40 +123,67 @@ impl DirectoryStreams {
             }
         }
         for (key, path) in replacements.drain(..) {
-            self.waiting.get_mut(&key).expect("planned stream remains locked").path = path;
+            self.waiting
+                .get_mut(&key)
+                .expect("planned stream remains locked")
+                .path = path;
         }
         Ok(())
     }
 }
 
 impl ProjectionState {
-    pub(super) fn directory_open_flags(source: &dyn MountFilesystem, work: &crate::NativeMaterializationWork)
-        -> Result<FopenFlags, NativeMountError>
-    {
+    pub(super) fn directory_open_flags(
+        source: &dyn MountFilesystem,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FopenFlags, NativeMountError> {
         Ok(if source.view_stamp_with_meter(work)?.is_some() {
             FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE
-        } else { FopenFlags::empty() })
+        } else {
+            FopenFlags::empty()
+        })
     }
 
-    pub(super) fn directory_stream(&mut self, source: &dyn MountFilesystem, inode: u64, offset: u64,
-        work: &crate::NativeMaterializationWork) -> Result<DirectoryStream, NativeMountError>
-    {
+    pub(super) fn directory_stream(
+        &mut self,
+        source: &dyn MountFilesystem,
+        inode: u64,
+        offset: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<DirectoryStream, NativeMountError> {
         fuse_item(work)?;
-        if let Some(stream) = self.streams.take(inode, offset) { return Ok(stream); }
-        if !source.view_is_stable_with_meter(work)? { return Err(libc::ESTALE.into()); }
+        if let Some(stream) = self.streams.take(inode, offset) {
+            return Ok(stream);
+        }
+        if !source.view_is_stable_with_meter(work)? {
+            return Err(libc::ESTALE.into());
+        }
         let path = fuse_clone_path(self.path(inode)?, work)?;
         let parent_inode = fuse_parent(&path, work)?
-            .and_then(|parent| self.inode_by_path.get(&*parent).copied()).unwrap_or(ROOT_INODE);
+            .and_then(|parent| self.inode_by_path.get(&*parent).copied())
+            .unwrap_or(ROOT_INODE);
         Ok(DirectoryStream {
-            path, parent_inode, binding_epoch: source.binding_epoch_with_meter(work)?,
-            page: None, entry_position: 0, entries_stamp: None, confirmed: HashMap::new(),
-            emitted: 0, parked: 0, park_replacement: None, storage: None,
+            path,
+            parent_inode,
+            binding_epoch: source.binding_epoch_with_meter(work)?,
+            page: None,
+            entry_position: 0,
+            entries_stamp: None,
+            confirmed: HashMap::new(),
+            emitted: 0,
+            parked: 0,
+            park_replacement: None,
+            storage: None,
         })
     }
 
     pub(super) fn list_directory(
-        &mut self, source: &dyn MountFilesystem, inode: u64, stream: &mut DirectoryStream,
-        listing: &mut Option<DirectoryReply>, work: &crate::NativeMaterializationWork,
+        &mut self,
+        source: &dyn MountFilesystem,
+        inode: u64,
+        stream: &mut DirectoryStream,
+        listing: &mut Option<DirectoryReply>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let counts_lookups = listing.as_ref().expect("unsent listing").counts_lookups();
         let mut listed = false;
@@ -149,11 +195,17 @@ impl ProjectionState {
                 let dots = [(inode, ".", 1), (stream.parent_inode, "..", 2)];
                 for (dot_inode, name, next) in dots.into_iter().filter(|dot| dot.2 > resumed) {
                     fuse_item(work)?;
-                    let dot = FileAttr { ino: INodeNo(dot_inode), ..attr };
+                    let dot = FileAttr {
+                        ino: INodeNo(dot_inode),
+                        ..attr
+                    };
                     fuse_copy_admit(name.len() as u64, work)?;
                     if listing.as_mut().expect("unsent listing").push(
-                        next, OsStr::new(name), &dot, &Duration::ZERO)
-                    {
+                        next,
+                        OsStr::new(name),
+                        &dot,
+                        &Duration::ZERO,
+                    ) {
                         listing.take().expect("unsent listing").ok();
                         return Ok(());
                     }
@@ -164,7 +216,9 @@ impl ProjectionState {
             self.admit_listing(source, inode, stream.entries_stamp, work)?;
             loop {
                 let next = stream.emitted.saturating_add(1);
-                let Some(entry) = stream.page.as_ref()
+                let Some(entry) = stream
+                    .page
+                    .as_ref()
                     .and_then(|page| page.entries().get(stream.entry_position))
                 else {
                     listing.take().expect("unsent listing").ok();
@@ -174,28 +228,61 @@ impl ProjectionState {
                 let path = fuse_child_path(&stream.path, &entry.name, work)?;
                 let child = ChildName::new(source, path, work)?;
                 let current = match stream.entries_stamp {
-                    Some(stamp) if source.unchanged_since_with_meter(&stream.path, None, stamp, work)?
-                        && source.unchanged_since_with_meter(child.key(), Some(entry.node.file_id), stamp, work)? =>
-                            Some(stamp),
+                    Some(stamp)
+                        if source.unchanged_since_with_meter(
+                            &stream.path,
+                            None,
+                            stamp,
+                            work,
+                        )? && source.unchanged_since_with_meter(
+                            child.key(),
+                            Some(entry.node.file_id),
+                            stamp,
+                            work,
+                        )? =>
+                    {
+                        Some(stamp)
+                    }
                     _ => None,
                 };
-                let page_lookup = MountLookup { node: entry.node, metadata: entry.metadata };
-                // A stale page must not roll back facts mounted writes refreshed.
-                let lookup = if current.is_some() { page_lookup } else {
-                    self.inode_by_file.get(&page_lookup.node.file_id)
-                        .and_then(|known| self.by_inode.get(known)).map_or(page_lookup, |known| known.lookup)
+                let page_lookup = MountLookup {
+                    node: entry.node,
+                    metadata: entry.metadata,
                 };
-                let child_inode = self.intern(source, fuse_clone_path(child.key(), work)?, &lookup,
-                    current, counts_lookups, &stream.confirmed, work)?;
-                if counts_lookups { unlisted_reference = Some(child_inode); }
+                // A stale page must not roll back facts mounted writes refreshed.
+                let lookup = if current.is_some() {
+                    page_lookup
+                } else {
+                    self.inode_by_file
+                        .get(&page_lookup.node.file_id)
+                        .and_then(|known| self.by_inode.get(known))
+                        .map_or(page_lookup, |known| known.lookup)
+                };
+                let child_inode = self.intern(
+                    source,
+                    fuse_clone_path(child.key(), work)?,
+                    &lookup,
+                    current,
+                    counts_lookups,
+                    &stream.confirmed,
+                    work,
+                )?;
+                if counts_lookups {
+                    unlisted_reference = Some(child_inode);
+                }
                 let attr = self.attr(child_inode, &lookup)?;
                 let ttl = if counts_lookups {
                     self.admit_entry(source, child_inode, &child, current, work)?
-                } else { Duration::ZERO };
+                } else {
+                    Duration::ZERO
+                };
                 fuse_copy_admit(entry.name.len() as u64, work)?;
                 if listing.as_mut().expect("unsent listing").push(
-                    next, OsStr::from_bytes(&entry.name), &attr, &ttl)
-                {
+                    next,
+                    OsStr::from_bytes(&entry.name),
+                    &attr,
+                    &ttl,
+                ) {
                     if let Some(inode) = unlisted_reference.take() {
                         self.release_lookup_reference_administrative(inode, 1);
                     }
@@ -217,7 +304,6 @@ impl ProjectionState {
         }
         result
     }
-
 }
 
 pub(super) enum DirectoryReply {
@@ -226,9 +312,17 @@ pub(super) enum DirectoryReply {
 }
 
 impl DirectoryReply {
-    pub(super) fn counts_lookups(&self) -> bool { matches!(self, Self::Plus(_)) }
+    pub(super) fn counts_lookups(&self) -> bool {
+        matches!(self, Self::Plus(_))
+    }
 
-    pub(super) fn push(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, ttl: &Duration) -> bool {
+    pub(super) fn push(
+        &mut self,
+        offset: u64,
+        name: &OsStr,
+        attr: &FileAttr,
+        ttl: &Duration,
+    ) -> bool {
         match self {
             Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
             Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
@@ -236,11 +330,17 @@ impl DirectoryReply {
     }
 
     pub(super) fn ok(self) {
-        match self { Self::Basic(reply) => reply.ok(), Self::Plus(reply) => reply.ok() }
+        match self {
+            Self::Basic(reply) => reply.ok(),
+            Self::Plus(reply) => reply.ok(),
+        }
     }
 
     pub(super) fn error(self, error: Errno) {
-        match self { Self::Basic(reply) => reply.error(error), Self::Plus(reply) => reply.error(error) }
+        match self {
+            Self::Basic(reply) => reply.error(error),
+            Self::Plus(reply) => reply.error(error),
+        }
     }
 }
 
@@ -254,11 +354,16 @@ impl FuseProjection {
     ) -> Result<(), NativeMountError> {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
-        let mut stream = self.core.state()?.directory_stream(source, inode, offset, work)?;
+        let mut stream = self
+            .core
+            .state()?
+            .directory_stream(source, inode, offset, work)?;
         self.position_directory_stream(&mut stream, offset, work)?;
         let expected = stream.binding_epoch;
         let _lease = source.acquire_binding_lease_with_meter(expected, work)?;
-        if !source.view_is_stable_with_meter(work)? || source.binding_epoch_with_meter(work)? != expected {
+        if !source.view_is_stable_with_meter(work)?
+            || source.binding_epoch_with_meter(work)? != expected
+        {
             return Err(libc::ESTALE.into());
         }
         let mut state = self.core.state()?;
@@ -280,22 +385,34 @@ impl FuseProjection {
             fuse_item(work)?;
             if let Some(page) = &stream.page {
                 if stream.entry_position < page.entries().len() {
-                    if stream.emitted >= offset { return Ok(()); }
+                    if stream.emitted >= offset {
+                        return Ok(());
+                    }
                     stream.entry_position += 1;
                     stream.emitted += 1;
                     continue;
                 }
-                if page.next_cursor().is_none() { return Ok(()); }
+                if page.next_cursor().is_none() {
+                    return Ok(());
+                }
             }
             let lease = source.acquire_binding_lease_with_meter(stream.binding_epoch, work)?;
             let stamp = source.view_stamp_with_meter(work)?;
             let cursor = stream.page.as_ref().and_then(|page| page.next_cursor());
-            let page = source.read_directory_with_meter(&stream.path, cursor, DIRECTORY_PAGE_SIZE, work)?;
-            if !source.view_is_stable_with_meter(work)? || source.binding_epoch_with_meter(work)? != stream.binding_epoch {
+            let page = source.read_directory_with_meter(
+                &stream.path,
+                cursor,
+                DIRECTORY_PAGE_SIZE,
+                work,
+            )?;
+            if !source.view_is_stable_with_meter(work)?
+                || source.binding_epoch_with_meter(work)? != stream.binding_epoch
+            {
                 return Err(libc::ESTALE.into());
             }
             drop(lease);
-            stream.confirmed = self.confirm_listed_names(&stream.path, page.entries(), stamp, work)?;
+            stream.confirmed =
+                self.confirm_listed_names(&stream.path, page.entries(), stamp, work)?;
             stream.page = Some(page);
             stream.entry_position = 0;
             stream.entries_stamp = stamp;
@@ -308,13 +425,17 @@ impl FuseProjection {
         entries: &[MountDirectoryEntry],
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError> {
+    ) -> Result<HashMap<(crate::FileId, FuseOwned<MountPath>), Option<ViewStamp>>, NativeMountError>
+    {
         let source = self.core.source.as_ref();
         let mut listed = fuse_vec(entries.len(), work)?;
         for entry in entries {
             fuse_item(work)?;
-            if entry.node.link_count <= 1 { continue; }
-            let name = ChildName::new(source, fuse_child_path(directory, &entry.name, work)?, work)?;
+            if entry.node.link_count <= 1 {
+                continue;
+            }
+            let name =
+                ChildName::new(source, fuse_child_path(directory, &entry.name, work)?, work)?;
             listed.push((fuse_clone_path(name.key(), work)?, entry.node));
         }
         let mut confirmed = self.confirm_names(
@@ -327,5 +448,4 @@ impl FuseProjection {
         }
         Ok(confirmed)
     }
-
 }
