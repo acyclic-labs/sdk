@@ -815,7 +815,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         mount_guard, destination_volume, native_work)?;
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let value = if let Some(mount) = mount {
-        mount.import_selected_work_guarded(checkpoint, plan.0, plan.1, operation, permit,
+        mount.import_selected(checkpoint, plan.0, plan.1, operation, permit,
             &native_work, cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
                 let publication_guard = std::sync::Arc::clone(&publication_guard);
                 let original = original.clone();

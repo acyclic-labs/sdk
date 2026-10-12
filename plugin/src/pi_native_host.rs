@@ -879,7 +879,7 @@ impl PiNativeCommandHost {
         if let Some(project) = handles.project.as_ref() {
             creator.authorize_settlement_with_native_work(&owner, meter).await?;
             let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            project.abandon_with_work(&volume_work).map_err(Error::from)?;
+            project.abandon(&volume_work).map_err(Error::from)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {

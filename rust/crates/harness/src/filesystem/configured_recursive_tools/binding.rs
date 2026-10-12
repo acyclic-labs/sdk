@@ -46,16 +46,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             };
             let content = match content {
                 Some(content) => content,
-                None => FilesystemContentVerifier::new(Arc::clone(&self.filesystem), &verifier, scope, self.limits.file_bytes, Some(&io))?.into_native_shared(work)?,
+                None => FilesystemContentVerifier::new(Arc::clone(&self.filesystem), &verifier, scope, self.limits.file_bytes, Some(&io))?,
             };
-            let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new_with_native_work(
-                Arc::clone(&self.filesystem), self.limits.file_bytes, &verifier, scope, work,
-            )?.into_native_shared(work)?;
+            let filesystem: Arc<dyn crate::fork::ForkSeedVerifier> = FilesystemForkVerifier::new(Arc::clone(&self.filesystem), self.limits.file_bytes, None, Some((&verifier, scope, &crate::filesystem::PreparationIo::from_native_work(work)?)))?;
             let history: Arc<dyn crate::fork::ForkSeedVerifier> = StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut Some(&mut io.history_io()))?.into_native_shared(work)?;
             let forks = CompositeForkVerifier::new(&[filesystem, history], &mut Some(&mut io.history_io()))?.into_native_shared(work)?;
-            let merge = FilesystemProjectMergeVerifier::new_with_native_work(
-                Arc::clone(&self.filesystem), &verifier, scope, work,
-            )?.into_native_shared(work)?;
+            let merge = FilesystemProjectMergeVerifier::new(
+                Arc::clone(&self.filesystem), Some((&verifier, scope, &io)),
+            )?;
             let mut aggregate = aggregate.with_content_verifier(content).with_fork_verifier(forks)
                 .with_merge_verifier(merge);
             aggregate.set_limits(self.limits)?;
@@ -63,14 +61,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let content = match content {
             Some(content) => content,
-            None => Arc::new(FilesystemContentVerifier::new(self.filesystem.clone(), &(verifier(binding)?), &scope, self.limits.file_bytes, None)?),
+            None => FilesystemContentVerifier::new(self.filesystem.clone(), &(verifier(binding)?), &scope, self.limits.file_bytes, None)?,
         };
         let forks = Arc::new(CompositeForkVerifier::new(&[
-            Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
+            FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes, None, None)?,
             Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
         ], &mut None)?);
         let mut aggregate = aggregate.with_content_verifier(content).with_fork_verifier(forks)
-            .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())));
+            .with_merge_verifier(FilesystemProjectMergeVerifier::new(self.filesystem.clone(), None)?);
         aggregate.set_limits(self.limits)?;
         Ok(aggregate)
     }

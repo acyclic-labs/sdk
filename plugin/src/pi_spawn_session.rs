@@ -424,8 +424,7 @@ impl PiSession {
         let reference = reference;
         let authority = owner.authority()?;
         let maximum = owner.policy().maximum_payload_bytes.min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), authority.verifier,
-            authority.signed, maximum)?;
+        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), &authority.verifier, &authority.signed, maximum, None)?;
         let (bytes, bytes_custody) = reader.read_with_native_work(&reference, maximum, work).await?;
         let bytes = bytes;
         let owned = std::mem::size_of::<T>() as u64;

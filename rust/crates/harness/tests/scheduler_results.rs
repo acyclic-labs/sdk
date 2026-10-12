@@ -125,9 +125,10 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "scheduler-private",
+        "scheduler-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([6; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let owner = Authority {
@@ -137,11 +138,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     let issuer = AuthorityIssuer::new("qualification", [5; 32], owner.clone());
     let scope = issuer.issue("scheduler", &Capabilities::new([
             "operation:declare".to_owned(),
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([6; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
     let state = host
         .put_content(
             &volume,
@@ -152,14 +153,9 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "initial.json",
             1_024,
             &IdempotencyKey::new("scheduler-initial")?,
-        )
+         None, None)
         .await?;
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host.clone(),
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        1_024, None,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 1_024, None)?;
     let stager = Arc::new(FilesystemSchedulerPayloadStore::new(
         host.clone(),
         &volume,
@@ -217,15 +213,16 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         if slot == "a" {
             let corrupt = FileRef::new(
                 result.volume().clone(),
-                result.path(),
-                result.version(),
-                FileDescriptor::from_bytes(b"999", "application/json")?,
-                "child.json",
+                result.path().into(),
+                result.version().into(),
+                FileDescriptor::from_bytes(b"999", "application/json", &mut None)?,
+                "child.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator
@@ -249,10 +246,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             );
             let missing = FileRef::new(
                 result.volume().clone(),
-                "child/missing.json",
-                result.version(),
+                "child/missing.json".into(),
+                result.version().into(),
                 result.descriptor().clone(),
-                "missing.json",
+                "missing.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator
@@ -278,7 +276,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "invalid.json",
                     1_024,
                     &IdempotencyKey::new("invalid-type-upload")?,
-                )
+                 None, None)
                 .await?;
             assert!(
                 coordinator
@@ -331,7 +329,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "forged-join.json",
             1_024,
             &IdempotencyKey::new("forged-join-upload")?,
-        )
+         None, None)
         .await?;
     let expected_revision = coordinator
         .scheduler()
@@ -387,7 +385,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "join did not succeed".into(),
         ));
     };
-    let bytes = host.read_content(result, &read, 1_024).await?;
+    let bytes = host.read_content(result, &read, 1_024, None).await?;
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
@@ -454,7 +452,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "child.json",
                 1_024,
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
-            )
+             None, None)
             .await?;
         coordinator
             .apply(
@@ -489,7 +487,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     };
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(
-            &host.read_content(quorum_result, &read, 1_024).await?
+            &host.read_content(quorum_result, &read, 1_024, None).await?
         )
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?,
         serde_json::json!([5, 6])
@@ -560,7 +558,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "child.json",
             1_024,
             &IdempotencyKey::new("reduce-child-upload")?,
-        )
+         None, None)
         .await?;
     coordinator
         .apply(
@@ -597,7 +595,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         ));
     };
     assert_eq!(
-        host.read_content(reduced, &read, 1_024).await?.as_ref(),
+        host.read_content(reduced, &read, 1_024, None).await?.as_ref(),
         b"11"
     );
 

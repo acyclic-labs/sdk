@@ -383,14 +383,12 @@ impl<P: StreamProvider> StreamAggregate<P> {
         })?;
         self.limits.validate_file(&prior.content, &mut None)?;
         let bytes = verified_content_bytes(verifier.as_ref(), &prior.content, (&prior.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
-        self.reducer
-            .validate_custom_bytes(&request.name, prior.version, &prior.content, &bytes)?;
+        self.reducer.schemas().validate_bytes(&request.name, prior.version, &prior.content, &bytes)?;
         let value: Value = crate::contract::json_from_slice(&bytes).map_err(|error| {
             Error::Invalid(format!("previous extension state is invalid: {error}"))
         })?;
         let target_digest = self
-            .reducer
-            .extension_implementation_digest(&request.name, request.to_version)?;
+            .reducer.schemas().implementation_digest(&request.name, request.to_version, &mut None)?;
         let migrated = migrations.migrate(
             &request.name,
             prior.version,
@@ -485,8 +483,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let box_slots = std::mem::size_of::<ForkSeed>() as u64;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.admit_allocation(box_slots)?;
+            observer.retain_owned(box_slots)?;
         }
-        custody.retain(box_slots)?;
+        custody.adopt(box_slots)?;
         let seed = Box::new(seed);
         let command = Command {
             operation_id: seed.operation_id,
@@ -823,7 +822,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
                 .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            let (cloned, clone_owned) = crate::core::native_event_clone_with_custody(&event, work)?;
+            let (cloned, clone_owned) = crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_event(&event, copy_quota))?;
             drop(reducer.apply_committed(cloned, work)?);
             if let Some(work) = work.as_deref_mut() { work.release_owned(clone_owned)?; }
             if indexed {
@@ -880,7 +879,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(state) = self.reducer.effect(effect) {
             crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
-            return crate::core::native_effect_clone_with_custody(state, work).map(Some);
+            return crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_effect(state, copy_quota)).map(Some);
         }
         let reader = HistoryReader::new(&self.client, self.reducer.authority(), self.reducer.event_verifier(), work)?;
         let reader_bytes = if work.is_some() { reader.logical_owned_bytes()? } else { 0 };
@@ -1028,7 +1027,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             }
             let indexed = effects::retirement_proof_for_event_with_work(
                 &self.client, self.reducer.authority(), &event, owned.work()).await?;
-            let (cloned, returned_owned) = crate::core::native_event_clone_with_custody(&event, owned.work())?;
+            let (cloned, returned_owned) = crate::wire_codec::CodecQuota::produce(owned.work(), |copy_quota| crate::core::copy_event(&event, copy_quota))?;
             owned.adopt(returned_owned)?;
             let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed { self.reducer.mark_indexed_terminal_effect_with_work(&event, owned.work())?; }
@@ -1538,8 +1537,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
             let bytes = verifier.read(content, content.descriptor().byte_length(), None)?.await?;
-            self.reducer
-                .validate_custom_bytes(schema, *version, content, &bytes)?;
+            self.reducer.schemas().validate_bytes(schema, *version, content, &bytes)?;
         }
         if let crate::core::Action::MigrateExtensionState {
             name,
@@ -1564,15 +1562,13 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.limits.validate_file(&prior.content, &mut None)?;
             self.limits.validate_file(content, &mut None)?;
             let (old_bytes, _old_hold) = verified_content_bytes(verifier.as_ref(), &prior.content, self.limits.file_bytes, None).await?;
-            self.reducer
-                .validate_custom_bytes(name, prior.version, &prior.content, &old_bytes)?;
+            self.reducer.schemas().validate_bytes(name, prior.version, &prior.content, &old_bytes)?;
             let previous_value: Value =
                 crate::contract::json_from_slice(&old_bytes).map_err(|error| {
                     Error::Invalid(format!("previous extension state is invalid: {error}"))
                 })?;
             let target_digest = self
-                .reducer
-                .extension_implementation_digest(name, *to_version)?;
+                .reducer.schemas().implementation_digest(name, *to_version, &mut None)?;
             let expected = migrations.migrate(
                 name,
                 prior.version,
@@ -1581,8 +1577,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &previous_value,
             )?;
             let (bytes, _hold) = verified_content_bytes(verifier.as_ref(), content, self.limits.file_bytes, None).await?;
-            self.reducer
-                .validate_custom_bytes(name, *to_version, content, &bytes)?;
+            self.reducer.schemas().validate_bytes(name, *to_version, content, &bytes)?;
             if bytes.as_ref() != crate::contract::canonical_json_bytes(&expected)?.as_slice() {
                 return Err(Error::Conflict(
                     "staged extension migration differs from its pinned implementation".into(),
@@ -1594,8 +1589,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("extension content verifier is not bound".into())
             })?;
             let bytes = verifier.read(content, content.descriptor().byte_length(), None)?.await?;
-            self.reducer
-                .validate_configuration_bytes(extension, content, &bytes, None)?;
+            self.reducer.schemas().validate_configuration_bytes(extension, content, &bytes, None)?;
         }
         let message = match action {
             crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
@@ -3536,10 +3530,8 @@ mod tests {
             volume.capability(VolumeOperation::Read, &mut None)?,
             volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
-        let publisher = FilesystemContentPublisher::new(
-            host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
+        let publisher = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
+        let reader = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),

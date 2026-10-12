@@ -496,7 +496,7 @@ where
                 let read = ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None,
                 )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes).await
+                self.host.read_content(reference, &read, self.maximum_payload_bytes, None).await
             }
         }
     }
