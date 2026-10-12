@@ -444,7 +444,7 @@ async fn phase(
         2000,
     )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     catalog()
         .install_scoped(
             &mut tools,

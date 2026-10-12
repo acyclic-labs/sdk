@@ -47,7 +47,7 @@ pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
 pub use customer::{
-    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof,
+    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof, NativeMountPublicationFailure,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1988,46 +1988,6 @@ macro_rules! with_driver {
     };
 }
 
-struct DriverStartFailure {
-    error: NativeMountError,
-    preserve_destination_fence: bool,
-    retained_driver: Option<DriverSession>,
-}
-
-impl DriverStartFailure {
-
-    fn retaining_driver(error: NativeMountError, driver: DriverSession) -> Self {
-        Self { error, preserve_destination_fence: true, retained_driver: Some(driver) }
-    }
-}
-
-impl From<NativeMountError> for DriverStartFailure {
-    fn from(error: NativeMountError) -> Self {
-        Self {
-            error,
-            preserve_destination_fence: false,
-            retained_driver: None,
-        }
-    }
-}
-
-impl std::fmt::Debug for DriverStartFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("DriverStartFailure")
-            .field("error", &self.error)
-            .field("preserve_destination_fence", &self.preserve_destination_fence)
-            .field("driver_retained", &self.retained_driver.is_some()).finish()
-    }
-}
-impl std::fmt::Display for DriverStartFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, formatter)
-    }
-}
-impl std::error::Error for DriverStartFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.error) }
-}
-
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeMountCleanupState<'a> {
@@ -2109,7 +2069,6 @@ struct NativeRecoverySnapshot {
 }
 
 enum NativeRecoveryCommand {
-    Acquire,
     Action { remove_destination: bool, work: crate::NativeMaterializationWork },
     LastDrop,
 }
@@ -2180,7 +2139,7 @@ impl NativeMountRecoveryOwner {
         let shared = Arc::new(NativeRecoveryShared {
             destination: destination.0,
             mailbox: std::sync::Mutex::new(NativeRecoveryMailbox {
-                command: Some(NativeRecoveryCommand::Acquire), reply: None, snapshot: None, state_retired: false,
+                command: None, reply: None, snapshot: None, state_retired: false,
             }),
             wake: std::sync::Condvar::new(),
             _custody: destination.1,
@@ -2359,7 +2318,10 @@ impl NativeRecoveryWorker {
         // recovery. An uninterruptible native task keeps its actual fence.
         while self.state.control.controls_pending() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.state.control.retire_controls_with_work(&self.original)
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                { self.state.control.retire_controls(&self.original) }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                { self.state.control.retire_controls_with_work(&self.original) }
             })) {
                 Ok(Ok(())) if !self.state.control.controls_pending() => break,
                 Ok(Err(error)) => {
@@ -2378,7 +2340,31 @@ impl NativeRecoveryWorker {
     }
 
     fn run(mut self) {
-        let mut identity = None;
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire())) {
+            Ok(result) => result,
+            Err(panic) => {
+                self.state.panic = Some(panic);
+                Err(NativeMountError::Lifecycle("administrative acquisition panicked"))
+            }
+        };
+        let identity = match result {
+            Ok(identity) => identity,
+            Err(error) => {
+                self.retire();
+                drop(self.state);
+                let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+                mailbox.reply = Some(Err(error));
+                mailbox.state_retired = true;
+                self.shared.wake.notify_all();
+                return;
+            }
+        };
+        {
+            let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            mailbox.snapshot = Some(self.state.snapshot(identity));
+            mailbox.reply = Some(Ok(true));
+            self.shared.wake.notify_all();
+        }
         loop {
             let command = {
                 let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
@@ -2388,40 +2374,18 @@ impl NativeRecoveryWorker {
                 mailbox.command.take().expect("original administrative slot")
             };
             let reply = match command {
-                NativeRecoveryCommand::Acquire => {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire()));
-                    let result = match result {
-                        Ok(Ok(actual)) => { identity = Some(actual); Ok(true) }
-                        Ok(Err(error)) => Err(error),
-                        Err(panic) => {
-                            self.state.panic = Some(panic);
-                            Err(NativeMountError::Lifecycle("administrative acquisition panicked"))
-                        }
-                    };
-                    if result.is_err() {
-                        self.retire();
-                        drop(self.state);
-                        let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
-                        mailbox.reply = Some(result);
-                        mailbox.state_retired = true;
-                        self.shared.wake.notify_all();
-                        return;
-                    }
-                    result
-                }
                 NativeRecoveryCommand::Action { remove_destination, work } => {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         self.state.finish_with_work(&self.shared.destination, remove_destination, &work)
                     }));
-                    let result = match result {
+                    match result {
                         Ok(result) => result,
                         Err(panic) => {
                             self.state.panic = Some(panic);
                             self.state.measured_cleanup_failed = true;
                             Err(NativeMountError::Lifecycle("administrative action panicked"))
                         }
-                    };
-                    result
+                    }
                 }
                 NativeRecoveryCommand::LastDrop => {
                     self.retire();
@@ -2433,7 +2397,7 @@ impl NativeRecoveryWorker {
                     return;
                 }
             };
-            let snapshot = self.state.snapshot(identity.expect("actual original fence identity"));
+            let snapshot = self.state.snapshot(identity);
             let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
             mailbox.snapshot = Some(snapshot);
             mailbox.reply = Some(reply);
@@ -2462,7 +2426,7 @@ fn recover_driver_with_work(
     disposable: bool, work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    { let _ = disposable; control.recover_measured(destination, &work) }
+    { let _ = disposable; control.recover(destination, work) }
     #[cfg(target_os = "windows")]
     { control.recover_measured(destination, disposable, &mut &*work) }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2744,8 +2708,6 @@ pub struct NativeMountSession {
     startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     measured_cleanup_failed: bool,
     namespace_detach_confirmed: bool,
-    // Separate actual detach evidence from an unresolved, ownerless control.
-    namespace_control_pending: bool,
     completed_future_callback_work: crate::WorkCounters,
     retired_callback_failure: std::sync::Mutex<Option<(NativeMountError, crate::WorkCounters)>>,
     // SDK namespace DATA can outlive physical retirement without retaining
@@ -2789,7 +2751,7 @@ impl NativeMountSession {
             volume_id: request.volume_id, writable: request.writable,
             driver: None, destination_guard: None, retained_source, startup_source_watch: None,
             measured_cleanup_failed: false,
-            namespace_detach_confirmed: false, namespace_control_pending: false,
+            namespace_detach_confirmed: false,
             completed_future_callback_work: crate::WorkCounters::UNCHARGED,
             retired_callback_failure: std::sync::Mutex::new(None),
             #[cfg(windows)]
@@ -2864,8 +2826,7 @@ impl NativeMountSession {
             ),
             measured_cleanup_failed: self.measured_cleanup_failed,
             cleanup_complete: self.driver.is_none() && self.destination_guard.is_none()
-                && self.retained_source.is_none() && self.startup_source_watch.is_none()
-                && !self.namespace_control_pending,
+                && self.retained_source.is_none() && self.startup_source_watch.is_none(),
         }
     }
 
@@ -2933,7 +2894,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Io(std::io::ErrorKind::NotConnected.into()))?;
-        with_driver!(driver, session, session.revalidate_with_meter(work), session.revalidate(work), Err(NativeMountError::UnsupportedTarget))
+        with_driver!(driver, session, session.revalidate(work), Err(NativeMountError::UnsupportedTarget))
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative path (leading `/` optional).
@@ -2947,16 +2908,15 @@ impl NativeMountSession {
     pub fn revalidate(&self) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        with_driver!(driver, session, session.revalidate(), session.revalidate(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?), Ok(()))
-    }
-
-    /// Takes the operation of every request the FUSE session served so far.
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn take_fuse_requests(&self) -> Vec<&'static str> {
-        match &self.driver {
-            Some(DriverSession::Fuse(session)) => session.take_requests(),
-            None => Vec::new(),
-        }
+        let work = NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).map_err(|(cause, _)| {
+            #[cfg(windows)]
+            { projfs::detach_work_error(cause) }
+            #[cfg(not(windows))]
+            { NativeMountError::from(cause) }
+        })?;
+        with_driver!(driver, session, session.revalidate(&work), Ok(()))
     }
 
     /// Detaches the kernel namespace and ends the driver session; returns whether a live session was actually stopped.
@@ -3011,19 +2971,14 @@ impl NativeMountSession {
     fn stop_with_context(
         &mut self, work: NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
-        if self.driver.is_none() && self.namespace_control_pending {
-            self.measured_cleanup_failed = true;
-            return Err(NativeMountError::ControlPending);
-        }
         let result = (|| {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
-                match &work {
-                    NativeSessionStopWork::Meter(meter) => with_driver!(&mut *driver, session, session.stop_with_meter(meter), session.stop(meter.cancellation()), Err(NativeMountError::UnsupportedTarget))?,
-                    NativeSessionStopWork::AcceptedWait(wait) => with_driver!(&mut *driver, session, session.stop_with_cleanup_wait(wait), session.stop(wait), Err(NativeMountError::UnsupportedTarget))?,
-                }
+                with_driver!(&mut *driver, session, session.stop(&work), session.stop(match &work {
+                    NativeSessionStopWork::Meter(meter) => meter.cancellation(),
+                    NativeSessionStopWork::AcceptedWait(wait) => wait,
+                }), Err(NativeMountError::UnsupportedTarget))?;
                 self.namespace_detach_confirmed = with_driver!(&*driver, session, session.namespace_detach_confirmed(), false);
-                self.namespace_control_pending = false;
                 // Copy settled callback totals and faults before dropping the driver context.
                 self.completed_future_callback_work = with_driver!(&*driver, session, session.completed_callback_work(), crate::WorkCounters::UNCHARGED);
                 *self.retired_callback_failure.get_mut()
@@ -3096,7 +3051,38 @@ impl Drop for NativeMountSession {
 /// Probes the target's one canonical native namespace mechanism.
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {
-    platform::probe()
+    #[cfg(target_os = "linux")]
+    let (kind, available, reason) = (
+        Some(NativeMountKind::LinuxFuse),
+        std::fs::OpenOptions::new().read(true).write(true).open("/dev/fuse").is_ok(),
+        "/dev/fuse is not usable",
+    );
+    #[cfg(target_os = "macos")]
+    let (kind, available, reason) = (
+        Some(NativeMountKind::MacOsNfs), Path::new("/sbin/mount_nfs").is_file(),
+        "the built-in macOS NFS mount utility is unavailable",
+    );
+    #[cfg(windows)]
+    let (kind, available, reason) = (
+        Some(NativeMountKind::WindowsProjFs),
+        Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32").join("ProjectedFSLib.dll").is_file(),
+        "ProjectedFSLib.dll is unavailable",
+    );
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let (kind, available, reason) = (None, false, "unsupported target");
+    NativeMountCapabilities {
+        kind,
+        available,
+        writable: available,
+        provider_process_io_observable: available && !cfg!(windows),
+        session_isolation: if kind.is_some() {
+            NativeMountSessionIsolation::SharedProcess
+        } else {
+            NativeMountSessionIsolation::ProcessIsolated
+        },
+        unavailable_reason: (!available).then(|| reason.to_owned()),
+    }
 }
 
 /// Starts a real native projection over the supplied canonical checkout.
@@ -3180,7 +3166,7 @@ fn start_native_mount_prepared_with_meter(
     ).transpose().map(|_| ()).map_err(NativeMountError::from);
     #[cfg(not(windows))]
     let lineage_admission: Result<(), NativeMountError> = Ok(());
-    let result = lineage_admission.map_err(DriverStartFailure::from).and_then(|()| start_driver_into(
+    let result = lineage_admission.and_then(|()| start_driver_into(
         &request, source, work, &mut driver, &mut retirement, |packet| {
             let _services = adapter::CallbackRuntime::existing()?;
             work.state.lock().check()?;
@@ -3206,15 +3192,13 @@ fn start_native_mount_prepared_with_meter(
             drop(storage);
             Ok(owner)
         },
-        Err(mut failure) => {
-            if owner.driver.is_none() { owner.driver = failure.retained_driver.take(); }
-            owner.namespace_control_pending = failure.preserve_destination_fence;
-            Err(NativeMountError::StartupFailed(storage.failed(failure.error, owner)))
+        Err(error) => {
+            Err(NativeMountError::StartupFailed(storage.failed(error, owner)))
         },
     }
 }
 
-/// Starts a native projection mounted directly over an existing, non-empty directory — its contents are shadowed for the mount's duration and reappear once the returned session stops.
+/// Starts a native projection mounted directly over an existing, non-empty directory â€” its contents are shadowed for the mount's duration and reappear once the returned session stops.
 pub fn mount_native_over_existing(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
@@ -3848,125 +3832,28 @@ fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
     hasher.update(path.to_string_lossy().as_bytes());
 }
 
-#[cfg(target_os = "linux")]
 fn start_driver_into<F>(
     request: &NativeMountRequest, source: Arc<dyn MountFilesystem>, work: &NativeMaterializationWork,
     out: &mut Option<DriverSession>, retirement: &mut Option<NativeMountRetirement>, prepare: F,
-) -> Result<(), DriverStartFailure>
+) -> Result<(), NativeMountError>
 where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
-    let mut driver = None;
-    let result = fuse::FuseSession::start_into(request, source, work, &mut driver, retirement, prepare);
-    *out = driver.map(DriverSession::Fuse);
-    result
-}
-
-#[cfg(target_os = "macos")]
-fn start_driver_into<F>(
-    request: &NativeMountRequest, source: Arc<dyn MountFilesystem>, work: &NativeMaterializationWork,
-    out: &mut Option<DriverSession>, retirement: &mut Option<NativeMountRetirement>, prepare: F,
-) -> Result<(), DriverStartFailure>
-where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
-    let mut driver = None;
-    let result = darwin_mount::DarwinMountSession::start_into(request, source, work, &mut driver, retirement, prepare);
-    *out = driver.map(DriverSession::DarwinMount);
-    result
-}
-
-#[cfg(target_os = "windows")]
-fn start_driver_into<F>(
-    request: &NativeMountRequest, source: Arc<dyn MountFilesystem>, work: &NativeMaterializationWork,
-    out: &mut Option<DriverSession>, retirement: &mut Option<NativeMountRetirement>, prepare: F,
-) -> Result<(), DriverStartFailure>
-where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
-    let mut driver = None;
-    let result = projfs::ProjFsSession::start(request, source, work, &mut driver, retirement, prepare);
-    *out = driver.map(DriverSession::ProjFs);
-    result
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn start_driver_into<F>(
-    _request: &NativeMountRequest, _source: Arc<dyn MountFilesystem>, _work: &NativeMaterializationWork,
-    _out: &mut Option<DriverSession>, _retirement: &mut Option<NativeMountRetirement>, _prepare: F,
-) -> Result<(), DriverStartFailure>
-where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
-    Err(NativeMountError::UnsupportedTarget.into())
-}
-
-#[cfg(target_os = "linux")]
-mod platform {
-    use super::{NativeMountCapabilities, NativeMountKind, NativeMountSessionIsolation};
-
-    pub(super) fn probe() -> NativeMountCapabilities {
-        let available = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/fuse")
-            .is_ok();
-        NativeMountCapabilities {
-            kind: Some(NativeMountKind::LinuxFuse),
-            available,
-            writable: available,
-            provider_process_io_observable: available,
-            session_isolation: NativeMountSessionIsolation::SharedProcess,
-            unavailable_reason: (!available).then(|| "/dev/fuse is not usable".to_owned()),
-        }
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        #[cfg(target_os = "linux")]
+        let (start, wrap) = (fuse::FuseSession::start_into, DriverSession::Fuse);
+        #[cfg(target_os = "macos")]
+        let (start, wrap) = (darwin_mount::DarwinMountSession::start_into, DriverSession::DarwinMount);
+        #[cfg(windows)]
+        let (start, wrap) = (projfs::ProjFsSession::start, DriverSession::ProjFs);
+        let mut driver = None;
+        let result = start(request, source, work, &mut driver, retirement, prepare);
+        *out = driver.map(wrap);
+        result
     }
-}
-
-#[cfg(target_os = "macos")]
-mod platform {
-    use super::{NativeMountCapabilities, NativeMountKind, NativeMountSessionIsolation};
-
-    pub(super) fn probe() -> NativeMountCapabilities {
-        let available = std::path::Path::new("/sbin/mount_nfs").is_file();
-        NativeMountCapabilities {
-            kind: Some(NativeMountKind::MacOsNfs),
-            available,
-            writable: available,
-            provider_process_io_observable: available,
-            session_isolation: NativeMountSessionIsolation::SharedProcess,
-            unavailable_reason: (!available)
-                .then(|| "the built-in macOS NFS mount utility is unavailable".to_owned()),
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod platform {
-    use super::{NativeMountCapabilities, NativeMountKind, NativeMountSessionIsolation};
-
-    pub(super) fn probe() -> NativeMountCapabilities {
-        let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-        let available = std::path::Path::new(&system_root)
-            .join("System32")
-            .join("ProjectedFSLib.dll")
-            .is_file();
-        NativeMountCapabilities {
-            kind: Some(NativeMountKind::WindowsProjFs),
-            available,
-            writable: available,
-            provider_process_io_observable: false,
-            session_isolation: NativeMountSessionIsolation::SharedProcess,
-            unavailable_reason: (!available)
-                .then(|| "ProjectedFSLib.dll is unavailable".to_owned()),
-        }
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-mod platform {
-    use super::{NativeMountCapabilities, NativeMountSessionIsolation};
-
-    pub(super) fn probe() -> NativeMountCapabilities {
-        NativeMountCapabilities {
-            kind: None,
-            available: false,
-            writable: false,
-            provider_process_io_observable: false,
-            session_isolation: NativeMountSessionIsolation::ProcessIsolated,
-            unavailable_reason: Some("unsupported target".to_owned()),
-        }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = (&request, &source, &work, &out, &retirement, &prepare);
+        Err(NativeMountError::UnsupportedTarget.into())
     }
 }
 
@@ -4858,14 +4745,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let volume = memory_volume(VolumeId::from_bytes([91; 16]), config, &cancellation).await?;
         let mut checkout = private_checkout(&volume, &cancellation).await?;
-        let file = NamespacePath::new(
-            vec![LogicalName::new(
-                NameEncoding::Utf8,
-                b"sparse.bin".to_vec(),
-                limits.maximum_component_bytes,
-            )?],
-            limits,
-        )?;
+        let file = portable_path(limits, &[b"sparse.bin"])?;
         checkout
             .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (Bytes::from_static(b"head")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
@@ -4906,15 +4786,16 @@ mod tests {
         assert_eq!(&body[..4], b"head");
         assert_eq!(&body[body.len() - 4..], b"tail");
 
+        let capture_options = CaptureOptions {
+            expected_root_identity: capture_root_identity(&destination)?,
+            source_root: destination.clone(),
+            maximum_paths: 1,
+            maximum_extent_spans: 16,
+        };
         let sparse_capture = capture_paths(
             &mut checkout,
             std::slice::from_ref(&file),
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &capture_options,
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4947,12 +4828,7 @@ mod tests {
         let captured = capture_paths(
             &mut checkout,
             std::slice::from_ref(&file),
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &capture_options,
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4977,14 +4853,7 @@ mod tests {
             .value
             .record
             .ok_or("captured file disappeared")?;
-        let renamed = NamespacePath::new(
-            vec![LogicalName::new(
-                NameEncoding::Utf8,
-                b"renamed.bin".to_vec(),
-                limits.maximum_component_bytes,
-            )?],
-            limits,
-        )?;
+        let renamed = portable_path(limits, &[b"renamed.bin"])?;
         mutate_as_a_user_would(|| std::fs::rename(&host_file, destination.join("renamed.bin")))
             .map_err(|error| std::io::Error::other(format!("host rename: {error}")))?;
         let watch = capture_watch_batch(
@@ -4999,12 +4868,7 @@ mod tests {
                 }],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &capture_options,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5023,14 +4887,7 @@ mod tests {
             .ok_or("renamed file disappeared")?;
         assert_eq!(new.file_id, before_rename.file_id);
 
-        let moved = NamespacePath::new(
-            vec![LogicalName::new(
-                NameEncoding::Utf8,
-                b"moved.bin".to_vec(),
-                limits.maximum_component_bytes,
-            )?],
-            limits,
-        )?;
+        let moved = portable_path(limits, &[b"moved.bin"])?;
         mutate_as_a_user_would(|| {
             std::fs::rename(
                 destination.join("renamed.bin"),
@@ -5055,12 +4912,7 @@ mod tests {
                 ],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5106,12 +4958,7 @@ mod tests {
                 changes: vec![WatchChange::Created(renamed.clone())],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &capture_options,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5141,12 +4988,7 @@ mod tests {
                 ],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5162,12 +5004,7 @@ mod tests {
 
         let dirty_baseline = capture_baseline(
             &mut checkout,
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 16,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5198,12 +5035,7 @@ mod tests {
         .map_err(|error| std::io::Error::other(format!("host baseline write: {error}")))?;
         let baseline = capture_baseline(
             &mut checkout,
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 16,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5250,12 +5082,7 @@ mod tests {
                 }],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &capture_options,
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5308,12 +5135,7 @@ mod tests {
                 ],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -5347,12 +5169,7 @@ mod tests {
                 ],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(&destination)?,
-                source_root: destination.clone(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,

@@ -26,10 +26,10 @@ use acyclic_fs::{
     OperationWindowLease, OperationWindowPhase, PromotionAdmission, PromotionDestination,
     PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
     ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
-    StorageLocationId, StorageTier, Transaction, TransactionCommit, TransactionConflict,
-    TransactionConflictRegion, TransactionDependencyUse, TransactionRebase, TransactionSparseSeek,
+    StorageLocationId, StorageTier, Transaction, TransactionCommit, RebaseConflict, DependencyState,
+    DependencyRegion, DependencyUse, TransactionRebase, ExtentSeekTarget,
     VolumeId, WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget, Workspace,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
     WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceGraph, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceMetadata, WorkspaceOperationFinish, WorkspaceRebase, WorkspaceRootId, WorkspaceStat,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,
@@ -3235,7 +3235,7 @@ fn native_transaction_rebase(
     }
 }
 
-fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionConflict {
+fn native_transaction_conflict(value: RebaseConflict) -> NativeTransactionConflict {
     let mut result = NativeTransactionConflict {
         region: String::new(),
         file_id: None,
@@ -3246,32 +3246,28 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
         name: None,
         maximum_entries: None,
         usage: match value.usage {
-            TransactionDependencyUse::Observation => "observation",
-            TransactionDependencyUse::Mutation => "mutation",
-            TransactionDependencyUse::ObservationAndMutation => "observation-and-mutation",
+            DependencyUse::Observation => "observation",
+            DependencyUse::Mutation => "mutation",
+            DependencyUse::ObservationAndMutation => "observation-and-mutation",
         }
         .to_owned(),
-        expected: value
-            .expected
-            .map(|digest| Buffer::from(digest.into_bytes().to_vec())),
-        actual: value
-            .actual
-            .map(|digest| Buffer::from(digest.into_bytes().to_vec())),
+        expected: match value.expected { DependencyState::Absent => None, DependencyState::Present(digest) => Some(Buffer::from(digest.into_bytes().to_vec())) },
+        actual: match value.actual { DependencyState::Absent => None, DependencyState::Present(digest) => Some(Buffer::from(digest.into_bytes().to_vec())) },
     };
     match value.region {
-        TransactionConflictRegion::FileRecord(file_id) => {
+        DependencyRegion::FileRecord(file_id) => {
             "file-record".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::Metadata(file_id) => {
+        DependencyRegion::Metadata(file_id) => {
             "metadata".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::FileLength(file_id) => {
+        DependencyRegion::FileLength(file_id) => {
             "file-length".clone_into(&mut result.region);
             result.file_id = Some(Buffer::from(file_id.into_bytes().to_vec()));
         }
-        TransactionConflictRegion::ContentRange {
+        DependencyRegion::ContentRange {
             file_id,
             offset,
             length,
@@ -3281,7 +3277,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             result.offset = Some(bigint(offset));
             result.length = Some(bigint(length));
         }
-        TransactionConflictRegion::SparseSeek {
+        DependencyRegion::SparseSeek {
             file_id,
             offset,
             target,
@@ -3291,13 +3287,13 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
             result.offset = Some(bigint(offset));
             result.sparse_target = Some(
                 match target {
-                    TransactionSparseSeek::Data => "data",
-                    TransactionSparseSeek::Hole => "hole",
+                    ExtentSeekTarget::Data => "data",
+                    ExtentSeekTarget::Hole => "hole",
                 }
                 .to_owned(),
             );
         }
-        TransactionConflictRegion::DirectoryName { directory_id, name } => {
+        DependencyRegion::DirectoryName { directory_id, name } => {
             "directory-name".clone_into(&mut result.region);
             result.directory_id = Some(Buffer::from(directory_id.into_bytes().to_vec()));
             result.name = Some(NativeWorkspaceName {
@@ -3305,7 +3301,7 @@ fn native_transaction_conflict(value: TransactionConflict) -> NativeTransactionC
                 bytes: Buffer::from(name.as_bytes().to_vec()),
             });
         }
-        TransactionConflictRegion::DirectoryRange {
+        DependencyRegion::DirectoryRange {
             directory_id,
             after,
             maximum_entries,
@@ -7835,7 +7831,7 @@ fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
-fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorkspaceDirectoryPage {
+fn native_workspace_directory_page(value: DirectoryPage) -> NativeWorkspaceDirectoryPage {
     NativeWorkspaceDirectoryPage {
         entries: value
             .entries

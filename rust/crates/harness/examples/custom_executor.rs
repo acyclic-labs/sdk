@@ -66,7 +66,7 @@ fn main() -> Result<()> {
             Model::new("example", "mock", "1", Value::Null)?,
             Arc::new(MockModel),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_compaction_policy(acyclic_harness::context::CompactionPolicy::Disabled),
     ));

@@ -427,12 +427,12 @@ fn binding_fixture(
     ))
 }
 
-#[test]
-fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
+#[tokio::test]
+async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
-    let found = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED)?;
+    let found = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(
         found.record.map(|record| record.kind),
         Some(FileKind::Regular)
@@ -476,7 +476,8 @@ fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
         &missing,
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(absent.record, None);
     assert_eq!(
         absent.parent.map(|record| record.kind),
@@ -504,8 +505,8 @@ fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
     Ok(())
 }
 
-#[test]
-fn observation_dependency_storage_is_admitted_with_cache_residency()
+#[tokio::test]
+async fn observation_dependency_storage_is_admitted_with_cache_residency()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
@@ -519,10 +520,10 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
     drop(cache);
     // The same canonical path frame is a real simultaneous allocation too.
     let cancellation = CancellationToken::new();
-    let zero_peak = async_storage::poll_immediate(observe_path_async(
+    let zero_peak = observe_path_async(
         &store, &generation, &path, config(),
         WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    )).expect_err("the original path frame must be admitted before allocation");
+    ).await.expect_err("the original path frame must be admitted before allocation");
     let PathLookupError::Work(WorkError::BudgetExceeded {
         counter: "peak_allocation_bytes", observed: frame_bytes, maximum: 0,
     }) = zero_peak.error else { return Err("zero-peak request did not reject the actual path frame".into()); };
@@ -561,10 +562,10 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
     // Isolate the actual name leaf, retaining the real cache/dependency backing.
     // A prior page's higher historical peak cannot disguise this field boundary.
     let (cache, _) = setup_cache(&store, cache_entries, WorkBudget::UNBOUNDED, None)?;
-    let root = async_storage::poll_immediate(super::super::file_table::lookup_file_record_async(
+    let root = super::super::file_table::lookup_file_record(
         &cache, generation.file_table, generation.root_file_id, DecodeLimits::for_volume(config()),
         WorkBudget::UNBOUNDED, &cancellation,
-    ))?;
+    ).await?;
     assert!(root.work.backend_read_operations > 0);
     let cache_bytes = cache_resident(&cache)?;
     let first_name_bytes = u64::try_from(path.components()[0].retained_bytes())?;
@@ -589,8 +590,8 @@ fn observation_dependency_storage_is_admitted_with_cache_residency()
     Ok(())
 }
 
-#[test]
-fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
+#[tokio::test]
+async fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
 -> Result<(), Box<dyn std::error::Error>> {
     for (declared, recorded) in [
         (FileKind::Regular, Some(FileKind::Directory)),
@@ -599,7 +600,7 @@ fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
     ] {
         let store = MemoryObjectStore::default();
         let (generation, path) = binding_fixture(&store, declared, recorded)?;
-        let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED)
+        let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("inconsistent authenticated binding resolved")?;
         assert!(matches!(failure.error, PathLookupError::KindMismatch));
@@ -612,7 +613,8 @@ fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
             std::slice::from_ref(&path),
             config(),
             WorkBudget::UNBOUNDED,
-        )
+            &CancellationToken::new(),
+        ).await
         .err()
         .ok_or("batch accepted inconsistent authenticated binding")?;
         assert!(matches!(batch_failure.error, PathLookupError::KindMismatch));
@@ -638,8 +640,8 @@ fn authenticated_bindings_fail_closed_on_kind_or_record_mismatch()
     Ok(())
 }
 
-#[test]
-fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
+#[tokio::test]
+async fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -697,7 +699,8 @@ fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
         &[main, src],
         config(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("malformed routing unexpectedly succeeded")?;
     assert!(matches!(
@@ -720,7 +723,7 @@ fn batch_cancellation_after_authenticated_progress_preserves_prior_work()
     };
     let (generation, path) = fixture(&store.inner)?;
     let cancellation = CancellationToken::new();
-    let failure = async_storage::poll_ready(lookup_paths_async(
+    let failure = async_storage::poll_ready(lookup_paths(
         &store,
         &generation,
         std::slice::from_ref(&path),
@@ -741,8 +744,8 @@ fn batch_cancellation_after_authenticated_progress_preserves_prior_work()
     Ok(())
 }
 
-#[test]
-fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
+#[tokio::test]
+async fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -760,7 +763,8 @@ fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
         &[main.clone(), missing, main.clone(), root.clone()],
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(batch.entries.len(), 4);
     assert_eq!(
         batch.entries[0].record.map(|record| record.kind),
@@ -782,7 +786,7 @@ fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
     assert_eq!(batch.work.page_reads, 5);
     assert_eq!(batch.work.backend_read_operations, 3);
     let borrowed_paths = [&main, &root];
-    let borrowed = async_storage::poll_ready(lookup_path_refs_async(
+    let borrowed = async_storage::poll_ready(lookup_path_refs(
         &store,
         &generation,
         &borrowed_paths,
@@ -797,13 +801,14 @@ fn batch_paths_share_prefix_and_file_table_frontiers_and_preserve_duplicates()
         &[main, root],
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(borrowed, owned);
     Ok(())
 }
 
-#[test]
-fn batch_observation_captures_exactly_each_paths_observation()
+#[tokio::test]
+async fn batch_observation_captures_exactly_each_paths_observation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -827,7 +832,7 @@ fn batch_observation_captures_exactly_each_paths_observation()
         &cancellation,
     ))
     .ok_or("observed batch blocked")??;
-    let looked_up = lookup_paths(&store, &generation, &paths, config(), WorkBudget::UNBOUNDED)?;
+    let looked_up = lookup_paths(&store, &generation, &paths, config(), WorkBudget::UNBOUNDED, &cancellation).await?;
     assert_eq!(observed.lookup.entries, looked_up.entries);
     let mut expected = std::collections::BTreeMap::new();
     for path in &paths {
@@ -853,8 +858,8 @@ fn batch_observation_captures_exactly_each_paths_observation()
     Ok(())
 }
 
-#[test]
-fn hardlinked_directory_aliases_share_one_directory_frontier()
+#[tokio::test]
+async fn hardlinked_directory_aliases_share_one_directory_frontier()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -871,15 +876,16 @@ fn hardlinked_directory_aliases_share_one_directory_frontier()
         &[main, alias],
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(batch.entries[0], batch.entries[1]);
     assert_eq!(batch.work.page_reads, 5);
     assert_eq!(batch.work.backend_read_operations, 3);
     Ok(())
 }
 
-#[test]
-fn copied_byte_budget_rejects_before_directory_frontier_read()
+#[tokio::test]
+async fn copied_byte_budget_rejects_before_directory_frontier_read()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -893,7 +899,8 @@ fn copied_byte_budget_rejects_before_directory_frontier_read()
         std::slice::from_ref(&main),
         config(),
         budget,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("copy budget unexpectedly admitted")?;
     assert!(matches!(
@@ -1131,7 +1138,7 @@ fn pre_cancelled_single_path_operations_do_no_backend_work()
     };
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let lookup = async_storage::poll_ready(lookup_path_async(
+    let lookup = async_storage::poll_ready(lookup_path(
         &store,
         &generation,
         &path,
@@ -1168,8 +1175,8 @@ fn pre_cancelled_single_path_operations_do_no_backend_work()
     Ok(())
 }
 
-#[test]
-fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
+#[tokio::test]
+async fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store)?;
@@ -1178,7 +1185,7 @@ fn batch_lookup_does_not_reserve_worst_case_page_frontiers()
     let paths = vec![&path; 1_224];
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 16 * 1024 * 1024;
-    let result = lookup_path_refs(&store, &generation, &paths, config(), budget)?;
+    let result = lookup_path_refs(&store, &generation, &paths, config(), budget, &CancellationToken::new()).await?;
     assert_eq!(result.entries.len(), paths.len());
     assert!(result.entries.iter().all(|entry| entry.record.is_none()));
     assert!(result.work.peak_allocation_bytes <= budget.peak_allocation_bytes);
@@ -1227,12 +1234,12 @@ fn operation_cache_capacity_never_evicts_or_misattributes_backend_work()
     Ok(())
 }
 
-#[test]
-fn empty_and_excessive_path_batches_reject_before_backend_work()
+#[tokio::test]
+async fn empty_and_excessive_path_batches_reject_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
-    let empty = lookup_paths(&store, &generation, &[], config(), WorkBudget::UNBOUNDED)
+    let empty = lookup_paths(&store, &generation, &[], config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("empty path batch succeeded")?;
     assert!(matches!(empty.error, PathLookupError::EmptyBatch));
@@ -1246,7 +1253,8 @@ fn empty_and_excessive_path_batches_reject_before_backend_work()
         &[path.clone(), path],
         bounded,
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("excessive path batch succeeded")?;
     assert!(matches!(excessive.error, PathLookupError::TooManyPaths));
@@ -1254,14 +1262,14 @@ fn empty_and_excessive_path_batches_reject_before_backend_work()
     Ok(())
 }
 
-#[test]
-fn cancelled_and_unadmitted_batches_perform_no_backend_work()
+#[tokio::test]
+async fn cancelled_and_unadmitted_batches_perform_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = async_storage::poll_ready(lookup_paths_async(
+    let cancelled = async_storage::poll_ready(lookup_paths(
         &store,
         &generation,
         std::slice::from_ref(&path),
@@ -1280,7 +1288,7 @@ fn cancelled_and_unadmitted_batches_perform_no_backend_work()
 
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 0;
-    let unadmitted = lookup_paths(&store, &generation, &[path], config(), budget)
+    let unadmitted = lookup_paths(&store, &generation, &[path], config(), budget, &CancellationToken::new()).await
         .err()
         .ok_or("zero-allocation path batch succeeded")?;
     assert!(matches!(unadmitted.error, PathLookupError::Work(_)));
@@ -1288,8 +1296,8 @@ fn cancelled_and_unadmitted_batches_perform_no_backend_work()
     Ok(())
 }
 
-#[test]
-fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
+#[tokio::test]
+async fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -1302,7 +1310,8 @@ fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
         &[main.clone(), src, root],
         config(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(
         mixed.entries[0].record.map(|record| record.kind),
         Some(FileKind::Regular)
@@ -1329,7 +1338,8 @@ fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
         &[invalid],
         config(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("non-directory descent succeeded")?;
     assert!(matches!(failure.error, PathLookupError::NotDirectory));
@@ -1337,8 +1347,8 @@ fn mixed_depth_batches_finish_prefixes_and_reject_non_directory_descent()
     Ok(())
 }
 
-#[test]
-fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store)?;
@@ -1346,7 +1356,7 @@ fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn
         vec![LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?],
         config().limits,
     )?;
-    let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED)
+    let failure = lookup_path(&store, &generation, &path, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("unsupported encoding succeeded")?;
     assert!(matches!(
@@ -1357,8 +1367,8 @@ fn unsupported_name_encoding_rejects_before_backend_work() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn profile_specific_name_encodings_reach_authenticated_absence()
+#[tokio::test]
+async fn profile_specific_name_encodings_reach_authenticated_absence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store)?;
@@ -1386,7 +1396,8 @@ fn profile_specific_name_encodings_reach_authenticated_absence()
             &candidate,
             profile_config,
             WorkBudget::UNBOUNDED,
-        )?;
+            &CancellationToken::new(),
+        ).await?;
         assert!(lookup.record.is_none());
         assert_eq!(lookup.resolved_components, 0);
         assert!(lookup.work.backend_read_operations > 0);
@@ -1419,7 +1430,7 @@ fn single_path_cancellation_after_authenticated_progress_preserves_work()
             .err()
             .ok_or("cancelled path observation unexpectedly succeeded")?
         } else {
-            async_storage::poll_ready(lookup_path_async(
+            async_storage::poll_ready(lookup_path(
                 &store,
                 &generation,
                 &path,
@@ -1444,13 +1455,13 @@ fn single_path_cancellation_after_authenticated_progress_preserves_work()
     Ok(())
 }
 
-#[test]
-fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
     let root = NamespacePath::new(Vec::new(), config().limits)?;
-    let lookup = lookup_path(&store, &generation, &root, config(), WorkBudget::UNBOUNDED)?;
+    let lookup = lookup_path(&store, &generation, &root, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(lookup.parent, None);
     assert_eq!(lookup.resolved_components, 0);
     assert_eq!(
@@ -1521,7 +1532,7 @@ fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Box<dyn 
 
     let mut missing = generation.clone();
     missing.root_file_id = FileId::from_bytes([99; 16]);
-    let failure = lookup_path(&store, &missing, &root, config(), WorkBudget::UNBOUNDED)
+    let failure = lookup_path(&store, &missing, &root, config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("missing root record unexpectedly succeeded")?;
     assert!(matches!(failure.error, PathLookupError::MissingRootRecord));
@@ -1529,8 +1540,8 @@ fn root_observation_and_missing_root_identity_are_exact() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
     let mut shallow = config();
@@ -1545,7 +1556,7 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
                 component.as_bytes().len() > usize::try_from(candidate.limits.maximum_component_bytes).unwrap_or(usize::MAX)
             ).ok_or("component-bound fixture no longer rejects a reached component")? + 1)?
         };
-        let failure = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED)
+        let failure = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("unsupported path semantics unexpectedly succeeded")?;
         assert!(matches!(failure.error, PathLookupError::PathBounds));
@@ -1565,7 +1576,8 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
         &long_path,
         short_path,
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("oversized encoded path unexpectedly succeeded")?;
     assert!(matches!(failure.error, PathLookupError::PathBounds));
@@ -1579,7 +1591,8 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
         &windows_path,
         config(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("Windows name in portable profile unexpectedly succeeded")?;
     assert!(matches!(
@@ -1590,8 +1603,8 @@ fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn exact_lookup_succeeds_regardless_of_case_and_unicode_policy()
+#[tokio::test]
+async fn exact_lookup_succeeds_regardless_of_case_and_unicode_policy()
 -> Result<(), Box<dyn std::error::Error>> {
     // `case_sensitivity`/`unicode` are folding/normalization policy for the
     // facade layer above this one; an exact-key lookup at this level must not
@@ -1603,7 +1616,7 @@ fn exact_lookup_succeeds_regardless_of_case_and_unicode_policy()
     let mut normalized = config();
     normalized.unicode = UnicodePolicy::RequireNfc;
     for candidate in [folded, normalized] {
-        let lookup = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED)?;
+        let lookup = lookup_path(&store, &generation, &path, candidate, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
         assert!(lookup.record.is_some());
     }
     Ok(())
@@ -1637,8 +1650,8 @@ fn cache_and_fixed_vector_admission_fail_before_impossible_allocations()
     Ok(())
 }
 
-#[test]
-fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
+#[tokio::test]
+async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store)?;
@@ -1650,9 +1663,9 @@ fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
         LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?, child,
     ], config().limits)?;
     let queries = [impossible.clone(), main.clone(), missing, impossible.clone()];
-    let selected = async_storage::poll_immediate(lookup_paths_selected_async(
+    let selected = lookup_paths_selected_async(
         &store, &generation, &queries, config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    ))?;
+    ).await?;
     assert_eq!(selected.entries.len(), queries.len());
     assert!(selected.entries[0].record.is_none());
     assert!(selected.entries[0].parent.is_none());
@@ -1669,9 +1682,9 @@ fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
             .map_err(|(error, _)| error)?;
         let live_before = original.live_allocation_bytes();
         let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let actual = async_storage::poll_immediate(lookup_paths_selected_async_with_accounting(
+        let actual = lookup_paths_selected_async_with_accounting(
             &store, &generation, &queries, config(), &mut accounting, &cancellation, None,
-        ))?;
+        ).await?;
         assert_eq!(actual.value().entries, selected.entries);
         let (value, allocation) = actual.into_parts();
         let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
@@ -1683,15 +1696,15 @@ fn selected_batch_proves_absent_descendants_in_the_original_authenticated_walk()
         drop(allocation);
         assert_eq!(original.live_allocation_bytes(), live_before);
     }
-    let ordinary = lookup_paths(&store, &generation, &[impossible], config(), WorkBudget::UNBOUNDED)
+    let ordinary = lookup_paths(&store, &generation, &[impossible], config(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .expect_err("ordinary no-follow semantics remain an error");
     assert!(matches!(ordinary.error, PathLookupError::NotDirectory));
     assert!(ordinary.work.backend_read_operations > 0);
     Ok(())
 }
 
-#[test]
-fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_closed()
+#[tokio::test]
+async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory))?;
@@ -1699,22 +1712,22 @@ fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_closed()
         &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
         config().limits, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0,
     )?.value;
-    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+    let failure = lookup_paths_selected_async(
         &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    )).expect_err("a malformed binding is not authenticated absence");
+    ).await.expect_err("a malformed binding is not authenticated absence");
     assert!(matches!(failure.error, PathLookupError::KindMismatch));
     assert!(failure.work.backend_read_operations > 0);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+    let failure = lookup_paths_selected_async(
         &store, &generation, &[query.clone()], config(), WorkBudget::UNBOUNDED, &cancellation,
-    )).expect_err("cancelled selected batch must fail before allocation/read");
+    ).await.expect_err("cancelled selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
-    let failure = async_storage::poll_immediate(lookup_paths_selected_async(
+    let failure = lookup_paths_selected_async(
         &store, &generation, &[query], config(),
         WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new(),
-    )).expect_err("unadmitted selected batch must fail before allocation/read");
+    ).await.expect_err("unadmitted selected batch must fail before allocation/read");
     assert_eq!(failure.work.allocation_operations, 0);
     assert_eq!(failure.work.backend_read_operations, 0);
     Ok(())
@@ -1749,11 +1762,11 @@ fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_retenti
     };
     let cancellation = CancellationToken::new();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        async_storage::poll_immediate(crate::heap_future::in_heap_measured(
+        async_storage::poll_ready(crate::heap_future::in_heap_measured(
             |_| PanicAfterAdmission(&dropped),
             WorkBudget::UNBOUNDED, &cancellation,
             PathLookupError::Tree(TreeReadError::Cancelled), Some(&observer),
-        ))
+        )).expect("panicking future cannot suspend")
     }));
     assert!(unwind.is_err());
     let frame_bytes = u64::try_from(size_of::<PanicAfterAdmission<'_>>())?;
@@ -1764,20 +1777,20 @@ fn observer_cache_and_cold_frame_overlap_survives_unwind_without_phantom_retenti
     drop(cache);
     assert_eq!(custody.take_completed_data_work(), completed);
     let next_observer = |event| custody.record_heap_future_event(event);
-    let next = async_storage::poll_immediate(crate::heap_future::in_heap_measured(
+    let next = async_storage::poll_ready(crate::heap_future::in_heap_measured(
         |_| std::future::ready(Ok::<_, PathLookupFailure>(crate::OperationReceipt {
             value: (), work: WorkCounters::default(),
         })),
         WorkBudget::UNBOUNDED, &cancellation,
         PathLookupError::Tree(TreeReadError::Cancelled), Some(&next_observer),
-    ))?;
+    )).ok_or("ready frame unexpectedly suspended")??;
     assert_eq!(custody.pending_data_work(), next.work, "dead cache backing is not carried forward");
     Ok(())
 }
 
-#[test]
+#[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
-fn original_path_frame_refusal_preserves_successful_prefix_without_backend_work()
+async fn original_path_frame_refusal_preserves_successful_prefix_without_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store)?;
@@ -1788,9 +1801,9 @@ fn original_path_frame_refusal_preserves_successful_prefix_without_backend_work(
     let before = original.receipt();
     let live_before = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let failure = async_storage::poll_immediate(lookup_path_async_with_accounting(
+    let failure = lookup_path_async_with_accounting(
         &store, &generation, &path, config(), &mut accounting, &cancellation, None,
-    )).expect_err("a refused original frame cannot start a backend read");
+    ).await.expect_err("a refused original frame cannot start a backend read");
     assert!(matches!(failure, crate::FsError::Work(WorkError::BudgetExceeded {
         counter: "allocation_operations", observed: 2, maximum: 1,
     })));

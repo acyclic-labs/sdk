@@ -32,7 +32,7 @@ use acyclic_fs::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, ForkOptions, Fs,
     Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
     JoinOutcome, JoinPlan, MergeConflict, MergePlan,
-    PublicationReservation, TransactionCommit, Workspace, WorkspaceDirectoryPage, WorkspaceError,
+    PublicationReservation, TransactionCommit, Workspace, DirectoryPage, WorkspaceError,
     WorkspaceStat,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -121,8 +121,8 @@ pub use native_execution::{
     NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
     NativeProcessView, NativePublicationFailure, NativeVolumeView,
-    NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
-    NativePreparationJournalObservation, NativeRecordedPreparation,
+    NativePublicationCleanup, NativePublicationReservationFailure,
+    NativeRecordedPreparation, observe_preparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
@@ -582,7 +582,7 @@ where
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         let grant = ContentGrant::verify_directory_read(
             &self.verifier,
             &self.scope,
@@ -632,7 +632,7 @@ where
         granted_prefix: &'a str, path: &'a str,
         expected_generation: Option<&'a GenerationRef>, after: Option<&'a str>,
         maximum_entries: u32, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ((GenerationRef, WorkspaceDirectoryPage), acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, ((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>> {
         self.supports_native_directory_list(volume, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             context.verify_original_execution_owner_with_native_work(work)?.await?;
@@ -3896,7 +3896,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<(GenerationRef, WorkspaceDirectoryPage)> {
+    ) -> Result<(GenerationRef, DirectoryPage)> {
         self.require_private_directory(volume, grant, path)?;
         if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
             return Err(Error::Invalid(
@@ -3940,7 +3940,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>, after: Option<&LogicalName>,
         maximum_entries: u32, work: &acyclic_fs::NativeMaterializationWork,
         mut guard: F,
-    ) -> Result<((GenerationRef, WorkspaceDirectoryPage), acyclic_fs::NativeAllocation)>
+    ) -> Result<((GenerationRef, DirectoryPage), acyclic_fs::NativeAllocation)>
     where
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<()>> + Send,
@@ -3964,7 +3964,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let scratch = PreparationIo::from_native_work(work)?;
         let output = PreparationIo::from_native_work(work)?;
-        output.retain_owned(std::mem::size_of::<(GenerationRef, WorkspaceDirectoryPage)>() as u64)?;
+        output.retain_owned(std::mem::size_of::<(GenerationRef, DirectoryPage)>() as u64)?;
         let workspace_ref = fork_preparer_io::content_workspace(&self.provider, volume, Some(&scratch))?;
         guard().await?;
         let workspace = fork_preparer_io::open(self, &workspace_ref, &scratch).await?;
@@ -4324,7 +4324,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: Option<&GenerationRef>,
         path: &str,
         maximum_entries: u32,
-    ) -> Result<WorkspaceDirectoryPage> {
+    ) -> Result<DirectoryPage> {
         self.list_after(workspace, generation, path, None, maximum_entries)
             .await
     }
@@ -4337,7 +4337,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         path: &str,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-    ) -> Result<WorkspaceDirectoryPage> {
+    ) -> Result<DirectoryPage> {
         let workspace = self.open(workspace).await?;
         match generation {
             Some(reference) => self

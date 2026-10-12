@@ -1,5 +1,6 @@
 
 use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
@@ -15,7 +16,7 @@ async fn native_host_rejects_missing_bootstrap_and_replacement_owner() {
     let fixture = Fixture::new(None).await;
     assert!(native_host(&fixture).is_err());
     let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    assert!(fixture.runtime.verify_owner(&replacement).is_err());
+    assert!(fixture.runtime.verify_owner_with_native_work(&replacement, &crate::pi_fork::tests::work()).is_err());
     assert!(PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(),
         fixture.stream.clone(), &fixture.resources, replacement, &crate::pi_fork::tests::work()).is_err());
 }
@@ -38,7 +39,7 @@ fn installed_runtime() -> PiNativeHostRuntime {
         executable_prefix: vec![cli.to_str().unwrap().into()],
         extension: required_path("ACYCLIC_PI_TEST_EXTENSION"), provider_extension: None,
         environment: std::env::vars().collect::<BTreeMap<_, _>>() }
-        .sanitize().unwrap()
+        .sanitize(&acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()).unwrap()
 }
 
 #[tokio::test]

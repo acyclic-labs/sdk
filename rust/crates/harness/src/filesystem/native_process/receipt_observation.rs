@@ -214,7 +214,7 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     check(work)
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn request(
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Cow<'_, NativeProcessRequest>, Option<NativeAllocation>)> {

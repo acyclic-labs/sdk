@@ -342,7 +342,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocation<A, O> {
-    pub(crate) async fn authenticate_record(&self, io: &PreparationIo) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
         let journal = allocation_ref(&self.host.provider, &self.request.volume, Some(io))?;
         let journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
         let bytes = bounded_io::read(&self.host, &journal, "/root-bootstrap.json", MAX_REQUEST_BYTES, Some(io)).await?;
@@ -355,12 +356,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         if !exact {
             return Err(bounded_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "protected original Root bootstrap association changed"));
         }
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
-        self.authenticate_record(io).await?;
         let name_hold;
         let name = bounded_io::volume_storage_name(&self.request.volume, Some(io))?;
         name_hold = io.guard_owned(name.capacity() as u64)?;
@@ -512,8 +507,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         {
             return Err(io.invalid("Root source path escapes its signed read boundary"));
         }
-        let mut metadata = io.history_io();
-        self.reader.verifier.verify(&self.reader.scope, &mut Some(&mut metadata))?;
         let directory = io.contains_capability(self.reader.scope.capabilities(), &(volume, prefix), "directory:read:")?;
         let entire = io.contains_capability(self.reader.scope.capabilities(), volume, "volume:read:")?;
         if self.reader.scope.agent().is_none() || (!directory && !entire) {
@@ -556,7 +549,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
     }
 
     async fn read_snapshot_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
-        expected: Option<&GenerationRef>, maximum: u64, io: &PreparationIo) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        expected: Option<&GenerationRef>, maximum: u64, io: Option<&PreparationIo>) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let ordinary;
+        let io = match io {
+            Some(io) => io,
+            None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
+        };
         let snapshot = self.allocation.snapshot().ok_or_else(|| io.invalid("Root path has no original lazy snapshot"))?;
         if expected.is_some_and(|value| value != &self.allocation.request.generation)
             || maximum == 0 || maximum > self.reader.maximum_bytes
@@ -658,12 +656,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
             if self.allocation.snapshot().is_some() {
-                let ordinary;
-                let binding = match io {
-                    Some(io) => io,
-                    None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
-                };
-                return self.read_snapshot_path(volume, prefix, path, Some(generation), maximum_bytes, binding)
+                return self.read_snapshot_path(volume, prefix, path, Some(generation), maximum_bytes, io)
                     .await.map(|(_, bytes)| bytes);
             }
             self.authenticate(volume, io).await?;
@@ -687,14 +680,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
         BoundedContentFuture::new(io, || async move {
             if self.allocation.snapshot().is_some() {
-                let ordinary;
-                let binding = match io {
-                    Some(io) => io,
-                    None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
-                };
-                let (file, bytes) = self.read_snapshot_path(volume, prefix, path, generation, maximum_bytes, binding).await?;
+                let (file, bytes) = self.read_snapshot_path(volume, prefix, path, generation, maximum_bytes, io).await?;
                 let retained = file.logical_owned_bytes()?;
-                let retained = retained + if binding.uses_native_work() { std::mem::size_of::<FileRef>() as u64 } else { 0 };
+                let retained = retained + if io.is_some_and(PreparationIo::uses_native_work) { std::mem::size_of::<FileRef>() as u64 } else { 0 };
                 let hold = io.map(|io| io.guard_owned(retained)).transpose()?;
                 Ok((file, bytes, hold))
             } else {
@@ -783,18 +771,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     created_publisher!(self);
 }
 
-fn original_creation_key(
-    operation: OperationId, digest: [u8; 32], role: &ForkAllocationRole, io: &PreparationIo,
-) -> Result<IdempotencyKey> {
-    let suffix = match role {
-        ForkAllocationRole::Scratch => "scratch",
-        ForkAllocationRole::Project => "project",
-        ForkAllocationRole::Result => "result",
-    };
-    IdempotencyKey::new(crate::contract::preparation_format(
-        format_args!("fork:{operation}:{}:{suffix}", blake3::Hash::from(digest)), Some(io))?)
-}
-
 struct AuthenticatedAllocation {
     origin: ResourceCreationOrigin,
     volume: VolumeRef,
@@ -805,12 +781,6 @@ struct AuthenticatedAllocation {
     role: ForkAllocationRole,
     creation_operation: acyclic_fs::OperationId,
     reference_files: Vec<FileRef>,
-}
-
-fn task_origin(claim: &AllocationClaim) -> Result<&ResourceCreationOrigin> {
-    claim.task_origin.as_ref().ok_or_else(|| Error::Unauthorized(
-        "raw trusted fork allocations cannot grant created-task access".into(),
-    ))
 }
 
 async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -906,7 +876,8 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let retained_binding = read_record::<A, O, [u8; 32]>(host, &allocation,
             "/seed.json", record_limit, Some(io)).await?
             .ok_or_else(|| Error::Unauthorized("created allocation seed is missing".into()))?;
-        let origin = task_origin(&claim)?;
+        let origin = claim.task_origin.as_ref().ok_or_else(|| Error::Unauthorized(
+            "raw trusted fork allocations cannot grant created-task access".into()))?;
         let prior_origin = selected.as_ref().map(|known| &known.origin).or(original_origin.as_ref());
         if claim.operation_id != fork.operation_id || claim.preparation_digest != digest
             || claim.parent != fork.parent || claim.child != fork.child || claim.volume != *volume
@@ -932,7 +903,13 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let workspace = bounded_io::content_workspace(&host.provider, volume, Some(io))?;
         let original_workspace = bounded_io::open(host, &workspace, io).await?;
         let prepared = bounded_io::generation(host, &original_workspace, prepared_generation, io).await?;
-        let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
+        let suffix = match role {
+            ForkAllocationRole::Scratch => "scratch",
+            ForkAllocationRole::Project => "project",
+            ForkAllocationRole::Result => "result",
+        };
+        let creation_key = IdempotencyKey::new(crate::contract::preparation_format(
+            format_args!("fork:{}:{}:{suffix}", fork.operation_id, blake3::Hash::from(digest)), Some(io))?)?;
         let key = bounded_io::operation_key(&creation_key, Some(io))?;
         let initial = bounded_io::filesystem_call!(io, original,
             async { original_workspace.operation_generation(key, original, io.cancellation()).await.map_err(|error| (error, None)) },
