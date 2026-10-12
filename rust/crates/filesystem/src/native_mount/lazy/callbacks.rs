@@ -134,7 +134,7 @@ where
             .as_ref()
             .and_then(|owner| owner.watch.as_deref())
             .map_or(Ok(()), |watch| {
-                crate::demand::fence_watch(watch, work, work.cancellation())
+                watch.fence(&mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
                     .map_err(mount_demand_error)
             })
     }
@@ -378,7 +378,7 @@ where
                         let mut accounting =
                             crate::kernel::KernelAccounting::native(work, work.cancellation());
                         self.lazy
-                            .read_unauthored(&lookup, &text, None, u64::MAX, &mut accounting)
+                            .read_resolved(&lookup, &text, None, u64::MAX, crate::model::GenerationSelector::Head, &mut accounting)
                             .await
                             .map_err(lazy_error)
                     }

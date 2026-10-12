@@ -160,8 +160,8 @@ pub(super) fn prepare_source_link_buffer<W: SourceDemandReadWork>(
 {
     let original = work
         .native_source_work()
-        .ok_or(DemandError::NativeWorkUnavailable)?
-        .materialization_work()?;
+        .ok_or(DemandError::NativeWorkUnavailable)?;
+    crate::native_host::NativeHostWork::check(&original)?;
     let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
     let (mut buffer, allocation) = buffer(size as usize, work)?;
     if let Err(error) = ownership.retain(allocation, work) {

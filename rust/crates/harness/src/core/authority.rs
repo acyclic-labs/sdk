@@ -1,4 +1,3 @@
-//! authority semantics.
 use super::*;
 /// Kind of independently ordered durable aggregate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
