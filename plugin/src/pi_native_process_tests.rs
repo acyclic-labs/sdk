@@ -465,7 +465,7 @@ async fn required_pinned_pi_native_denies_changed_publication_and_unrelated_ledg
     assert!(failed.is_err(), "changed retry bytes reused the original actual upload operation");
     let original = fixture.provider().await?;
     let sealed_guard = fixture.context.volume_callback_guard_with_native_work(&fixture.owner, &fixture.work).await?;
-    let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?;
+    let callback_guard = sealed_guard.for_volume(&fixture.owner, &fixture.binding.scratch.volume, false, &fixture.work)?.0;
     let original_header = fixture.work.clone();
     acyclic_fs::native_mount::NativeMountCallbackGuard::check(callback_guard.as_ref(), &original_header)
         .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?.await

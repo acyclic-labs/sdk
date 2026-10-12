@@ -24,7 +24,7 @@ required-features = ["http"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt"]
 http = ["dep:reqwest"]
-local = ["dep:fs2", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
@@ -37,7 +37,6 @@ futures.workspace = true
 pin-project-lite = "0.2.17"
 h2 = { version = "0.4.19", optional = true }
 hyper = { version = "1.11.0", default-features = false, optional = true }
-fs2 = { workspace = true, optional = true }
 prost.workspace = true
 ruzstd.workspace = true
 serde_json.workspace = true
@@ -58,6 +57,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tracing.workspace = true
@@ -80,7 +80,7 @@ tower.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-tokio = { version = "1.48.0", features = ["net", "io-util"] }
+tokio = { version = "1.48.0", features = ["net", "io-util", "rt-multi-thread"] }
 tracing-subscriber.workspace = true
 
 [lints]

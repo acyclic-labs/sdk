@@ -1449,18 +1449,24 @@ impl From<acyclic_fs::NativeTreeMaterializationError> for Error {
 }
 
 /// Moves the complete filesystem cause and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::FsError> for Error {
     fn from(source: acyclic_fs::FsError) -> Self {
-        Self::NativeFilesystem { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeFilesystem { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { crate::filesystem::map_error(acyclic_fs::WorkspaceError::Filesystem(source)) }
     }
 }
 
 /// Moves the complete workspace cause and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::WorkspaceError> for Error {
     fn from(source: acyclic_fs::WorkspaceError) -> Self {
-        Self::NativeWorkspace { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeWorkspace { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { crate::filesystem::map_error(source) }
     }
 }
 
@@ -1473,10 +1479,13 @@ impl From<acyclic_fs::DrivenJoinError> for Error {
 }
 
 /// Moves the complete lazy-source failure and its intrinsic custody without formatting.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl From<acyclic_fs::LazyWorkspaceError> for Error {
     fn from(source: acyclic_fs::LazyWorkspaceError) -> Self {
-        Self::NativeSource { source, custody: None }
+        #[cfg(not(target_arch = "wasm32"))]
+        { Self::NativeSource { source, custody: None } }
+        #[cfg(target_arch = "wasm32")]
+        { Self::Storage(source.to_string()) }
     }
 }
 

@@ -4,6 +4,7 @@
     clippy::too_many_lines,
     reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
 )]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -33,7 +34,7 @@ use acyclic_harness::model::{
 use acyclic_harness::registry::ComponentIdentity;
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
-    DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
+    RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
     ToolContext, ToolPolicy, ToolPolicyDecision,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
@@ -1484,13 +1485,7 @@ async fn worker_restart_with_options(
                     }
                     let probe = OperationId::from_bytes([99; 16]);
                     let (stock, legacy) = tokio::join!(
-                        runtime.task_host().send_owned(
-                            task,
-                            fence.clone(),
-                            task,
-                            probe,
-                            input.payload.clone()
-                        ),
+                        runtime.task_host().send_mail(task, &fence, task, probe, input.payload.clone(), None),
                         runtime
                             .task_host()
                             .send(task, task, probe, input.payload.clone())
@@ -1878,13 +1873,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .send_owned(
-                            task,
-                            LeaseFence::from(&lease.reservation),
-                            task,
-                            OperationId::from_bytes([99; 16]),
-                            first.payload.clone()
-                        )
+                        .send_mail(task, &LeaseFence::from(&lease.reservation), task, OperationId::from_bytes([99; 16]), first.payload.clone(), None)
                         .await
                         .is_err()
                 );
@@ -2735,7 +2724,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
                 let payload = payloads.stage(OperationId::new(), path, bytes, None)?.await?;
-                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+                runtime.task_host().send_mail(task, &fence, task, OperationId::new(), payload, None).await?;
             }
             let items = runtime.task_host().inbox(task, 0, 2).await?;
             assert_eq!(items.len(), if queued { 2 } else { 0 });

@@ -275,7 +275,7 @@ impl WasmMcpHttpTransport {
         let params = from_js(params)?;
         crate::mcp::services::validate_params(&method, &params, None).map_err(js_error)?;
         let result = self.0.rpc(operation, &method, params).await.map_err(js_error)?;
-        let result = crate::mcp::services::validate_result(&method, result).map_err(js_error)?;
+        let result = crate::mcp::services::validate_result(&method, result, None).map_err(js_error)?;
         serde_json::to_vec(&result).map_err(|error| JsValue::from_str(&error.to_string()))
     }
     /// Calls an already admitted operation.

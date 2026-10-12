@@ -1,3 +1,4 @@
+use acyclic_harness::runtime::TaskSpawner as _;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::work;
@@ -7,7 +8,7 @@ use acyclic_harness::{Admission, AgentId, Capabilities,
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceSnapshot, SessionLimits},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceSnapshot, SessionLimits},
     tool::ToolRegistry, workflow::{MachineIdentity, MachineRegistry}};
 use acyclic_fs::{CancellationToken, Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::{MemoryStream};
