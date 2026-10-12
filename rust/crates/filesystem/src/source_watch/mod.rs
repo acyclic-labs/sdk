@@ -836,7 +836,7 @@ impl NativeSourceWatch {
         } else { None };
         let result = PlatformWatch::start_with_work(directory, delivery, work).and_then(|platform| {
             if let Some(failure) = failure {
-                if let Err(error) = work.commit_output() {
+                if let Err(error) = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::ReturnedItems, 1, 1)) {
                     return Err(failure.retain_failed_platform(error, platform));
                 }
             }

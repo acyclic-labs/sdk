@@ -91,8 +91,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             }
         }
         if self.invocation.is_none()
-            && (!self.authority.content.supports_native_read(self.plan.request.volume(), work)?
-                || !self.authority.result_content.supports_native_read(self.authority.results.volume(), work)?)
+            && (!self.authority.content.supports_read(self.plan.request.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
+                || !self.authority.result_content.supports_read(self.authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?)
         {
             return Err(boundary(crate::wire::ErrorCode::Unsupported,
                 "cold process drain requires actual finite request and result readers"));
@@ -139,9 +139,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     }
                     self.owner.require_volume_grant_with_native_work(reference.volume(),
                         crate::conversation::VolumeOperation::Read, work)?;
-                    let bytes = self.authority.result_content.read_with_native_work(
-                        reference, u64::from(request.as_ref().maximum_result_bytes), work,
-                    )?.await?;
+                    let bytes = self.authority.result_content.read(reference, u64::from(request.as_ref().maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
                     let (result, custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
                     if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
                         return Err(Error::Indeterminate(self.command));

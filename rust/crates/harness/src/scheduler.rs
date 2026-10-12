@@ -691,9 +691,6 @@ impl Scheduler {
     }
 
     /// Applies a borrowed committed event on the optional history ledger.
-    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
-        name = "acyclic.harness.scheduler.apply", level = "debug", skip_all,
-        fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)))]
     pub fn apply(
         &mut self, event: &SchedulerEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1141,7 +1138,7 @@ impl Scheduler {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         drop(custody);
         if let Some(io) = work.as_deref_mut() { io.release_owned(observer_owned)?; }
-        crate::obs::outcome(Ok(()))
+        Ok(())
     }
 
     fn cancellation_descendant(
@@ -2091,43 +2088,32 @@ impl TaskInbox {
     }
 
     /// Applies one committed item, deduplicating exact message identities.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.scheduler.inbox_apply",
-            level = "debug",
-            skip_all,
-            fields(items = self.items.len() as u64, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        crate::obs::outcome((|| {
-            if item.task_id != self.task_id || item.message_id.trim().is_empty() {
-                return Err(Error::Invalid(
-                    "inbox item has the wrong task or an empty message identity".into(),
-                ));
-            }
-            item.payload.validate(&mut None)?;
-            if let Some(existing) = self
-                .items
-                .iter()
-                .find(|existing| existing.message_id == item.message_id)
-            {
-                return if existing == &item {
-                    Ok(())
-                } else {
-                    Err(Error::Conflict("inbox message identity reused".into()))
-                };
-            }
-            let expected = self.items.len() as u64 + 1;
-            if item.sequence != expected {
-                return Err(Error::Conflict(format!(
-                    "expected inbox sequence {expected}"
-                )));
-            }
-            self.items.push(item);
-            Ok(())
-        })())
+        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+            return Err(Error::Invalid(
+                "inbox item has the wrong task or an empty message identity".into(),
+            ));
+        }
+        item.payload.validate(&mut None)?;
+        if let Some(existing) = self
+            .items
+            .iter()
+            .find(|existing| existing.message_id == item.message_id)
+        {
+            return if existing == &item {
+                Ok(())
+            } else {
+                Err(Error::Conflict("inbox message identity reused".into()))
+            };
+        }
+        let expected = self.items.len() as u64 + 1;
+        if item.sequence != expected {
+            return Err(Error::Conflict(format!(
+                "expected inbox sequence {expected}"
+            )));
+        }
+        self.items.push(item);
+        Ok(())
     }
 
     /// Reads a bounded page after a sequence.

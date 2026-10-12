@@ -888,21 +888,12 @@ pub struct DurableWorkflowHost {
 
 impl DurableWorkflowHost {
     /// Opens a workflow by replaying and validating every atomic transition.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.workflow.open",
-            level = "info",
-            skip_all,
-            fields(rev = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn open(
         registry: MachineRegistry,
         initial: MachineCheckpoint,
         journal: Arc<dyn WorkflowJournal>,
     ) -> Result<Self> {
-        crate::obs::outcome(Self::open_untraced(registry, initial, journal, None).await)
+        Self::recover(registry, initial, journal, None).await
     }
 
     /// Restores the original journal and machine engine on the original work.
@@ -918,12 +909,12 @@ impl DurableWorkflowHost {
             return Err(native_workflow_unsupported("journal has no native workflow callbacks"));
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = Self::open_untraced(registry, initial, journal, Some(&io)).await;
+        let result = Self::recover(registry, initial, journal, Some(&io)).await;
         let (host, _retired) = finish_native_io(result, io, 0)?;
         Ok(host)
     }
 
-    async fn open_untraced(
+    async fn recover(
         registry: MachineRegistry,
         initial: MachineCheckpoint,
         journal: Arc<dyn WorkflowJournal>,
@@ -986,7 +977,6 @@ impl DurableWorkflowHost {
             }
             // Page data drops before its guard and the next read.
         }
-        crate::obs::obs_record!("rev" = host.checkpoint.revision);
         Ok(host)
     }
 
@@ -1044,15 +1034,6 @@ impl DurableWorkflowHost {
     }
 
     /// Validates a transition before its checkpoint and outbox are committed.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.workflow.step",
-            level = "info",
-            skip_all,
-            fields(rev = self.checkpoint.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
     pub async fn step<F>(
         &mut self,
         operation_id: OperationId,
@@ -1063,10 +1044,8 @@ impl DurableWorkflowHost {
     where
         F: FnOnce(&MachineTransition) -> Result<()>,
     {
-        crate::obs::outcome(
-            self.step_checked_untraced(operation_id, idempotency_key, input, check, None)
-                .await.map(|(transition, _, _)| transition),
-        )
+        self.advance(operation_id, idempotency_key, input, check, None)
+            .await.map(|(transition, _, _)| transition)
     }
 
     /// Rejects native-incompatible machine/journal composition before provider IO.
@@ -1110,7 +1089,7 @@ impl DurableWorkflowHost {
         self.require_original_native_work(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let original_index_bytes = self.index_custody.as_ref().map(acyclic_fs::NativeAllocation::bytes);
-        let result = self.step_checked_untraced(
+        let result = self.advance(
             operation_id, idempotency_key, input, check, Some(&io),
         ).await;
         if result.is_err() {
@@ -1131,7 +1110,7 @@ impl DurableWorkflowHost {
         Ok((transition, custody))
     }
 
-    async fn step_checked_untraced<F>(
+    async fn advance<F>(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,

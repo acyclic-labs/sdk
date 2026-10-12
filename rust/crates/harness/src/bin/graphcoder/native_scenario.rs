@@ -391,7 +391,7 @@ impl Producer {
         let operation = OperationId::new();
         let approval = InteractionId::new_v4();
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -683,7 +683,7 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
-    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new()).await?
+    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))
         .with_limits(config.limits)

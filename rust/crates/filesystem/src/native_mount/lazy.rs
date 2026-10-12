@@ -1268,7 +1268,6 @@ impl Drop for DirectoryCarrierScratch<'_, '_> {
     }
 }
 
-
 fn directory_removal_bytes(names: &Vec<String>) -> Result<u64, MountSourceError> {
     let backing = names.capacity().checked_mul(std::mem::size_of::<String>())
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
@@ -1836,7 +1835,6 @@ struct SelectedImportProof {
     source_config: crate::model::VolumeConfig,
     input: crate::Digest,
 }
-
 
 struct SelectedMountInput<'a> {
     destination: crate::LazySnapshotRef,
@@ -3107,7 +3105,6 @@ where
         work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
         Ok(())
     }
-
 
     async fn stage_detached_records_measured(
         &self,
@@ -9844,7 +9841,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn finite_cursor_custody_survives_take_and_foreign_scope_until_payload_drop()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -10666,7 +10662,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn finite_opened_source_reads_keep_original_meter_identity_and_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -11166,129 +11161,98 @@ mod tests {
             self.inner.reference()
         }
 
-        fn watch(
+        fn watch<W: crate::facade::FsWork + Send>(
             &self,
             sink: Arc<dyn SourceChangeSink>,
-            budget: crate::WorkBudget,
+            funding: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Option<Box<dyn SourceWatch>>> {
-            let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
+            let mut accounting = funding.accounting(cancellation);
             let result = (|| {
-                work.check().map_err(mount_demand_error)?;
-                if !self.watched { return Ok(None); }
-                work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
-                let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
-                let remaining = work.remaining().map_err(mount_demand_error)?;
-                mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)
-            })();
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = (|| {
+                    let mut work = crate::demand::DemandWork::new(budget, cancellation);
+                    let result = (|| {
+                        work.check().map_err(mount_demand_error)?;
+                        if !self.watched { return Ok(None); }
+                        work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
+                        let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
+                        let remaining = work.remaining().map_err(mount_demand_error)?;
+                        mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)
+                })();
             result.map(|value| crate::OperationReceipt { value, work: work.work })
                 .map_err(|error| crate::OperationFailure::new(source_callback_error(error), work.work))
+        })();
+                crate::demand::accept_source_result(answer, &mut accounting)
+            })();
+            funding.finish(result, &accounting)
         }
 
-        async fn lookup(
+        async fn lookup<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Option<SourceNode>> {
+        ) -> W::Output<Option<SourceNode>, DemandError> {
             self.lookups.fetch_add(1, Ordering::AcqRel);
-            self.inner.lookup(source, path, budget, cancellation).await
+            self.inner.lookup(source, path, work, cancellation).await
         }
 
-        async fn list_page(
+        async fn list_page<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             directory: &crate::kernel::NamespacePath,
             cursor: Option<crate::demand::SourceCursor>,
             maximum_entries: u32,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::demand::SourceDirectoryPage> {
+        ) -> W::Output<crate::demand::SourceDirectoryPage, DemandError> {
             self.inner
-                .list_page(source, directory, cursor, maximum_entries, budget, cancellation)
+                .list_page(source, directory, cursor, maximum_entries, work, cancellation)
                 .await
         }
 
-        async fn read_range(
+        async fn read_range<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
             offset: u64,
             length: u64,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::kernel::OwnedSourceChunk> {
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
             self.inner
-                .read_range(source, path, expected, offset, length, budget, cancellation)
+                .read_range(source, path, expected, offset, length, work, cancellation)
                 .await
         }
 
-        async fn open_file(
+        async fn open_file<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Box<dyn DemandFile>> {
+        ) -> W::Output<Box<dyn DemandFile>, DemandError> {
             self.opens.fetch_add(1, Ordering::AcqRel);
             self.inner
-                .open_file(source, path, expected, budget, cancellation)
+                .open_file(source, path, expected, work, cancellation)
                 .await
         }
 
-        async fn lookup_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<Option<SourceNode>, DemandError> {
-            self.lookups.fetch_add(1, Ordering::AcqRel);
-            self.inner.lookup_with_native_work(source, path, work).await
-        }
-
-        async fn list_page_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            cursor: Option<crate::demand::SourceCursor>, maximum_entries: u32,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::demand::SourceDirectoryPage, DemandError> {
-            self.inner.list_page_with_native_work(source, path, cursor, maximum_entries, work).await
-        }
-
-        async fn open_file_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<Box<dyn DemandFile>, DemandError> {
-            self.opens.fetch_add(1, Ordering::AcqRel);
-            self.inner.open_file_with_native_work(source, path, expected, work).await
-        }
-
-        async fn read_range_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, offset: u64, length: u64,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner.read_range_with_native_work(source, path, expected, offset, length, work).await
-        }
-
-        async fn read_link_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, maximum_bytes: u64,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner.read_link_with_native_work(source, path, expected, maximum_bytes, work).await
-        }
-
-        async fn read_link(
+        async fn read_link<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
-            budget: crate::WorkBudget,
+            maximum_bytes: u64,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::kernel::OwnedSourceChunk> {
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
             self.inner
-                .read_link(source, path, expected, budget, cancellation)
+                .read_link(source, path, expected, maximum_bytes, work, cancellation)
                 .await
         }
     }

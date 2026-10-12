@@ -1770,8 +1770,7 @@ mod tests {
                 let foreign_agent = AgentId::from_bytes([186; 16]);
                 let scope = issuer.issue("foreign-prior-root-bind", &Capabilities::new(["conversation:bind"]), Some(foreign_agent), None, &mut None).expect("scope proof");
                 let mut aggregate = crate::store::StreamAggregate::open(
-                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-                ).await?;
+                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
                 aggregate.execute(Command { operation_id: OperationId::from_bytes([186; 16]),
                     idempotency_key: IdempotencyKey::new("genuine-foreign-prior-root-bind")?,
                     expected_revision: 0, causal_parent: None,
