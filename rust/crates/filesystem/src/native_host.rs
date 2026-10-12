@@ -17,7 +17,7 @@ use crate::NativeRootIdentity;
 
 pub(crate) struct PreparedMaterializationRecord {
     file: File,
-    parent: Dir,
+    _parent: Dir,
     #[cfg(unix)]
     temporary_name: NativeOwned<Vec<u8>>,
     #[cfg(unix)]
@@ -87,7 +87,7 @@ impl PreparedMaterializationRecord {
             create_windows_provisional_file_with_work(&parent, name, work)
         })?;
         let prepared = Self {
-            file, parent,
+            file, _parent: parent,
             #[cfg(unix)] temporary_name,
             #[cfg(unix)] current_name,
             #[cfg(windows)] rename_packet,
@@ -124,14 +124,14 @@ impl PreparedMaterializationRecord {
             let temporary = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: preparation validated and terminated these owned names; borrowing them performs no late scan, encoding or allocation.
             let current = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
-            rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
+            rename_unix_names_once(&self._parent, temporary, &self._parent, current, true)?;
         }
         #[cfg(windows)]
         windows_rename_packet_once(file, &self.rename_packet.data, self.rename_length)?;
         drop(self.cleanup.take());
         self.credit.record_completed(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED })?;
         #[cfg(unix)]
-        sync_held_descriptor_once(&self.parent)?;
+        sync_held_descriptor_once(&self._parent)?;
         #[cfg(windows)]
         sync_held_descriptor_once(&self.parent_sync)?;
         Ok(())
@@ -146,7 +146,7 @@ impl Drop for PreparedMaterializationRecord {
             // SAFETY: preparation validated and terminated this retained name.
             let name = unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
-            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+            if unsafe { libc::unlinkat(self._parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 Ok(())
             } else { Err(io::Error::last_os_error()) }
         });
@@ -1247,61 +1247,6 @@ pub(crate) fn open_leaf_with_work<W: NativeHostWork>(
     #[cfg(windows)]
     { with_wide_path_with_work(name, work, |name, work| open_windows_leaf_with_options_with_work(parent, name, options, work)) }
 }
-#[cfg(unix)]
-fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
-    file: &impl std::os::fd::AsRawFd, directory: bool, work: &mut W,
-) -> Result<(), W::Error> {
-    let stat = loop {
-        let result = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-            // SAFETY: live held descriptor and correctly sized output storage.
-            if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 { return Err(io::Error::last_os_error()); }
-            Ok(unsafe { stat.assume_init() })
-        });
-        match result {
-            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => {}
-            result => break result?,
-        }
-    };
-    let user = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-        // SAFETY: the effective-user query has no arguments or retained data.
-        Ok(unsafe { libc::geteuid() })
-    })?;
-    let kind = if directory { libc::S_IFDIR } else { libc::S_IFREG } as libc::mode_t;
-    let mode = stat.st_mode & 0o777;
-    if stat.st_mode & libc::S_IFMT as libc::mode_t != kind
-        || stat.st_uid != user
-        || (directory && mode & 0o022 != 0)
-        || (!directory && (mode != 0o600 || stat.st_nlink != 1))
-    {
-        return Err(W::invalid_request());
-    }
-    work.check()
-}
-
-#[cfg(windows)]
-fn validate_private_state_descriptor_with_work<W: NativeHostWork>(
-    file: &impl std::os::windows::io::AsRawHandle, directory: bool, work: &mut W,
-) -> Result<(), W::Error> {
-    use windows::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle,
-    };
-    let information = work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
-        let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: the exact held handle and fixed output storage remain live.
-        unsafe { GetFileInformationByHandle(windows::Win32::Foundation::HANDLE(file.as_raw_handle()), &raw mut information) }
-            .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
-        Ok(information)
-    })?;
-    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-        || (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0) != directory
-    {
-        return Err(W::invalid_request());
-    }
-    // The existing host policy checks regular/reparse metadata on Windows; DPAPI's current-user protection belongs to its existing caller engine.
-    work.check()
-}
-
 pub(crate) fn open_builtin_directory_with_work<W: NativeHostWork>(
     parent: &Dir, name: &Path, create: bool, work: &mut W,
 ) -> Result<Dir, W::Error> {
@@ -2060,7 +2005,8 @@ use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 #[cfg(any(feature = "native-mount", test))]
 #[derive(Debug, thiserror::Error)]
 #[error("native metadata cannot represent {0}")]
-pub(crate) struct NativeMetadataError(pub(crate) &'static str);
+/// Metadata the host cannot represent.
+pub struct NativeMetadataError(pub(crate) &'static str);
 
 #[cfg(target_os = "macos")]
 #[cfg(any(feature = "native-mount", test))]

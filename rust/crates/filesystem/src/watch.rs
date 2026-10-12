@@ -366,26 +366,6 @@ impl NativeWatchDriver {
         }
     }
 
-    fn watch_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self, path: &Path, mode: RecursiveMode, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                if mode != RecursiveMode::NonRecursive {
-                    return Err(NativeWatchError::BoundedObservationUnavailable.into());
-                }
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                watcher.admit_with_work(relative, work).map(|_| ())
-            }
-            #[cfg(windows)]
-            Self::Source { root, .. } if path == root => Ok(()),
-            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
-        }
-    }
-
     fn unwatch_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, path: &Path, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
@@ -2481,19 +2461,6 @@ impl NativeWatch {
         state.invalidation.get_or_insert(reason);
         self.fenced.notify_all();
     }
-}
-
-fn admit_watch_work(
-    work: &mut WorkCounters,
-    proposed: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), NativeWatchError> {
-    cancellation.check()?;
-    let next = work.checked_add(proposed)?;
-    next.verify(budget)?;
-    *work = next;
-    Ok(())
 }
 
 #[cfg(windows)]

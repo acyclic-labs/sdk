@@ -609,11 +609,11 @@ impl NativeMaterializationWork {
     pub(crate) fn from_original_demand_work(work: &crate::demand::OriginalDemandWork) -> Result<Self, crate::DemandError> {
         let cancellation = work.with_original_leaf(|state| state.cancellation().clone())?;
         Ok(Self {
-            state: std::sync::Arc::clone(work.meter()), cancellation,
-            resource: work.resource_allowance().cloned(), capture_origin: work.capture_origin().cloned(),
-            invocation: work.invocation_view_state().cloned(),
+            state: std::sync::Arc::clone(&work.state), cancellation,
+            resource: work.resource.clone(), capture_origin: work.capture_origin.clone(),
+            invocation: work.invocation.clone(),
             #[cfg(feature = "native-mount")]
-            execution: work.source_execution_view().cloned(),
+            execution: work.execution.clone(),
         })
     }
 
@@ -4112,7 +4112,7 @@ impl NativeTreeMaterializationBackend {
             else { open_native_walk_file(&parent, name, &self.work()) }
         })?;
         let actual = crate::native_host::stat_file_with_work(&file, &mut &self.work())?;
-        if (&actual).identity().map_err(native_materialization_work_error)? != (&expected).identity().map_err(native_materialization_work_error)? {
+        if actual.identity().map_err(native_materialization_work_error)? != expected.identity().map_err(native_materialization_work_error)? {
             return Err(native_diagnostic(&self.work(), path.path.display(), NativeTreeMaterializationError::ExternalMutation)?);
         }
         Ok((file, actual))
@@ -4130,7 +4130,7 @@ impl NativeTreeMaterializationBackend {
                 if desired.readonly { metadata.file_attributes() | 1 }
                 else { metadata.file_attributes() & !1 }
             });
-            crate::native_host::set_file_attributes_held_measured(&parent, &leaf, attributes, Some((&metadata).identity().map_err(native_materialization_work_error)?), &self.work())?;
+            crate::native_host::set_file_attributes_held_measured(&parent, &leaf, attributes, Some(metadata.identity().map_err(native_materialization_work_error)?), &self.work())?;
         }
         #[cfg(unix)]
         {
@@ -4517,8 +4517,8 @@ struct NativeRemoveFrame {
 fn native_remove_frame(parent: &cap_std::fs::Dir, name: &NativeWalkNameRef, metadata: &crate::native_host::HostStat, work: &NativeMaterializationWork) -> Result<NativeRemoveFrame, NativeTreeMaterializationError> {
     let directory = open_native_walk_directory(parent, name, work)?;
     let actual = crate::native_host::directory_identity(&directory, &mut &*work)?;
-    if actual != (metadata).identity().map_err(native_materialization_work_error)? {
-        return Err(NativeTreeMaterializationError::AllocationChanged { expected: (metadata).identity().map_err(native_materialization_work_error)?, actual });
+    if actual != metadata.identity().map_err(native_materialization_work_error)? {
+        return Err(NativeTreeMaterializationError::AllocationChanged { expected: metadata.identity().map_err(native_materialization_work_error)?, actual });
     }
     let (reader, cursor) = crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
     Ok(NativeRemoveFrame { directory, reader, cursor, name: None })
@@ -4775,13 +4775,6 @@ pub(crate) fn native_stat_held(parent: &cap_std::fs::Dir, leaf: &Path, work: &Na
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn native_stat_readonly(metadata: &crate::native_host::HostStat) -> bool {
-    #[cfg(unix)]
-    { metadata.mode() & 0o222 == 0 }
-    #[cfg(windows)]
-    { metadata.file_attributes() & 1 != 0 }
-}
-#[cfg(not(target_arch = "wasm32"))]
 impl NativeTreeMaterializationBackend {
     fn parent<'a>(&self, path: &NativeEntry<'a>) -> Result<(cap_std::fs::Dir, &'a Path), NativeTreeMaterializationError> {
         self.work().charge(crate::WorkCounters { source_path_components: 1, ..crate::WorkCounters::default() })?;
@@ -4822,7 +4815,7 @@ fn native_directory_contains(directory: &cap_std::fs::Dir, wanted: crate::Native
         if metadata.is_dir() && !metadata.file_type().is_symlink() {
             let child = open_native_walk_directory(parent, &name, work)?;
             let actual = crate::native_host::directory_identity(&child, &mut &*work)?;
-            if actual != (&metadata).identity().map_err(native_materialization_work_error)? { return Err(NativeTreeMaterializationError::AllocationChanged { expected: (&metadata).identity().map_err(native_materialization_work_error)?, actual }); }
+            if actual != metadata.identity().map_err(native_materialization_work_error)? { return Err(NativeTreeMaterializationError::AllocationChanged { expected: metadata.identity().map_err(native_materialization_work_error)?, actual }); }
             if actual == wanted { return Ok(true); }
             let (reader, cursor) = crate::native_host::read_dir_held_with_work(&child, &mut &*work)?;
             if frames.len() == frames.capacity() {
@@ -4896,7 +4889,7 @@ fn hash_native_metadata_edit(
         |value| value.readonly,
     ))]);
     #[cfg(windows)]
-    if metadata.is_dir() || file_type.is_file() { hasher.update(&(metadata).identity().map_err(native_materialization_work_error)?.to_bytes()); }
+    if metadata.is_dir() || file_type.is_file() { hasher.update(&metadata.identity().map_err(native_materialization_work_error)?.to_bytes()); }
     Ok(())
 }
 
@@ -5151,7 +5144,7 @@ fn hash_native_entry_shallow(
 
     hasher.update(kind);
     hasher.update(&metadata.len().to_le_bytes());
-    hasher.update(&[u8::from(native_stat_readonly(metadata))]);
+    hasher.update(&[u8::from(native_metadata(metadata).readonly)]);
     hash_native_metadata(metadata, hasher);
     if metadata.file_type().is_symlink() {
         #[cfg(unix)]
@@ -5173,14 +5166,14 @@ fn hash_native_entry_shallow(
     } else if metadata.is_dir() {
         let directory = open_native_walk_directory(parent, leaf, &backend.work())?;
         let opened = crate::native_host::directory_identity(&directory, &mut &backend.work())?;
-        if opened != (metadata).identity().map_err(native_materialization_work_error)? {
-            return Err(NativeTreeMaterializationError::AllocationChanged { expected: (metadata).identity().map_err(native_materialization_work_error)?, actual: opened });
+        if opened != metadata.identity().map_err(native_materialization_work_error)? {
+            return Err(NativeTreeMaterializationError::AllocationChanged { expected: metadata.identity().map_err(native_materialization_work_error)?, actual: opened });
         }
         return native_hash_frame(directory, &backend.work()).map(Some);
     } else if metadata.file_type().is_file() {
         let mut file = open_native_walk_file(parent, leaf, &backend.work())?;
         let opened = crate::native_host::stat_file_with_work(&file, &mut &backend.work())?;
-        if (&opened).identity().map_err(native_materialization_work_error)? != (metadata).identity().map_err(native_materialization_work_error)? || opened.len() != metadata.len() {
+        if opened.identity().map_err(native_materialization_work_error)? != metadata.identity().map_err(native_materialization_work_error)? || opened.len() != metadata.len() {
             return Err(native_diagnostic(&backend.work(), format_args!("{leaf:?}"), NativeTreeMaterializationError::ExternalMutation)?);
         }
         let mut buffer = [0; 64 * 1024];
@@ -5199,7 +5192,7 @@ fn hash_native_entry_shallow(
             offset += read as u64;
         }
         let finished = crate::native_host::stat_file_with_work(&file, &mut &backend.work())?;
-        if (&finished).identity().map_err(native_materialization_work_error)? != (metadata).identity().map_err(native_materialization_work_error)? || finished.len() != metadata.len() {
+        if finished.identity().map_err(native_materialization_work_error)? != metadata.identity().map_err(native_materialization_work_error)? || finished.len() != metadata.len() {
             return Err(native_diagnostic(&backend.work(), format_args!("{leaf:?}"), NativeTreeMaterializationError::ExternalMutation)?);
         }
     }
@@ -5234,7 +5227,10 @@ fn hash_native_metadata(metadata: &crate::native_host::HostStat, hasher: &mut bl
 #[cfg(not(target_arch = "wasm32"))]
 fn native_metadata(metadata: &crate::native_host::HostStat) -> NativeMetadataImage {
     NativeMetadataImage {
-        readonly: native_stat_readonly(metadata),
+        #[cfg(unix)]
+        readonly: metadata.mode() & 0o222 == 0,
+        #[cfg(windows)]
+        readonly: metadata.file_attributes() & 1 != 0,
         #[cfg(unix)]
         posix_mode: Some(metadata.mode()),
         #[cfg(not(unix))]
@@ -5820,7 +5816,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
                                 let actual = native_utf16_name_bytes(target.iter().copied());
                                 Ok(native_compare(actual, published.iter().copied(), work)? == std::cmp::Ordering::Equal)
                             })?;
-                            matched && (&native_stat_held(&parent, leaf, work)?).identity().map_err(native_materialization_work_error)? == (&observed).identity().map_err(native_materialization_work_error)?
+                            matched && native_stat_held(&parent, leaf, work)?.identity().map_err(native_materialization_work_error)? == observed.identity().map_err(native_materialization_work_error)?
                         }
                         _ => false,
                     }
@@ -5939,7 +5935,7 @@ where
         Err(NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    if crate::native_host::directory_identity(&directory, &mut &*work)? != (observed).identity().map_err(native_materialization_work_error)? {
+    if crate::native_host::directory_identity(&directory, &mut &*work)? != observed.identity().map_err(native_materialization_work_error)? {
         return Err(native_diagnostic(work, path, NativeTreeMaterializationError::ExternalMutation)?.into());
     }
     let mut host = Vec::new();
@@ -6013,7 +6009,7 @@ where
     let published = generation.read(&absolute, metadata.len(), work, cancellation).await.map_err(|error| (error, None))?;
     let mut file = crate::native_host::open_leaf_with_work(&parent, Path::new(leaf), &crate::native_host::NativeOpenOptions::Read, &mut &*work)?;
     let opened = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
-    if (&opened).identity().map_err(native_materialization_work_error)? != (&metadata).identity().map_err(native_materialization_work_error)? || opened.len() != metadata.len() {
+    if opened.identity().map_err(native_materialization_work_error)? != metadata.identity().map_err(native_materialization_work_error)? || opened.len() != metadata.len() {
         return Err(native_diagnostic(work, path, NativeTreeMaterializationError::ExternalMutation)?.into());
     }
     let mut buffer = [0; 64 * 1024];
@@ -6035,8 +6031,8 @@ where
     }
     let finished = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
     let selected = native_stat_held(parent, Path::new(leaf), work)?;
-    Ok((&finished).identity().map_err(native_materialization_work_error)? == (metadata).identity().map_err(native_materialization_work_error)?
-        && (&selected).identity().map_err(native_materialization_work_error)? == (metadata).identity().map_err(native_materialization_work_error)?
+    Ok(finished.identity().map_err(native_materialization_work_error)? == metadata.identity().map_err(native_materialization_work_error)?
+        && selected.identity().map_err(native_materialization_work_error)? == metadata.identity().map_err(native_materialization_work_error)?
         && finished.len() == metadata.len()
         && native_source_metadata_matches(&finished, &stat.metadata, path, work, false)?)
 }
@@ -6747,9 +6743,9 @@ mod tests {
         work.write_working_file(temporary.path(), identity, Path::new("file"), "", false, Some(digest),
             || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("same held preimage edit can truncate to empty");
         assert_eq!(std::fs::read(temporary.path().join("file")).expect("empty postimage"), b"");
-        work.write_working_file(temporary.path(), identity, Path::new("new/nested/file"), "hÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©llo", true, None,
+        work.write_working_file(temporary.path(), identity, Path::new("new/nested/file"), "h\u{e9}llo", true, None,
             || std::future::ready(Ok::<(), NativeTreeMaterializationError>(()))).await.expect("held parent directory creation");
-        assert_eq!(std::fs::read(temporary.path().join("new/nested/file")).expect("whole UTF-8 postimage"), "hÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©llo".as_bytes());
+        assert_eq!(std::fs::read(temporary.path().join("new/nested/file")).expect("whole UTF-8 postimage"), "h\u{e9}llo".as_bytes());
     }
 
     #[cfg(not(target_arch = "wasm32"))]

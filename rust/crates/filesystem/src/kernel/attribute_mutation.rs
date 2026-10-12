@@ -7,7 +7,7 @@ use super::attribute::{
     attribute_page_decode_shape,
 };
 use super::codec::DecodedPageShape;
-use super::persistent_btree::{self, Child, Format, Page, PageRef};
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::{
     AttributeEntry, AttributeName, CanonicalDecodeError, DecodeLimits,
 };

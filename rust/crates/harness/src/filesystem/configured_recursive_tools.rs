@@ -13,7 +13,7 @@ use crate::{
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, TaskAdmissionRecord, TaskContext, ToolContext},
+    runtime::{TaskAdmissionRecord, TaskContext, ToolContext},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
     source_authorization::{ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider},
     tool::ToolInvocation,

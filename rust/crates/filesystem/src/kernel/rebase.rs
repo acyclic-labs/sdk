@@ -608,14 +608,6 @@ impl CheckoutDependencies {
         true
     }
 
-    pub(crate) fn logical_data_with_step<E: From<WorkError>>(
-        &self,
-        mut step: impl FnMut() -> Result<(), E>,
-    ) -> Result<(usize, u64, u64), E> {
-        step()?;
-        Ok(self.logical_data())
-    }
-
     pub(crate) fn logical_data(&self) -> (usize, u64, u64) {
         (Arc::as_ptr(&self.captured) as usize, self.data_generation, self.name_data_bytes)
     }
@@ -1163,6 +1155,7 @@ pub trait RebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
+    /// Authenticates one dependency region.
     fn probe(
         &self,
         generation: GenerationId,
@@ -1176,6 +1169,7 @@ pub trait AsyncRebaseProbe {
     /// Stable backend-specific failure.
     type Error: std::error::Error;
 
+    /// Authenticates one dependency region asynchronously.
     fn probe_async(
         &self,
         generation: GenerationId,

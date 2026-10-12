@@ -498,8 +498,8 @@ impl Delivery {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
         let current = current.original_demand_work();
-        Arc::ptr_eq(birth.meter(), current.meter())
-            && match (birth.resource_allowance(), current.resource_allowance()) {
+        Arc::ptr_eq(&birth.state, &current.state)
+            && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
                 (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                 _ => false,
@@ -739,22 +739,6 @@ impl NativeSourceWatch {
         })
     }
 
-    /// Starts the ordinary NativeWatch root service.
-    #[cfg(windows)]
-    pub(crate) fn start_held_with_sink(
-        directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>,
-        complete: bool, recursive: bool, budget: crate::performance::WorkBudget,
-        cancellation: &crate::cancellation::CancellationToken,
-    ) -> std::io::Result<Self> {
-        let callback = crate::demand::DemandWork::new(budget, cancellation);
-        let delivery = Arc::new(Delivery::new_measured(sink, &callback));
-        let ordinary = crate::cancellation::CancellationToken::new();
-        let mut bootstrap = crate::demand::DemandWork::new(crate::performance::WorkBudget::UNBOUNDED, &ordinary);
-        PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, &mut bootstrap)
-            .map(|platform| Self { platform })
-            .map_err(|error| std::io::Error::other(error.to_string()))
-    }
-
     #[cfg(windows)]
     pub(crate) fn start_held_with_sink_with_work<W: SourceDemandReadWork>(
         directory: &crate::native_host::HostRoot, sink: Arc<dyn HostChangeSink>,
@@ -983,12 +967,6 @@ impl NativeSourceWatch {
     /// Returns once every change that completed before the call has been delivered.
     pub(crate) fn fence(&self) -> std::io::Result<()> {
         self.platform.fence()
-    }
-
-    pub(crate) fn fence_measured(
-        &self, timeout: std::time::Duration, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, crate::demand::DemandError> {
-        self.fence_with_work(timeout, work)
     }
 
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
