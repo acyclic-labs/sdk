@@ -7416,47 +7416,10 @@ where
         }).await
     }
 
-    /// Returns one bounded page combining unresolved source entries with the authored overlay.
-    pub async fn list_directory(
-        &self,
-        path: &str,
-        cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-    ) -> Result<LazyDirectoryPage, LazyWorkspaceError> {
-        let cancellation = CancellationToken::new();
-        self.list_directory_measured(
-            path,
-            cursor,
-            maximum_entries,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-            None,
-            None,
-        )
-        .await
-        .map(|receipt| receipt.value)
-    }
-
-    /// Reads the same merged sparse directory against an unpublished mounted checkout candidate instead of the workspace's last committed head.
-    #[cfg(feature = "native-mount")]
-    pub(crate) async fn list_directory_in_checkout(
-        &self,
-        checkout: &mut crate::Checkout<A, O>,
-        path: &str,
-        cursor: Option<LazyDirectoryCursor>,
-        maximum_entries: u32,
-        mounted_mask: Option<(&[String], bool)>,
-    ) -> Result<(LazyDirectoryPage, LazyWorkspaceState), LazyWorkspaceError> {
-        self.list_directory_in_checkout_measured(
-            checkout, path, cursor, maximum_entries, mounted_mask,
-            WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        ).await.map(|receipt| receipt.value)
-            .map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
-    }
-
+    /// Lists an unpublished mounted checkout with the source overlay.
     #[cfg(feature = "native-mount")]
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn list_directory_in_checkout_measured(
+    pub(crate) async fn list_directory_in_checkout(
         &self,
         checkout: &mut crate::Checkout<A, O>,
         path: &str,
@@ -7663,16 +7626,14 @@ where
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn list_directory_measured(
+    /// Lists one bounded page combining source entries and the authored overlay.
+    pub async fn list_directory(
         &self,
         path: &str,
         cursor: Option<LazyDirectoryCursor>,
         maximum_entries: u32,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-        mounted: Option<&mut crate::Checkout<A, O>>,
-        mounted_mask: Option<(&[String], bool)>,
     ) -> Result<OperationReceipt<LazyDirectoryPage>, LazyWorkspaceError> {
         let state = self.state_measured(budget, cancellation).await?;
         self.list_directory_at(
@@ -7683,8 +7644,8 @@ where
             maximum_entries,
             budget,
             cancellation,
-            mounted,
-            mounted_mask,
+            None,
+            None,
             None,
             None,
             None,
@@ -8518,9 +8479,9 @@ where
                                     snapshot, &directory, cursor.take(), 1_024, allowance, cancellation, source_used,
                                 ).await.map_err(|failure| lazy_operation_failure(failure, std::convert::identity))
                             } else {
-                                self.list_directory_measured(
+                                self.list_directory(
                                     &directory, cursor.take(), 1_024, accounting.remaining()?,
-                                    cancellation, None, None,
+                                    cancellation,
                                 ).await
                             }.map_err(|error| exactify_error(accounting.nested_error(error)));
                             accounting.accept(response)?
@@ -12369,7 +12330,7 @@ where
     result
 }
 
-fn lazy_operation_failure<E>(
+pub(crate) fn lazy_operation_failure<E>(
     failure: crate::OperationFailure<E>,
     map: impl FnOnce(E) -> LazyWorkspaceError,
 ) -> LazyWorkspaceError {
@@ -15332,7 +15293,7 @@ mod tests {
         ).await.expect("attach");
         let budget = finite_fixture_budget();
         let token = CancellationToken::new();
-        let failure = root.list_directory_measured("/", None, 1, budget, &token, None, None)
+        let failure = root.list_directory("/", None, 1, budget, &token)
             .await.err().expect("cancel after real raw page");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Cancelled));
         assert_eq!(failure.spent_work().source_entries_visited, 1);
@@ -15343,7 +15304,7 @@ mod tests {
         let mut cursor = None;
         let mut names = Vec::new();
         loop {
-            let receipt = root.list_directory_measured("/", cursor, 1, budget, &token, None, None)
+            let receipt = root.list_directory("/", cursor, 1, budget, &token)
                 .await.expect("retry held reader");
             receipt.work.verify(budget).expect("bounded projected page");
             names.extend(receipt.value.entries.into_iter().map(|entry| entry.name.as_bytes().to_vec()));
@@ -15849,16 +15810,16 @@ mod tests {
             .await
             .expect("unpublished file");
         let source_page = root
-            .list_directory_in_checkout(&mut checkout, "/", None, 16, None)
+            .list_directory_in_checkout(&mut checkout, "/", None, 16, None, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|(page, _)| page)
+            .map(|receipt| receipt.value.0)
             .expect("source page");
         assert_eq!(source_page.entries.len(), 1);
         assert!(!source_page.entries[0].authored);
         let authored_page = root
-            .list_directory_in_checkout(&mut checkout, "/", source_page.next, 16, None)
+            .list_directory_in_checkout(&mut checkout, "/", source_page.next, 16, None, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|(page, _)| page)
+            .map(|receipt| receipt.value.0)
             .expect("authored page");
         assert_eq!(authored_page.entries.len(), 1);
         assert!(authored_page.entries[0].authored);
@@ -15901,10 +15862,10 @@ mod tests {
             .workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("mount checkout");
         assert_eq!(
-            root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
+            root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
                 .expect("source directory")
-                .0
+                .value.0
                 .entries
                 .len(),
             1
@@ -15921,9 +15882,9 @@ mod tests {
             .await
             .expect("replace with empty authored directory");
         let page = root
-            .list_directory_in_checkout(&mut checkout, "/d", None, 16, None)
+            .list_directory_in_checkout(&mut checkout, "/d", None, 16, None, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
-            .map(|(page, _)| page)
+            .map(|receipt| receipt.value.0)
             .expect("replacement directory");
         assert!(page.entries.is_empty());
         assert!(page.next.is_none());
@@ -16354,14 +16315,14 @@ mod tests {
         )
         .await
         .expect("attach");
-        let first = root.list_directory("/", None, 1).await.expect("first page");
+        let first = root.list_directory("/", None, 1, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).expect("first page");
         let name = std::str::from_utf8(first.entries[0].name.as_bytes()).expect("portable name");
         root.inspect(&format!("/{name}"))
             .await
             .expect("entry metadata");
         let second = root
-            .list_directory("/", first.next, 1)
-            .await
+            .list_directory("/", first.next, 1, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value)
             .expect("second page remains valid");
         assert_eq!(second.entries.len(), 1);
     }
@@ -18307,13 +18268,13 @@ mod tests {
             .expect("write");
 
         let source_page = root
-            .list_directory("/", None, 16)
-            .await
+            .list_directory("/", None, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value)
             .expect("source phase");
         assert!(source_page.entries.is_empty());
         let authored_page = root
-            .list_directory("/", source_page.next, 16)
-            .await
+            .list_directory("/", source_page.next, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value)
             .expect("authored phase");
         assert_eq!(authored_page.entries.len(), 1);
         assert!(authored_page.entries[0].authored);
@@ -18333,13 +18294,13 @@ mod tests {
         .await
         .expect("attach");
         let first = root
-            .list_directory("/", None, 16)
-            .await
+            .list_directory("/", None, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value)
             .expect("first page");
         root.stat("/newly-observed.txt").await.expect("observe");
 
         assert!(matches!(
-            root.list_directory("/", first.next, 16).await,
+            root.list_directory("/", first.next, 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value),
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::StaleCursor)
         ));
     }
