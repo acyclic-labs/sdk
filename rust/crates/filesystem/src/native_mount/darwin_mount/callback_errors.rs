@@ -40,9 +40,6 @@ fn source_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWorkspaceCause(error) => {
             crate::native_mount::native_workspace_errno(&error.source)
         }
-        MountSourceError::NativeText { kind, .. } => {
-            crate::native_mount::native_source_text_errno(*kind)
-        }
         _ => libc::EIO,
     }
 }

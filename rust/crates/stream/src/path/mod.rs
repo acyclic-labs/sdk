@@ -1,28 +1,15 @@
 use super::*;
 
 /// Permanent account-relative slash-separated ASCII path.
-#[derive(Clone)]
-pub struct StreamPath(StreamPathStorage);
-
-#[derive(Clone)]
-enum StreamPathStorage {
-    Plain(Arc<str>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native { owner: Arc<NativePathText>, length: usize },
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-struct NativePathText {
-    text: String,
-    _allocation: acyclic_native_runtime::ReadAllocation,
-}
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+pub struct StreamPath(OwnedBytes);
 
 impl StreamPath {
     /// Validates and owns one path.
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();
         Self::validate(path)?;
-        Ok(Self(StreamPathStorage::Plain(Arc::from(path))))
+        Ok(Self(OwnedBytes::copy_from_slice(path.as_bytes())))
     }
 
     fn validate(path: &str) -> Result<(), StreamError> {
@@ -54,111 +41,92 @@ impl StreamPath {
         Ok(())
     }
 
-    /// Owns canonical path text with last-alias original-ledger custody.
+    /// Owns canonical path text on the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_native(
         path: impl AsRef<str>,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Result<Self, StreamError>> {
         let path = path.as_ref();
-        if let Err(error) = Self::validate(path) { return Ok(Err(error)); }
-        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, path.len())?;
-        let mut text = String::new();
-        if let Err(error) = text.try_reserve_exact(path.len()) {
-            return Err(meter.allocation_failed(error));
+        if let Err(error) = Self::validate(path) {
+            return Ok(Err(error));
         }
-        allocation.reconcile_capacity(text.capacity())?;
+        let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, path.len())?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(path.len())
+            .map_err(|error| meter.allocation_failed(error))?;
+        allocation.reconcile_capacity(data.capacity())?;
         meter.admit_codec(0, path.len() as u64, 0)?;
-        text.push_str(path);
+        data.extend_from_slice(path.as_bytes());
         meter.record_codec(0, path.len() as u64, 0)?;
-        let metadata = std::mem::size_of::<NativePathText>();
-        meter.admit_codec(0, metadata as u64, 0)?;
-        let mut owner_allocation = acyclic_native_runtime::ReadAllocation::new(meter, metadata)?;
-        allocation.absorb(&mut owner_allocation)?;
-        let owner = Arc::new(NativePathText { text, _allocation: allocation });
-        meter.record_codec(0, metadata as u64, 0)?;
-        Ok(Ok(Self(StreamPathStorage::Native { owner, length: path.len() })))
+        OwnedBytes::from_vec_with_guard(data, allocation, Arc::clone(meter))
+            .map(|data| Ok(Self(data)))
+            .map_err(|failure| match failure.into_error() {
+                PreparedOwnedBytesError::Admission(error) => error,
+                PreparedOwnedBytesError::NotFullyInitialized => {
+                    unreachable!("immutable storage has no initialization requirement")
+                }
+            })
     }
 
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        match &self.0 {
-            StreamPathStorage::Plain(text) => text,
-            #[cfg(not(target_arch = "wasm32"))]
-            StreamPathStorage::Native { owner, length } => &owner.text[..*length],
-        }
+        std::str::from_utf8(&self.0).expect("validated paths and their prefixes are ASCII")
     }
 
     /// Immediate parent, if any.
     #[must_use]
-    #[allow(
-        clippy::string_slice,
-        reason = "`new` rejects any path that is not `is_ascii()`, so every byte offset from \
-                  `rfind` is a valid char boundary and this can never panic"
-    )]
     pub fn parent(&self) -> Option<Self> {
-        let index = self.as_str().rfind('/')?;
-        Some(Self(match &self.0 {
-            StreamPathStorage::Plain(text) => StreamPathStorage::Plain(Arc::from(&text[..index])),
-            #[cfg(not(target_arch = "wasm32"))]
-            StreamPathStorage::Native { owner, .. } =>
-                StreamPathStorage::Native { owner: Arc::clone(owner), length: index },
-        }))
+        self.as_str()
+            .rfind('/')
+            .map(|length| Self(self.0.slice(..length)))
     }
 
-    /// Produces an implicit parent without an unmetered path allocation.
+    /// Produces an implicit parent with funded text storage.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn parent_native(
         &self,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Option<Self>> {
         meter.check()?;
-        let Some(index) = self.as_str().rfind('/') else { return Ok(None); };
-        match &self.0 {
-            StreamPathStorage::Native { owner, .. } => Ok(Some(Self(
-                StreamPathStorage::Native { owner: Arc::clone(owner), length: index },
-            ))),
-            StreamPathStorage::Plain(_) => match Self::new_native(&self.as_str()[..index], meter)? {
-                Ok(parent) => Ok(Some(parent)),
-                // A prefix of an already valid ASCII path is itself valid.
-                Err(_) => unreachable!("canonical stream path parent was invalid"),
-            },
-        }
+        self.as_str()
+            .rfind('/')
+            .map(|length| self.retain_prefix(length, meter))
+            .transpose()
     }
 
-    /// Retains an existing native owner, or funds a real copy of plain text before it can outlive the caller's operation-scoped input claim.
+    /// Retains an existing owner or funds the ordinary text copy.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retain_native(
         &self,
         meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<Self> {
         meter.check()?;
-        match &self.0 {
-            StreamPathStorage::Native { .. } => Ok(self.clone()),
-            StreamPathStorage::Plain(_) => match Self::new_native(self.as_str(), meter)? {
-                Ok(path) => Ok(path),
-                Err(_) => unreachable!("canonical stream path became invalid"),
-            },
+        self.retain_prefix(self.0.len(), meter)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_prefix(
+        &self,
+        length: usize,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
+        if self.0.is_native() {
+            return Ok(Self(self.0.slice(..length)));
         }
+        Self::new_native(&self.as_str()[..length], meter)?
+            .map_err(|_| unreachable!("a canonical path prefix remains valid"))
     }
 }
 
 impl fmt::Debug for StreamPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_tuple("StreamPath").field(&self.as_str()).finish()
+        formatter
+            .debug_tuple("StreamPath")
+            .field(&self.as_str())
+            .finish()
     }
-}
-
-impl PartialEq for StreamPath {
-    fn eq(&self, other: &Self) -> bool { self.as_str() == other.as_str() }
-}
-impl Eq for StreamPath {}
-impl PartialOrd for StreamPath {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
-}
-impl Ord for StreamPath {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.as_str().cmp(other.as_str()) }
 }
 impl std::hash::Hash for StreamPath {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -166,9 +134,10 @@ impl std::hash::Hash for StreamPath {
     }
 }
 impl std::borrow::Borrow<str> for StreamPath {
-    fn borrow(&self) -> &str { self.as_str() }
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
 }
-
 impl fmt::Display for StreamPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())

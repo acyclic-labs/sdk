@@ -31,7 +31,7 @@ impl DarwinMountSession {
             ));
         }
         let mut host = original;
-        let metadata = crate::native_host::unix_name_with_work(
+        let metadata = crate::native_host::unix_name(
             request.destination.as_os_str(),
             &mut host,
             |path, work| start_stat(path, work),
@@ -40,7 +40,7 @@ impl DarwinMountSession {
             .destination
             .parent()
             .ok_or(NativeMountError::InvalidDestination)?;
-        crate::native_host::unix_name_with_work(parent.as_os_str(), &mut host, |path, work| {
+        crate::native_host::unix_name(parent.as_os_str(), &mut host, |path, work| {
             start_stat(path, work)
         })?;
         let custody = crate::demand::NativeMountAllocationCustody::new(
@@ -60,7 +60,7 @@ impl DarwinMountSession {
             .native_allocation
             .grow((2 * std::mem::size_of::<usize>()) as u64)?;
         let context = Arc::new(context);
-        let _active = DarwinStartupMeterScope::new(Arc::clone(&context), original)?;
+        let _active = NativeMountWorkScope::new(Arc::clone(&context), original)?;
         context
             .source
             .observe_view_with_meter(Arc::downgrade(&context), original)?;
@@ -106,16 +106,15 @@ impl DarwinMountSession {
         });
         let unmount = DarwinStopController::new(&resources, &destination, original)?;
         *out = Some(Self {
-            resources: Some(Arc::clone(&resources)),
+            handler_failure: Arc::clone(&resources.context.handler_failure),
+            resources: Some(resources),
             destination,
             thread: None,
             events,
             loop_finished_before_teardown: None,
             loop_result: None,
-            loop_panic: None,
             teardown_complete: true,
             unmount,
-            handler_failure: Arc::clone(&resources.context.handler_failure),
             native_root_identity: None,
         });
         let session = out
@@ -251,7 +250,7 @@ impl DarwinMountSession {
         // SAFETY: fd is a newly opened descriptor; its explicit close is prepaid.
         let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
         let mut host = original;
-        let identity = crate::native_host::file_identity_and_length_with_work(&file, &mut host);
+        let identity = crate::native_host::file_identity_and_length(&file, &mut host);
         let (closed, recorded) = close.attempt(|| {
             // SAFETY: file represents fd, and ManuallyDrop prevents a second close.
             if unsafe { libc::close(fd) } == 0 {

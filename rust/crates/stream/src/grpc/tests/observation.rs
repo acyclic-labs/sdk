@@ -1,12 +1,12 @@
 use super::*;
 
 #[tokio::test]
-async fn served_body_completion_stays_with_its_origin()
--> Result<(), Box<dyn std::error::Error>> {
+async fn served_body_completion_stays_with_its_origin() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
     for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
         ["unpolled", "partial", "pending", "eof", "error"]
-            .into_iter().map(move |scenario| (filtered, scenario))
+            .into_iter()
+            .map(move |scenario| (filtered, scenario))
     }) {
         let captured = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
@@ -17,46 +17,100 @@ async fn served_body_completion_stays_with_its_origin()
                 })),
         );
         let provider = Arc::new(FiniteFollow {
-            inner: MemoryStream::default(), follows: AtomicUsize::new(0),
-            tail_delay: std::time::Duration::ZERO, denial: Some(1),
+            inner: MemoryStream::default(),
+            follows: AtomicUsize::new(0),
+            tail_delay: std::time::Duration::ZERO,
+            denial: Some(1),
         });
-        provider.inner.append(AppendRequest {
-            path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
-            if_tail: None, idempotency_key: None,
-        }).await?;
+        provider
+            .inner
+            .append(AppendRequest {
+                path: StreamPath::new("events")?,
+                records: vec![
+                    OwnedBytes::from_static(b"one"),
+                    OwnedBytes::from_static(b"two"),
+                ],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
         let service = Service::new(Arc::clone(&provider));
-        let caller = tracing::info_span!("opening_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+        let caller = tracing::info_span!(
+            "opening_caller",
+            outcome = "caller",
+            error.kind = "caller",
+            rpc.code = 99
+        );
         let mut body = async {
-            assert_eq!(StreamService::tail(&service, Request::new(wire::TailRequest {
-                path: String::new(),
-            })).await.unwrap_err().code(), Code::InvalidArgument);
+            assert_eq!(
+                StreamService::tail(
+                    &service,
+                    Request::new(wire::TailRequest {
+                        path: String::new(),
+                    })
+                )
+                .await
+                .unwrap_err()
+                .code(),
+                Code::InvalidArgument
+            );
             match scenario {
-                "error" => StreamService::follow(&service, Request::new(wire::FollowRequest {
-                    path: "events".to_owned(), from: 0,
-                })).await.map(Response::into_inner),
-                "pending" => StreamService::follow(&Service::new(Arc::new(provider.inner.clone())), Request::new(wire::FollowRequest {
-                    path: "events".to_owned(), from: 0,
-                })).await.map(Response::into_inner),
-                _ => StreamService::read(&service, Request::new(wire::ReadRequest {
-                    path: "events".to_owned(), from: 0, limit: 2,
-                })).await.map(Response::into_inner),
+                "error" => StreamService::follow(
+                    &service,
+                    Request::new(wire::FollowRequest {
+                        path: "events".to_owned(),
+                        from: 0,
+                    }),
+                )
+                .await
+                .map(Response::into_inner),
+                "pending" => StreamService::follow(
+                    &Service::new(Arc::new(provider.inner.clone())),
+                    Request::new(wire::FollowRequest {
+                        path: "events".to_owned(),
+                        from: 0,
+                    }),
+                )
+                .await
+                .map(Response::into_inner),
+                _ => StreamService::read(
+                    &service,
+                    Request::new(wire::ReadRequest {
+                        path: "events".to_owned(),
+                        from: 0,
+                        limit: 2,
+                    }),
+                )
+                .await
+                .map(Response::into_inner),
             }
-        }.instrument(caller).await?;
+        }
+        .instrument(caller)
+        .await?;
         let operation = if matches!(scenario, "pending" | "error") {
             "acyclic.stream.grpc.serve.follow"
-        } else { "acyclic.stream.grpc.serve.read" };
+        } else {
+            "acyclic.stream.grpc.serve.read"
+        };
         assert!(!captured.fields(operation).contains_key("outcome"));
         let other = acyclic_grpc_observability::test_support::Capture::default();
         let _polling = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
-        let caller = tracing::info_span!("polling_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+        let caller = tracing::info_span!(
+            "polling_caller",
+            outcome = "caller",
+            error.kind = "caller",
+            rpc.code = 99
+        );
         async {
             if scenario != "unpolled" {
                 assert!(body.next().await.unwrap().is_ok());
                 if scenario == "error" {
-                    assert_eq!(body.next().await.unwrap().unwrap_err().code(), Code::PermissionDenied);
+                    assert_eq!(
+                        body.next().await.unwrap().unwrap_err().code(),
+                        Code::PermissionDenied
+                    );
                     assert!(body.next().await.is_none());
                 } else if matches!(scenario, "pending" | "eof") {
                     assert!(body.next().await.unwrap().is_ok());
@@ -69,7 +123,9 @@ async fn served_body_completion_stays_with_its_origin()
                 }
             }
             drop(body);
-        }.instrument(caller).await;
+        }
+        .instrument(caller)
+        .await;
         for (capture, name) in [(&captured, "opening_caller"), (&other, "polling_caller")] {
             let fields = capture.fields(name);
             assert_eq!(fields["outcome"], "caller");
@@ -95,7 +151,10 @@ async fn served_body_completion_stays_with_its_origin()
                     assert!(!fields.contains_key("rpc.code"));
                 }
             }
-            assert_eq!(captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"], "invalid_path");
+            assert_eq!(
+                captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"],
+                "invalid_path"
+            );
         }
     }
     Ok(())
@@ -205,6 +264,11 @@ async fn cancelled_server_handler_records_owned_rpc_and_closes_origin_parent() {
     assert_eq!(other.closed("foreign_parent"), 0);
 }
 
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one adversarial matrix compares filtered and visible lifecycle evidence across body boundaries"
+)]
 async fn client_body_completion_observes_decode_trailers_and_drop()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -229,7 +293,10 @@ async fn client_body_completion_observes_decode_trailers_and_drop()
             }),
             None,
         );
-        let client = Client::from_channels(Arc::from([provider_channel(source)]), Client::authorization("fixture")?);
+        let client = Client::from_channels(
+            Arc::from([provider_channel(source)]),
+            Client::authorization("fixture")?,
+        );
         let body = client
             .read(ReadRequest {
                 path: StreamPath::new("events")?,
@@ -351,7 +418,10 @@ async fn eager_children_semantic_decode_failure_keeps_rpc_trailers_unobserved()
         Some("malformed_children"),
         None,
     );
-    let client = Client::from_channels(Arc::from([provider_channel(service)]), Client::authorization("fixture")?);
+    let client = Client::from_channels(
+        Arc::from([provider_channel(service)]),
+        Client::authorization("fixture")?,
+    );
     assert!(matches!(
         client
             .children(ChildrenRequest {
@@ -390,10 +460,13 @@ async fn client_follow_reconnects_close_rpc_spans_without_closing_cursor()
         idempotency_key: None,
     })
     .await?;
-    let client = Client::from_channels(Arc::from([
+    let client = Client::from_channels(
+        Arc::from([
             provider_channel(Service::new(Arc::clone(&ended))),
             provider_channel(Service::new(live)),
-        ]), Client::authorization("fixture")?);
+        ]),
+        Client::authorization("fixture")?,
+    );
     let mut cursor = client.follow(path, 0).await?;
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(1), cursor.next())
@@ -503,9 +576,11 @@ async fn unary_headers_wait_for_decode_and_cancel_pending_requests()
         fields["rpc.code"], "0",
         "unary successful trailers remain distinct from semantic rejection"
     );
-    let mut pending = Box::pin(client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
-        Box::pin(std::future::pending::<Result<Response<()>, Status>>())
-    }));
+    let mut pending = Box::pin(
+        client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
+            Box::pin(std::future::pending::<Result<Response<()>, Status>>())
+        }),
+    );
     assert!(futures::poll!(pending.as_mut()).is_pending());
     drop(pending);
     assert!(

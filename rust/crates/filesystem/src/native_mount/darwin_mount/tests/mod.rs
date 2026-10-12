@@ -740,7 +740,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
         Some(std::io::ErrorKind::NotFound)
     );
     let began = Instant::now();
-    mount.revalidate()?;
+    mount.revalidate(&work)?;
     assert!(
         began.elapsed() < REPLY_DELIVERY_SLACK,
         "the mount's own changes need no wait"
@@ -757,7 +757,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
         None,
         &work,
     )?;
-    mount.revalidate()?;
+    mount.revalidate(&work)?;
     assert_eq!(std::fs::metadata(&changed)?.len(), 5);
     assert!(created.is_file(), "the absent name is looked up again");
     let mut listed = names()?;

@@ -165,7 +165,7 @@ test("parent publication reconciles one exact child after a lost acknowledgement
   const advanced = await Harness.builder(contracts).parentSnapshot({ ...snapshot, parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }).forkPublisher(publisher).grant("fork:publish").build();
   expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
   expect(publications).toBe(1);
-  const narrowed = await runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
+  const narrowed = await runtime.scoped(new ExecutionScope().onlyGrants("fork:publish"));
   expect(narrowed.components.forkPublisher).toBeUndefined();
   await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow();
   await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,

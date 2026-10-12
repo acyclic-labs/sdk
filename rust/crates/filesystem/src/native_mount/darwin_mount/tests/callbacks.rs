@@ -516,9 +516,9 @@ fn owned_original_scope_rejects_other_meter_and_retains_real_sdk_callbacks_until
     ))));
     let original = crate::NativeMaterializationWork::from_meter(original);
     let other = crate::NativeMaterializationWork::from_meter(other);
-    let active = DarwinStartupMeterScope::new(Arc::clone(&context), &original)?;
+    let active = NativeMountWorkScope::new(Arc::clone(&context), &original)?;
     assert!(matches!(
-        DarwinStartupMeterScope::new(Arc::clone(&context), &other),
+        NativeMountWorkScope::new(Arc::clone(&context), &other),
         Err(NativeMountError::ControlPending)
     ));
     assert_eq!(

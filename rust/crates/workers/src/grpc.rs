@@ -53,9 +53,7 @@ pub enum ConnectError {
 
 /// Connects a bounded TLS channel.
 #[doc(hidden)]
-pub async fn connect_channel(
-    endpoint: &str, ca: Option<&[u8]>,
-) -> Result<Channel, ConnectError> {
+pub async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channel, ConnectError> {
     if !crate::client_config::valid_endpoint(endpoint) {
         return Err(ConnectError::InsecureEndpoint);
     }
@@ -66,7 +64,8 @@ pub async fn connect_channel(
             if ca.is_empty() || ca.len() > 64 * 1024 {
                 return Err(ConnectError::InvalidCaCertificate);
             }
-            configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
+            configured
+                .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
         }
         None => {
             let verifier = rustls_platform_verifier::Verifier::new(Arc::new(

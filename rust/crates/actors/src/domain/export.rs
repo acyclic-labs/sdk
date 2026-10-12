@@ -75,7 +75,10 @@ pub fn typescript_export_names(config: &Config) -> Vec<String> {
 /// Actual exported names and compiler-linked wire/semantic identities.
 pub fn typescript_export_metadata(config: &Config) -> (Vec<String>, Vec<(String, String)>) {
     fn paired<D, W>(config: &Config) -> (String, String)
-    where D: TS + TryFrom<W>, W: prost::Name + prost::Message + From<D> {
+    where
+        D: TS + TryFrom<W>,
+        W: prost::Name + prost::Message + From<D>,
+    {
         (W::full_name(), D::ident(config))
     }
     let mut messages = Vec::new();
@@ -92,12 +95,20 @@ fn export_numeric_union<T: TS + 'static>(path: &Path, config: &Config) -> Result
     let generated = T::export_to_string(config)?;
     let declaration = format!("{}\n", T::decl(config));
     let prefix = generated.strip_suffix(&declaration).ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, "ts-rs enum declaration suffix is absent")
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "ts-rs enum declaration suffix is absent",
+        )
     })?;
-    let output = T::output_path().ok_or(ExportError::CannotBeExported(std::any::type_name::<T>()))?;
+    let output =
+        T::output_path().ok_or(ExportError::CannotBeExported(std::any::type_name::<T>()))?;
     std::fs::write(
         path.join(output),
-        format!("{prefix}type {} = {};\n", T::ident(config), T::inline(config)),
+        format!(
+            "{prefix}type {} = {};\n",
+            T::ident(config),
+            T::inline(config)
+        ),
     )?;
     Ok(())
 }

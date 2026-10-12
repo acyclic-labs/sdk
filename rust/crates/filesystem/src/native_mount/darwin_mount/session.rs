@@ -6,19 +6,11 @@ pub(in crate::native_mount) struct DarwinMountSession {
     pub(super) thread: Option<JoinHandle<c_int>>,
     pub(super) events: Arc<LoopEvents>,
     pub(super) loop_finished_before_teardown: Option<bool>,
-    pub(super) loop_result: Option<MountLoopResult>,
-    pub(super) loop_panic: Option<Mutex<Box<dyn std::any::Any + Send>>>,
+    pub(super) loop_result: Option<Result<c_int, Mutex<Option<Box<dyn std::any::Any + Send>>>>>,
     pub(super) teardown_complete: bool,
     pub(super) unmount: Arc<DarwinStopController>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
     pub(super) native_root_identity: Option<crate::NativeRootIdentity>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum MountLoopResult {
-    Exited(c_int),
-    Panicked,
-    TimedOut,
 }
 
 impl DarwinMountSession {
@@ -83,13 +75,13 @@ impl DarwinMountSession {
     pub(in crate::native_mount) fn begin_original_work(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<DarwinStartupMeterScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         work.admit(crate::WorkCounters::UNCHARGED)?;
         let resources = self.resources()?;
         if resources.pointer() == 0 {
             return Err(NativeMountError::Lifecycle("session is stopped"));
         }
-        DarwinStartupMeterScope::new(Arc::clone(&resources.context), work)
+        NativeMountWorkScope::new(Arc::clone(&resources.context), work)
     }
 
     pub(in crate::native_mount) fn revalidate(
@@ -221,20 +213,12 @@ impl DarwinMountSession {
             };
             controller.changed.notify_all();
             work.check()?;
-            if self
-                .loop_result
-                .is_none_or(|result| matches!(result, MountLoopResult::TimedOut))
-            {
-                if !self.events.current().provider_exited {
-                    if let Some(resources) = &self.resources {
-                        resources.interrupt(Some(wait))?;
-                    }
+            if self.thread.is_some() && !self.events.current().provider_exited {
+                if let Some(resources) = &self.resources {
+                    resources.interrupt(Some(wait))?;
                 }
-                self.loop_result =
-                    Some(self.finish_thread(MOUNT_LOOP_EXIT_TIMEOUT, &work, wait)?);
-            } else if self.resources.is_some() {
-                self.finish_thread(MOUNT_LOOP_EXIT_TIMEOUT, &work, wait)?;
             }
+            self.finish_thread(MOUNT_LOOP_EXIT_TIMEOUT, &work, wait)?;
             let mut state = controller
                 .state
                 .lock()
@@ -243,24 +227,28 @@ impl DarwinMountSession {
             if state.control.controls_pending() {
                 return Err(NativeMountError::ControlPending);
             }
-            if let Some(panic) = self.loop_panic.take() {
-                return Err(NativeMountError::DriverPanicked {
-                    operation: "Darwin mount loop shutdown",
-                    panic,
-                });
-            }
-            let result = classify_detached_loop(
-                self.loop_result
-                    .as_ref()
-                    .ok_or(NativeMountError::DarwinTeardown(
-                        DarwinTeardownFailure::MissingTeardownState,
-                    ))?,
-                was_mounted,
-                self.loop_finished_before_teardown
-                    .ok_or(NativeMountError::DarwinTeardown(
-                        DarwinTeardownFailure::MissingTeardownState,
-                    ))?,
-            );
+            let before = self
+                .loop_finished_before_teardown
+                .expect("teardown sampled the provider");
+            let result = match self.loop_result.as_mut().expect("joined provider") {
+                Ok(0) if !before || !was_mounted => Ok(()),
+                Ok(status) => Err(NativeMountError::DarwinTeardown(if before {
+                    DarwinTeardownFailure::LoopExitedBeforeDetach(*status)
+                } else {
+                    DarwinTeardownFailure::LoopExitedAfterDetach(*status)
+                })),
+                Err(panic) => Err(panic
+                    .get_mut()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take()
+                    .map_or(
+                        NativeMountError::DarwinTeardown(DarwinTeardownFailure::LoopPanicked),
+                        |panic| NativeMountError::DriverPanicked {
+                            operation: "Darwin mount loop shutdown",
+                            panic: Mutex::new(panic),
+                        },
+                    )),
+            };
             if result.is_ok() {
                 self.teardown_complete = true;
             }
@@ -280,7 +268,7 @@ impl DarwinMountSession {
         timeout: Duration,
         work: &ProbeWork<'_, '_>,
         wait: &crate::CancellationToken,
-    ) -> Result<MountLoopResult, NativeMountError> {
+    ) -> Result<(), NativeMountError> {
         if self.thread.is_some() {
             let deadline = Instant::now() + timeout;
             loop {
@@ -302,7 +290,9 @@ impl DarwinMountSession {
                     return Err(error);
                 }
                 if Instant::now() >= deadline {
-                    return Ok(MountLoopResult::TimedOut);
+                    return Err(NativeMountError::DarwinTeardown(
+                        DarwinTeardownFailure::LoopExitTimedOut,
+                    ));
                 }
                 work.read()?;
                 self.events.wait_until(STOP_POLL_INTERVAL, |_| {
@@ -314,13 +304,13 @@ impl DarwinMountSession {
             } else {
                 work.read()?;
             }
-            self.loop_result = Some(match self.thread.take().expect("admitted loop").join() {
-                Ok(status) => MountLoopResult::Exited(status),
-                Err(panic) => {
-                    self.loop_panic = Some(Mutex::new(panic));
-                    MountLoopResult::Panicked
-                }
-            });
+            self.loop_result = Some(
+                self.thread
+                    .take()
+                    .expect("admitted loop")
+                    .join()
+                    .map_err(|panic| Mutex::new(Some(panic))),
+            );
         }
         if let Some(resources) = &mut self.resources {
             let resources = Arc::get_mut(resources).ok_or(NativeMountError::ControlPending)?;
@@ -335,29 +325,8 @@ impl DarwinMountSession {
                 retirement.retire(Some(wait))?;
             }
         }
-        Ok(self.loop_result.unwrap_or(MountLoopResult::Exited(0)))
+        Ok(())
     }
-}
-
-pub(super) fn classify_detached_loop(
-    join: &MountLoopResult,
-    was_mounted: bool,
-    finished_before_teardown: bool,
-) -> Result<(), NativeMountError> {
-    let failure = match (join, was_mounted, finished_before_teardown) {
-        (MountLoopResult::Exited(0), _, false) | (MountLoopResult::Exited(0), false, true) => {
-            return Ok(());
-        }
-        (MountLoopResult::Exited(status), _, true) => {
-            DarwinTeardownFailure::LoopExitedBeforeDetach(*status)
-        }
-        (MountLoopResult::Exited(status), _, false) => {
-            DarwinTeardownFailure::LoopExitedAfterDetach(*status)
-        }
-        (MountLoopResult::Panicked, _, _) => DarwinTeardownFailure::LoopPanicked,
-        (MountLoopResult::TimedOut, _, _) => DarwinTeardownFailure::LoopExitTimedOut,
-    };
-    Err(NativeMountError::DarwinTeardown(failure))
 }
 
 impl Drop for DarwinMountSession {

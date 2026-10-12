@@ -507,12 +507,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let authority = match work.as_deref_mut() { Some(work) => work.clone_authority(self.verifier.audience())?, None => self.verifier.audience().clone() };
         let verifier = self.verifier.copy(&mut work)?;
         let schemas = self.schemas.copy(&mut work)?;
-        if let Some(io) = io { io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?; }
         let content = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let aggregate = StreamAggregate::open(&self.stream, authority, verifier, schemas, None,
             crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work)
-            .await?.with_content_verifier(Arc::new(content));
+            .await?.with_content_verifier(content);
         let agent = aggregate.reducer().conversation().and_then(|conversation| conversation.agent)
             .ok_or_else(|| interaction_boundary(io, ErrorCode::Conflict, "interaction conversation is not bound to an agent"))?;
         if self.private_volume.owner() != &VolumeOwner::Agent(agent) {

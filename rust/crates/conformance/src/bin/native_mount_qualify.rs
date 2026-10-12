@@ -14,10 +14,10 @@ use acyclic_fs::model::{Lifecycle, VolumeConfig};
 #[cfg(windows)]
 use acyclic_fs::recover_native_mount_destination_preserving_residue;
 use acyclic_fs::{
-    Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit, probe_native_mount,
-    native_mount::NativeMountRecoveryOwner,
+    Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit,
+    native_mount::NativeMountRecoveryOwner, probe_native_mount,
 };
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::ProcessTree;
 use bytes::Bytes;
 use notify::{RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
@@ -546,7 +546,7 @@ fn spawn_captured_child(command: &mut Command) -> Result<CapturedChild, Failure>
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
     Ok(CapturedChild {
-        process: spawn_process_tree(command)?,
+        process: ProcessTree::spawn(command)?,
         stdout,
         stderr,
     })

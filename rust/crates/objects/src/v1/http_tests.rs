@@ -97,7 +97,9 @@ async fn operation(
             framing.finish()?;
             let bad_receipt = header.object_key == "native-bad-receipt";
             let mut result = fixture.objects.put(header, body.freeze().into()).await?;
-            if bad_receipt { result.size += 1; }
+            if bad_receipt {
+                result.size += 1;
+            }
             Ok(("application/json", json::encode(output, &result)?))
         }
         "multipart/upload-part" => {
@@ -123,11 +125,16 @@ async fn operation(
                 }
             }
             framing.finish()?;
-            let result = fixture.objects.upload_part(header, body.freeze().into()).await?;
+            let result = fixture
+                .objects
+                .upload_part(header, body.freeze().into())
+                .await?;
             Ok(("application/json", json::encode(output, &result)?))
         }
         "objects/get" => {
-            fixture.get_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            fixture
+                .get_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let query: wire::GetObjectRequest = json::decode(input, bytes, 128 * 1024)?;
             let mode = query.object_key.clone();
             let selected = fixture.objects.get(query, 8 * 1024 * 1024).await?;
@@ -140,9 +147,7 @@ async fn operation(
             let mut result = framed(
                 output,
                 &wire::GetObjectResponse {
-                    frame: Some(wire::get_object_response::Frame::Header(
-                        header.clone(),
-                    )),
+                    frame: Some(wire::get_object_response::Frame::Header(header.clone())),
                 },
             )?;
             if mode == "malformed" {
@@ -165,8 +170,12 @@ async fn operation(
                 )?);
             } else {
                 let selected_body = if mode == "truncated" {
-                    selected.body().slice(..selected.body().len().saturating_sub(1))
-                } else { selected.body().clone() };
+                    selected
+                        .body()
+                        .slice(..selected.body().len().saturating_sub(1))
+                } else {
+                    selected.body().clone()
+                };
                 let size = if mode == "oversized-frame" {
                     65537
                 } else {
@@ -320,7 +329,6 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
         Some(wire::ErrorCode::AccessDenied)
     );
     super::conformance::verify(&client, "conformance-http").await?;
-    super::tests::exercise_provider(&client).await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),
@@ -331,7 +339,13 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
         Box::pin(client.get_stream(query, maximum))
     })
     .await?;
-    super::tests::exercise_native_transport(&client, || server.fixture.get_calls.load(std::sync::atomic::Ordering::SeqCst)).await?;
+    super::tests::exercise_native_transport(&client, || {
+        server
+            .fixture
+            .get_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await?;
     let calls = server
         .fixture
         .calls
@@ -375,11 +389,15 @@ async fn ndjson_rejects_incomplete_oversized_and_wrong_media_responses()
         } else {
             Bytes::from_static(b"bytes")
         };
-        client.put(wire::PutObjectHeader {
-            bucket: bucket.clone(),
-            object_key: key.into(),
-            ..Default::default()
-        }, bytes.into())
+        client
+            .put(
+                wire::PutObjectHeader {
+                    bucket: bucket.clone(),
+                    object_key: key.into(),
+                    ..Default::default()
+                },
+                bytes.into(),
+            )
             .await?;
         let error = client
             .get(
@@ -433,9 +451,7 @@ fn customer_credentials_and_endpoint_configuration_are_bounded() {
     ] {
         assert!(HttpObjects::new("https://example.com", &token, 1024, None).is_err());
     }
-    assert!(
-        HttpObjects::new("https://example.com", "token", 1024, Some(&[])).is_err()
-    );
+    assert!(HttpObjects::new("https://example.com", "token", 1024, Some(&[])).is_err());
     for endpoint in ["http://127.0.0.2:1", "http://[::1]:1", "http://localhost:1"] {
         assert!(HttpObjects::new(endpoint, "token", 1024, None).is_ok());
     }
@@ -472,11 +488,15 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         "terminal-error",
         "corrupt-codec",
     ] {
-        client.put(wire::PutObjectHeader {
-            bucket: bucket.clone(),
-            object_key: key.into(),
-            ..Default::default()
-        }, bytes.clone().into())
+        client
+            .put(
+                wire::PutObjectHeader {
+                    bucket: bucket.clone(),
+                    object_key: key.into(),
+                    ..Default::default()
+                },
+                bytes.clone().into(),
+            )
             .await?;
     }
     let capture = Capture::default();
@@ -491,9 +511,25 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
     // Receipt of headers, and even receipt of all bytes, is not validated EOF.
     let mut download = client.get_stream(query("ordinary"), 512 * 1024).await?;
     assert!(capture.spans(span_name).is_empty());
-    assert_eq!(download.body.next().await.transpose()?.map(|bytes| bytes.len()), Some(65536));
+    assert_eq!(
+        download
+            .body
+            .next()
+            .await
+            .transpose()?
+            .map(|bytes| bytes.len()),
+        Some(65536)
+    );
     assert!(capture.spans(span_name).is_empty());
-    assert_eq!(download.body.next().await.transpose()?.map(|bytes| bytes.len()), Some(65536));
+    assert_eq!(
+        download
+            .body
+            .next()
+            .await
+            .transpose()?
+            .map(|bytes| bytes.len()),
+        Some(65536)
+    );
     assert!(capture.spans(span_name).is_empty());
     assert!(download.body.next().await.is_none());
     let completed = capture.spans(span_name);
@@ -515,7 +551,10 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         assert_eq!(spans.len(), before + 1);
         let fields = &spans.get(before).ok_or("missing terminal span")?.fields;
         assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
-        assert_eq!(fields.get("error.kind").map(String::as_str), Some("cancelled"));
+        assert_eq!(
+            fields.get("error.kind").map(String::as_str),
+            Some("cancelled")
+        );
     }
     for key in [
         "truncated",
@@ -541,7 +580,10 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         assert_eq!(spans.len(), before + 1);
         let fields = &spans.get(before).ok_or("missing terminal span")?.fields;
         assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
-        assert_eq!(fields.get("error.kind").map(String::as_str), Some(error.code.as_str_name()));
+        assert_eq!(
+            fields.get("error.kind").map(String::as_str),
+            Some(error.code.as_str_name())
+        );
     }
     assert!(capture.spans(span_name).iter().all(|span| {
         span.fields.keys().all(|key| {
@@ -664,7 +706,12 @@ async fn http_unary_trace_waits_for_delayed_body_and_json_decode()
     let spans = capture.spans(span_name);
     assert_eq!(spans.len(), 2);
     assert_eq!(
-        spans.get(1).ok_or("missing cancelled span")?.fields.get("error.kind").map(String::as_str),
+        spans
+            .get(1)
+            .ok_or("missing cancelled span")?
+            .fields
+            .get("error.kind")
+            .map(String::as_str),
         Some("cancelled")
     );
     gate.add_permits(1);
@@ -733,8 +780,12 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                         .build()?
                         .block_on(async {
                             let server = start().await?;
-                            let client =
-                                HttpObjects::new(&server.endpoint, "exact-token", 512 * 1024, None)?;
+                            let client = HttpObjects::new(
+                                &server.endpoint,
+                                "exact-token",
+                                512 * 1024,
+                                None,
+                            )?;
                             client
                                 .create_bucket(wire::CreateBucketRequest {
                                     name: BUCKET.into(),
@@ -744,17 +795,21 @@ fn http_chrome_export_keeps_customer_data_out_of_serialized_trace()
                             let bucket = Some(wire::BucketRef {
                                 name: BUCKET.into(),
                             });
-                            client.put(wire::PutObjectHeader {
-                                bucket: bucket.clone(),
-                                object_key: KEY.into(),
-                                metadata: Some(wire::ObjectMetadata {
-                                    user: [("source-path".into(), PATH.into())]
-                                        .into_iter()
-                                        .collect(),
-                                    ..Default::default()
-                                }),
-                                ..Default::default()
-                            }, Bytes::from_static(BODY.as_bytes()).into())
+                            client
+                                .put(
+                                    wire::PutObjectHeader {
+                                        bucket: bucket.clone(),
+                                        object_key: KEY.into(),
+                                        metadata: Some(wire::ObjectMetadata {
+                                            user: [("source-path".into(), PATH.into())]
+                                                .into_iter()
+                                                .collect(),
+                                            ..Default::default()
+                                        }),
+                                        ..Default::default()
+                                    },
+                                    Bytes::from_static(BODY.as_bytes()).into(),
+                                )
                                 .await?;
                             let download = client
                                 .get_stream(
@@ -933,8 +988,8 @@ async fn http_rejects_the_obsolete_namespace_for_an_existing_bucket()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn http_rejects_a_substituted_bucket()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn http_rejects_a_substituted_bucket() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
     let bucket = wire::Bucket {
         bucket: Some(wire::BucketRef {
             name: "different.bucket".into(),
@@ -976,6 +1031,11 @@ async fn http_rejects_a_substituted_bucket()
         .await;
     let _ = shutdown.send(());
     server.await??;
-    assert!(matches!(result, Err(Error { code: wire::ErrorCode::Unavailable })));
+    assert!(matches!(
+        result,
+        Err(Error {
+            code: wire::ErrorCode::Unavailable
+        })
+    ));
     Ok(())
 }

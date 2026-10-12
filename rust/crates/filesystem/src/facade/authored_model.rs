@@ -157,13 +157,21 @@ pub enum AuthoredMutation {
 }
 
 impl AuthoredMutation {
-
     /// Exact owned namespace-path buffer bytes transferred with this mutation.
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         match self {
-            Self::Rename { source, destination, .. }
-            | Self::HardLink { source, destination } => { source.retained_bytes() + destination.retained_bytes() }
-            Self::CloneRange(request) => { request.source.retained_bytes() + request.destination.retained_bytes() }
+            Self::Rename {
+                source,
+                destination,
+                ..
+            }
+            | Self::HardLink {
+                source,
+                destination,
+            } => source.retained_bytes() + destination.retained_bytes(),
+            Self::CloneRange(request) => {
+                request.source.retained_bytes() + request.destination.retained_bytes()
+            }
             Self::Reidentify { path, .. }
             | Self::CreateFile { path, .. }
             | Self::CreateFileFromContent { path, .. }
@@ -182,4 +190,3 @@ impl AuthoredMutation {
         }
     }
 }
-

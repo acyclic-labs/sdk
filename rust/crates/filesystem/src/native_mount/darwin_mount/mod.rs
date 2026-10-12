@@ -96,7 +96,7 @@ mod tests;
 
 pub(super) use cleanup::DarwinRecoveryControl;
 pub(super) use session::DarwinMountSession;
-pub(super) use work_scope::DarwinStartupMeterScope;
+pub use work_scope::NativeMountWorkScope;
 
 mod callback_errors;
 use callback_errors::*;

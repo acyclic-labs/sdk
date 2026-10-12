@@ -1,12 +1,14 @@
 use super::*;
 
-pub(in crate::native_mount) struct DarwinStartupMeterScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     pub(super) context: Arc<DarwinMountContext>,
     meter: crate::NativeMaterializationWork,
     generation: u64,
 }
 
-impl DarwinStartupMeterScope {
+impl NativeMountWorkScope {
     pub(super) fn new(
         context: Arc<DarwinMountContext>,
         meter: &crate::NativeMaterializationWork,
@@ -23,12 +25,13 @@ impl DarwinStartupMeterScope {
         })
     }
 
-    pub(in crate::native_mount) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+    /// Retains the original callback meter for accepted I/O.
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::new(Arc::clone(&self.context), &self.meter)
     }
 }
 
-impl Drop for DarwinStartupMeterScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         self.context
             .startup_meter

@@ -20,7 +20,9 @@ impl Completion {
         self.finished = true;
         match kind {
             Some(kind) => obs::failed(&self.span, kind),
-            None => { self.span.record("outcome", "ok"); }
+            None => {
+                self.span.record("outcome", "ok");
+            }
         }
         if let Some(code) = code {
             self.span.record("rpc.code", code as u64);
@@ -64,7 +66,10 @@ pub(super) fn decode_response<T, U>(
     result
 }
 
-pub(super) fn observe_body<S, T>(span: &tracing::Span, body: S) -> impl Stream<Item = Result<T, Status>> + Unpin + use<S, T>
+pub(super) fn observe_body<S, T>(
+    span: &tracing::Span,
+    body: S,
+) -> impl Stream<Item = Result<T, Status>> + Unpin + use<S, T>
 where
     S: Stream<Item = Result<T, Status>> + Unpin,
 {
@@ -73,7 +78,9 @@ where
     let mut state = (completion.span.scope(body), completion);
     stream::poll_fn(move |cx| {
         let (body, completion) = &mut state;
-        if completion.finished { return Poll::Ready(None); }
+        if completion.finished {
+            return Poll::Ready(None);
+        }
         let next = Pin::new(body).poll_next(cx);
         match &next {
             Poll::Ready(Some(Err(error))) => completion.status(error),

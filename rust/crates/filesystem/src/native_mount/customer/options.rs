@@ -1,5 +1,34 @@
 use super::*;
 
+pub(super) fn checkout_source<A, O>(
+    checkout: crate::Checkout<A, O>,
+    root: (
+        crate::kernel::NamespacePath,
+        crate::kernel::allocation::KernelOwnedAllocation,
+    ),
+    publication: MountPublication,
+    work: &NativeMaterializationWork,
+    original: Option<&NativeMaterializationWork>,
+    guard: Option<&Arc<dyn super::super::NativeMountCallbackGuard>>,
+) -> Result<Arc<CheckoutMountSource<A, O>>, MountLifecycleError>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let config = checkout.volume_config();
+    let shared = SharedCheckout::with_publication_meter(checkout, publication, work)?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = root.1 else {
+        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
+    };
+    let source =
+        CheckoutMountSource::new_at_meter(shared, config, root.0, custody, work, original)?;
+    let source = match guard {
+        Some(guard) => source.with_native_callback_guard(guard.clone()),
+        None => source,
+    };
+    source.into_arc_meter(work).map_err(Into::into)
+}
+
 /// When authored native mutations become a durable workspace generation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MountPublication {
