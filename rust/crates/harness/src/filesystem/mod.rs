@@ -1203,7 +1203,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited conversation has the wrong media type"));
                         }
                         let bytes = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
-                        let inherited = io.decode_preparation::<InheritedConversationPrefix>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let inherited = io.decode(std::marker::PhantomData::<InheritedConversationPrefix>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let canonical_guard;
                         let canonical = io.encode(&inherited.0, io.remaining()?.bytes_encoded, true)?;
                         canonical_guard = io.guard_bytes(&canonical)?;
@@ -1233,7 +1233,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     let _bytes_hold;
                     let bytes = self.host.read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(&io)).await?;
                     _bytes_hold = io.guard_owned(bytes.len() as u64)?;
-                    let context = io.decode_preparation::<crate::context::Context>(&bytes, crate::wire::ErrorCode::Storage)?;
+                    let context = io.decode(std::marker::PhantomData::<crate::context::Context>, &bytes, crate::wire::ErrorCode::Storage)?;
                     crate::context::validate_projected_context(&context.0, summary.selection.limits, Some(&io))?;
                     let _canonical_hold;
                     let canonical = io.encode(&context.0, io.remaining()?.bytes_encoded, true)?;
