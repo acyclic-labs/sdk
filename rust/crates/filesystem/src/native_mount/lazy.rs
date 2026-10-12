@@ -469,7 +469,6 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::RescanInProgress => "filesystem engine failure: source demand failed: native watcher baseline scan is in progress",
         WatchError::ZeroPollLimit => "filesystem engine failure: source demand failed: native watcher poll limit must be non-zero",
         WatchError::SequenceExhausted => "filesystem engine failure: source demand failed: native watcher sequence is exhausted",
-        WatchError::AllocationFailed => "filesystem engine failure: source demand failed: native watcher output allocation failed",
     };
     MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: reason }
 }
@@ -5737,14 +5736,14 @@ where
         self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.settle_with_meter(work))
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
-        self.with_view(super::adapter::NativeDemandCarrier::Native(work), |file| file.read_sparse_range_with_meter(offset, length, work))
+        self.with_view(super::adapter::NativeDemandCarrier::Native(work), |file| file.read_sparse_range(offset, length, work))
     }
 
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_sparse_range_with_meter(offset, range, work))
+        self.with_mutation(super::adapter::NativeDemandCarrier::Native(work), |file| file.write_sparse_range(offset, range, work))
     }
 
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
@@ -6131,10 +6130,10 @@ where
         })
     }
 
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &crate::NativeMaterializationWork)
         -> Result<(super::MountSparseRange, crate::NativeAllocation), MountSourceError> {
         self.with_view_with_meter(work, false, |file, node, carrier| {
-            if let Some(file) = file { return file.read_sparse_range_with_meter(offset, length, work); }
+            if let Some(file) = file { return file.read_sparse_range(offset, length, work); }
             let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
@@ -6184,9 +6183,9 @@ where
         })
     }
 
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (super::MountSparseRange, crate::NativeAllocation),
         work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {
-        self.with_authored_with_meter(work, |file| file.write_sparse_range_with_meter(offset, range, work))
+        self.with_authored_with_meter(work, |file| file.write_sparse_range(offset, range, work))
     }
 
     fn lookup(&self) -> Result<MountLookup, MountSourceError> {
@@ -7958,11 +7957,11 @@ mod tests {
         std::fs::write(source_root.path().join("b"), b"old-b")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8058,11 +8057,11 @@ mod tests {
         std::fs::write(source_root.join("source-only"), b"source")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root,
+                std::borrow::Cow::Owned(std::path::Path::new(source_root).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8291,8 +8290,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("source-only"), b"source")?;
         let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let fs = crate::Fs::memory();
         let store = crate::MemoryLazyWorkspaceStore::default();
         let lazy = Arc::new(LazyWorkspace::attach(
@@ -8454,8 +8453,8 @@ mod tests {
             std::fs::write(source_root.path().join("a"), b"source")?;
             std::fs::hard_link(source_root.path().join("a"), source_root.path().join("b"))?;
             let demand = Arc::new(crate::demand::native::NativeDemandSource::open(
-                source_root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-            ).await?);
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+            ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
             let simulation = Simulation::default();
             let (authority, objects) = simulation.stores();
             let fs = crate::Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
@@ -8601,11 +8600,11 @@ mod tests {
         let source_root = tempfile::tempdir()?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8672,11 +8671,11 @@ mod tests {
         std::fs::hard_link(source_root.path().join("c"), source_root.path().join("d"))?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8760,11 +8759,11 @@ mod tests {
         std::fs::write(source_root.path().join("file"), b"source")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8834,11 +8833,11 @@ mod tests {
         std::fs::write(source_root.path().join("a"), b"source")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -8938,11 +8937,11 @@ mod tests {
         std::fs::write(source_root.path().join("g"), b"other")?;
         let demand = Arc::new(
             NativeDemandSource::open(
-                source_root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         );
         let fs = Fs::memory();
         let lazy = Arc::new(
@@ -9024,11 +9023,11 @@ mod tests {
             std::fs::hard_link(source_root.path().join("a"), source_root.path().join("b"))?;
             let demand = Arc::new(
                 NativeDemandSource::open(
-                    source_root.path(),
+                    std::borrow::Cow::Owned(std::path::Path::new(source_root.path()).to_path_buf()),
                     FilesystemProfile::Portable,
-                    VolumeLimits::default(), None, None,
+                    VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
                 )
-                .await?,
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             );
             let fs = Fs::memory();
             let lazy = Arc::new(
@@ -9861,11 +9860,11 @@ mod tests {
     ) -> Result<crate::demand::native::NativeDemandSource, Box<dyn std::error::Error>> {
         use crate::model::{FilesystemProfile, VolumeLimits};
         Ok(crate::demand::native::NativeDemandSource::open(
-            source,
+            std::borrow::Cow::Owned(std::path::Path::new(source).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?)
     }
 
     async fn mounted_view_of<D: DemandSource + 'static>(
@@ -10210,7 +10209,7 @@ mod tests {
         assert!(handle.read_attribute_with_meter(b"absent", &context)?.is_none());
         assert!(handle.list_attributes_with_meter(None, 2, &context)?.0.names.is_empty());
         handle.settle_with_meter(&context)?;
-        let (sparse, owned) = handle.read_sparse_range_with_meter(1, 3, &context)?;
+        let (sparse, owned) = handle.read_sparse_range(1, 3, &context)?;
         assert_eq!(sparse.logical_bytes, 3);
         assert_eq!(sparse.spans.len(), 1);
         assert_eq!(sparse.spans[0].relative_offset, 0);
@@ -10310,7 +10309,7 @@ mod tests {
         let demand = Arc::new(Counted::new(runtime.block_on(native_source(source.path()))?, false));
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "shared-content-scope"))?;
         let link = mounted(&["link"]);
-        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
+        super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
         let caller = crate::CancellationToken::new();
         let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
@@ -10476,7 +10475,7 @@ mod tests {
         assert_eq!(demand.opens.load(Ordering::Acquire), opened + 1);
         let link = mounted(&["authored-link"]);
         let target = Bytes::from_static(b"../opaque-target\xff");
-        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((target.clone()).into(), 0), FileMetadata::default(), work))?;
+        super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((target.clone()).into(), 0), FileMetadata::default(), work))?;
         let lookups = demand.lookups();
         let opened = demand.opens.load(Ordering::Acquire);
         let mut read = native_control_work(finite_content_budget(), &caller)?;
@@ -10940,11 +10939,11 @@ mod tests {
             crate::model::FilesystemProfile::Posix
         };
         Ok(crate::demand::native::NativeDemandSource::open(
-            source,
+            std::borrow::Cow::Owned(std::path::Path::new(source).to_path_buf()),
             profile,
-            crate::model::VolumeLimits::default(), None, None,
+            crate::model::VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?)
     }
 
     async fn live_lazy_mount_of(

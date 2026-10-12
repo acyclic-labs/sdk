@@ -19,7 +19,7 @@ fn binding(session: &str, identity: u8) -> PiTaskBinding {
             .unwrap(),
             allocation: PiScratchAllocation::Created(PiScratchCreation {
                 workspace_id: [identity; 16],
-                generation: GenerationRef::new(provider, [3; 32], None).unwrap(),
+                generation: GenerationRef::new(provider, [3; 32].into(), None).unwrap(),
             }),
         },
     }
@@ -56,7 +56,7 @@ fn roles_providers_and_original_creation_are_checked() {
     };
     creation.generation = GenerationRef::new(
         ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None).unwrap(),
-        [3; 32],
+        [3; 32].into(),
         None,
     )
     .unwrap();

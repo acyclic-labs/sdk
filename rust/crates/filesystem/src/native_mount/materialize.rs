@@ -1419,7 +1419,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         work.admit(delta).map_err(restore_demand_error)?;
         let allocation = allocation_work.claim(bytes as u64).map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
-        write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
+        write!(name, ".acyclic-restore-{process}-{sequence}").expect("String formatting cannot fail");
         work.record(delta).map_err(restore_demand_error)?;
         let name = (PathBuf::from(name), allocation);
         match parent.create_dir(&name.0, work) {
@@ -1473,11 +1473,7 @@ fn restore_artifact_name(prefix: &str, relative: &Path, work: &mut impl crate::d
     work.admit(delta).map_err(restore_demand_error)?;
     work.allocate(bytes as u64).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
-    if write!(name, "{prefix}{}", hasher.finalize().to_hex()).is_err() {
-        drop(name);
-        work.release(bytes as u64).map_err(restore_demand_error)?;
-        return Err(MaterializeError::InvalidPath);
-    }
+    write!(name, "{prefix}{}", hasher.finalize().to_hex()).expect("String formatting cannot fail");
     if let Err(error) = work.record(delta) {
         drop(name);
         work.release(bytes as u64).map_err(restore_demand_error)?;
@@ -2986,11 +2982,6 @@ mod restore_recovery_tests {
         waiter.abort();
         let cancelled = waiter.await;
         let competing = acquire_restore_lock(&parent, relative, false, &mut work);
-        let competing_error = match &competing {
-            Err(MaterializeError::Io(error)) => Some((error.raw_os_error(), error.kind())),
-            _ => None,
-        };
-        eprintln!("competing restore lock error: {competing_error:?}");
         let fenced = matches!(
             &competing,
             Err(MaterializeError::Io(error))
@@ -3003,56 +2994,35 @@ mod restore_recovery_tests {
         // Acquiring is the completion barrier for the worker's final lock drop.
         let _next = acquire_restore_lock(&parent, relative, true, &mut work)?;
         assert!(cancelled.is_err_and(|error| error.is_cancelled()));
-        assert!(
-            fenced,
-            "cancelled waiter released a still-running restore's lock: {competing_error:?}"
-        );
+        assert!(fenced, "cancelled waiter released a still-running restore's lock");
         Ok(())
     }
 
     #[test]
-    fn live_mount_recovery_restores_a_displaced_entry() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let root = temporary.path().join("root");
-        std::fs::create_dir(&root)?;
-        let relative = Path::new("entry");
-        let destination = root.join(relative);
-        std::fs::write(&destination, b"before")?;
-        let mut work = restoration_work();
-        let held_root = HostRoot::open(&root, &mut work)?;
-        let parent = held_parent(&held_root, relative, &mut work)?;
-        let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
-        let witness = restore_artifact_name(".acyclic-restore-live-witness-", relative, &mut work)?;
-        create_restore_witness(&parent, &witness, LIVE_RESTORE_WITNESS, &mut work)?;
-        parent.rename_to(relative, &parent, &backup, &mut work)?;
-
-        recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
-
-        assert_eq!(std::fs::read(&destination)?, b"before");
-        assert!(!root.join(backup).exists());
-        Ok(())
-    }
-
-    #[test]
-    fn live_mount_recovery_keeps_a_published_entry() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        let root = temporary.path().join("root");
-        std::fs::create_dir(&root)?;
-        let relative = Path::new("entry");
-        let destination = root.join(relative);
-        std::fs::write(&destination, b"after")?;
-        let mut work = restoration_work();
-        let held_root = HostRoot::open(&root, &mut work)?;
-        let parent = held_parent(&held_root, relative, &mut work)?;
-        let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
-        let witness = restore_artifact_name(".acyclic-restore-live-witness-", relative, &mut work)?;
-        create_restore_witness(&parent, &witness, LIVE_RESTORE_WITNESS, &mut work)?;
-        std::fs::write(root.join(&backup), b"before")?;
-
-        recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
-
-        assert_eq!(std::fs::read(&destination)?, b"after");
-        assert!(!root.join(backup).exists());
+    fn live_mount_recovery_preserves_the_correct_entry() -> Result<(), Box<dyn std::error::Error>> {
+        for published in [false, true] {
+            let temporary = tempfile::tempdir()?;
+            let root = temporary.path().join("root");
+            std::fs::create_dir(&root)?;
+            let relative = Path::new("entry");
+            let destination = root.join(relative);
+            let expected = if published { b"after".as_slice() } else { b"before" };
+            std::fs::write(&destination, expected)?;
+            let mut work = restoration_work();
+            let held_root = HostRoot::open(&root, &mut work)?;
+            let parent = held_parent(&held_root, relative, &mut work)?;
+            let backup = restore_artifact_name(".acyclic-restore-backup-", relative, &mut work)?;
+            let witness = restore_artifact_name(".acyclic-restore-live-witness-", relative, &mut work)?;
+            create_restore_witness(&parent, &witness, LIVE_RESTORE_WITNESS, &mut work)?;
+            if published {
+                std::fs::write(root.join(&backup), b"before")?;
+            } else {
+                parent.rename_to(relative, &parent, &backup, &mut work)?;
+            }
+            recover_live_mount_replacement(&parent, relative, relative, &mut work)?;
+            assert_eq!(std::fs::read(&destination)?, expected);
+            assert!(!root.join(backup).exists());
+        }
         Ok(())
     }
 

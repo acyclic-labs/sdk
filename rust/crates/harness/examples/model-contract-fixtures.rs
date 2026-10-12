@@ -16,7 +16,7 @@ fn text(bytes: &[u8]) -> Result<String> {
 }
 fn main() -> Result<()> {
     let request = ModelRequest {
-        model: Model::new("mock", "exact", "pinned", json!({}))?,
+        model: Model::new("mock".into(), "exact".into(), "pinned".into(), json!({}))?,
         messages: vec![
             ModelMessage {
                 role: ModelRole::User,

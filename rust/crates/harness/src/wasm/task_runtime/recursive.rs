@@ -190,7 +190,7 @@ impl WasmTaskRuntime {
         let revision = original_owner.reducer.revision();
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let page = reader.read_page(&HistoryCursor { authority: original_owner.reducer.authority().clone(),
-            after_revision: revision - 1, through_revision: revision }, history_limits).await.map_err(js_error)?;
+            after_revision: revision - 1, through_revision: revision }, history_limits, None).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         if page.events.as_slice() != std::slice::from_ref(head) {
             return Err(js_error(Error::Unauthorized("original fork source head differs from canonical Stream".into())));
@@ -228,7 +228,7 @@ impl WasmTaskRuntime {
         let lease = from_js(lease)?;
         self.validate_recursive_lease(source, &lease).await?;
         let commands = self.commands().with_fork_preparer(source.binding.preparer.clone());
-        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis).await))
+        work_to_js(&work_value(self.runtime.reconcile_task(lease, &commands, maximum_commands, maximum_wait_millis, None).await))
     }
 }
 

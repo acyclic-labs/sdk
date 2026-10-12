@@ -415,22 +415,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
 
-    /// Checks whether all model and tool dispatches have settled.
-    pub(crate) async fn is_quiescent(&self) -> Result<bool> {
-        self.quiescent(None).await
-    }
-
-    /// Checks settled dispatches on the original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn is_quiescent_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, bool>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            self.quiescent(Some(&PreparationIo::from_native_work(work)?)).await
-        })
-    }
-
-    async fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
+    /// Checks settled dispatches under their original owner and optional IO.
+    pub async fn is_quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
             io, crate::wire::ErrorCode::Unsupported, "quiescence requires a task-owned execution journal"))?;
         self.require_operation(*operation, io)?;
@@ -1312,7 +1298,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
 
-    async fn replay_page(
+    pub(super) async fn replay_page(
         &self, operation_id: OperationId, after: u64, maximum: u32,
         retain_models: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>

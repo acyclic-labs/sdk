@@ -2470,7 +2470,7 @@ impl StockExecution<'_> {
         let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native.is_some() {
-            return tracing::Instrument::instrument(call, span).await;
+            return span.scope(call).await;
         }
         traced(span, call).await
     }
@@ -3231,7 +3231,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.pin(0, Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3271,8 +3276,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.operation_event(envelope.operation_id, maximum_history_bytes, &mut Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -4135,7 +4144,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "fixed-context", "1", json!({}))?,
+            Model::new("synthetic".into(), "fixed-context".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "fixed",
@@ -4193,7 +4202,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -4253,7 +4262,7 @@ mod tests {
             ..crate::context::Context::default()
         };
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "history",
@@ -4305,7 +4314,7 @@ mod tests {
             ..CountedModel::default()
         });
         let executor = StockExecutor::new(
-            Model::new("synthetic", "small", "1", json!({}))?,
+            Model::new("synthetic".into(), "small".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -4345,7 +4354,7 @@ mod tests {
                 ..CountedModel::default()
             });
             let executor = StockExecutor::new(
-                Model::new("synthetic", "counter", "1", Value::Null)?,
+                Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
                 ToolRegistry::default(),
@@ -4432,7 +4441,7 @@ mod tests {
         });
         let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
         let executor = StockExecutor::new(
-            Model::new("synthetic", "counter", "1", Value::Null)?,
+            Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-history",
@@ -4519,7 +4528,7 @@ mod tests {
                 ..CountedModel::default()
             });
             let executor = StockExecutor::new(
-                Model::new("synthetic", "counter", "1", Value::Null)?,
+                Model::new("synthetic".into(), "counter".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                     "history",
@@ -4561,7 +4570,7 @@ mod tests {
         });
         let source = Arc::new(ChangingCompactionSource(AtomicUsize::new(0)));
         let executor = StockExecutor::new(
-            Model::new("synthetic", "byte-counter", "1", json!({}))?,
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-history",
@@ -4766,7 +4775,7 @@ mod tests {
         })?;
         let model = Arc::new(ScriptedModel::default());
         let base = StockExecutor::new(
-            Model::new("fixture", "exact", "1", Value::Null)?,
+            Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -4874,7 +4883,7 @@ mod tests {
             ..Default::default()
         });
         let base = uncompacted_executor(
-            Model::new("test", "bounded-summary", "1", Value::Null)?,
+            Model::new("test".into(), "bounded-summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -4953,7 +4962,7 @@ mod tests {
                 ..Default::default()
             });
             let executor = uncompacted_executor(
-                Model::new("test", "explicit-summary", "1", Value::Null)?,
+                Model::new("test".into(), "explicit-summary".into(), "1".into(), Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
                 ToolRegistry::default(),
@@ -4988,7 +4997,7 @@ mod tests {
             ..Default::default()
         });
         let executor = uncompacted_executor(
-            Model::new("test", "explicit-summary", "1", Value::Null)?,
+            Model::new("test".into(), "explicit-summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -5028,7 +5037,7 @@ mod tests {
     async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "summary", "1", Value::Null)?,
+            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -5086,7 +5095,7 @@ mod tests {
     async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "summary", "1", Value::Null)?,
+            Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -5282,7 +5291,7 @@ mod tests {
         let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
         let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("test", "model", "1", json!({}))?,
+            Model::new("test".into(), "model".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
                 "changing-source",
@@ -5541,7 +5550,7 @@ mod tests {
         let stage = Arc::new(OnceStage(AtomicUsize::new(0)));
         let provider = Arc::new(PrefixBoundaryModel::default());
         let executor = uncompacted_executor(
-            Model::new("test", "model", "1", Value::Null)?,
+            Model::new("test".into(), "model".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::default(),
@@ -5596,7 +5605,7 @@ mod tests {
 
     #[tokio::test]
     async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
-        let model = Model::new("example", "model", "1", Value::Null)?;
+        let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
         let root = crate::model::PreparedModelRequest::prepare(
             ModelRequest {
                 model: model.clone(),
@@ -5678,7 +5687,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let base = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -5770,7 +5779,7 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
             let executor = uncompacted_executor(
-                Model::new("example", "model", "1", Value::Null)?,
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
                 model.clone(),
                 ContextPipeline::default(),
                 tools,
@@ -5891,7 +5900,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "batch", "1", Value::Null)?,
+            Model::new("example".into(), "batch".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6074,7 +6083,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6314,7 +6323,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
@@ -6369,7 +6378,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6426,7 +6435,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             tools,
@@ -6477,7 +6486,7 @@ mod tests {
             projection: Arc::new(Projection),
         })?;
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model,
             ContextPipeline::default(),
             tools,
@@ -6621,7 +6630,7 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
             let executor = uncompacted_executor(
-                Model::new("example", "model", "1", Value::Null)?,
+                Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
                 model,
                 ContextPipeline::default(),
                 tools,
@@ -6653,7 +6662,7 @@ mod tests {
     async fn operation_identity_rejects_changed_input() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             model,
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -6764,7 +6773,7 @@ mod tests {
         });
         let model = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
-            Model::new("example", "recoverable", "1", Value::Null)?,
+            Model::new("example".into(), "recoverable".into(), "1".into(), Value::Null)?,
             model.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -6938,7 +6947,7 @@ mod tests {
     #[tokio::test]
     async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         let mut executor = uncompacted_executor(
-            Model::new("example", "model", "1", Value::Null)?,
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             ToolRegistry::default(),
@@ -7048,7 +7057,7 @@ mod tests {
             ..wide.limits()
         };
         let executor = StockExecutor::new(
-            Model::new("test", "scoped", "1", Value::Null)?,
+            Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
@@ -7094,7 +7103,7 @@ mod tests {
             arguments: json!({"path":"destination.txt","text":"body","media_type":"text/plain","display_name":"destination.txt"}),
         };
         let base = StockExecutor::new(
-            Model::new("test", "scoped", "1", Value::Null)?,
+            Model::new("test".into(), "scoped".into(), "1".into(), Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
             tools,
@@ -7161,7 +7170,7 @@ mod tests {
         }
         let provider = Arc::new(Provider::default());
         let executor = StockExecutor::new(
-            Model::new("fixture", "identity", "1", Value::Null)?,
+            Model::new("fixture".into(), "identity".into(), "1".into(), Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),

@@ -146,10 +146,8 @@ pub(crate) struct PreparedPiFork {
 }
 
 impl PreparedPiFork {
-    pub(crate) fn original_work(&self) -> &NativeMaterializationWork { self._metadata_custody.work() }
-
     pub(crate) fn into_native_shared(mut self) -> Result<Arc<Self>> {
-        let mut slot = self.original_work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
+        let mut slot = self._metadata_custody.work().claim((std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self._metadata_custody.absorb(&mut slot).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(self))

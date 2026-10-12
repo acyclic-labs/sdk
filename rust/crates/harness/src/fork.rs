@@ -2730,7 +2730,7 @@ mod tests {
         seed.child_result_volume = Some(VolumeRef::new(
             provider.clone(), "independent-child-result", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(seed.child_agent))?);
-        seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32], None)?);
+        seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32].into(), None)?);
         seed.validate(&mut None)?;
         let mut mutation = seed.clone();
         mutation.child_result_generation = None;
@@ -2740,7 +2740,7 @@ mod tests {
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         mutation = seed;
         mutation.child_result_generation = Some(GenerationRef::new(
-            ProviderRef::new(provider.namespace().into(), provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32], None)?);
+            ProviderRef::new(provider.namespace().into(), provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32].into(), None)?);
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         Ok(())
     }
@@ -2845,11 +2845,11 @@ mod tests {
         )?;
         let source = ResourceRevision::Project {
             volume: parent,
-            generation: GenerationRef::new(provider.clone(), [1; 32], None)?,
+            generation: GenerationRef::new(provider.clone(), [1; 32].into(), None)?,
         };
         let revision = ResourceRevision::Project {
             volume: child,
-            generation: GenerationRef::new(provider.clone(), [2; 32], None)?,
+            generation: GenerationRef::new(provider.clone(), [2; 32].into(), None)?,
         };
         CapturedResource {
             source: source.clone(),
@@ -2871,7 +2871,7 @@ mod tests {
                 VolumeClass::Project,
                 VolumeOwner::Project("other".into()),
             )?,
-            generation: GenerationRef::new(provider, [3; 32], None)?,
+            generation: GenerationRef::new(provider, [3; 32].into(), None)?,
         };
         assert!(
             CapturedResource {

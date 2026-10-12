@@ -223,7 +223,7 @@ async fn lazy_workspace(
     } else {
         FilesystemProfile::Posix
     };
-    let demand = NativeDemandSource::open(&source_root, profile, VolumeLimits::default(), None, None).await?;
+    let demand = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()), profile, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let engine = Fs::local(LocalOptions::new(root.join("state"))).await?;
     let lazy = Arc::new(
         LazyWorkspace::attach(
