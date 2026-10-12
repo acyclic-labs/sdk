@@ -1,7 +1,7 @@
 //! Streamable HTTP over a host-supplied bounded provider.
 
 use super::{
-    McpInitializeResult, McpToolResult, McpToolTransport, McpToolsPage, PROTOCOL_VERSION,
+    McpInitializeResult, McpToolResult, McpToolTransport, PROTOCOL_VERSION,
     callbacks::{McpCallbackPolicy, McpRuntimeCallbacks},
     rpc::{decode_tool_result, request, rpc_result},
 };
@@ -173,17 +173,6 @@ impl HttpMcpTransport {
         Ok((binding, initialization, notification))
     }
 
-    /// Discovers one admitted tool page.
-    pub async fn list_tools(
-        &self,
-        operation: OperationId,
-        cursor: Option<&str>,
-    ) -> Result<McpToolsPage> {
-        let params = cursor.map_or_else(|| json!({}), |cursor| json!({"cursor":cursor}));
-        serde_json::from_value(self.rpc(operation, "tools/list", params, None).await?)
-            .map_err(|error| Error::Invalid(error.to_string()))
-    }
-
     /// Constructs the exact request for separate host admission.
     pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
         if !matches!(method, "POST" | "GET" | "DELETE")
@@ -285,9 +274,14 @@ impl HttpMcpTransport {
                     "MCP task context operation mismatch".into(),
                 ));
             }
+            super::services::validate_params(method, &params, None)?;
             let request = self.request("POST", request(operation, method, params)?)?;
             let response = self.provider.exchange(operation, request).await?;
-            self.response(operation, response, context).await
+            super::services::validate_result(
+                method,
+                self.response(operation, response, context).await?,
+                None,
+            )
         })
     }
 }
