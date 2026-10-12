@@ -247,7 +247,9 @@ impl SchemaRegistry {
         crate::contract::validate_json_schema_value(
             &binding.schema,
             &value,
-            "extension payload", &mut None)?;
+            "extension payload",
+            &mut None,
+        )?;
         Ok(())
     }
 
@@ -266,7 +268,7 @@ impl SchemaRegistry {
         let record = ExtensionConfiguration {
             extension: copying::copy_dependency(extension, quota)?,
             schema_digest,
-            content: copying::copy_file(content, quota)?,
+            content: content.clone_in_quota(quota)?,
         };
         record.validate()?;
         Ok(record)
@@ -362,6 +364,8 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(schema, value, "configuration", work))
+        crate::executor::with_history_io(io, |work| {
+            crate::contract::validate_json_schema_value(schema, value, "configuration", work)
+        })
     }
 }

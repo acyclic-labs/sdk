@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    core::{copy_file, copy_text, copy_value, copy_vector},
+    core::{copy_text, copy_value, copy_vector},
     wire_codec::CodecQuota,
 };
 
@@ -65,7 +65,7 @@ copy!(
             WorkflowCommand {
                 operation_id: command.operation_id,
                 kind: copy_text(&command.kind, quota)?,
-                payload: copy_file(&command.payload, quota)?,
+                payload: command.payload.clone_in_quota(quota)?,
             }
         ))?,
         status: match &self.status {

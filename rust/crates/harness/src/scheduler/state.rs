@@ -70,7 +70,7 @@ impl Outcome<FileRef> {
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
         observe(quota.work())?;
         Ok(match self {
-            Self::Succeeded(file) => Self::Succeeded(crate::core::copy_file(file, quota)?),
+            Self::Succeeded(file) => Self::Succeeded(file.clone_in_quota(quota)?),
             Self::Failed { message } => Self::Failed {
                 message: copy_text(message, quota)?,
             },
@@ -97,7 +97,7 @@ impl WorkflowSuspension {
             input: self
                 .input
                 .as_ref()
-                .map(|input| crate::core::copy_file(input, quota))
+                .map(|input| input.clone_in_quota(quota))
                 .transpose()?,
         })
     }

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     core::{
-        copy_boxed, copy_configuration, copy_file, copy_reference, copy_text, copy_value,
+        copy_boxed, copy_configuration, copy_reference, copy_text, copy_value,
         copy_vector,
     },
     wire_codec::CodecQuota,
@@ -287,7 +287,7 @@ impl ToolResultContent {
                             text: copy_text(text, quota)?,
                         },
                         ModelDataPart::File { file, policy } => ModelDataPart::File {
-                            file: copy_file(file, quota)?,
+                            file: file.clone_in_quota(quota)?,
                             policy: policy.copy_fields(quota)?,
                         },
                     })
@@ -304,7 +304,7 @@ impl ModelContentPart {
                 text: copy_text(text, quota)?,
             },
             Self::File { file, policy } => Self::File {
-                file: copy_file(file, quota)?,
+                file: file.clone_in_quota(quota)?,
                 policy: policy.copy_fields(quota)?,
             },
             Self::ToolCall {
