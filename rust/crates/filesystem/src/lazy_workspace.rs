@@ -10800,7 +10800,7 @@ where
             } else {
                 let allocation = accounting.take_native_owned(transferred_bytes)?
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-                checkout.mutate_with_native_work(operations, allocation, original, cancellation)
+                checkout.mutate_owned_with_accounting(crate::kernel::Owned { value: operations, bytes: allocation.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) }, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation)
                     .await.map_err(native_filesystem_error)?;
             }
             let mut logical_owned_bytes = (paths.capacity() as u64)

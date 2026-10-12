@@ -3816,7 +3816,8 @@ impl InstalledCaptureAccounting<'_> {
                     candidate, MAXIMUM_EXACT_INSTALL_CHANGES,
                     work.remaining().map_err(mount_demand_error)?, cancellation,
                 ).await;
-                let diff = mount_accept(work, result, mount_engine_error)?;
+                let (diff, allocation) = mount_accept(work, result, mount_engine_error)?;
+                drop(allocation);
                 if !diff.truncated {
                     let bytes = (diff.files.capacity() * std::mem::size_of::<crate::FileRecordChange>()
                         + diff.bindings.capacity() * std::mem::size_of::<crate::DirectoryBindingChange>()) as u64
@@ -3828,9 +3829,12 @@ impl InstalledCaptureAccounting<'_> {
             Self::Native(scratch) => {
                 let allocation;
                 let diff;
-                (diff, allocation) = base.candidate_diff_with_native_work(
+                (diff, allocation) = base.candidate_diff(
                     candidate, MAXIMUM_EXACT_INSTALL_CHANGES, scratch.work, cancellation,
                 ).await.map_err(MountSourceError::Filesystem)?;
+                let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
+                    return Err(MountSourceError::Filesystem(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)));
+                };
                 scratch.absorb(allocation);
                 Ok(diff)
             }
@@ -5737,10 +5741,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             operations.value.push(crate::kernel::Mutation::Remove {
                 path: path.0, expected_file_id: expected.map_or(MetadataField::Unavailable, MetadataField::Value),
             });
-            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
-                operations.allocation else { unreachable!("native mutation keeps original custody"); };
-            candidate.checkout.mutate_with_native_work(
-                operations.value, allocation, &original, &cancellation,
+            candidate.checkout.mutate_owned_with_accounting(
+                operations, &mut accounting, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)
         } else {
             let consumed = phase_carrier.with_work(|work| {
@@ -5892,10 +5894,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             operations.value.push(crate::kernel::Mutation::Rename {
                 source: source_path.0, destination: destination_path.0, replace,
             });
-            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
-                operations.allocation else { unreachable!("native mutation keeps original custody"); };
-            candidate.checkout.mutate_with_native_work(
-                operations.value, allocation, &original, &cancellation,
+            candidate.checkout.mutate_owned_with_accounting(
+                operations, &mut accounting, &cancellation,
             ).await.map_err(MountSourceError::Filesystem)
         } else {
             let consumed_source = phase_carrier.with_work(|work| {
