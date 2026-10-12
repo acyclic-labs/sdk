@@ -10,7 +10,7 @@ import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
 import type {
   WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
-  WasmModelContent, WasmModelContentPart, WasmModelEvent, WasmModelRole,
+  ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
   CompactionPolicy as RustCompactionPolicy, CompactionRetention as RustCompactionRetention,
   ThresholdCompaction as RustThresholdCompaction, ModelContextCapacity as RustModelContextCapacity,
   ModelTokenCount as RustModelTokenCount,
@@ -29,8 +29,8 @@ type _SummaryLimitsPreserveEveryBigint = Assert<Equal<
 
 type _BrowserAggregateBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["execute"]>[0], Omit<Command, "authority">>>;
 type _BrowserReconciliationBindsCommandAuthority = Assert<Equal<Parameters<BrowserAggregate["reconcile"]>[0], Omit<Command, "authority">>>;
-type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, WasmModelContentPart>>;
-type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, WasmModelContent>>;
+type _NativeModelPartUsesGeneratedRustUnion = Assert<Equal<NativeModelContentPart, ModelContentPartWire>>;
+type _NativeModelContentUsesGeneratedRustUnion = Assert<Equal<NativeModelContent, ModelContentWire>>;
 
 type _CompactionContractsUseGeneratedRustShapes = Assert<Equal<
   [CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire],
@@ -45,23 +45,23 @@ type _AccountingFacadeUsesRustCounts = Assert<Equal<
   Readonly<{ requestDigest: Uint8Array; fixedTokens: RustModelTokenCount["fixed_tokens"]; messageTokens: readonly RustModelTokenCount["message_tokens"][number][] }>
 >>;
 
-type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelRole,
+type _ModelRolesHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelRoleWire,
   "system" | "user" | "assistant" | "tool">>;
 type _ModelRolesHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "system" | "user" | "assistant" | "tool", WasmModelRole>>;
-type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelContentPart["kind"],
+  "system" | "user" | "assistant" | "tool", ModelRoleWire>>;
+type _ModelPartsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelContentPartWire["kind"],
   "text" | "file" | "tool_call" | "tool_result">>;
 type _ModelPartsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "text" | "file" | "tool_call" | "tool_result", WasmModelContentPart["kind"]>>;
-type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<WasmModelEvent["kind"],
+  "text" | "file" | "tool_call" | "tool_result", ModelContentPartWire["kind"]>>;
+type _ModelEventsHaveNoUntrackedRustVariants = AssertNever<Exclude<ModelEventWire["kind"],
   "content" | "reasoning" | "tool_call" | "completed">>;
 type _ModelEventsHaveNoMissingPublicVariants = AssertNever<Exclude<
-  "content" | "reasoning" | "tool_call" | "completed", WasmModelEvent["kind"]>>;
+  "content" | "reasoning" | "tool_call" | "completed", ModelEventWire["kind"]>>;
 
-const generatedModelContent: WasmModelContent = {
+const generatedModelContent: ModelContentWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
 };
-const generatedModelEvent: WasmModelEvent = {
+const generatedModelEvent: ModelEventWire = {
   kind: "tool_call", call_id: "call", name: "lookup", arguments: { value: 1 },
 };
 const publicModelContent: ModelContentPart = {

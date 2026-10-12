@@ -58,7 +58,7 @@ pub struct ContextSummary {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct CompactionRetention {
     /// Roles retained in full. Defaults to instructions (`System`).
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelRole[]"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "ModelRole[]"))]
     pub roles: Vec<ModelRole>,
     /// Retains messages containing native media references in full.
     pub native_media: bool,
@@ -1343,7 +1343,7 @@ impl ContextStage for CompactionStage {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Context {
     /// Ordered model-visible messages.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelMessageWire[]"))]
+    #[cfg_attr(feature = "wasm", tsify(type = "ModelMessage[]"))]
     pub messages: Vec<ModelMessage>,
     /// Stage-owned, namespaced version-pinned metadata files.
     #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]

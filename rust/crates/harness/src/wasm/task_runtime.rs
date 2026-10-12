@@ -514,7 +514,7 @@ impl WasmTaskRegistry {
     #[wasm_bindgen(js_name = registerTool)]
     pub fn register_tool(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelToolDefinitionWire")] definition: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "ToolDefinition")] definition: JsValue,
         execute: Function,
         reconcile: Function,
         project: Function,
@@ -754,17 +754,17 @@ impl WasmTaskRuntime {
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
-        #[wasm_bindgen(unchecked_param_type = "WasmModelWire")] model: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "Model")] model: JsValue,
         #[wasm_bindgen(
-            unchecked_param_type = "(request: Uint8Array, dispatch: Pick<WasmModelAttemptWire, 'operation_id' | 'step' | 'request_digest'>, signal: AbortSignal) => AsyncIterator<WasmModelEvent>"
+            unchecked_param_type = "(request: Uint8Array, dispatch: ModelDispatch, signal: AbortSignal) => AsyncIterator<ModelEvent>"
         )]
         generate: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "(attempt: WasmModelAttemptWire) => WasmModelEvent[] | null | Promise<WasmModelEvent[] | null>"
+            unchecked_param_type = "(attempt: ModelDispatch & { observed: ModelEvent[] }) => ModelEvent[] | null | Promise<ModelEvent[] | null>"
         )]
         reconcile: Function,
         #[wasm_bindgen(
-            unchecked_param_type = "((model: WasmModelWire) => ModelContextCapacity) | undefined"
+            unchecked_param_type = "((model: Model) => ModelContextCapacity) | undefined"
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(

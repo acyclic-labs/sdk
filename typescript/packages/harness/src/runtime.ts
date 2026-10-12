@@ -5,7 +5,7 @@ import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredCon
 import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { validateModelContent, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
-import type { WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { ModelRequest as ModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import { publicModelContent, type SelectedModelContext } from "./projection.js";
 import type { ForkParentSnapshot, ForkPublisher, ForkReport, ForkSeed, ResourceRef } from "./fork.js";
@@ -2266,7 +2266,7 @@ export class AgentHarness {
           [...pending.keys()].forEach((key, index) => files.set(key, payloads[index]!));
           bytes = await prefix.core.prepareInheritedModelRequest(prefix.scope, request, prefix.head, files, nativeLimits(this.limits));
         }
-        const wire = this.contracts.decodeModelJson(bytes) as unknown as WasmModelRequestWire;
+        const wire = this.contracts.decodeModelJson(bytes) as unknown as ModelRequestWire;
         const admittedRequest = {
           serializedInput: bytes,
           model: wire.model,

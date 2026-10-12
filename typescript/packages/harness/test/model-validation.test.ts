@@ -10,7 +10,7 @@ import {
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { publicModelContent } from "../src/projection.js";
 import type { NativeModelContent } from "../src/native-contracts.js";
-import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
 
@@ -151,7 +151,7 @@ test("declared context binding pins metadata and preserves the prior binding on 
 
 test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {
   const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
-  const wire = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
+  const wire = contracts.decodeModelJson(fixture) as unknown as ModelRequestWire;
   const request = {
     model: wire.model,
     messages: wire.messages,
@@ -191,7 +191,7 @@ test("the actual task provider receives the admitted serialized input", async ()
 
 test("WASM direct-parent prefixes preserve exact provider bytes across depth three and siblings", async () => {
   const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
-  const root = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
+  const root = contracts.decodeModelJson(fixture) as unknown as ModelRequestWire;
   const core = new WasmReducer({ kind: "conversation", id: "model-prefix" }, "model-prefix", new Uint8Array(32).fill(19), []);
   const files = new Map<string, Uint8Array>();
   const references: FileRef[] = [];
@@ -216,7 +216,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
       "application/vnd.acyclic.harness.model-prefix+json");
     for (let depth = 1; depth <= 3; depth++) {
       const scope = core.issueScopeForAgent(agent, `reader-${depth}`, references.map(ref => core.fileReadCapability(ref)));
-      const parentWire = contracts.decodeModelJson(parentRequest) as unknown as WasmModelRequestWire;
+      const parentWire = contracts.decodeModelJson(parentRequest) as unknown as ModelRequestWire;
       const children = depth === 1 ? ["primary", "sibling"] : ["primary"];
       let primary: Uint8Array | undefined;
       for (const child of children) {
@@ -260,7 +260,7 @@ test("tool results retain their pinned string schema and enforce the exact rende
           if (calls === 1) yield { kind: "tool_call" as const, callId: "read", name: "read", arguments: "go" };
           else {
             expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "read", name: "read", content: { kind: "json", value } });
-            expect((contracts.decodeModelJson(request.serializedInput) as unknown as WasmModelRequestWire).messages.at(-1)?.content)
+            expect((contracts.decodeModelJson(request.serializedInput) as unknown as ModelRequestWire).messages.at(-1)?.content)
               .toEqual({ kind: "tool_result", call_id: "read", name: "read", content: { kind: "json", value } });
           }
           yield { kind: "completed" as const, metadata: {} };
