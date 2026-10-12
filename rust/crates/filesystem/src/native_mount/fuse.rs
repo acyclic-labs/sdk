@@ -3871,7 +3871,7 @@ impl FuseProjection {
             .transpose()
             .map_err(FuseRequestError::from)?;
         let removed = self.source_write(work, || source
-            .remove_with_meter(path, current.map(|lookup| lookup.node.file_id), work)
+            .remove(path, current.map(|lookup| lookup.node.file_id), work)
             .map_err(FuseRequestError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
@@ -3923,7 +3923,7 @@ impl FuseProjection {
             .transpose()
             .map_err(FuseRequestError::from)?;
         let renamed = self.source_write(work, || source
-            .rename_with_meter(&from.spelled, &to.spelled, replace, work)
+            .rename(&from.spelled, &to.spelled, replace, work)
             .map_err(FuseRequestError::from));
         let mut state = self.core.state()?;
         if let Some((inode, detached)) = detached {
@@ -6275,7 +6275,7 @@ mod tests {
         assert!(!name_is_bound(&confirmed, &source, file_id, &name("c"), &work).expect("name history"));
 
         // The name changes after the page was read, before it is emitted.
-        source.remove(&name("b"), Some(file_id))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&name("b"), Some(file_id), work))?;
         source.create_file(&name("b"), FileMetadata::default())?;
         assert!(!name_is_bound(&confirmed, &source, file_id, &name("b"), &work).expect("name history"));
         // A sibling changing leaves another name's confirmation standing.
@@ -6577,13 +6577,13 @@ mod tests {
         denied(projection.write_named_attribute(0, std::ffi::OsStr::new("user.denied"),
             b"denied", 0, 0, &work));
         denied(projection.remove_named_attribute(0, std::ffi::OsStr::new("user.denied"), &work));
-        assert!(projection.source_write(&work, || source.remove_with_meter(
+        assert!(projection.source_write(&work, || source.remove(
             &path, Some(created.node.file_id), &work,
         ).map_err(super::FuseRequestError::from)).is_err());
         assert!(around.lookup(&path)?.is_some(), "pre-effect refusal cannot remove the file");
         guard.writable.store(true, std::sync::atomic::Ordering::Release);
         let removed = projection.source_write(&work, || {
-            source.remove_with_meter(&path, Some(created.node.file_id), &work)
+            source.remove(&path, Some(created.node.file_id), &work)
                 .map_err(super::FuseRequestError::from)?;
             guard.writable.store(false, std::sync::atomic::Ordering::Release);
             Ok(())
@@ -6612,7 +6612,7 @@ mod tests {
             source.clone(), empty_projection_state(), FINITE_HANDLER_POLICY, &cancellation,
         )?;
         let result = core.request(|work| {
-            source.remove_with_meter(&path, Some(created.node.file_id), work)?;
+            source.remove(&path, Some(created.node.file_id), work)?;
             cancellation.cancel();
             source.lookup_with_meter(&path, work).map_err(super::FuseRequestError::from)
         });
@@ -6759,7 +6759,7 @@ mod tests {
                 }))
             },
         ).map_err(|failure| failure.0)?.value;
-        source.remove(&path, Some(opened.node.file_id))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(opened.node.file_id), work))?;
         let rebound = source.create_file(&path, FileMetadata::default())?;
         assert_ne!(rebound.node.file_id, opened.node.file_id);
         let failure = super::super::run_native_mount_handler(
@@ -6940,7 +6940,7 @@ mod tests {
         assert_eq!(listing(temporary.path())?, ["added", "file"]);
 
         // Without the barrier the change still arrives, promptly.
-        around.remove(&name("added"), None)?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| around.remove(&name("added"), None, work))?;
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while added.exists() {
             assert!(
@@ -7283,13 +7283,11 @@ mod tests {
             resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;
             allocate_range(path: &MountPath, offset: u64, length: u64, operation: MountRangeAllocation) -> Result<(), MountSourceError>;
             clone_range(source: &MountPath, source_offset: u64, destination: &MountPath, destination_offset: u64, length: u64) -> Result<(), MountSourceError>;
-            remove(path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
-            rename(source: &MountPath, destination: &MountPath, replace: bool) -> Result<(), MountSourceError>;
             capture_host_path(source_root: &std::path::Path, path: &MountPath) -> Result<(), MountSourceError>;
             capture_host_paths(source_root: &std::path::Path, paths: &[MountPath]) -> Result<(), MountSourceError>;
             capture_host_subtree(source_root: &std::path::Path, path: &MountPath) -> Result<(), MountSourceError>;
-            remove_with_meter(path: &MountPath, expected: Option<FileId>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            rename_with_meter(source: &MountPath, destination: &MountPath, replace: bool, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            remove(path: &MountPath, expected: Option<FileId>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+            rename(source: &MountPath, destination: &MountPath, replace: bool, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             flush(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             open_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
