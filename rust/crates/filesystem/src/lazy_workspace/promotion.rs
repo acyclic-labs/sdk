@@ -110,27 +110,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 )?;
             }
             LazyLookup::Shadow { record, .. } => {
-                'accounted: {
-                    let cancellation = cancellation;
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(original) = accounting.native_work() {
-                        break 'accounted transaction
-                            .restore_record(requested, *record, original, cancellation)
-                            .await
-                            .map_err(LazyWorkspaceError::from);
-                    }
-                    accept_receipt(
-                        transaction
-                            .restore_record(
-                                requested,
-                                *record,
-                                accounting.remaining()?,
-                                cancellation,
-                            )
-                            .await,
-                        accounting,
-                    )
-                }?;
+                let path = transaction.mutation_path(requested, accounting, cancellation)?;
+                let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
+                crate::Transaction::<A, O>::push_mutation(
+                    &mut operations,
+                    crate::kernel::Owned::new(
+                        crate::kernel::Mutation::Restore { path: path.value, record: *record },
+                        path.allocation,
+                        path.bytes,
+                    ),
+                    accounting,
+                )?;
+                transaction.checkout.mutate_owned_with_accounting(
+                    operations, accounting, cancellation,
+                ).await?;
             }
         }
         Ok(true)

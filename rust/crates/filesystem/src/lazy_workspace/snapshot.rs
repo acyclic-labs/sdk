@@ -71,7 +71,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             crate::PublicationPermit::Unrestricted,
                             original,
                             cancellation,
-                            crate::NativeAuthorityGuard((|_| async { Ok::<(), LazyWorkspaceError>(()) }).clone()),
+                            crate::NativeAuthorityGuard(|_: &crate::NativeMaterializationWork| {
+                                std::future::ready(Ok::<(), LazyWorkspaceError>(()))
+                            }),
                         )
                         .await?
                 };
@@ -84,12 +86,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         crate::PublicationPermit::Unrestricted,
                         accounting.remaining()?,
                         cancellation,
-                        &mut |_| async {
+                        &mut |_: crate::WorkBudget| std::future::ready(
                             Ok::<_, crate::OperationFailure<crate::FsError>>(OperationReceipt {
                                 value: (),
                                 work: WorkCounters::UNCHARGED,
                             })
-                        },
+                        ),
                     )
                     .await,
                 accounting,
