@@ -229,7 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
-pub trait OperationWindowStore: crate::async_storage::StorageProvider {
+pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -238,7 +238,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         &self,
         workspace_id: WorkspaceId,
     ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>
-    + crate::async_storage::StorageFuture;
+    + acyclic_stream::ProviderTask;
 
     /// Replaces `expected_revision` atomically. Revision zero creates state.
     fn compare_and_swap(
@@ -246,7 +246,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
