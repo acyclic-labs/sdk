@@ -111,9 +111,9 @@ pin_project_lite::pin_project! {
     /// Polls and destroys the pinned inner value under the owned context.
     pub struct Scoped<T> {
         #[pin]
-        /// The original producer retained by this owner.
+        // The original producer retained by this owner.
         pub inner: Option<T>,
-        /// Originating poll/drop context, absent for consumer-owned streams.
+        // Originating poll/drop context, absent for consumer-owned streams.
         pub context: Option<OperationSpan>,
     }
     impl<T> PinnedDrop for Scoped<T> {
