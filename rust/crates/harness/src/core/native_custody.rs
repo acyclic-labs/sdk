@@ -397,6 +397,7 @@ pub(super) fn copy_payload(
 pub(super) fn copy_event(
     source: &Event, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Event> {
+    if quota.work().is_none() { return Ok(source.clone()); }
     Ok(Event {
         revision: source.revision, operation_id: source.operation_id, intent_digest: source.intent_digest,
         scope: copy_recorded_scope(&source.scope, quota)?,

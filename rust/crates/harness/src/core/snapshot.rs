@@ -396,97 +396,20 @@ struct Projection<C = ConversationState> {
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
 }
 
-fn copy_snapshot_states(
-    source: &BTreeMap<String, (EventReference, ExtensionRecord)>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<BTreeMap<String, (EventReference, ExtensionRecord)>> {
-    let mut output = BTreeMap::new();
-    for (name, (reference, record)) in source {
-        super::native_custody::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
-        let name = super::native_custody::copy_text(name, quota)?;
-        let reference = super::native_custody::copy_reference(reference, quota)?;
-        let record = super::native_custody::copy_extension_record(record, quota)?;
-        output.insert(name, (reference, record));
-    }
-    Ok(output)
-}
-
-fn copy_snapshot_effects(
-    source: &BTreeMap<EffectId, EffectState>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<BTreeMap<EffectId, EffectState>> {
-    let mut output = BTreeMap::new();
-    for (id, effect) in source {
-        super::native_custody::retain_entry::<(EffectId, EffectState)>(quota)?;
-        let (effect, retained) = super::native_effect_clone_with_custody(effect, quota.work())?;
-        quota.adopt(retained)?;
-        output.insert(*id, effect);
-    }
-    Ok(output)
-}
-
-fn copy_snapshot_merges(
-    source: &BTreeSet<(String, Vec<u8>)>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<BTreeSet<(String, Vec<u8>)>> {
-    let mut output = BTreeSet::new();
-    for (name, operation) in source {
-        super::native_custody::retain_entry::<(String, Vec<u8>)>(quota)?;
-        let name = super::native_custody::copy_text(name, quota)?;
-        let operation = super::copy_copy_vector(operation, quota)?;
-        output.insert((name, operation));
-    }
-    Ok(output)
-}
-
-fn copy_snapshot_interactions(
-    source: &BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>> {
-    let mut output = BTreeMap::new();
-    for (id, (ticket, resolution)) in source {
-        super::native_custody::retain_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
-        let (ticket, retained) = super::native_interaction_ticket_clone_with_custody(ticket, quota.work())?;
-        quota.adopt(retained)?;
-        let resolution = match resolution {
-            Some(resolution) => {
-                let (resolution, retained) = super::native_interaction_resolution_clone_with_custody(
-                    resolution, quota.work())?;
-                quota.adopt(retained)?;
-                Some(resolution)
-            }
-            None => None,
-        };
-        output.insert(*id, (ticket, resolution));
-    }
-    Ok(output)
-}
-
-fn copy_snapshot_terminal_effects(
-    source: &VecDeque<EffectId>, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<VecDeque<EffectId>> {
-    if quota.work().is_none() { return Ok(source.clone()); }
-    let bytes = source.len().checked_mul(std::mem::size_of::<EffectId>())
-        .ok_or_else(|| crate::fork::boundary_error(quota.work(), crate::wire::ErrorCode::Invalid, "terminal effect copy size overflows"))? as u64;
-    quota.work().as_deref().expect("snapshot terminal copy observer").admit_copy(bytes)?;
-    let mut output = super::reserve_copy_vector::<EffectId>(source.len(), quota)?;
-    for slice in [source.as_slices().0, source.as_slices().1] {
-        if !slice.is_empty() {
-            quota.work().as_deref_mut().expect("snapshot terminal copy observer")
-                .copy_bytes((slice.len() * std::mem::size_of::<EffectId>()) as u64)?;
-            output.extend_from_slice(slice);
-        }
-    }
-    Ok(VecDeque::from(output))
-}
-
 macro_rules! copy_projection {
     ($destination:expr, $source:expr, $quota:expr) => {{
         let destination = &mut $destination;
         let source = &$source;
         let quota = &mut $quota;
         destination.active_extensions = super::copy_vector(&source.active_extensions, quota, super::native_custody::copy_dependency)?;
-        destination.extension_states = copy_snapshot_states(&source.extension_states, quota)?;
+        destination.extension_states = BTreeMap::new();
+        for (name, (reference, record)) in &source.extension_states {
+            super::native_custody::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
+            let name = super::native_custody::copy_text(name, quota)?;
+            let reference = super::native_custody::copy_reference(reference, quota)?;
+            let record = super::native_custody::copy_extension_record(record, quota)?;
+            destination.extension_states.insert(name, (reference, record));
+        }
         destination.configured_extensions = super::reserve_copy_vector(source.configured_extensions.len(), quota)?;
         for (extension, configuration) in source.configured_extensions.iter() {
             destination.configured_extensions.push((
@@ -495,18 +418,52 @@ macro_rules! copy_projection {
             ));
         }
         destination.active_configurations = super::copy_vector(&source.active_configurations, quota, super::copy_configuration)?;
-        destination.effects = copy_snapshot_effects(&source.effects, quota)?;
-        destination.indexed_terminal_effects = copy_snapshot_terminal_effects(&source.indexed_terminal_effects, quota)?;
+        destination.effects = BTreeMap::new();
+        for (id, effect) in &source.effects {
+            super::native_custody::retain_entry::<(EffectId, EffectState)>(quota)?;
+            let effect = super::native_custody::copy_effect(effect, quota)?;
+            destination.effects.insert(*id, effect);
+        }
+        destination.indexed_terminal_effects = if quota.work().is_none() {
+            source.indexed_terminal_effects.clone()
+        } else {
+            let bytes = source.indexed_terminal_effects.len().checked_mul(std::mem::size_of::<EffectId>())
+                .ok_or_else(|| crate::fork::boundary_error(quota.work(), crate::wire::ErrorCode::Invalid,
+                    "terminal effect copy size overflows"))? as u64;
+            quota.work().as_deref().expect("snapshot terminal copy observer").admit_copy(bytes)?;
+            let mut output = super::reserve_copy_vector::<EffectId>(source.indexed_terminal_effects.len(), quota)?;
+            for slice in [source.indexed_terminal_effects.as_slices().0, source.indexed_terminal_effects.as_slices().1] {
+                if !slice.is_empty() {
+                    quota.work().as_deref_mut().expect("snapshot terminal copy observer")
+                        .copy_bytes((slice.len() * std::mem::size_of::<EffectId>()) as u64)?;
+                    output.extend_from_slice(slice);
+                }
+            }
+            VecDeque::from(output)
+        };
         destination.forks = super::reserve_copy_vector(source.forks.len(), quota)?;
         for (authority, seed) in source.forks.iter() {
             let authority = super::copy_authority(authority, quota)?;
             let seed = super::native_custody::copy_seed(seed, quota)?;
             destination.forks.push((authority, seed));
         }
-        destination.published_merges = copy_snapshot_merges(&source.published_merges, quota)?;
+        destination.published_merges = BTreeSet::new();
+        for (name, operation) in &source.published_merges {
+            super::native_custody::retain_entry::<(String, Vec<u8>)>(quota)?;
+            let name = super::native_custody::copy_text(name, quota)?;
+            let operation = super::copy_copy_vector(operation, quota)?;
+            destination.published_merges.insert((name, operation));
+        }
         destination.latest_context_checkpoint = source.latest_context_checkpoint.as_ref()
             .map(|file| super::copy_file(file, quota)).transpose()?;
-        destination.interactions = copy_snapshot_interactions(&source.interactions, quota)?;
+        destination.interactions = BTreeMap::new();
+        for (id, (ticket, resolution)) in &source.interactions {
+            super::native_custody::retain_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
+            let ticket = super::native_custody::copy_ticket(ticket, quota)?;
+            let resolution = resolution.as_ref()
+                .map(|resolution| super::native_custody::copy_resolution(resolution, quota)).transpose()?;
+            destination.interactions.insert(*id, (ticket, resolution));
+        }
     }};
 }
 
@@ -599,11 +556,8 @@ impl Snapshot {
         let mut ordinary_quota = crate::wire_codec::CodecQuota::from_retained(&mut ordinary_work, 0);
         let mut fields = if native { &mut quota } else { &mut ordinary_quota };
         copied.authority = super::native_custody::copy_authority(&self.authority, fields)?;
-        copied.events = super::copy_iter(self.events.len(), self.events.iter(), fields, |event, quota| {
-            let (event, retained) = super::native_event_clone_with_custody(event, quota.work())?;
-            quota.adopt(retained)?;
-            Ok(event)
-        })?;
+        copied.events = super::copy_iter(self.events.len(), self.events.iter(), fields,
+            super::native_custody::copy_event)?;
         copy_projection!(copied.projection, self.projection, fields);
         copied.projection.bindings = super::native_custody::copy_vector(
             &self.projection.bindings, fields, |(extension, digest), quota| {
@@ -850,11 +804,8 @@ impl Reducer {
             snapshot.authority = super::native_custody::copy_authority(&self.authority, fields)?;
             let retained_events = self.events.len().min(maximum_events);
             snapshot.events = super::copy_iter(retained_events,
-                self.events.iter().skip(self.events.len() - retained_events), fields, |event, quota| {
-                    let (event, retained) = super::native_event_clone_with_custody(event, quota.work())?;
-                    quota.adopt(retained)?;
-                    Ok(event)
-                })?;
+                self.events.iter().skip(self.events.len() - retained_events), fields,
+                super::native_custody::copy_event)?;
             copy_projection!(snapshot.projection, self, fields);
         }
         let count = self.schemas.schemas.as_deref().map_or(0, BTreeMap::len);

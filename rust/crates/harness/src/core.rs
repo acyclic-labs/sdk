@@ -249,13 +249,10 @@ impl AuthorityIssuer {
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let cloned = (|| -> Result<Self> {
-            let id = quota.work().as_deref_mut().expect("issuer clone observer").clone_text(&self.id)?;
-            quota.adopt(id.capacity() as u64)?;
-            let audience = quota.work().as_deref_mut().expect("issuer clone observer").clone_authority(&self.audience)?;
-            quota.adopt(audience.id.capacity() as u64)?;
-            Ok(Self { id, key: self.key, audience })
-        })()?;
+        let cloned = Self {
+            id: native_custody::copy_text(&self.id, &mut quota)?, key: self.key,
+            audience: native_custody::copy_authority(&self.audience, &mut quota)?,
+        };
         quota.transfer();
         Ok(cloned)
     }
@@ -1184,24 +1181,11 @@ impl ExtensionAdmission {
 
     /// Actual heap ownership, excluding inline proofs and identifiers.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        let mut bytes = (self.source.authority.id.capacity() as u64)
-            .checked_add((self.selected.capacity() as u64)
-                .checked_mul(std::mem::size_of::<ExtensionDependency>() as u64)
-                .ok_or_else(|| Error::Invalid("admission selection ownership overflows".into()))?)
-            .and_then(|bytes| bytes.checked_add((self.configurations.capacity() as u64)
-                .checked_mul(std::mem::size_of::<ExtensionConfiguration>() as u64)?))
-            .ok_or_else(|| Error::Invalid("admission ownership overflows".into()))?;
-        for extension in &self.selected {
-            bytes = bytes.checked_add(extension.name.capacity() as u64)
-                .ok_or_else(|| Error::Invalid("admission ownership overflows".into()))?;
-        }
-        for configuration in &self.configurations {
-            let content = configuration.content.logical_owned_bytes()?;
-            bytes = bytes.checked_add(configuration.extension.name.capacity() as u64)
-                .and_then(|bytes| bytes.checked_add(content))
-                .ok_or_else(|| Error::Invalid("admission configuration ownership overflows".into()))?;
-        }
-        Ok(bytes)
+        native_custody::owned_sum([
+            self.source.authority.id.capacity() as u64,
+            native_custody::owned_vector(&self.selected, |extension| Ok(extension.name.capacity() as u64))?,
+            native_custody::owned_vector(&self.configurations, native_custody::owned_configuration)?,
+        ])
     }
 
     pub(crate) fn copy(
@@ -1851,7 +1835,7 @@ impl Reducer {
     ) -> Result<()> {
         self.authority_verifier.verify_audience(&self.authority, &mut None)?;
         self.authority_verifier.verify(scope, &mut None)?;
-        require_capability(scope, capability::EXTENSION_MIGRATE)?;
+        require_capability((&scope.id, &scope.capabilities), capability::EXTENSION_MIGRATE)?;
         ContentGrant::authorize_volume(
             &self.authority_verifier,
             scope,
@@ -2215,11 +2199,11 @@ impl Reducer {
                 command.expected_revision, self.revision
             )));
         }
-        self.authorize_with_work(
-            |capability| require_capability(&command.scope, capability),
+        self.authorize(
+            (&command.scope.id, &command.scope.capabilities),
             command.scope.agent(),
             command.operation_id,
-            command.action.kind(),
+            command.action.admission(),
             archived_effect,
             work,
         )?;
@@ -2288,22 +2272,22 @@ impl Reducer {
     }
 
     /// Authorizes one transition identically when planned and when committed.
-    fn authorize_with_work(
+    fn authorize(
         &self,
-        require: impl Fn(&str) -> Result<()>,
+        scope: (&str, &Capabilities),
         agent: Option<AgentId>,
         operation_id: OperationId,
-        (kind, subject): (TransitionKind, Subject<'_>),
+        (_, permission, subject): (&'static str, &'static str, Subject<'_>),
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        require(kind.spec().2)?;
+        require_capability(scope, permission)?;
         match subject {
             Subject::None => Ok(()),
-            Subject::PlannedEffect => require(capability::EFFECT_PLAN),
+            Subject::PlannedEffect => require_capability(scope, capability::EFFECT_PLAN),
             Subject::Effect(effect_id) => {
                 let effect = self.transition_effect(effect_id, archived_effect)?;
-                require(&capability::effect_provider(&effect.provider))
+                require_capability(scope, &capability::effect_provider(&effect.provider))
             }
             Subject::Interaction(resolution) => {
                 validate_interaction_operation(resolution, operation_id)?;
@@ -2311,7 +2295,7 @@ impl Reducer {
                     .interactions
                     .get(&resolution.id)
                     .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-                require(&ticket.responder_grant())
+                require_capability(scope, &ticket.responder_grant())
             }
             Subject::Fork(seed) => {
                 if self.conversation.agent.is_none() || agent != self.conversation.agent {
@@ -2342,11 +2326,11 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                let mut owned = crate::fork::CodecQuota::observed(work)?;
+                if let Some(io) = work.as_deref() { io.check_cancellation()?; }
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
-                        let capability = owned.volume_capability(volume)?;
-                        require(&capability)?;
+                        Self::require_volume_operation(scope, volume, VolumeOperation::Read,
+                            crate::store::default_projection_read_limits().maximum_bytes, work)?;
                     }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
@@ -2360,8 +2344,8 @@ impl Reducer {
                                 "scratch is not owned by the direct parent".into(),
                             ));
                         }
-                        let capability = owned.volume_capability(volume)?;
-                        require(&capability)?;
+                        Self::require_volume_operation(scope, volume, VolumeOperation::Read,
+                            crate::store::default_projection_read_limits().maximum_bytes, work)?;
                     }
                 }
                 Ok(())
@@ -2373,29 +2357,26 @@ impl Reducer {
                     ));
                 }
                 receipt.target_project.require_writer(agent, &None)?;
-                Self::require_volume_operation_with_work(&require, &receipt.target_project, VolumeOperation::Write, work)?;
-                Self::require_volume_operation_with_work(&require, &receipt.source_project, VolumeOperation::Read, work)?;
+                let maximum_bytes = if work.as_deref().is_some_and(native_custody::is_native) {
+                    acyclic_stream::MAX_RECORD_BYTES as u64
+                } else { u64::MAX };
+                Self::require_volume_operation(scope, &receipt.target_project, VolumeOperation::Write, maximum_bytes, work)?;
+                Self::require_volume_operation(scope, &receipt.source_project, VolumeOperation::Read, maximum_bytes, work)?;
                 Ok(())
             }
         }
     }
-    fn require_volume_operation_with_work(
-        require: &impl Fn(&str) -> Result<()>, volume: &VolumeRef, operation: VolumeOperation,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    fn require_volume_operation(
+        scope: (&str, &Capabilities), volume: &VolumeRef, operation: VolumeOperation,
+        maximum_bytes: u64, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().is_some_and(native_custody::is_native) {
-            let digest = crate::contract::canonical_json_digest_with_work(
-                volume, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-            let hex = blake3::Hash::from_bytes(digest).to_hex();
-            let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
-            let mut capability = [0_u8; 77];
-            capability[..prefix.len()].copy_from_slice(prefix.as_bytes());
-            capability[prefix.len()..prefix.len()+64].copy_from_slice(hex.as_bytes());
-            return require(std::str::from_utf8(&capability[..prefix.len()+64]).expect("hex capability"));
-        }
-        let _ = work;
-        require(&volume.capability(operation, work)?)
+        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let hex = blake3::Hash::from_bytes(digest).to_hex();
+        let prefix = match operation { VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:" };
+        let mut label = [0_u8; 77];
+        label[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        label[prefix.len()..prefix.len()+64].copy_from_slice(hex.as_bytes());
+        require_capability(scope, std::str::from_utf8(&label[..prefix.len()+64]).expect("hex capability"))
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -2447,11 +2428,11 @@ impl Reducer {
             )));
         }
         self.authority_verifier.verify_event(&event, work)?;
-        self.authorize_with_work(
-            |capability| require_recorded_capability(&event.scope, capability),
+        self.authorize(
+            (&event.scope.id, &event.scope.capabilities),
             event.scope.agent(),
             event.operation_id,
-            event.payload.kind(),
+            event.payload.admission(),
             None,
             work,
         )?;
@@ -2616,11 +2597,11 @@ impl Reducer {
                 ));
             }
             projection.authority_verifier.verify_event(event, work)?;
-            projection.authorize_with_work(
-                |capability| require_recorded_capability(&event.scope, capability),
+            projection.authorize(
+                (&event.scope.id, &event.scope.capabilities),
                 event.scope.agent(),
                 event.operation_id,
-                event.payload.kind(),
+                event.payload.admission(),
                 None,
                 work,
             )?;
@@ -3708,46 +3689,6 @@ impl Reducer {
     }
 }
 
-/// Declares [`TransitionKind`] from one table: each transition's serde `kind` tag as an [`Action`], as an [`EventPayload`], and the capability both require.
-macro_rules! transition_kinds {
-    ($($kind:ident => $action:literal, $event:literal, $capability:ident;)*) => {
-        /// One reducer transition, shared by its command and its committed event.
-        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub(crate) enum TransitionKind {
-            $($kind,)*
-        }
-
-        impl TransitionKind {
-            #[cfg(test)]
-            const ALL: &[Self] = &[$(Self::$kind,)*];
-
-            const fn spec(self) -> (&'static str, &'static str, &'static str) {
-                match self {
-                    $(Self::$kind => ($action, $event, capability::$capability),)*
-                }
-            }
-        }
-    };
-}
-
-transition_kinds! {
-    Lifecycle => "transition_lifecycle", "lifecycle_transitioned", LIFECYCLE_MANAGE;
-    Custom => "append_custom", "custom", EVENT_APPEND;
-    Migration => "migrate_extension_state", "extension_state_migrated", EXTENSION_MIGRATE;
-    Selection => "select_extensions", "extensions_selected", EXTENSION_ACTIVATE;
-    Configuration => "configure_extension", "extension_configured", EXTENSION_CONFIGURE;
-    PlanEffect => "plan_effect", "effect_planned", EFFECT_RUN;
-    DispatchEffect => "mark_effect_dispatched", "effect_dispatched", EFFECT_RUN;
-    ResolveEffect => "resolve_effect", "effect_resolved", EFFECT_RUN;
-    Fork => "publish_fork", "fork_published", FORK_PUBLISH;
-    ProjectMerge => "publish_project_merge", "project_merge_published", PROJECT_MERGE;
-    BindConversation => "bind_conversation", "conversation_bound", CONVERSATION_BIND;
-    AppendMessage => "append_conversation_message", "conversation_message_appended", CONVERSATION_APPEND;
-    SelectContext => "select_model_context", "model_context_selected", CONVERSATION_SELECT_CONTEXT;
-    OpenInteraction => "open_interaction", "interaction_opened", INTERACTION_OPEN;
-    ResolveInteraction => "resolve_interaction", "interaction_resolved", INTERACTION_RESOLVE;
-}
-
 /// Transition input whose authorization depends on reducer state.
 enum Subject<'a> {
     None,
@@ -3759,76 +3700,70 @@ enum Subject<'a> {
 }
 
 impl Action {
-    fn kind(&self) -> (TransitionKind, Subject<'_>) {
-        use TransitionKind as Kind;
+    fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
         match self {
-            Self::TransitionLifecycle { .. } => (Kind::Lifecycle, Subject::None),
-            Self::AppendCustom { .. } => (Kind::Custom, Subject::None),
-            Self::MigrateExtensionState { .. } => (Kind::Migration, Subject::None),
-            Self::SelectExtensions { .. } => (Kind::Selection, Subject::None),
-            Self::ConfigureExtension { .. } => (Kind::Configuration, Subject::None),
-            Self::PlanEffect { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::TransitionLifecycle { .. } => ("transition_lifecycle", capability::LIFECYCLE_MANAGE, Subject::None),
+            Self::AppendCustom { .. } => ("append_custom", capability::EVENT_APPEND, Subject::None),
+            Self::MigrateExtensionState { .. } => ("migrate_extension_state", capability::EXTENSION_MIGRATE, Subject::None),
+            Self::SelectExtensions { .. } => ("select_extensions", capability::EXTENSION_ACTIVATE, Subject::None),
+            Self::ConfigureExtension { .. } => ("configure_extension", capability::EXTENSION_CONFIGURE, Subject::None),
+            Self::PlanEffect { .. } => ("plan_effect", capability::EFFECT_RUN, Subject::PlannedEffect),
             Self::MarkEffectDispatched { effect_id, .. } => {
-                (Kind::DispatchEffect, Subject::Effect(effect_id))
+                ("mark_effect_dispatched", capability::EFFECT_RUN, Subject::Effect(effect_id))
             }
             Self::ResolveEffect { observation } => {
-                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+                ("resolve_effect", capability::EFFECT_RUN, Subject::Effect(&observation.effect_id))
             }
-            Self::PublishFork { seed } => (Kind::Fork, Subject::Fork(seed)),
-            Self::PublishProjectMerge { receipt } => (Kind::ProjectMerge, Subject::Merge(receipt)),
-            Self::BindConversation { .. } => (Kind::BindConversation, Subject::None),
-            Self::AppendConversationMessage { .. } => (Kind::AppendMessage, Subject::None),
-            Self::SelectModelContext { .. } => (Kind::SelectContext, Subject::None),
-            Self::OpenInteraction { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::PublishFork { seed } => ("publish_fork", capability::FORK_PUBLISH, Subject::Fork(seed)),
+            Self::PublishProjectMerge { receipt } => ("publish_project_merge", capability::PROJECT_MERGE, Subject::Merge(receipt)),
+            Self::BindConversation { .. } => ("bind_conversation", capability::CONVERSATION_BIND, Subject::None),
+            Self::AppendConversationMessage { .. } => ("append_conversation_message", capability::CONVERSATION_APPEND, Subject::None),
+            Self::SelectModelContext { .. } => ("select_model_context", capability::CONVERSATION_SELECT_CONTEXT, Subject::None),
+            Self::OpenInteraction { .. } => ("open_interaction", capability::INTERACTION_OPEN, Subject::None),
             Self::ResolveInteraction { resolution } => {
-                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+                ("resolve_interaction", capability::INTERACTION_RESOLVE, Subject::Interaction(resolution))
             }
         }
     }
 
     /// Serde `kind` tag, carried beside canonical action JSON on the wire.
-    #[cfg_attr(
-        not(all(feature = "wasm", target_arch = "wasm32")),
-        allow(dead_code, reason = "only the WASM command decoder reads it")
-    )]
     pub(crate) fn tag(&self) -> &'static str {
-        self.kind().0.spec().0
+        self.admission().0
     }
 }
 
 impl EventPayload {
-    fn kind(&self) -> (TransitionKind, Subject<'_>) {
-        use TransitionKind as Kind;
+    fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
         match self {
-            Self::LifecycleTransitioned { .. } => (Kind::Lifecycle, Subject::None),
-            Self::Custom { .. } => (Kind::Custom, Subject::None),
-            Self::ExtensionStateMigrated { .. } => (Kind::Migration, Subject::None),
-            Self::ExtensionsSelected { .. } => (Kind::Selection, Subject::None),
-            Self::ExtensionConfigured { .. } => (Kind::Configuration, Subject::None),
-            Self::EffectPlanned { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::LifecycleTransitioned { .. } => ("lifecycle_transitioned", capability::LIFECYCLE_MANAGE, Subject::None),
+            Self::Custom { .. } => ("custom", capability::EVENT_APPEND, Subject::None),
+            Self::ExtensionStateMigrated { .. } => ("extension_state_migrated", capability::EXTENSION_MIGRATE, Subject::None),
+            Self::ExtensionsSelected { .. } => ("extensions_selected", capability::EXTENSION_ACTIVATE, Subject::None),
+            Self::ExtensionConfigured { .. } => ("extension_configured", capability::EXTENSION_CONFIGURE, Subject::None),
+            Self::EffectPlanned { .. } => ("effect_planned", capability::EFFECT_RUN, Subject::PlannedEffect),
             Self::EffectDispatched { effect_id, .. } => {
-                (Kind::DispatchEffect, Subject::Effect(effect_id))
+                ("effect_dispatched", capability::EFFECT_RUN, Subject::Effect(effect_id))
             }
             Self::EffectResolved { observation } => {
-                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+                ("effect_resolved", capability::EFFECT_RUN, Subject::Effect(&observation.effect_id))
             }
-            Self::ForkPublished { seed } => (Kind::Fork, Subject::Fork(seed)),
+            Self::ForkPublished { seed } => ("fork_published", capability::FORK_PUBLISH, Subject::Fork(seed)),
             Self::ProjectMergePublished { receipt } => {
-                (Kind::ProjectMerge, Subject::Merge(receipt))
+                ("project_merge_published", capability::PROJECT_MERGE, Subject::Merge(receipt))
             }
-            Self::ConversationBound { .. } => (Kind::BindConversation, Subject::None),
-            Self::ConversationMessageAppended { .. } => (Kind::AppendMessage, Subject::None),
-            Self::ModelContextSelected { .. } => (Kind::SelectContext, Subject::None),
-            Self::InteractionOpened { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::ConversationBound { .. } => ("conversation_bound", capability::CONVERSATION_BIND, Subject::None),
+            Self::ConversationMessageAppended { .. } => ("conversation_message_appended", capability::CONVERSATION_APPEND, Subject::None),
+            Self::ModelContextSelected { .. } => ("model_context_selected", capability::CONVERSATION_SELECT_CONTEXT, Subject::None),
+            Self::InteractionOpened { .. } => ("interaction_opened", capability::INTERACTION_OPEN, Subject::None),
             Self::InteractionResolved { resolution } => {
-                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+                ("interaction_resolved", capability::INTERACTION_RESOLVE, Subject::Interaction(resolution))
             }
         }
     }
 
     /// Serde `kind` tag, carried beside canonical payload JSON on the wire.
     pub(crate) fn tag(&self) -> &'static str {
-        self.kind().0.spec().1
+        self.admission().0
     }
 }
 
@@ -3864,25 +3799,11 @@ fn validate_interaction_operation(
     Ok(())
 }
 
-fn require_capability(scope: &Scope, capability: &str) -> Result<()> {
-    if scope.capabilities.contains(capability) {
+fn require_capability((id, capabilities): (&str, &Capabilities), capability: &str) -> Result<()> {
+    if capabilities.contains(capability) {
         Ok(())
     } else {
-        Err(Error::Unauthorized(format!(
-            "scope {} lacks capability {capability}",
-            scope.id
-        )))
-    }
-}
-
-fn require_recorded_capability(scope: &RecordedScope, capability: &str) -> Result<()> {
-    if scope.capabilities.contains(capability) {
-        Ok(())
-    } else {
-        Err(Error::Unauthorized(format!(
-            "recorded scope {} lacks capability {capability}",
-            scope.id
-        )))
+        Err(Error::Unauthorized(format!("scope {id} lacks capability {capability}")))
     }
 }
 
