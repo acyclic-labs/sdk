@@ -196,7 +196,11 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         rejected,
         MountLifecycleError::Source(MountSourceError::Work(
             crate::WorkError::BudgetExceeded { .. }
-        )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Source(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
     ));
     let admitted_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(cause, _)| cause)?;
