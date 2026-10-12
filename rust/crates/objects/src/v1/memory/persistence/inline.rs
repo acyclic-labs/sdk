@@ -41,19 +41,12 @@ impl Journal {
             _ => self.external_with(body, publication),
         }
     }
-    /// Moves every body the journal carries into segments, so a checkpoint can
-    /// drop the frames that carried them. Bodies are packed into as few
-    /// segments as the segment bounds allow, each synchronized as it is
-    /// written, and their directory entries are made durable once, before the
-    /// relocated state is returned for the checkpoint to record: a compaction
-    /// costs a few synchronizations, not two for every small body.
+    /// Moves every body the journal carries into segments, so a checkpoint can drop the frames that carried them.
     pub(super) fn materialize_inline(&self, state: &mut State) -> Result<(), LocalOpenError> {
         self.materialize_inline_with(state, None).map_err(open_error)
     }
 
-    /// Native materialization retains authenticated owned read buffers and
-    /// relocation storage on the current original meter through their actual
-    /// owners; ordinary maintenance takes this identical packing engine.
+    /// Native materialization retains authenticated owned read buffers and relocation storage on the current original meter through their actual owners; ordinary maintenance takes this identical packing engine.
     pub(super) fn materialize_inline_with(
         &self,
         state: &mut State,
@@ -123,7 +116,8 @@ impl Journal {
                 crate::physical::sync_segment_directory_measured(
                     &self.root.path, self.limits.durability, &mut publication,
                 )?;
-                for bucket in state.buckets.values_mut() {
+                for (name, _) in &state.buckets.clone() {
+                    let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
                     let mut relocation = Publication::new(publication.meter.clone());
                     let mut relocated = Vec::new();
                     for (key, object) in bucket.objects.iter() {
@@ -141,8 +135,10 @@ impl Journal {
                             .body = body;
                     }
                 }
-                for upload in state.uploads.values_mut() {
-                    for (_, body) in upload.parts.values_mut() {
+                for (id, _) in &state.uploads.clone() {
+                    let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+                    for (number, _) in &upload.parts.clone() {
+                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
                         if let Some(moved) = relocated_publication(body, &moves, &publication)? {
                             *body = moved;
                         }
@@ -188,9 +184,7 @@ impl Journal {
     }
 }
 
-/// One segment's worth of journal bodies being materialized. A segment holds
-/// each distinct body once: the journal may carry equal bodies, such as empty
-/// ones, at several offsets, and they all move to the same record.
+/// One segment's worth of journal bodies being materialized.
 #[derive(Default)]
 struct Materialized {
     bodies: Vec<([u8; 32], OwnedBytes)>,
@@ -293,15 +287,17 @@ pub(super) fn place_with(delta: &mut Delta, state: &mut State, frame: u64, publi
     for change in delta.objects.iter().filter(|change| change.info.is_some()) {
         let object = state
             .buckets
-            .get_mut(&change.bucket)
+            .get_mut(change.bucket.as_str())
             .and_then(|bucket| bucket.objects.get_mut(change.key.as_str()))
             .ok_or(Error::from(Unavailable))?;
         if let Some(body) = relocated_publication(&object.body, &moves, publication)? {
             object.body = body;
         }
     }
-    for upload in state.uploads.values_mut() {
-        for (_, body) in upload.parts.values_mut() {
+    for (id, _) in &state.uploads.clone() {
+                    let upload = state.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+        for (number, _) in &upload.parts.clone() {
+                        let (_, body) = upload.parts.get_mut(number).ok_or(Error::from(Unavailable))?;
             if let Some(moved) = relocated_publication(body, &moves, publication)? {
                 *body = moved;
             }

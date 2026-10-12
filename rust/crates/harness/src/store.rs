@@ -545,8 +545,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork report belongs to another parent"));
         }
-        owner.authenticate_fork_parent_with_work(self.reducer.authority(), work)?;
-        if scope.agent() != Some(owner.authenticated_fork_agent_with_work(work)?) {
+        owner.authenticate_fork_parent(self.reducer.authority(), work)?;
+        if scope.agent() != Some(owner.authenticated_fork_agent(work)?) {
             return Err(guarded::guarded_boundary(work, guarded::GuardedBoundary::Unauthorized,
                 "fork publication scope differs from its admitted caller"));
         }
@@ -736,8 +736,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<()> {
         let mut custody = crate::fork::ForkValidationWork::new(work)?;
         seed.validate_with_work(custody.work())?;
-        let parent_agent = owner.authenticated_fork_agent_with_work(custody.work())?;
-        owner.authenticate_fork_parent_with_work(&seed.parent, custody.work())?;
+        let parent_agent = owner.authenticated_fork_agent(custody.work())?;
+        owner.authenticate_fork_parent(&seed.parent, custody.work())?;
         if parent.reducer.authority() != &seed.parent
             || parent.reducer.fork(&seed.child) != Some(seed)
             || self.reducer.authority() != &seed.child {
@@ -1319,7 +1319,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::validate_effect_json_byte_bound_with_work(state, limits.maximum_bytes, work)?;
+            crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
         let reader = if work.is_some() {

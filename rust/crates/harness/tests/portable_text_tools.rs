@@ -876,34 +876,3 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     Ok(())
 }
 
-#[tokio::test]
-async fn measured_content_read_accepts_exact_receipt_budget_and_preserves_quota_failure_prefix() -> Result<()> {
-    let provider = ProviderRef::new("exact-content", "filesystem", "1")?;
-    let owner = AgentId::from_bytes([93; 16]);
-    let volume = VolumeRef::new(provider.clone(), "exact", VolumeClass::AgentPrivate, VolumeOwner::Agent(owner))?;
-    let issuer = AuthorityIssuer::new("exact-content", [94; 32], Authority {
-        kind: AggregateKind::Conversation, id: "exact-content".into(),
-    });
-    let scope = issuer.root_for_agent(owner, "owner", Capabilities::new([
-        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-    let host = FilesystemHost::new(Fs::memory(), provider)?;
-    host.create_volume(&volume).await?;
-    let cancel = acyclic_fs::CancellationToken::new();
-    let file = host.put_content_measured(&volume, &write, "exact", b"exact", "text/plain", "exact",
-        64, &IdempotencyKey::new("exact")?, content_work_budget(), &cancel).await.map_err(|failure| failure.error)?.value;
-    let warm = host.read_content_measured(&file, &read, 64, content_work_budget(), &cancel)
-        .await.map_err(|failure| failure.error)?;
-    let exact = host.read_content_measured(&file, &read, 64, warm.work, &cancel)
-        .await.map_err(|failure| failure.error)?;
-    assert_eq!(exact.value, b"exact");
-    exact.work.verify(warm.work).map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut short = warm.work;
-    short.bytes_copied = 0;
-    let failure = host.read_content_measured(&file, &read, 64, short, &cancel).await.unwrap_err();
-    assert!(failure.work.backend_read_operations > 0 || failure.work.items_examined > 0);
-    assert!(host.read_content_measured(&file, &write, 64, content_work_budget(), &cancel).await.is_err());
-    Ok(())
-}

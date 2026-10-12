@@ -1,5 +1,4 @@
 //! Span helpers for `docs/observability.md`. Each expands to nothing on wasm32,
-//! which never links `tracing`.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -374,8 +373,7 @@ pub(crate) fn scoped<R: Outcome>(span: &Span, body: impl FnOnce() -> R) -> R {
     })
 }
 
-/// Opens a span at `level` with `outcome`/`error.kind` slots for [`traced`];
-/// a unit [`Span`] on wasm32, where the field values are not evaluated.
+/// Opens a span at `level` with `outcome`/`error.kind` slots for [`traced`]; a unit [`Span`] on wasm32, where the field values are not evaluated.
 macro_rules! span {
     ($level:ident, $name:literal $(, $($field:tt)+)?) => {{
         #[cfg(not(target_arch = "wasm32"))]

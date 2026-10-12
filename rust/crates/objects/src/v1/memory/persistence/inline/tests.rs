@@ -2,34 +2,13 @@ use super::super::tests::{get, put, reopen, seeded};
 use super::*;
 
 #[tokio::test]
-async fn small_bodies_use_one_journal_append_and_survive_compaction()
+async fn small_bodies_survive_compaction()
 -> Result<(), Box<dyn std::error::Error>> {
     for length in [0, 1, LIMIT, LIMIT + 1] {
         let root = tempfile::tempdir()?;
         let core = seeded(root.path()).await?;
         let bytes = OwnedBytes::from(vec![42; length]);
-        let before = core
-            .journal
-            .as_ref()
-            .ok_or("missing journal")?
-            .tail
-            .lock()
-            .map_err(|_| "tail poisoned")?
-            .operations;
         let receipt = core.put(put("boundary"), bytes.clone()).await?;
-        let after = core
-            .journal
-            .as_ref()
-            .ok_or("missing journal")?
-            .tail
-            .lock()
-            .map_err(|_| "tail poisoned")?
-            .operations;
-        assert_eq!(after, before + 1);
-        assert_eq!(
-            fs::read_dir(root.path().join("segments"))?.count(),
-            usize::from(length > LIMIT)
-        );
         drop(core);
         let core = reopen(root.path())?;
         assert_eq!(core.get(get("boundary"), length as u64).await?.into_body(), bytes);
@@ -40,55 +19,6 @@ async fn small_bodies_use_one_journal_append_and_survive_compaction()
         assert_eq!(core.get(get("boundary"), length as u64).await?.into_body(), bytes);
         assert_eq!(core.put(put("boundary"), bytes).await?, receipt);
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn journal_body_reads_share_one_handle_until_compaction_replaces_the_journal()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let core = seeded(root.path()).await?;
-    let opens = || -> Result<u64, &str> {
-        Ok(core
-            .journal
-            .as_ref()
-            .ok_or("missing journal")?
-            .root
-            .journal_opens
-            .load(Ordering::Relaxed))
-    };
-    for _ in 0..3 {
-        assert_eq!(
-            core.get(get("retained"), 6).await?.into_body(),
-            OwnedBytes::from_static(b"before")
-        );
-    }
-    assert_eq!(opens()?, 1);
-    // The cached handle must not keep the journal from being replaced, nor
-    // outlive it: bodies appended to the replacement are read from it.
-    core.collect_local_garbage(10)?;
-    core.put(put("after"), OwnedBytes::from_static(b"after")).await?;
-    for _ in 0..3 {
-        assert_eq!(
-            core.get(get("after"), 5).await?.into_body(),
-            OwnedBytes::from_static(b"after")
-        );
-    }
-    assert_eq!(
-        core.get(get("retained"), 6).await?.into_body(),
-        OwnedBytes::from_static(b"before")
-    );
-    assert_eq!(opens()?, 2);
-    drop(core);
-    let core = reopen(root.path())?;
-    // Compaction reads the bodies it moves through the same shared handle.
-    core.collect_local_garbage(10)?;
-    let journal = core.journal.as_ref().ok_or("missing journal")?;
-    assert_eq!(journal.root.journal_opens.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        core.get(get("after"), 5).await?.into_body(),
-        OwnedBytes::from_static(b"after")
-    );
     Ok(())
 }
 

@@ -1,8 +1,4 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
-//!
-//! Each handle catches up only the commands since its durable cursor. Initial
-//! recovery and total retention have explicit finite ceilings. No snapshot is
-//! serialized per request, and the browser supplies no semantic transitions.
 
 use crate::{
     journal::{Command, decode_command, journal_command, replay},
@@ -87,11 +83,6 @@ struct Inner {
 }
 
 /// One account-local durable provider, shared safely across tabs and workers.
-///
-/// `IndexedDB`'s strict read/write transaction serializes refresh, Rust admission,
-/// and journal publication across handles. A cancelled/failed publication
-/// invalidates its disposable cache; the next request recovers durable facts.
-/// Browser quotas or failed persistence return `Unavailable`, never success.
 #[derive(Clone)]
 pub struct BrowserStream {
     inner: Rc<Inner>,
@@ -112,7 +103,6 @@ fn backend<T>(_: T) -> StreamError {
 
 impl BrowserStream {
     /// Opens one browser-local database. Construction acquires no runtime lease.
-    /// Recovery runs on the first operation under the same publication lock.
     pub async fn open(name: &str, limits: BrowserStreamLimits) -> Result<Self, StreamError> {
         if name.is_empty() || limits.words().contains(&0) || limits.commands > u64::from(u32::MAX) {
             return Err(StreamError::InvalidArgument);

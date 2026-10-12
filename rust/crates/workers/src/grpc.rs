@@ -30,8 +30,6 @@ pub type Client = wire::workers_service_client::WorkersServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-///
-/// A transport OK does not certify typed protobuf decoding or a unary message.
 pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
 
 /// Statically named workers RPC span factory.
@@ -71,20 +69,11 @@ pub enum ConnectError {
 }
 
 /// Connect trusting the operating system's roots with account-bound bearer metadata.
-///
-/// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select the native roots.
-///
-/// # Errors
-/// Returns an error for invalid configuration or an unavailable TLS endpoint.
 pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
     connect_with_ca_certificate(endpoint, token, None).await
 }
 
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-/// A supplied CA replaces, rather than augments, ambient trust for this connection.
-///
-/// # Errors
-/// Returns an error for invalid configuration, CA bytes, or TLS connection.
 pub async fn connect_with_ca_certificate(
     endpoint: &str,
     token: &str,

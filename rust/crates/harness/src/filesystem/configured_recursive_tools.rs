@@ -18,7 +18,7 @@ use crate::{
     source_authorization::{ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider},
     tool::ToolInvocation,
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget, WorkCounters};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
 use acyclic_stream::{BoxProviderFuture, StreamClient, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,8 +190,8 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
                 reason: "configured source checkpoint ownership overflows" },
             None => Error::Invalid("configured source checkpoint ownership overflows".into()),
         };
-        let snapshot = crate::contract::snapshot_json_ownership(
-            shape, 128, native_code,
+        let snapshot = crate::contract::json_decode_owned_bytes(
+            shape, true, native_code,
         )?;
         let outer = shape.lexical_items().checked_mul(10)
             .and_then(|items| items.checked_mul(Self::maximum_slot_bytes()))
@@ -199,7 +199,7 @@ impl crate::filesystem::PreparationRecord for SourceCheckpoint {
             .and_then(|bytes| bytes.checked_add(codec_scratch.max(input_bytes)))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(overflow)?;
-        snapshot.maximum_owned_bytes.checked_sub(snapshot.diagnostic_bytes)
+        snapshot.0.checked_sub(snapshot.1)
             .and_then(|bytes| bytes.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .and_then(|bytes| bytes.checked_add(outer)).ok_or_else(overflow)
     }
@@ -312,19 +312,24 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         recursive_default_tools(self.clone(), maximum_bytes)
     }
 
-    fn runtime(&self) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
-        self.runtime.get().and_then(Weak::upgrade).ok_or_else(|| Error::Unauthorized("configured source has no original runtime".into()))
+    fn runtime(&self, io: Option<&super::PreparationIo>) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
+        self.runtime.get().and_then(Weak::upgrade).ok_or_else(|| super::interaction_host::interaction_boundary(
+            io, crate::wire::ErrorCode::Unauthorized, "configured source has no original runtime"))
     }
 
-    fn caller(&self, task: TaskId) -> Result<&ConfiguredRecursiveCaller> {
-        self.config.callers.iter().find(|caller| caller.task == task)
-            .ok_or_else(|| Error::Unauthorized("task has no explicit signed configured source binding".into()))
+    fn caller(&self, task: TaskId, io: Option<&super::PreparationIo>) -> Result<&ConfiguredRecursiveCaller> {
+        for caller in &self.config.callers {
+            if let Some(io) = io { io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 16, items: 1 }, true)?; }
+            if caller.task == task { return Ok(caller); }
+        }
+        Err(super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
+            "task has no explicit signed configured source binding"))
     }
 
     async fn authenticate_caller<'a>(&'a self, context: &ToolContext, require_project_read: bool) -> Result<&'a ConfiguredRecursiveCaller> {
         let task = context.durable_task_id().ok_or_else(|| Error::Unauthorized("configured tool has no admitted caller".into()))?;
-        let caller = self.caller(task)?;
-        let runtime = self.runtime()?;
+        let caller = self.caller(task, None)?;
+        let runtime = self.runtime(None)?;
         let admission = runtime.task_host().observe_admission(task).await?;
         if admission.parent.is_some() {
             let inspection = runtime.inspect_source(task, task).await?;
@@ -393,9 +398,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.bind_aggregate_reader(binding, scope, aggregate, content)
     }
 
-    fn allocation(&self, caller: TaskId, arguments: &ForkToolArguments) -> Result<&ConfiguredRecursiveFork> {
-        self.config.forks.iter().find(|fork| fork.caller == caller && fork.child.scope.agent() == Some(arguments.id))
-            .ok_or_else(|| Error::Unauthorized("new child has no explicit signed configured allocation".into()))
+    fn allocation(&self, caller: TaskId, arguments: &ForkToolArguments, io: Option<&super::PreparationIo>) -> Result<&ConfiguredRecursiveFork> {
+        for allocation in &self.config.forks {
+            if let Some(io) = io { io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 }, true)?; }
+            if allocation.caller == caller && allocation.child.scope.agent() == Some(arguments.id) { return Ok(allocation); }
+        }
+        Err(super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
+            "new child has no explicit signed configured allocation"))
     }
 
     async fn child_claims(&self, context: &ToolContext, caller: &ConfiguredRecursiveCaller,
@@ -452,8 +461,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let caller = self.authenticate_caller(context,
             arguments.source.is_none_or(|source| Some(source) == context.durable_task_id())).await?;
-        let allocation = self.allocation(caller.task, arguments)?;
-        let runtime = self.runtime()?;
+        let allocation = self.allocation(caller.task, arguments, None)?;
+        let runtime = self.runtime(None)?;
         let parent = self.aggregate(&caller.owner, cancellation).await?;
         let project = self.filesystem.resolve(&workspace_ref(caller.project.provider().clone(), &caller.project.storage_name()?)?).await?.generation;
         let private = self.filesystem.resolve(&workspace_ref(caller.private_volume.provider().clone(), &caller.private_volume.storage_name()?)?).await?.generation;
@@ -462,7 +471,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let source_read = if selected != caller.task {
             let BoundProjectSourcePolicy { issuer, provider, .. } = self.project_policy.get().ok_or_else(|| Error::Unauthorized(
                 "foreign project selection lacks an explicitly configured RootService approval policy".into()))?;
-            let chosen = self.caller(selected)?;
+            let chosen = self.caller(selected, None)?;
             if let Some(native) = &chosen.native_snapshot {
                 crate::contract::validate_json_byte_bound(native, context.scope().limits().file_bytes)?;
             }
@@ -499,7 +508,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let caller = self.authenticate_caller(context,
             arguments.source.is_none_or(|source| Some(source) == context.durable_task_id())).await?;
-        let allocation = self.allocation(caller.task, arguments)?;
+        let allocation = self.allocation(caller.task, arguments, None)?;
         if intent.arguments != *arguments || intent.caller != caller.task
             || intent.source_task != arguments.source.unwrap_or(caller.task)
             || intent.child_operation_id != allocation.admission.operation_id
@@ -583,10 +592,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         original: Option<&RecursiveMergeToolPlan>, cancellation: &CancellationToken) -> Result<MergeBinding<P, A, O>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let caller = self.authenticate_caller(context, true).await?;
-        let source_owner = self.caller(arguments.source)?;
+        let source_owner = self.caller(arguments.source, None)?;
         let allocation = self.config.merges.iter().find(|merge| merge.caller == caller.task && merge.source == arguments.source)
             .ok_or_else(|| Error::Unauthorized("configured merge has no explicit notice binding".into()))?;
-        let runtime = self.runtime()?;
+        let runtime = self.runtime(None)?;
         let inspected = runtime.inspect_source(caller.task, arguments.source).await?;
         if inspected.project()?.volume != source_owner.project
             || inspected.volumes().iter().filter(|snapshot| snapshot.volume == source_owner.private_volume).count() != 1
@@ -632,7 +641,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &CancellationToken) -> Result<Option<ProjectSourceReadHandle>> {
         let Some(authorization) = &request.authorized_source else { return Ok(None); };
         let caller = context.durable_task_id().ok_or_else(|| Error::Unauthorized("source intent has no original caller".into()))?;
-        let runtime = self.runtime()?;
+        let runtime = self.runtime(None)?;
         let owner = Arc::new(runtime.task_host().journal_owner(caller, context.owned_task_fence()?).await?
             .with_invocation_cancellation(cancellation));
         Ok(Some(owner.restore_project_source_authorization(context, authorization).await?))
@@ -643,12 +652,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let preparation = token.request();
         preparation.validate()?;
         let caller = preparation.child.parent.ok_or_else(|| Error::Unauthorized("configured preparation has no original caller".into()))?;
-        let binding = self.caller(caller)?;
+        let binding = self.caller(caller, None)?;
         if reader.durable_task_id() != Some(token.origin().preparation_task)
             || token.origin().parent_task != caller {
             return Err(Error::Unauthorized("source restore lacks the actual sealed helper and original caller".into()));
         }
-        let runtime = self.runtime()?;
+        let runtime = self.runtime(None)?;
         let admitted = runtime.task_host().observe_admission(caller).await?;
         if admitted.parent.is_some() {
             let actual = runtime.inspect_source(caller, caller).await?;
@@ -694,7 +703,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
         let task = context.durable_task_id().ok_or_else(||
             Error::Unauthorized("recursive source has no original admitted reader".into()))?;
-        let owner = Arc::new(self.runtime()?.task_host()
+        let owner = Arc::new(self.runtime(None)?.task_host()
             .journal_owner(task, context.owned_task_fence()?).await?
             .with_invocation_cancellation(cancellation));
         context.content_residency_verifier(owner)
@@ -737,44 +746,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(())
     }
 
-    fn native_runtime(&self) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {
-        self.runtime.get().and_then(Weak::upgrade).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native recursive source has no original runtime",
-        })
-    }
-
-    fn native_caller(&self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork)
-        -> Result<&ConfiguredRecursiveCaller> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let mut history = io.history_io();
-        for caller in &self.config.callers {
-            history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 16, items: 1 })?;
-            if caller.task == task { return Ok(caller); }
-        }
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native recursive caller has no installed source binding" })
-    }
-
-    fn native_allocation(&self, caller: TaskId, arguments: &ForkToolArguments,
-        work: &acyclic_fs::NativeMaterializationWork) -> Result<&ConfiguredRecursiveFork> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let mut history = io.history_io();
-        for allocation in &self.config.forks {
-            history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 })?;
-            if allocation.caller == caller && allocation.child.scope.agent() == Some(arguments.id) {
-                return Ok(allocation);
-            }
-        }
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native recursive child has no installed allocation" })
-    }
-
     async fn native_source_owner(&self, context: &TaskContext,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork)
         -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {
         let (task, fence) = context.owned_task_binding_with_native_work(work)?;
-        let owner = self.native_runtime()?.task_host()
+        let owner = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?.task_host()
             .journal_owner_with_native_work(task, fence, work).await?
             .with_invocation_cancellation(cancellation);
         owner.require_mail_scope_with_native_work(context.scope(), work)?;
@@ -790,12 +766,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source owner differs from original context" });
         }
-        let caller = self.native_caller(task, work)?;
+        let caller = self.caller(task, Some(&super::PreparationIo::from_native_work(work)?))?;
         if owner.authenticated_binding_agent_with_native_work(work)? != caller.owner.scope.agent() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source actor differs from admitted current creator" });
         }
-        let runtime = self.native_runtime()?;
+        let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
         let admission = runtime.task_host().observe_admission_with_native_work(task, work).await?;
         if admission.0.parent.is_some() {
             let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(task, work).await?;
@@ -803,9 +779,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let mut scratch = 0_usize;
             let mut result = 0_usize;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let mut history = io.history_io();
             for snapshot in &snapshots.0 {
-                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
                 project += usize::from(snapshot.volume == caller.project);
                 scratch += usize::from(snapshot.volume == caller.private_volume);
                 result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
@@ -863,8 +838,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     ) -> Result<()> {
         let capability = volume.capability_with_native_work(operation, work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let mut history = io.history_io();
-        history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
         if !context.effective_scope().grants().contains(&capability.0) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native recursive tool effective scope denies its selected volume operation" });
@@ -1114,7 +1088,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if arguments.source.is_none_or(|source| source == caller.task) {
             self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
         }
-        let allocation = self.native_allocation(caller.task, arguments, work)?;
+        let allocation = self.allocation(caller.task, arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
         let parent = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let current_project = super::fork_preparer::bounded_io::content_workspace(
@@ -1133,7 +1107,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "foreign native Project selection has no configured original Root policy",
             })?;
             self.require_native_policy(custody.as_ref(), work)?;
-            let chosen = self.native_caller(selected_task, work)?;
+            let chosen = self.caller(selected_task, Some(&super::PreparationIo::from_native_work(work)?))?;
             let chosen_workspace = super::fork_preparer::bounded_io::content_workspace(
                 chosen.project.provider(), &chosen.project, Some(&io),
             )?;
@@ -1222,13 +1196,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let caller = self.authenticate_native_caller(context.task(), owner.as_ref(), true, work).await?;
         self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
         self.require_native_effective_volume(context, &caller.project, VolumeOperation::Write, work)?;
-        let source_owner = self.native_caller(arguments.source, work)?;
+        let source_owner = self.caller(arguments.source, Some(&super::PreparationIo::from_native_work(work)?))?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let allocation = {
             let mut history = io.history_io();
             let mut found = None;
             for merge in &self.config.merges {
-                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 })?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 32, items: 1 }, true)?;
                 if merge.caller == caller.task && merge.source == arguments.source {
                     found = Some(merge);
                     break;
@@ -1237,13 +1211,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             found.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native merge has no configured original notice binding" })?
         };
-        let runtime = self.native_runtime()?;
+        let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
         let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(arguments.source, work).await?;
         let selected = {
             let mut history = io.history_io();
             let mut found = None;
             for snapshot in &snapshots.0 {
-                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
                 if snapshot.volume == source_owner.project {
                     if found.is_some() {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1345,7 +1319,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if arguments.source.is_none_or(|source| source == caller.task) {
             self.require_native_effective_volume(context, &caller.project, VolumeOperation::Read, work)?;
         }
-        let allocation = self.native_allocation(caller.task, arguments, work)?;
+        let allocation = self.allocation(caller.task, arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
         if intent.arguments != *arguments || intent.caller != caller.task
             || intent.source_task != arguments.source.unwrap_or(caller.task)
             || intent.child_operation_id != allocation.admission.operation_id
@@ -1497,10 +1471,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "native recursive preparation has no original caller",
         })?;
-        let caller = self.native_caller(caller_task, work)?;
+        let caller = self.caller(caller_task, Some(&super::PreparationIo::from_native_work(work)?))?;
         let request = io.value_decode_preparation::<ForkRequest>(&preparation.payload, crate::wire::ErrorCode::Storage)?
             .into_retained();
-        let runtime = self.native_runtime()?;
+        let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
         let admission = runtime.task_host().observe_admission_with_native_work(caller_task, work).await?;
         if admission.0.parent.is_some() {
             let snapshots = runtime.task_host().observe_volume_snapshots_with_native_work(caller_task, work).await?;
@@ -1508,7 +1482,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let mut project = 0;
             let mut scratch = 0;
             for snapshot in &snapshots.0 {
-                history.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
                 project += usize::from(snapshot.volume == caller.project);
                 scratch += usize::from(snapshot.volume == caller.private_volume);
             }
@@ -1578,7 +1552,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     fn owner<'a>(&'a self, context: &'a ToolContext, tool: &'a ResumableTool, invocation: &'a ToolInvocation,
         cancellation: &'a CancellationToken) -> BoxProviderFuture<'a, Result<Owner<P, A, O>>> {
-        Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime()?.recursive_tool_owner(context, tool, invocation, cancellation).await })
+        Box::pin(async move { self.authenticate_caller(context, false).await?; self.runtime(None)?.recursive_tool_owner(context, tool, invocation, cancellation).await })
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn owner_with_native_work<'a>(&'a self, context: &'a ToolContext,
@@ -1586,7 +1560,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &'a CancellationToken, work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (Owner<P, A, O>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let runtime = self.native_runtime()?;
+            let runtime = self.runtime(Some(&super::PreparationIo::from_native_work(work)?))?;
             let owner = runtime.recursive_tool_owner_with_native_work(
                 context, tool, invocation, cancellation, work,
             ).await?;

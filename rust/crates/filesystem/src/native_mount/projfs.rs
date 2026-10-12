@@ -65,10 +65,7 @@ const HR_VIRTUALIZATION_INVALID_OPERATION: HRESULT = HRESULT(0x8007_0181_u32.cas
 const HR_SHARING_VIOLATION: HRESULT = HRESULT(0x8007_0020_u32.cast_signed());
 const HR_DIRECTORY_NOT_EMPTY: HRESULT = HRESULT(0x8007_0091_u32.cast_signed());
 
-/// Every notification the provider observes, for every file, for its whole
-/// life. A file created or renamed through the mount keeps this exact set:
-/// narrowing it would hide a later write, metadata edit, or delete of that
-/// name once its first capture had completed.
+/// Every notification the provider observes, for every file, for its whole life.
 const FILE_NOTIFICATIONS: PRJ_NOTIFY_TYPES = PRJ_NOTIFY_TYPES(
     PRJ_NOTIFY_NEW_FILE_CREATED.0
         | PRJ_NOTIFY_FILE_OVERWRITTEN.0
@@ -84,34 +81,19 @@ const FILE_NOTIFICATIONS: PRJ_NOTIFY_TYPES = PRJ_NOTIFY_TYPES(
 const NOTIFICATION_ROOT: [u16; 1] = [0];
 /// Largest read from the source while writing a file; bounds peak memory.
 const WRITE_CHUNK_BYTES: u32 = 1 << 20;
-/// Bounds the provider's memo of read-only close bindings.
 const MAXIMUM_CACHED_BINDINGS: usize = 16_384;
 
-/// One entry of a source listing, as this provider writes it.
 struct ProjectedEntry {
     // ProjFS compares NUL-terminated UTF-16 names, not SDK byte cursors.
     name: RetainedBuffer<Vec<u16>>,
-    /// The exact component retains its source's canonical paid guard.
     component: RetainedBuffer<Vec<u8>>,
-    /// What the entry is written from.
     facts: EntryFacts,
-    /// The basic information written for this entry.
     info: PRJ_FILE_BASIC_INFO,
     symlink_target: Option<RetainedBuffer<crate::kernel::OwnedSourceChunk>>,
-    /// Whether a link names a directory: a Windows link says so when made.
     directory_link: bool,
 }
 
-impl ProjectedEntry {
-    fn take_component(&mut self) -> RetainedBuffer<Vec<u8>> {
-        self.component.take()
-    }
-}
-
-
-/// Physical data drops first. Ordinary buffers retain their original weak
-/// retirement proof; native resource buffers retain the canonical strong
-/// allocation guard, including its exact original resource view.
+/// Physical data drops first.
 struct RetainedBuffer<T> {
     value: Option<T>,
     custody: crate::demand::NativeMountAllocationCustody,
@@ -138,7 +120,6 @@ impl<T> RetainedBuffer<T> {
         }
         Ok(Self { value: Some(value), custody, bytes, native_allocation: None, source_ownership: None })
     }
-
 
     fn source_owned(value: T, ownership: crate::demand::SourcePayloadOwnership, custody: crate::demand::NativeMountAllocationCustody) -> Self {
         Self { value: Some(value), custody, bytes: 0, native_allocation: None, source_ownership: Some(ownership) }
@@ -175,18 +156,9 @@ impl<T> Drop for RetainedBuffer<T> {
     }
 }
 
-/// One existing Arc body: its actual SDK payload drops before the canonical
-/// native allocation. Opaque std Arc/Weak bookkeeping is outside this logical
-/// payload profile; ordinary allocations keep their original weak proof.
-struct RetainedArc<T> {
-    value: Option<Arc<RetainedArcValue<T>>>,
-    custody: crate::demand::NativeMountAllocationCustody,
-    bytes: u64,
-}
-
 struct RetainedArcValue<T> {
     value: T,
-    _allocation: Option<crate::NativeAllocation>,
+    _allocation: crate::NativeAllocation,
 }
 
 impl<T> std::ops::Deref for RetainedArcValue<T> {
@@ -203,45 +175,6 @@ impl<T: ViewObserver> ViewObserver for RetainedArcValue<T> {
     }
 }
 
-impl<T> Clone for RetainedArc<T> {
-    fn clone(&self) -> Self {
-        Self { value: self.value.clone(), custody: self.custody.clone(), bytes: self.bytes }
-    }
-}
-
-impl<T> std::ops::Deref for RetainedArc<T> {
-    type Target = Arc<RetainedArcValue<T>>;
-    fn deref(&self) -> &Self::Target { self.value.as_ref().expect("live retained Arc") }
-}
-
-impl<T> Drop for RetainedArc<T> {
-    fn drop(&mut self) {
-        // get_mut proves the actual storage has no other strong or weak
-        // owners. Never derive an allocation or backend cost from refcounts.
-        let exclusive = self.value.as_mut().is_some_and(|value| Arc::get_mut(value).is_some());
-        drop(self.value.take());
-        if exclusive && self.bytes != 0 {
-            self.custody.retire(self.bytes).expect("actual Arc freed before retirement");
-        }
-        // Otherwise the outside alias/paired Weak keeps this original proof
-        // alive until its real storage drops, then weak expiry reconciles it.
-    }
-}
-
-fn reserve_retained_storage(
-    bytes: u64, _custody: &crate::demand::NativeMountAllocationCustody, work: &super::NativeMountMeterWork,
-) -> Result<(u64, Option<crate::NativeAllocation>), NativeMountError> {
-    Ok((0, Some(work.native_materialization_work().claim(bytes)?)))
-}
-
-fn retire_ordinary_storage(
-    bytes: u64, custody: &crate::demand::NativeMountAllocationCustody,
-) -> Result<(), NativeMountError> {
-    if bytes != 0 { custody.retire(bytes)?; }
-    Ok(())
-}
-
-
 fn clone_host_path_with_work(
     path: &std::path::Path, custody: &crate::demand::NativeMountAllocationCustody, work: &super::NativeMountMeterWork,
 ) -> Result<RetainedBuffer<PathBuf>, NativeMountError> {
@@ -249,65 +182,43 @@ fn clone_host_path_with_work(
     let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
     let materialization = work.native_materialization_work();
     materialization.admit(copied)?;
-    let (ordinary_bytes, mut native_allocation) = reserve_retained_storage(bytes, custody, work)?;
+    let mut native_allocation = work.native_materialization_work().claim(bytes)?;
     let mut value = PathBuf::new();
-    if let Err(error) = value.try_reserve_exact(bytes as usize) {
-        drop(value);
-        retire_ordinary_storage(ordinary_bytes, custody)?;
-        return Err(NativeMountError::Allocation(error));
-    }
-    if let Some(allocation) = native_allocation.as_mut() {
-        allocation.reconcile_capacity(value.capacity() as u64)?;
-    }
+    value.try_reserve_exact(bytes as usize).map_err(NativeMountError::Allocation)?;
+    native_allocation.reconcile_capacity(value.capacity() as u64)?;
     value.push(path);
-    let retained = RetainedBuffer { value: Some(value), custody: custody.clone(), bytes: ordinary_bytes, native_allocation, source_ownership: None };
+    let retained = RetainedBuffer { value: Some(value), custody: custody.clone(), bytes: 0, native_allocation: Some(native_allocation), source_ownership: None };
     materialization.record_admitted(copied)?;
     Ok(retained)
 }
 
-fn retained_arc_on_meter<T>(
-    value: T, custody: &crate::demand::NativeMountAllocationCustody,
-    meter: &super::NativeMountMeterWork,
-) -> Result<RetainedArc<T>, NativeMountError> {
-    let bytes = size_of::<RetainedArcValue<T>>() as u64;
-    let (ordinary_bytes, allocation) = reserve_retained_storage(bytes, custody, meter)?;
-    Ok(RetainedArc {
-        value: Some(Arc::new(RetainedArcValue { value, _allocation: allocation })),
-        custody: custody.clone(), bytes: ordinary_bytes,
-    })
+fn retained_arc<T>(
+    value: T, meter: &super::NativeMountMeterWork,
+) -> Result<Arc<RetainedArcValue<T>>, NativeMountError> {
+    let allocation = meter.native_materialization_work().claim(size_of::<RetainedArcValue<T>>() as u64)?;
+    Ok(Arc::new(RetainedArcValue { value, _allocation: allocation }))
 }
-
 
 struct Runtime {
     source: Arc<dyn MountFilesystem>,
     original_work: Option<super::NativeMountMeterWork>,
     callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     root: RetainedBuffer<PathBuf>,
-    metadata_root: RetainedArc<HostRoot>,
+    metadata_root: Arc<RetainedArcValue<HostRoot>>,
     writable: bool,
-    metadata_baselines: RetainedArc<Mutex<MemoMap<u128, OpenMetadataState>>>,
-    projection: RetainedArc<Mutex<ProjectionCache>>,
-    /// Everything written into the projection, kept current as the source
-    /// changes.
-    projector: RetainedArc<Projector>,
-    metadata_probes: RetainedArc<Mutex<MemoMap<MountPath, RetainedArc<std::sync::atomic::AtomicUsize>>>>,
-    /// The admitted retry snapshot doubles as borrowed metadata suppression;
-    /// no second path clone or guessed hash-table allocation is needed.
+    metadata_baselines: Arc<RetainedArcValue<Mutex<MemoMap<u128, OpenMetadataState>>>>,
+    projection: Arc<RetainedArcValue<Mutex<ProjectionCache>>>,
+    projector: Arc<RetainedArcValue<Projector>>,
+    metadata_probes: Arc<RetainedArcValue<Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>>>,
+    /// The admitted retry snapshot doubles as borrowed metadata suppression; no second path clone or guessed hash-table allocation is needed.
     capture_probes: std::sync::RwLock<Vec<(MountPath, u64, bool)>>,
     flush_gate: Mutex<()>,
     /// Present only while a real lifecycle operation owns SDK callbacks.
     stop_meter: Mutex<super::NativeMountMeterActivation>,
-    /// The actual sibling created by this driver, including an unprobed held
-    /// capability. A predictable name is never itself removal authority.
     staging_custody: Mutex<Option<StagingDirectoryCustody>>,
-    /// Held for a file while one handle's metadata edits are read from the
-    /// source and written back. `ProjFS` names each handle apart, so handles
-    /// to one file close concurrently; each applies only what it changed, on
-    /// what the one before it left. Keyed by the file's host identity, which
-    /// every spelling of its name shares.
-    metadata_edits: RetainedArc<FileLocks>,
-    post_operation_failure: RetainedArc<Mutex<PostOperationFailures>>,
-    callbacks: RetainedBuffer<CallbackGate>,
+    metadata_edits: Arc<RetainedArcValue<FileLocks>>,
+    post_operation_failure: Arc<RetainedArcValue<Mutex<PostOperationFailures>>>,
+    callbacks: CallbackGate,
     handler_budget: crate::WorkBudget,
     handler_cancellation: crate::CancellationToken,
 }
@@ -354,17 +265,7 @@ fn installed_callback_work(
     }
 }
 
-/// Installed native sources retain their original full invocation even outside
-/// a lifecycle window. Only an ordinary source admits a distinct request with
-/// the configured policy; no bound request reconstructs or replaces its work.
 fn with_callback_meter<T>(
-    runtime: &Runtime,
-    operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, NativeMountError>,
-) -> Result<T, NativeMountCallbackFailure> {
-    with_callback_meter_for_role(runtime, false, operation)
-}
-
-fn with_callback_meter_for_role<T>(
     runtime: &Runtime, authored_write: bool,
     operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountCallbackFailure> {
@@ -373,7 +274,7 @@ fn with_callback_meter_for_role<T>(
     })?;
     let active = lock_recover(&runtime.stop_meter).upgrade();
     if let Some(meter) = active.or(bound) {
-        verify_callback_work_for_role(runtime, &meter, authored_write)
+        verify_callback_work(runtime, &meter, authored_write)
             .map_err(|cause| NativeMountCallbackFailure {
                 cause, work: meter.meter().lock().work,
             })?;
@@ -385,9 +286,6 @@ fn with_callback_meter_for_role<T>(
         Ok(receipt) => receipt.work,
         Err(failure) => failure.work,
     };
-    // Only this genuinely ordinary request has physically completed. Bound and
-    // lifecycle callbacks above already belong to their original work and never
-    // enter this distinct-request completion window a second time.
     let folded = {
         let mut failures = lock_recover(runtime.post_operation_failure.as_ref());
         let folded = failures.completed_callback_work.try_add_assign(&completed);
@@ -410,16 +308,7 @@ fn with_callback_meter_for_role<T>(
     }
 }
 
-/// Await the source's authentic installed guard on its existing callback runtime.
-/// The full native work funds the parked wake owner and the guard's one future;
-/// both verification owners physically finish before provider or request heaps.
 fn verify_callback_work(
-    runtime: &Runtime, work: &super::NativeMountMeterWork,
-) -> Result<(), NativeMountError> {
-    verify_callback_work_for_role(runtime, work, false)
-}
-
-fn verify_callback_work_for_role(
     runtime: &Runtime, work: &super::NativeMountMeterWork, authored_write: bool,
 ) -> Result<(), NativeMountError> {
     if runtime.original_work.as_ref().is_some_and(|original| !same_callback_work(original, work)) {
@@ -450,8 +339,6 @@ fn verify_source_write_work(
     Ok(())
 }
 
-/// Moves the first actual fatal callback cause, without erasing its persistent
-/// publication fence or stealing any replayable path/cause from the old queue.
 fn take_callback_failure(runtime: &Runtime) -> Option<NativeMountCallbackFailure> {
     lock_recover(runtime.post_operation_failure.as_ref()).unreplayable.take()
 }
@@ -486,7 +373,7 @@ struct CallbackGate {
     active: Mutex<usize>,
     idle: Condvar,
     closing: std::sync::atomic::AtomicBool,
-    _allocation: Option<crate::NativeAllocation>,
+    _allocation: crate::NativeAllocation,
 }
 
 struct ActiveCallback<'a>(&'a CallbackGate);
@@ -505,14 +392,12 @@ impl Drop for ActiveCallback<'_> {
 struct PostOperationFailures {
     pending_captures: MemoMap<MountPath, PendingCapture>,
     next_capture_serial: u64,
-    /// Terminal distinct SDK requests only; active lifecycle scopes remain in
-    /// their original invocation and never contribute to this aggregate.
+    /// Terminal distinct SDK requests only; active lifecycle scopes remain in their original invocation and never contribute to this aggregate.
     completed_callback_work: crate::WorkCounters,
     unreplayable: Option<NativeMountCallbackFailure>,
     /// Moving the first original cause to a caller never clears its fence.
     unreplayable_barrier: bool,
-    /// A callback whose provider controls could not be admitted never ran its
-    /// authored handler. Its exact failure permanently fences root deletion.
+    /// A callback whose provider controls could not be admitted never ran its authored handler.
     provider_control_failure: Option<provider_stack::ProviderFailure>,
 }
 
@@ -524,18 +409,7 @@ struct PendingCapture {
 }
 
 impl PostOperationFailures {
-    fn queue_capture(
-        &mut self, path: &MountPath, reason: &'static str, error: &mut Option<NativeMountError>,
-        projection: Projection<'_>,
-    ) -> Result<(), NativeMountError> {
-        self.queue(path, reason, error, false, projection)
-    }
 
-    fn queue_subtree(
-        &mut self, path: &MountPath, reason: &'static str, projection: Projection<'_>,
-    ) -> Result<(), NativeMountError> {
-        self.queue(path, reason, &mut None, true, projection)
-    }
 
     fn queue(
         &mut self, path: &MountPath, reason: &'static str, error: &mut Option<NativeMountError>,
@@ -559,8 +433,7 @@ impl PostOperationFailures {
                         .ok_or(crate::WorkError::Overflow)? as u64,
                     ..crate::WorkCounters::UNCHARGED
                 }).map_err(detach_work_error)?;
-                // Moving the original cause is now infallible. A denied
-                // reserve/comparison/shift leaves it with the caller.
+                // Moving the original cause is now infallible.
                 self.pending_captures.entries.items.insert(index,
                     (key, PendingCapture { serial, reason, error: error.take(), subtree }));
             }
@@ -569,9 +442,6 @@ impl PostOperationFailures {
         Ok(())
     }
 
-    /// All new keys/backing and the complete shift are admitted before the
-    /// first old entry moves. The remaining transition is pure Rust memory;
-    /// no source/native wait or callback runs while the original guard is held.
     fn rename_pending_captures(
         &mut self, source: &MountPath, destination: &MountPath, projection: Projection<'_>,
     ) -> Result<(), NativeMountError> {
@@ -596,7 +466,6 @@ impl PostOperationFailures {
         Ok(())
     }
 }
-
 
 fn comparison_name_with_work(
     bytes: &[u8], work: &super::NativeMountMeterWork,
@@ -631,8 +500,7 @@ fn same_projfs_name_with_work(
     let left = comparison_name_with_work(left, work)?;
     let right = comparison_name_with_work(right, work)?;
     projection_native_call(work, false, || {
-        // SAFETY: both exact native owners include NUL and stay live through
-        // the actual SDK comparison; no original work lock spans the call.
+        // SAFETY: both exact native owners include NUL and stay live through the actual SDK comparison; no original work lock spans the call.
         Ok(unsafe { PrjFileNameCompare(
             PCWSTR::from_raw(left.as_slice().as_ptr()),
             PCWSTR::from_raw(right.as_slice().as_ptr()),
@@ -652,10 +520,8 @@ fn projfs_path_suffix_with_work<'a>(
 }
 
 impl CallbackGate {
-    #[cfg(test)]
-    fn start() -> Result<Self, NativeMountError> {
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map_err(|(cause, _)| detach_work_error(cause))?;
+
+    fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
         const SHARDS: usize = 64;
         let mut allocation = work.claim((SHARDS * size_of::<Mutex<()>>()) as u64)?;
         let mut shards = Vec::new();
@@ -664,27 +530,8 @@ impl CallbackGate {
         for _ in 0..SHARDS { shards.push(Mutex::new(())); }
         Ok(Self {
             shards: shards.into_boxed_slice(), active: Mutex::new(0), idle: Condvar::new(),
-            closing: std::sync::atomic::AtomicBool::new(false), _allocation: Some(allocation),
+            closing: std::sync::atomic::AtomicBool::new(false), _allocation: allocation,
         })
-    }
-
-    fn start_with_meter(
-        work: &super::NativeMountMeterWork, custody: &crate::demand::NativeMountAllocationCustody,
-    ) -> Result<RetainedBuffer<Self>, NativeMountError> {
-        const SHARDS: usize = 64;
-        let bytes = (SHARDS * size_of::<Mutex<()>>()) as u64;
-        let (ordinary_bytes, mut native_allocation) = reserve_retained_storage(bytes, custody, work)?;
-        let mut shards = Vec::new();
-        if let Err(error) = shards.try_reserve_exact(SHARDS) {
-            drop(shards);
-            retire_ordinary_storage(ordinary_bytes, custody)?;
-            return Err(NativeMountError::Allocation(error));
-        }
-        if let Some(allocation) = native_allocation.as_mut() {
-            allocation.reconcile_capacity((shards.capacity() * size_of::<Mutex<()>>()) as u64)?;
-        }
-        for _ in 0..SHARDS { shards.push(Mutex::new(())); }
-        Ok(RetainedBuffer { value: Some(Self { shards: shards.into_boxed_slice(), active: Mutex::new(0), idle: Condvar::new(), closing: std::sync::atomic::AtomicBool::new(false), _allocation: native_allocation }), bytes: ordinary_bytes, custody: custody.clone(), native_allocation: None, source_ownership: None })
     }
 
     fn close_admission(&self) {
@@ -704,8 +551,6 @@ impl CallbackGate {
         }
     }
 
-    /// Waits on the existing callback controls without assigning a guessed
-    /// cost to the foreign callbacks that the SDK happens to drain.
     fn drain_measured(&self, work: &super::NativeMountMeterWork) -> Result<(), NativeMountError> {
         let mut active = lock_recover(&self.active);
         while *active != 0 {
@@ -725,52 +570,19 @@ impl CallbackGate {
         if count == 0 { return Err(NativeMountError::Lifecycle("callback gate has no shards")); }
         let shard = (key % count) as usize;
         {
-            let mut active = loop {
-                work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-                match self.active.try_lock() {
-                    Ok(guard) => break guard,
-                    Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                    Err(std::sync::TryLockError::WouldBlock) =>
-                        std::thread::sleep(std::time::Duration::from_millis(1)),
-                }
-            };
+            let mut active = lock_with_meter(&self.active, work, std::time::Duration::from_millis(1))?;
             if self.closing.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle("original SDK instance callback admission is closed"));
             }
             *active = active.checked_add(1).ok_or(crate::WorkError::Overflow)?;
         }
         let _active = ActiveCallback(self);
-        let _serial = loop {
-            work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-            match self.shards[shard].try_lock() {
-                Ok(guard) => break guard,
-                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) =>
-                    std::thread::sleep(std::time::Duration::from_millis(1)),
-            }
-        };
+        let _serial = lock_with_meter(&self.shards[shard], work, std::time::Duration::from_millis(1))?;
         work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-        // The observer consumes the original result while its request is
-        // still active: no error clone or receipt-erasing string conversion.
         Ok(observe(operation()))
     }
 }
 
-#[cfg(test)]
-fn flush_callback_gate(
-    callbacks: &CallbackGate,
-    failure: Arc<Mutex<PostOperationFailures>>,
-    capture: impl Fn(&[(MountPath, u64, bool)]) -> Result<(), MountSourceError>,
-) -> Result<(), NativeMountError> {
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-        .map_err(|(cause, _)| detach_work_error(cause))?;
-    flush_callback_gate_measured(callbacks, failure.as_ref(), None, &work.native_mount_work(),
-        |paths, _meter| capture(paths).map_err(detach_source_error))
-}
-
-/// Snapshots only replayable failures, retaining their serials until a
-/// successful capture proves exactly those writes were joined. Buffer claims
-/// live until the buffers actually drop, including every denied replay.
 fn flush_callback_gate_measured(
     callbacks: &CallbackGate,
     failure: &Mutex<PostOperationFailures>,
@@ -799,7 +611,6 @@ fn flush_callback_gate_measured(
         {
             let failure = lock_recover(failure);
             // Only bounded Rust construction/copy runs under this guard.
-            // It ends before any real source, native probe or SDK callback.
             let bytes = (failure.pending_captures.entries.items.len() as u64)
                 .checked_mul(size_of::<(MountPath, u64, bool)>() as u64)
                 .ok_or(crate::WorkError::Overflow)?;
@@ -810,7 +621,7 @@ fn flush_callback_gate_measured(
                 "Global reserve-exact reports the admitted layout");
             for (path, capture) in failure.pending_captures.iter() {
                 materialization.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                let (path, mut owned) = clone_mount_components_native(path.components(), work)?;
+                let (path, mut owned) = clone_mount_components_native(path.components().len(), path.components().iter(), work)?;
                 allocation.absorb(&mut owned)?;
                 let (mut low, mut high) = (0, pending.len());
                 while low < high {
@@ -826,8 +637,7 @@ fn flush_callback_gate_measured(
                 pending.insert(low, (path, capture.serial, capture.subtree));
             }
         }
-        // Host capture reads inside the virtualization root; release the
-        // failure lock so nested native notifications can finish.
+        // Host capture reads inside the virtualization root; release the failure lock so nested native notifications can finish.
         if let Some(probes) = probes {
             *probes.write().unwrap_or_else(std::sync::PoisonError::into_inner) = std::mem::take(&mut pending);
             let restore = RestoreProbeSnapshot { probes, pending: &mut pending };
@@ -868,39 +678,46 @@ fn flush_callback_gate_measured(
     result
 }
 
-fn clone_mount_components_native(
-    source: &[Vec<u8>], work: &super::NativeMountMeterWork,
+fn clone_mount_components_native<'a>(
+    count: usize, components: impl IntoIterator<Item = &'a Vec<u8>>, meter: &super::NativeMountMeterWork,
 ) -> Result<(MountPath, crate::NativeAllocation), NativeMountError> {
-    let materialization = work.native_materialization_work();
-    let bytes = source.len().checked_mul(size_of::<Vec<u8>>()).ok_or(crate::WorkError::Overflow)? as u64;
-    let mut allocation = materialization.claim(bytes)?;
-    let mut components = Vec::new();
-    components.try_reserve_exact(source.len()).map_err(NativeMountError::Allocation)?;
-    for component in source {
-        let copied = crate::WorkCounters {
-            bytes_copied: component.len() as u64, items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        };
-        materialization.admit(copied)?;
-        allocation.absorb(&mut materialization.claim(component.len() as u64)?)?;
-        let mut owned = Vec::new();
-        owned.try_reserve_exact(component.len()).map_err(NativeMountError::Allocation)?;
-        owned.extend_from_slice(component);
-        components.push(owned);
-        materialization.record_admitted(copied)?;
+    let outer = count.checked_mul(size_of::<Vec<u8>>()).ok_or(crate::WorkError::Overflow)? as u64;
+    let work = meter.native_materialization_work();
+    let mut native_allocation = meter.native_materialization_work().claim(outer)?;
+    let mut copied = Vec::new();
+    let answer = (|| {
+        copied.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
+        native_allocation.reconcile_capacity((copied.capacity() * size_of::<Vec<u8>>()) as u64)?;
+        for component in components {
+            let delta = crate::WorkCounters {
+                bytes_copied: component.len() as u64, items_examined: 1,
+                ..crate::WorkCounters::UNCHARGED
+            };
+            work.admit(delta)?;
+            let mut component_allocation = meter.native_materialization_work().claim(component.len() as u64)?;
+            let mut value = Vec::new();
+            value.try_reserve_exact(component.len()).map_err(NativeMountError::Allocation)?;
+            component_allocation.reconcile_capacity(value.capacity() as u64)?;
+            native_allocation.absorb(&mut component_allocation)?;
+            value.extend_from_slice(component);
+            copied.push(value);
+            work.record_admitted(delta)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = answer {
+        drop(copied);
+        return Err(error);
     }
-    Ok((MountPath { components }, allocation))
+    Ok((MountPath { components: copied }, native_allocation))
 }
-
-
 
 fn defer_host_capture(
     failure: &Mutex<PostOperationFailures>, path: &MountPath, projection: Projection<'_>,
 ) -> Result<(), NativeMountError> {
-    lock_recover(failure).queue_capture(path, "host capture pending", &mut None, projection)
+    lock_recover(failure).queue(path, "host capture pending", &mut None, false, projection)
 }
 
-/// The source view one read began in. It is sampled before the read, so any
-/// later change to what the read depended on is recorded after it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ReadBasis {
     stamp: ViewStamp,
@@ -908,7 +725,6 @@ struct ReadBasis {
 }
 
 impl ReadBasis {
-    /// `None` while the actual view is moving or cannot version its binding.
     fn sample(projection: Projection<'_>) -> Result<Option<Self>, NativeMountError> {
         let work = projection.work.clone();
         if !projection.source.view_is_stable_with_meter(&work).map_err(detach_source_error)? {
@@ -921,8 +737,6 @@ impl ReadBasis {
         Ok(Some(Self { stamp, binding }))
     }
 
-    /// Checks the same original source history, not a broad invalidation or an
-    /// unmeasured lookup substitute. Every original queue wait sees its Arc.
     fn still_describes(
         self, projection: Projection<'_>, path: &MountPath, file_id: Option<FileId>,
     ) -> Result<bool, NativeMountError> {
@@ -946,20 +760,12 @@ impl ReadBasis {
     }
 }
 
-/// Whether what the projection wrote at a path is gone.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Release {
-    /// Gone, or the user's and kept.
     Done,
-    /// Held open by another process: tried again later.
     Busy,
 }
 
-/// What the projection wrote at a path that `ProjFS` does not manage for
-/// it: the projection replaces or removes it only while it is still
-/// exactly what was written.
-/// Intrinsic custody in the existing written memo. The creation capability
-/// closes before its birth-paid controls and the enclosing Arc allocation.
 struct PhysicalEntry {
     file: Mutex<Option<std::fs::File>>,
     directory: bool,
@@ -976,9 +782,8 @@ struct PhysicalEntry {
 impl PhysicalEntry {
     fn prepare(
         work: &super::NativeMountMeterWork,
-        custody: &crate::demand::NativeMountAllocationCustody,
         directory: bool,
-    ) -> Result<RetainedArc<Self>, NativeMountError> {
+    ) -> Result<Arc<RetainedArcValue<Self>>, NativeMountError> {
         let original = work.native_materialization_work().allocation_work();
         let controls = original.reserve_work(crate::WorkCounters {
             backend_read_operations: if directory { 3 } else { 2 }, backend_write_operations: 2,
@@ -992,14 +797,14 @@ impl PhysicalEntry {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             })?)
         } else { None };
-        retained_arc_on_meter(Self {
+        retained_arc(Self {
             file: Mutex::new(None), directory, identity: Mutex::new(None),
             disposed: std::sync::atomic::AtomicBool::new(false),
             expected_reparse: std::sync::atomic::AtomicU32::new(0),
             delete_on_close: std::sync::atomic::AtomicBool::new(false),
             controls: Mutex::new(controls), temporary_close: Mutex::new(temporary_close),
             creator_transfer_close: Mutex::new(None), close: Mutex::new(close),
-        }, custody, work)
+        }, work)
     }
 
     fn install(&self, file: std::fs::File) {
@@ -1016,9 +821,6 @@ impl PhysicalEntry {
         Ok(())
     }
 
-    /// Derive a metadata-only control from the same original Open.Link after
-    /// the positional writer closes. Keeping WRITE access would prevent even
-    /// this issuer's later no-share-write consistency window.
     fn retain_metadata_control(&self, work: &super::NativeMountMeterWork) -> Result<(), NativeMountError> {
         use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
         use windows::Win32::Storage::FileSystem::{
@@ -1066,8 +868,6 @@ impl Drop for PhysicalEntry {
     }
 }
 
-/// Close the original capability without disposing namespace data that could
-/// not be captured. This is the same prepaid close used by the owner Drop.
 fn close_preserved_physical_entry(
     owner: &PhysicalEntry, work: &super::NativeMountMeterWork,
     wait: Option<&crate::CancellationToken>,
@@ -1080,8 +880,6 @@ fn close_preserved_physical_entry(
             let loan = match wait { Some(wait) => controls.cleanup_loan(wait), None => controls.accepted_cleanup_loan() };
             let mut host = &work.native_materialization_work();
             // ON_CLOSE without DELETE clears the creator's provisional flag.
-            // Refusal retains the real handle and its data; it is not safe to
-            // close a still-delete-on-close capability after failed capture.
             set_disposition_ex_through_measured(original, 8, &mut host, Some(&loan))?;
             owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
         }
@@ -1096,8 +894,6 @@ fn close_preserved_physical_entry(
     Ok(())
 }
 
-/// The original SDK instance's own accepted placeholder, not an OS file ID
-/// or a version-hash CAS. Its protected live namespace must drain before Stop.
 #[derive(Clone, Copy)]
 struct SdkNamespaceResidue {
     hresult: HRESULT,
@@ -1113,13 +909,12 @@ struct SdkPhysicalEntry {
     namespace_residue: Mutex<Option<SdkNamespaceResidue>>,
     cleanup: Mutex<crate::materializer::NativeWorkReservation>,
 }
-// SAFETY: only the existing drained ProjFS controller calls this original
-// opaque instance; no runtime Arc/backedge or OS path authority is invented.
+// SAFETY: only the existing drained ProjFS controller calls this original opaque instance; no runtime Arc/backedge or OS path authority is invented.
 unsafe impl Send for SdkPhysicalEntry {}
 unsafe impl Sync for SdkPhysicalEntry {}
 
 impl SdkPhysicalEntry {
-    fn prepare(projection: Projection<'_>, relative: PCWSTR) -> Result<RetainedArc<Self>, NativeMountError> {
+    fn prepare(projection: Projection<'_>, relative: PCWSTR) -> Result<Arc<RetainedArcValue<Self>>, NativeMountError> {
         // SAFETY: the existing scoped SDK spelling is terminated and borrowed.
         let name = unsafe { relative.as_wide() };
         let bytes = (name.len() as u64).checked_add(1).and_then(|units| units.checked_mul(2))
@@ -1141,11 +936,11 @@ impl SdkPhysicalEntry {
             value: Some(owned), custody: projection.custody.clone(), bytes: 0,
             native_allocation: Some(allocation), source_ownership: None,
         };
-        retained_arc_on_meter(Self {
+        retained_arc(Self {
             context: Mutex::new(Some(projection.context)), name, born: std::sync::atomic::AtomicBool::new(false),
             effect_uncertain: std::sync::atomic::AtomicBool::new(false),
             retired: std::sync::atomic::AtomicBool::new(false), namespace_residue: Mutex::new(None), cleanup: Mutex::new(cleanup),
-        }, projection.custody, projection.work)
+        }, projection.work)
     }
 
     fn retire(&self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, wait: Option<&crate::CancellationToken>)
@@ -1171,8 +966,7 @@ impl SdkPhysicalEntry {
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
-        // SAFETY: the sole protected original live SDK instance and owned
-        // spelling survive this synchronous call. NONE never adopts dirty/full.
+        // SAFETY: the sole protected original live SDK instance and owned spelling survive this synchronous call.
         let mut update_causes = PRJ_UPDATE_FAILURE_CAUSES(0);
         let result = unsafe { PrjDeleteFile(context, PCWSTR::from_raw(self.name.as_ptr()), None, Some(&raw mut update_causes)) };
         match result {
@@ -1192,9 +986,6 @@ impl SdkPhysicalEntry {
             }
         }
     }
-    /// The synchronous failure is namespace data, not outstanding SDK IO.
-    /// This original funded payload retains its name and exact cause after
-    /// instance stop; it never uses the stale context again.
     fn retire_for_shutdown(&self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT)
         -> Result<(), NativeMountError>
     {
@@ -1209,17 +1000,12 @@ impl SdkPhysicalEntry {
 
 #[derive(Clone)]
 enum Owned {
-    /// A symbolic link to the target with this digest: a link placeholder
-    /// turns full once read, and `ReFS` takes only ordinary links.
-    Link(RetainedArc<SdkPhysicalEntry>),
-    /// An ordinary file the projection wrote, as it left it. `ProjFS` drops
-    /// a time set through a writable handle to a placeholder it manages, so
-    /// no file is one.
-    File(HostWindowsMetadata, RetainedArc<PhysicalEntry>),
-    Directory(RetainedArc<PhysicalEntry>),
-    /// The genuine creation capability before final file metadata/publication.
-    ProvisionalFile(RetainedArc<PhysicalEntry>),
-    PhysicalLink(u64, RetainedArc<PhysicalEntry>),
+    /// A symbolic link to the target with this digest: a link placeholder turns full once read, and `ReFS` takes only ordinary links.
+    Link(Arc<RetainedArcValue<SdkPhysicalEntry>>),
+    File(HostWindowsMetadata, Arc<RetainedArcValue<PhysicalEntry>>),
+    Directory(Arc<RetainedArcValue<PhysicalEntry>>),
+    ProvisionalFile(Arc<RetainedArcValue<PhysicalEntry>>),
+    PhysicalLink(u64, Arc<RetainedArcValue<PhysicalEntry>>),
 }
 
 impl PartialEq for Owned {
@@ -1238,18 +1024,12 @@ impl PartialEq for Owned {
 }
 impl Eq for Owned {}
 
-/// What writing one entry into the projection placed there.
 #[derive(Clone, PartialEq, Eq)]
 enum Placed {
-    /// Nothing: something is there already, or its directory is gone.
     Nothing,
-    /// Written with nothing the projection owns in it: a link placeholder,
-    /// which `ProjFS` manages, or an ordinary directory.
+    /// Written with nothing the projection owns in it: a link placeholder, which `ProjFS` manages, or an ordinary directory.
     Unowned,
-    /// What `ProjFS` does not manage for the projection.
     Owned(Owned),
-    /// Nothing yet: the source changed while its content was read. Its
-    /// directory is listed again.
     Retry,
 }
 
@@ -1262,8 +1042,6 @@ impl Placed {
     }
 }
 
-/// What one path was written from: the node, its metadata, and the content
-/// its file holds.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct EntryFacts {
     lookup: MountLookup,
@@ -1271,8 +1049,6 @@ struct EntryFacts {
 }
 
 impl EntryFacts {
-    /// Whether what was written from `self` is also what `current` would
-    /// write. Access times move with every read and are not written.
     fn describe(&self, current: &Self) -> bool {
         let unaccessed = |facts: &Self| {
             let mut lookup = facts.lookup;
@@ -1283,10 +1059,6 @@ impl EntryFacts {
     }
 }
 
-/// Source facts the provider memoizes between callbacks.
-///
-/// Each fact keeps the basis it was read in and is reused only while the
-/// source proves that nothing it depended on has changed since.
 #[derive(Default)]
 struct ProjectionCache {
     bindings: MemoMap<MountPath, ReadOnlyBinding>,
@@ -1306,17 +1078,12 @@ impl ProjectionCache {
     }
 }
 
-/// What the projection wrote at one path, as a source read wrote it.
 #[derive(Clone, PartialEq, Eq)]
 struct WrittenEntry {
     file_id: FileId,
-    /// What is held here that `ProjFS` does not manage; `None` for what it
-    /// does.
     owned: Option<Owned>,
-    /// What it was written from; `None` for one known only to be gone.
     facts: Option<EntryFacts>,
-    /// The view it was read in; `None` when the source cannot version it
-    /// or was moving, which no later change is needed to supersede.
+    /// The view it was read in; `None` when the source cannot version it or was moving, which no later change is needed to supersede.
     basis: Option<ReadBasis>,
 }
 
@@ -1337,8 +1104,7 @@ impl WrittenEntry {
     }
 }
 
-/// The files a rename through the mount carried unchanged, as the source
-/// holds them at their new paths, read in `basis`.
+/// The files a rename through the mount carried unchanged, as the source holds them at their new paths, read in `basis`.
 #[derive(Default)]
 struct Carried {
     basis: Option<ReadBasis>,
@@ -1366,29 +1132,14 @@ impl Carried {
     }
 }
 
-/// A directory this provider created as an ordinary directory, and what it
-/// wrote into it.
 struct Materialized {
-    /// The view its listing was read in; `None` when the source cannot
-    /// version it or was moving.
+    /// The view its listing was read in; `None` when the source cannot version it or was moving.
     basis: Option<ReadBasis>,
-    /// Every name written or found here, and whether it is a directory: the
-    /// base a changed listing is reconciled against.
     names: MemoMap<Vec<u8>, bool>,
 }
 
-/// Most threads that write one tree at once.
 const MATERIALIZE_WORKERS: usize = 8;
 
-/// A [`Projection`] several workers write through at once.
-struct SharedProjection<'a>(Projection<'a>);
-
-// SAFETY: the source is `Sync`, the root a shared path, and the context an
-// opaque token `ProjFS` accepts from any thread for the projection's life,
-// which the scoped workers do not outlive.
-unsafe impl Sync for SharedProjection<'_> {}
-
-/// Directories waiting to be written, and how many are being written.
 struct MaterializeQueue {
     state: Mutex<MaterializeProgress>,
     changed: Condvar,
@@ -1412,7 +1163,6 @@ impl MaterializeQueue {
         }
     }
 
-    /// The next directory to write; `None` once none is left or one failed.
     fn next(&self, projection: Projection<'_>) -> Option<RetainedBuffer<MountPath>> {
         let mut state = lock_recover(&self.state);
         loop {
@@ -1432,7 +1182,6 @@ impl MaterializeQueue {
         }
     }
 
-    /// Records how writing one directory went, and what it found.
     fn done(
         &self, written: Result<MemoVec<RetainedBuffer<MountPath>>, NativeMountError>,
         projection: Projection<'_>,
@@ -1462,44 +1211,32 @@ impl MaterializeQueue {
     }
 }
 
-/// Where this provider writes: the source it projects, its live context,
-/// and the projection's root on the host.
 #[derive(Clone, Copy)]
 struct Projection<'a> {
     source: &'a dyn MountFilesystem,
-    /// This round's original full invocation, never a second handler ledger.
     work: &'a super::NativeMountMeterWork,
-    /// Physical owners may retain this proof, but never an original meter
-    /// alias, after the scoped queue has returned the original invocation.
+    /// Physical owners may retain this proof, but never an original meter alias, after the scoped queue has returned the original invocation.
     custody: &'a crate::demand::NativeMountAllocationCustody,
     context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
     root: &'a std::path::Path,
     root_identity: crate::NativeRootIdentity,
     staging_custody: &'a Mutex<Option<StagingDirectoryCustody>>,
-    /// Host edits not yet captured: a file holding one is the user's until
-    /// the source has it.
+    /// Host edits not yet captured: a file holding one is the user's until the source has it.
     captures: &'a Mutex<PostOperationFailures>,
-    /// Whether the mount is still starting, which nothing can read yet: a
-    /// file is written at its name directly, with no staged name first.
     starting: bool,
 }
 
-// SAFETY: the SDK context is an opaque thread-independent token. Borrowed
-// source/memos are synchronized; scoped workers finish before SDK stop or the
-// runtime and original meter loan can retire.
+// SAFETY: the SDK context is an opaque thread-independent token.
 unsafe impl Send for Projection<'_> {}
 unsafe impl Sync for Projection<'_> {}
 
-/// The existing memo's backing, with portable exact growth and physical-drop
-/// evidence. A new operation never adopts storage retained by an older one.
 struct MemoVec<T> {
     items: Vec<T>,
-    backing: Option<(crate::demand::NativeMountAllocationCustody, u64)>,
     native_allocation: Option<crate::NativeAllocation>,
 }
 
 impl<T> Default for MemoVec<T> {
-    fn default() -> Self { Self { items: Vec::new(), backing: None, native_allocation: None } }
+    fn default() -> Self { Self { items: Vec::new(), native_allocation: None } }
 }
 
 impl<T> MemoVec<T> {
@@ -1520,28 +1257,19 @@ impl<T> MemoVec<T> {
         };
         let work = projection.work.native_materialization_work();
         work.admit(copied)?;
-        let (ordinary_bytes, mut native_allocation) = reserve_retained_storage(bytes, projection.custody, projection.work)?;
+        let mut native_allocation = projection.work.native_materialization_work().claim(bytes)?;
         let mut replacement = Vec::new();
-        if let Err(error) = replacement.try_reserve_exact(count) {
-            drop(replacement);
-            retire_ordinary_storage(ordinary_bytes, projection.custody)?;
-            return Err(NativeMountError::Allocation(error));
-        }
-        if let Some(allocation) = native_allocation.as_mut() {
-            allocation.reconcile_capacity((replacement.capacity() * size_of::<T>()) as u64)?;
-        }
+        replacement.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
+        native_allocation.reconcile_capacity((replacement.capacity() * size_of::<T>()) as u64)?;
         if let Err(error) = work.admit(copied) {
             drop(replacement);
-            retire_ordinary_storage(ordinary_bytes, projection.custody)?;
             return Err(error.into());
         }
         replacement.append(&mut self.items);
         let old = std::mem::replace(&mut self.items, replacement);
         drop(old);
         drop(self.native_allocation.take());
-        self.native_allocation = native_allocation;
-        let old = self.backing.replace((projection.custody.clone(), ordinary_bytes));
-        if let Some((custody, bytes)) = old { retire_ordinary_storage(bytes, &custody)?; }
+        self.native_allocation = Some(native_allocation);
         work.record_admitted(copied)?;
         Ok(())
     }
@@ -1573,15 +1301,6 @@ impl<T> MemoVec<T> {
 
 }
 
-impl<T> Drop for MemoVec<T> {
-    fn drop(&mut self) {
-        drop(std::mem::take(&mut self.items));
-        if let Some((custody, bytes)) = self.backing.take() {
-            retire_ordinary_storage(bytes, &custody).expect("freed memo backing owns its original claim");
-        }
-    }
-}
-
 trait MemoKey {
     fn compare(&self, other: &Self) -> std::cmp::Ordering;
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError>
@@ -1602,18 +1321,12 @@ impl MemoKey for Vec<u8> {
         let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
         let work = projection.work.native_materialization_work();
         work.admit(copied)?;
-        let (ordinary_bytes, mut native_allocation) = reserve_retained_storage(bytes, projection.custody, projection.work)?;
+        let mut native_allocation = projection.work.native_materialization_work().claim(bytes)?;
         let mut value = Vec::new();
-        if let Err(error) = value.try_reserve_exact(self.len()) {
-            drop(value);
-            retire_ordinary_storage(ordinary_bytes, projection.custody)?;
-            return Err(NativeMountError::Allocation(error));
-        }
-        if let Some(allocation) = native_allocation.as_mut() {
-            allocation.reconcile_capacity(value.capacity() as u64)?;
-        }
+        value.try_reserve_exact(self.len()).map_err(NativeMountError::Allocation)?;
+        native_allocation.reconcile_capacity(value.capacity() as u64)?;
         value.extend_from_slice(self);
-        let value = RetainedBuffer { value: Some(value), custody: projection.custody.clone(), bytes: ordinary_bytes, native_allocation, source_ownership: None };
+        let value = RetainedBuffer { value: Some(value), custody: projection.custody.clone(), bytes: 0, native_allocation: Some(native_allocation), source_ownership: None };
         work.record_admitted(copied)?;
         Ok(value)
     }
@@ -1660,7 +1373,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
         Ok(Err(left))
     }
 
-
     fn get(&self, key: &K, projection: Projection<'_>) -> Result<Option<&V>, NativeMountError> {
         Ok(self.index(key, projection.work)?.ok().map(|index| &self.entries.items[index].1))
     }
@@ -1668,8 +1380,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
     fn get_mut(&mut self, key: &K, projection: Projection<'_>) -> Result<Option<&mut V>, NativeMountError> {
         Ok(self.index(key, projection.work)?.ok().map(|index| &mut self.entries.items[index].1))
     }
-
-
 
     fn insert(&mut self, key: &K, value: V, projection: Projection<'_>) -> Result<Option<V>, NativeMountError> {
         match self.index(key, projection.work)? {
@@ -1703,8 +1413,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
         }
     }
 
-    /// Changes one existing key without losing its value on a budget denial.
-    /// All fallible work precedes any actual, pre-admitted Vec shifts.
     fn rekey(
         &mut self, source: &K, destination: RetainedBuffer<K>, projection: Projection<'_>,
         merge: impl FnOnce(&mut V, V),
@@ -1750,16 +1458,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
         }
     }
 
-
-    fn remove_entry(
-        &mut self, key: &K, projection: Projection<'_>,
-    ) -> Result<Option<(RetainedBuffer<K>, V)>, NativeMountError> {
-        match self.index(key, projection.work)? {
-            Ok(index) => self.entries.remove(index, projection).map(Some),
-            Err(_) => Ok(None),
-        }
-    }
-
     fn contains_key(&self, key: &K, projection: Projection<'_>) -> Result<bool, NativeMountError> {
         Ok(self.index(key, projection.work)?.is_ok())
     }
@@ -1773,8 +1471,6 @@ impl<K: MemoKey, V> MemoMap<K, V> {
 }
 
 impl<K: MemoKey, V: Clone> MemoMap<K, V> {
-    /// A snapshot is needed while native calls may reenter and edit the memo.
-    /// Existing data is borrowed; only this real snapshot's storage is charged.
     fn copy_owned(&self, projection: Projection<'_>) -> Result<Self, NativeMountError> {
         let mut copied = Self::default();
         copied.entries.reserve_for(self.entries.items.len(), projection)?;
@@ -1789,41 +1485,9 @@ impl<K: MemoKey, V: Clone> MemoMap<K, V> {
 fn owned_components<'a>(
     count: usize, components: impl IntoIterator<Item = &'a Vec<u8>>, projection: Projection<'_>,
 ) -> Result<RetainedBuffer<MountPath>, NativeMountError> {
-    let outer = count.checked_mul(size_of::<Vec<u8>>()).ok_or(crate::WorkError::Overflow)? as u64;
-    let work = projection.work.native_materialization_work();
-    let (mut live, mut native_allocation) = reserve_retained_storage(outer, projection.custody, projection.work)?;
-    let mut copied = Vec::new();
-    let answer = (|| {
-        copied.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
-        if let Some(allocation) = native_allocation.as_mut() {
-            allocation.reconcile_capacity((copied.capacity() * size_of::<Vec<u8>>()) as u64)?;
-        }
-        for component in components {
-            let delta = crate::WorkCounters {
-                bytes_copied: component.len() as u64, items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            work.admit(delta)?;
-            let (_, mut component_allocation) = reserve_retained_storage(component.len() as u64, projection.custody, projection.work)?;
-            let mut value = Vec::new();
-            value.try_reserve_exact(component.len()).map_err(NativeMountError::Allocation)?;
-            if let Some(allocation) = component_allocation.as_mut() {
-                allocation.reconcile_capacity(value.capacity() as u64)?;
-                native_allocation.as_mut().expect("the same immutable full resource view")
-                    .absorb(allocation)?;
-            }
-            value.extend_from_slice(component);
-            copied.push(value);
-            work.record_admitted(delta)?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = answer {
-        drop(copied);
-        retire_ordinary_storage(live, projection.custody)?;
-        return Err(error);
-    }
-    Ok(RetainedBuffer { value: Some(MountPath { components: copied }), bytes: live, custody: projection.custody.clone(), native_allocation, source_ownership: None })
+    let (value, allocation) = clone_mount_components_native(count, components, projection.work)?;
+    Ok(RetainedBuffer { value: Some(value), bytes: 0, custody: projection.custody.clone(),
+        native_allocation: Some(allocation), source_ownership: None })
 }
 
 fn owned_parent(
@@ -1868,42 +1532,11 @@ fn rebase_memo<V>(
     Ok(())
 }
 
-/// The projection this provider writes, and the worker that keeps it
-/// current.
-///
-/// `ProjFS` never lets a directory it projected be renamed, and drops a
-/// time set through a writable handle to a placeholder it manages, so
-/// nothing is projected on demand: every directory is created as an
-/// ordinary directory and every file written as an ordinary file before
-/// anything can list it (`ProjFS` asks the provider nothing about an
-/// ordinary directory). Only links are placeholders.
-///
-/// Every path written is kept with the basis it was written in, and once a
-/// change supersedes it the worker writes it again from the source, or
-/// removes it where the source names nothing. Every directory is kept with
-/// the names it holds, and once its source listing changes the worker
-/// reconciles three ways: a name the source gained is written unless
-/// something is there already, and a directory the source lost is emptied
-/// of what was written into it and removed if nothing else is left. What
-/// the user creates, changes or deletes through the mount is authored state
-/// and stays: a file is replaced or removed only while it is exactly as
-/// written.
-///
-/// A superseded path is pending from the moment the worker finds it until
-/// it is replaced, released, or fails, including while the worker is
-/// replacing it, so revalidation never returns while one still describes a
-/// superseded source. One another process holds open cannot be replaced
-/// until the handle closes: it stays pending, retried as handles close and
-/// every [`HELD_RETRY`], and revalidation waits for it at most
-/// [`HELD_SETTLE_LIMIT`] once every change has been served, then fails
-/// naming it.
 struct Projector {
     state: Mutex<ProjectorState>,
-    /// Observer callbacks never take the memo lock while a source holds the
-    /// original meter. This is the same latest-notification control, not a log.
+    /// Observer callbacks never take the memo lock while a source holds the original meter.
     notification: Mutex<Option<ViewStamp>>,
-    /// Held by whatever writes directories into the projection, so a
-    /// listing is written and recorded as one step.
+    /// Held by whatever writes directories into the projection, so a listing is written and recorded as one step.
     tree: Mutex<()>,
     /// Held for a path while what is written there is replaced or removed.
     paths: KeyedLocks<MountPath>,
@@ -1918,17 +1551,15 @@ struct Projector {
 }
 
 /// Owns the preexisting physical runtime across a mounted host operation.
-/// Cloning this scope allocates no runtime, journal or accounting engine.
 pub(super) struct ProjectionWorkScope {
-    runtime: RetainedArc<Runtime>,
+    runtime: Arc<RetainedArcValue<Runtime>>,
     meter: super::NativeMountMeterWork,
     projector_generation: u64,
     runtime_generation: u64,
 }
 
 impl ProjectionWorkScope {
-    /// Moves an independent same-engine activation into the actual queued
-    /// native-I/O closure, keeping SDK callbacks scoped until it terminates.
+    /// Moves an independent same-engine activation into the actual queued native-I/O closure, keeping SDK callbacks scoped until it terminates.
     pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         let (projector_generation, runtime_generation) =
             enter_projection_work(&self.runtime.projector, &self.runtime, &self.meter)?;
@@ -1939,7 +1570,6 @@ impl ProjectionWorkScope {
     }
 }
 
-/// Internal synchronous projection of the same activation metadata.
 struct ProjectionWorkLease<'a> {
     projector: &'a Projector,
     runtime: &'a Runtime,
@@ -2015,44 +1645,28 @@ impl Drop for ProjectorRound<'_> {
     }
 }
 
-/// How often a path held open is tried again.
 const HELD_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-/// How long revalidation waits for paths held open, once every
-/// change has been served.
+/// How long revalidation waits for paths held open, once every change has been served.
 const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
 struct ProjectorState {
     written: MemoMap<MountPath, WrittenEntry>,
-    /// Superseded paths not yet replaced, released, or failed.
     pending: MemoMap<MountPath, WrittenEntry>,
-    /// Every directory created in the projection.
     directories: MemoMap<MountPath, Materialized>,
-    /// Directories to list again whatever their basis says.
     stale: MemoMap<MountPath, ()>,
-    /// Pending paths a listing waits on: when one is settled, its parent is
-    /// listed again.
+    /// Pending paths a listing waits on: when one is settled, its parent is listed again.
     relist: MemoMap<MountPath, ()>,
-    /// Directories the source removed that still held a file another
-    /// process had open: removed once nothing beneath them is pending.
     vacated: MemoMap<MountPath, ()>,
-    /// Whether the worker's pass in progress took stale directories it has
-    /// not listed yet.
     relisting: bool,
-    /// Whether a handle closed since pending paths were last tried.
     retry: bool,
-    /// Latest change around the mount the source reported.
     notified: Option<ViewStamp>,
-    /// Latest change everything written was checked against.
     processed: Option<ViewStamp>,
-    /// First path the worker could not replace since the last
-    /// revalidation.
     failure: Option<NativeMountError>,
     stopping: bool,
 }
 
-/// Only the already-drained sole producer borrows this inline state. Original
-/// memo DATA and G return even when a native retirement leaf refuses or panics.
+/// Only the already-drained sole producer borrows this inline state.
 struct RetiredProjectorState<'a> {
     slot: &'a Mutex<ProjectorState>,
     state: Option<ProjectorState>,
@@ -2070,8 +1684,6 @@ impl Drop for RetiredProjectorState<'_> {
 }
 
 impl ProjectorState {
-    /// Updates the original memo only after actual placement/release. Denied
-    /// memo retirement leaves the pending record, rather than losing custody.
     fn record_attempt(
         &mut self, path: &MountPath, attempted: &WrittenEntry,
         current: Option<WrittenEntry>, projection: Projection<'_>,
@@ -2111,26 +1723,13 @@ impl ViewObserver for Projector {
     }
 }
 
-/// What replacing one superseded path came to.
 enum Replaced {
-    /// Written again from the source.
     Rewritten(WrittenEntry),
-    /// Deleted, or no longer the projection's.
     Released,
-    /// Open elsewhere; pending until it can be replaced.
     Busy,
 }
 
-
 impl Projector {
-    #[cfg(test)]
-    fn new() -> Self {
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .expect("one original fixture invocation");
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&work.native_mount_work())
-            .expect("unbounded fixture custody");
-        Self::new_with_work(&custody, &work.native_read_meter().lock())
-    }
 
     fn new_with_work(custody: &crate::demand::NativeMountAllocationCustody, work: &DemandWork) -> Self {
         Self {
@@ -2149,33 +1748,12 @@ impl Projector {
         }
     }
 
-    fn with_control_work<T>(
-        &self, runtime: &Runtime, work: &crate::NativeMaterializationWork,
-        operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        self.with_control_meter(runtime, &work.native_mount_work(), operation)
-    }
-
     fn with_control_meter<T>(
         &self, runtime: &Runtime, meter: &super::NativeMountMeterWork,
         operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, NativeMountError>,
     ) -> Result<T, NativeMountError> {
-        let _gate = loop {
-            meter.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-            match self.scope_gate.try_lock() {
-                Ok(gate) => break gate,
-                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(HELD_RETRY),
-            }
-        };
+        let _gate = lock_with_meter(&self.scope_gate, meter, HELD_RETRY)?;
         self.with_control_meter_locked(runtime, meter, operation)
-    }
-
-    fn with_control_work_locked<T>(
-        &self, runtime: &Runtime, work: &crate::NativeMaterializationWork,
-        operation: impl FnOnce(&super::NativeMountMeterWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        self.with_control_meter_locked(runtime, &work.native_mount_work(), operation)
     }
 
     fn with_control_meter_locked<T>(
@@ -2184,14 +1762,6 @@ impl Projector {
     ) -> Result<T, NativeMountError> {
         let _scope = ProjectionWorkLease::enter(self, runtime, meter)?;
         operation(meter)
-    }
-
-    fn with_projection_work<T>(
-        &self, runtime: &Runtime, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-        starting: bool, work: &crate::NativeMaterializationWork,
-        operation: impl FnOnce(Projection<'_>) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        self.with_projection_meter(runtime, context, starting, &work.native_mount_work(), operation)
     }
 
     fn with_projection_meter<T>(
@@ -2210,7 +1780,6 @@ impl Projector {
         })
     }
 
-    /// Keeps only an actually placed entry in the original projection memo.
     fn written(
         &self, path: &MountPath, facts: EntryFacts, owned: Option<Owned>,
         basis: Option<ReadBasis>, projection: Projection<'_>,
@@ -2221,22 +1790,8 @@ impl Projector {
         Ok(())
     }
 
-    fn lock_tree(&self, projection: Projection<'_>) -> Result<MutexGuard<'_, ()>, NativeMountError> {
-        loop {
-            projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-            match self.tree.try_lock() {
-                Ok(held) => return Ok(held),
-                Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(HELD_RETRY),
-            }
-        }
-    }
-
-    /// Runs the existing parallel materializer, borrowing one original meter.
-    /// Standard-library/native thread internals are opaque control boundaries,
-    /// not predicted stack/RSS allocations. Its actual owned queue is metered.
     fn materialize(&self, projection: Projection<'_>, path: &MountPath) -> Result<(), NativeMountError> {
-        let _tree = self.lock_tree(projection)?;
+        let _tree = lock_with_meter(&self.tree, projection.work, HELD_RETRY)?;
         let mut directories = MemoVec::default();
         directories.push(path.copy_owned(projection)?, projection)?;
         self.materialize_locked(projection, directories)
@@ -2250,7 +1805,7 @@ impl Projector {
             std::thread::available_parallelism().map_or(1, usize::from).min(MATERIALIZE_WORKERS)
         ))?;
         let queue = MaterializeQueue::new(directories);
-        let shared = SharedProjection(projection);
+        let shared = projection;
         std::thread::scope(|scope| {
             for _ in 1..workers {
                 let spawned = projection_native_call(projection.work, true, || {
@@ -2267,11 +1822,28 @@ impl Projector {
         queue.finish()
     }
 
-    fn materialize_from(&self, projection: &SharedProjection<'_>, queue: &MaterializeQueue) {
-        while let Some(directory) = queue.next(projection.0) {
-            let written = self.materialize_directory(projection.0, directory);
-            queue.done(written, projection.0);
+    fn materialize_from(&self, projection: &Projection<'_>, queue: &MaterializeQueue) {
+        while let Some(directory) = queue.next(*projection) {
+            let written = self.materialize_directory(*projection, directory);
+            queue.done(written, *projection);
         }
+    }
+
+    fn place_entry(
+        &self, projection: Projection<'_>, path: &MountPath,
+        entry: &ProjectedEntry, basis: Option<ReadBasis>,
+    ) -> Result<Placed, NativeMountError> {
+        let mut committed = None;
+        let placed = write_entry(projection, path, entry, &mut committed, &mut |owner|
+            self.written(path, entry.facts, Some(owner.clone()), basis, projection));
+        if let Some(owned) = committed.as_ref() {
+            self.written(path, entry.facts, Some(owned.clone()), basis, projection)?;
+        }
+        let placed = placed?;
+        if !entry.info.IsDirectory && !matches!(placed, Placed::Nothing | Placed::Retry) && committed.is_none() {
+            self.written(path, entry.facts, placed.owned(), basis, projection)?;
+        }
+        Ok(placed)
     }
 
     fn materialize_directory(
@@ -2298,13 +1870,7 @@ impl Projector {
             examine_memo(projection)?;
             let child = owned_child(&directory, &entry.component, projection)?;
             let is_directory = entry.info.IsDirectory;
-            let mut committed = None;
-            let placed = write_entry(projection, &child, entry, &mut committed, &mut |owner|
-                self.written(&child, entry.facts, Some(owner.clone()), basis, projection));
-            if let Some(owned) = committed.as_ref() {
-                self.written(&child, entry.facts, Some(owned.clone()), basis, projection)?;
-            }
-            let placed = placed?;
+            let placed = self.place_entry(projection, &child, entry, basis)?;
             if placed == Placed::Retry {
                 lock_recover(&self.state).stale.insert(&directory, (), projection)?;
                 self.changed.notify_all();
@@ -2312,10 +1878,8 @@ impl Projector {
             }
             if is_directory {
                 found.push(child, projection)?;
-            } else if placed != Placed::Nothing && committed.is_none() {
-                self.written(&child, entry.facts, placed.owned(), basis, projection)?;
             }
-            names.insert_owned(entry.take_component(), is_directory, projection)?;
+            names.insert_owned(entry.component.take(), is_directory, projection)?;
         }
         lock_recover(&self.state).directories.insert_owned(
             directory, Materialized { basis, names }, projection,
@@ -2323,11 +1887,8 @@ impl Projector {
         Ok(found)
     }
 
-    /// Lists `directory` again and reconciles what it holds with the names
-    /// it was last written with (see [`Projector`]). A file the source
-    /// lost is replaced, so deleted unless modified.
     fn reconcile(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), NativeMountError> {
-        let _tree = self.lock_tree(projection)?;
+        let _tree = lock_with_meter(&self.tree, projection.work, HELD_RETRY)?;
         let known = {
             let state = lock_recover(&self.state);
             let Some(materialized) = state.directories.get(directory, projection)? else { return Ok(()); };
@@ -2358,7 +1919,7 @@ impl Projector {
             };
             match written_before {
                 Some(kind) if kind == is_directory => {
-                    names.insert_owned(entry.take_component(), is_directory, projection)?;
+                    names.insert_owned(entry.component.take(), is_directory, projection)?;
                     continue;
                 }
                 Some(true) => self.remove_tree(projection, &child)?,
@@ -2373,22 +1934,13 @@ impl Projector {
                 }
                 None => {}
             }
-            let mut committed = None;
-            let placed = write_entry(projection, &child, entry, &mut committed, &mut |owner|
-                self.written(&child, entry.facts, Some(owner.clone()), basis, projection));
-            if let Some(owned) = committed.as_ref() {
-                self.written(&child, entry.facts, Some(owned.clone()), basis, projection)?;
-            }
-            let placed = placed?;
+            let placed = self.place_entry(projection, &child, entry, basis)?;
             if placed == Placed::Retry {
                 lock_recover(&self.state).stale.insert(directory, (), projection)?;
                 continue;
             }
             if is_directory { created.push(child, projection)?; }
-            else if placed != Placed::Nothing && committed.is_none() {
-                self.written(&child, entry.facts, placed.owned(), basis, projection)?;
-            }
-            names.insert_owned(entry.take_component(), is_directory, projection)?;
+            names.insert_owned(entry.component.take(), is_directory, projection)?;
         }
         for (name, was_directory) in known.iter() {
             examine_memo(projection)?;
@@ -2416,8 +1968,6 @@ impl Projector {
         Ok(())
     }
 
-    /// Releases only the recorded object under the same per-path exclusion.
-    /// A failed native release leaves both original records in custody.
     fn release_recorded(
         &self, projection: Projection<'_>, path: &MountPath,
     ) -> Result<(Option<Owned>, Release), NativeMountError> {
@@ -2440,8 +1990,6 @@ impl Projector {
         })
     }
 
-    /// Descendants precede ancestors in reverse sorted-key order. Actual
-    /// release failures leave the original directory/name records intact.
     fn remove_tree(&self, projection: Projection<'_>, directory: &MountPath) -> Result<(), NativeMountError> {
         let paths = {
             let state = lock_recover(&self.state);
@@ -2609,8 +2157,6 @@ impl Projector {
         Ok(())
     }
 
-    /// The worker borrows the existing Arc runtime. It cannot outlive the
-    /// actual join fence used before SDK stop/runtime retirement.
     fn run(&self, runtime: &Runtime, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT) {
         loop {
             let through = {
@@ -2645,15 +2191,13 @@ impl Projector {
                         break (None, Some(error.into_inner())),
                     Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(HELD_RETRY),
                 }
-                // A lifecycle loan can appear while this round waits for its
-                // gate. Inherit it instead of blocking the caller's settle on
-                // a new future-policy work context behind that same gate.
+                // A lifecycle loan can appear while this round waits for its gate.
             };
             let outcome = if let Some(meter) = inherited {
                 let _round = ProjectorRound(self);
                 (|| {
                     installed_callback_work(runtime)?;
-                    verify_callback_work(runtime, &meter)?;
+                    verify_callback_work(runtime, &meter, false)?;
                     let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
                     self.run_round(Projection {
                         source: runtime.source.as_ref(), work: &meter, custody: &custody,
@@ -2670,8 +2214,8 @@ impl Projector {
                             .map_err(|(cause, _)| detach_work_error(cause)),
                     })
                     .and_then(|work| {
-                        verify_callback_work(runtime, &work.native_mount_work())?;
-                        self.with_control_work_locked(runtime, &work, |meter| {
+                        verify_callback_work(runtime, &work.native_mount_work(), false)?;
+                        self.with_control_meter_locked(runtime, &work.native_mount_work(), |meter| {
                             self.active_rounds.fetch_add(1, Ordering::AcqRel);
                             let _round = ProjectorRound(self);
                             let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(meter)?;
@@ -2736,8 +2280,7 @@ impl Projector {
                 state.written.remove(key, projection)?;
             }
         }
-        // Sorted keys visit every parent before its descendants, without an
-        // opaque sort or guessed sorting-buffer/copy costs.
+        // Sorted keys visit every parent before its descendants, without an opaque sort or guessed sorting-buffer/copy costs.
         for directory in listings.keys() {
             examine_memo(projection)?;
             self.reconcile(projection, directory)?;
@@ -2747,8 +2290,6 @@ impl Projector {
         self.clear_vacated(projection)
     }
 
-    /// Pending paths survive every denial/uncertain native error. A concrete
-    /// committed output replaces their ownership facts before an error returns.
     fn replace_pending(&self, projection: Projection<'_>) -> Result<(), NativeMountError> {
         let attempted = lock_recover(&self.state).pending.copy_owned(projection)?;
         for path in attempted.keys().rev() {
@@ -2777,8 +2318,6 @@ impl Projector {
         Ok(())
     }
 
-    /// Tries the paths held open again, as one of their handles
-    /// closed.
     fn retry(&self) {
         let mut state = lock_recover(&self.state);
         if !state.pending.is_empty() {
@@ -2802,9 +2341,6 @@ impl Projector {
         drop(std::mem::take(&mut state.relist));
     }
 
-    /// Retire the existing intrinsic memo capabilities without a fresh path
-    /// snapshot, namespace adoption, or variable recursive directory walk.
-    /// The sole producer and every callback must already be physically drained.
     fn retire_owned_entries(
         &self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
         work: &super::NativeMountMeterWork, wait: Option<&crate::CancellationToken>,
@@ -2825,8 +2361,6 @@ impl Projector {
         Ok(())
     }
 
-    /// Waits on the existing control, checking the original invocation rather
-    /// than installing a fresh timeout/cancellation or erasing pending work.
     fn settle_measured(&self, work: &super::NativeMountMeterWork) -> Result<(), NativeMountError> {
         let target = *lock_recover(&self.notification);
         let mut state = lock_recover(&self.state);
@@ -2849,57 +2383,12 @@ impl Projector {
         }
     }
 
-    /// Signals the existing worker and keeps its join handle in custody if
-    /// cancellation arrives before completion. Waiting allocates no envelope.
-    fn finish_measured<W: crate::native_host::NativeHostWork>(
-        &self, work: &mut W, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
-    ) -> Result<(), NativeMountError>
-    where NativeMountError: From<W::Error> {
-        if let Some(loan) = cleanup {
-            loan.check_wait().map_err(detach_work_error)?;
-        } else {
-            work.check().map_err(detach_work_error)?;
-        }
-        lock_recover(&self.state).stopping = true;
-        self.changed.notify_all();
-        loop {
-            if let Some(loan) = cleanup {
-                loan.check_wait().map_err(detach_work_error)?;
-            } else {
-                work.check().map_err(detach_work_error)?;
-            }
-            {
-                let mut worker = lock_recover(&self.worker);
-                if worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished) {
-                    if worker.is_some() {
-                        let attempt = crate::WorkCounters {
-                            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-                        };
-                        if let Some(loan) = cleanup {
-                            loan.started_io(attempt).map_err(detach_work_error)?;
-                        } else {
-                            work.started_io(attempt).map_err(detach_work_error)?;
-                        }
-                        let joined = worker.take().expect("owned finished worker").join();
-                        if joined.is_err() {
-                            return Err(NativeMountError::Lifecycle("ProjFS projector worker panicked"));
-                        }
-                    }
-                    return Ok(());
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
 }
-
 
 fn projection_io_error(error: std::io::Error) -> NativeMountError {
     detach_work_error(crate::demand::native_demand_error(error))
 }
 
-/// Preserve Win32 classification and the complete non-Win32 SDK status without
-/// allocating a replacement diagnostic or truncating its original cause.
 fn projection_sdk_io_error(error: windows::core::Error) -> std::io::Error {
     let code = error.code().0;
     let raw = if ((code as u32 >> 16) & 0x1fff) == 7 { code & 0xffff } else { code };
@@ -2931,8 +2420,6 @@ fn projection_native_call<T>(
     operation().map_err(projection_io_error)
 }
 
-/// Poll accepted native work to its real terminal fence, including cancellation.
-/// A stack/no-op waker needs no second executor or unaccounted waiter allocation.
 fn wait_native_unit_measured(
     completion: acyclic_native_runtime::UnitCompletion,
     work: &super::NativeMountMeterWork,
@@ -2948,10 +2435,8 @@ fn wait_native_unit_measured(
     }
 }
 
-/// Owns only a fresh leaf buffer. Its backing is physically freed before the
-/// original allocation claim is retired; a borrowed source packet is not adopted.
 struct ProjectionBuffer<T> {
-    bytes: Option<Vec<T>>,
+    bytes: Vec<T>,
     _allocation: crate::NativeAllocation,
 }
 
@@ -2962,24 +2447,14 @@ impl<T> ProjectionBuffer<T> {
         let size = count.checked_mul(size_of::<T>()).ok_or(crate::WorkError::Overflow)? as u64;
         let allocation = work.native_materialization_work().claim(size)?;
         let mut bytes = Vec::new();
-        if let Err(error) = bytes.try_reserve_exact(count) {
-            drop(bytes);
-            return Err(NativeMountError::Allocation(error));
-        }
-        // The declared std Global reserve-exact ABI reports this chosen logical
-        // layout; no allocation may be financed by post-hoc capacity adoption.
+        bytes.try_reserve_exact(count).map_err(NativeMountError::Allocation)?;
+        // The declared std Global reserve-exact ABI reports this chosen logical layout; no allocation may be financed by post-hoc capacity adoption.
         debug_assert_eq!(bytes.capacity().checked_mul(size_of::<T>()), Some(size as usize));
-        Ok(Self { bytes: Some(bytes), _allocation: allocation })
+        Ok(Self { bytes, _allocation: allocation })
     }
 
-    fn as_mut(&mut self) -> &mut Vec<T> { self.bytes.as_mut().expect("buffer remains owned") }
-    fn as_slice(&self) -> &[T] { self.bytes.as_ref().expect("buffer remains owned") }
-}
-
-impl<T> Drop for ProjectionBuffer<T> {
-    fn drop(&mut self) {
-        drop(self.bytes.take());
-    }
+    fn as_mut(&mut self) -> &mut Vec<T> { &mut self.bytes }
+    fn as_slice(&self) -> &[T] { &self.bytes }
 }
 
 fn projection_component(
@@ -2989,6 +2464,17 @@ fn projection_component(
         return Err(NativeMountError::Demand(crate::DemandError::InvalidRequest));
     }
     let mut name = ProjectionBuffer::new(component.len() / 2, work)?;
+    append_projection_component(component, &mut name, work)?;
+    Ok(name)
+}
+
+fn append_projection_component(
+    component: &[u8], name: &mut ProjectionBuffer<u16>, work: &super::NativeMountMeterWork,
+) -> Result<(), NativeMountError> {
+    if component.is_empty() || !component.len().is_multiple_of(2) {
+        return Err(NativeMountError::Demand(crate::DemandError::InvalidRequest));
+    }
+    let start = name.as_slice().len();
     let mut host_work = &work.native_materialization_work();
     for pair in component.chunks_exact(2) {
         let examined = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
@@ -3003,10 +2489,10 @@ fn projection_component(
         name.as_mut().push(unit);
         host_work.record(encoded).map_err(detach_work_error)?;
     }
-    if name.as_slice() == [46] || name.as_slice() == [46, 46] {
+    if name.as_slice()[start..] == [46] || name.as_slice()[start..] == [46, 46] {
         return Err(NativeMountError::Demand(crate::DemandError::InvalidRequest));
     }
-    Ok(name)
+    Ok(())
 }
 
 fn with_projection_relative_name<T>(
@@ -3030,23 +2516,7 @@ fn with_projection_relative_name<T>(
             name.as_mut().push(92);
             host_work.record(delta).map_err(detach_work_error)?;
         }
-        let start = name.as_slice().len();
-        for pair in component.chunks_exact(2) {
-            let examined = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-            host_work.admit(examined).map_err(detach_work_error)?;
-            let unit = u16::from_le_bytes([pair[0], pair[1]]);
-            host_work.record(examined).map_err(detach_work_error)?;
-            if matches!(unit, 0 | 47 | 58 | 92) {
-                return Err(NativeMountError::Demand(crate::DemandError::InvalidRequest));
-            }
-            let encoded = crate::WorkCounters { bytes_encoded: 2, ..crate::WorkCounters::UNCHARGED };
-            host_work.admit(encoded).map_err(detach_work_error)?;
-            name.as_mut().push(unit);
-            host_work.record(encoded).map_err(detach_work_error)?;
-        }
-        if name.as_slice()[start..] == [46] || name.as_slice()[start..] == [46, 46] {
-            return Err(NativeMountError::Demand(crate::DemandError::InvalidRequest));
-        }
+        append_projection_component(component, &mut name, work)?;
     }
     let encoded = crate::WorkCounters { bytes_encoded: 2, ..crate::WorkCounters::UNCHARGED };
     host_work.admit(encoded).map_err(detach_work_error)?;
@@ -3079,10 +2549,6 @@ fn with_projection_parent<T>(
     operation(&parent, leaf.as_slice())
 }
 
-/// Writes `entry` at `path`: an ordinary directory for a directory, an
-/// ordinary file for a file, and a placeholder for a link. Whatever is
-/// already there (the user's, or written before) stays, and is reported as
-/// not written.
 fn write_entry(
     projection: Projection<'_>, path: &MountPath, entry: &ProjectedEntry,
     placed: &mut Option<Owned>,
@@ -3090,7 +2556,7 @@ fn write_entry(
 ) -> Result<Placed, NativeMountError> {
     if entry.info.IsDirectory {
         let result = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-            let owner = PhysicalEntry::prepare(projection.work, projection.custody, true)?;
+            let owner = PhysicalEntry::prepare(projection.work, true)?;
             let owned = Owned::Directory(owner.clone());
             record(&owned)?;
             let mut work = &projection.work.native_materialization_work();
@@ -3145,8 +2611,7 @@ fn write_entry(
         projection_native_call(projection.work, true, || {
             *placed = Some(owned.clone());
             owner.effect_uncertain.store(true, std::sync::atomic::Ordering::Release);
-            // SAFETY: admitted native names and fixed SDK information remain
-            // live throughout this synchronous, potentially reentrant call.
+            // SAFETY: admitted native names and fixed SDK information remain live throughout this synchronous, potentially reentrant call.
             let result = unsafe { PrjWritePlaceholderInfo2(projection.context, relative, &raw const placeholder,
                 size_of::<PRJ_PLACEHOLDER_INFO>() as u32, Some(&extended)) }
                 .map_err(|error| {
@@ -3182,9 +2647,6 @@ fn write_entry(
     }
 }
 
-/// Writes an ordinary link through the existing held-parent create engine.
-/// Raw reparse creation requires the OS privilege; failure keeps the genuine
-/// provisional creator capability rather than adopting its ambient spelling.
 fn write_link(
     projection: Projection<'_>, path: &MountPath, target: &[u16], directory: bool,
     digest: u64, placed: &mut Option<Owned>,
@@ -3192,7 +2654,7 @@ fn write_link(
 ) -> Result<Placed, NativeMountError> {
     let target = target.strip_suffix(&[0]).unwrap_or(target);
     with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        let owner = PhysicalEntry::prepare(projection.work, projection.custody, false)?;
+        let owner = PhysicalEntry::prepare(projection.work, false)?;
         let owned = Owned::PhysicalLink(digest, owner.clone());
         record(&owned)?;
         let mut capability = lock_recover(&owner.file);
@@ -3231,8 +2693,6 @@ fn link_digest_measured(
     Ok(digest)
 }
 
-/// A digest of a link's target, which says whether a link is still the
-/// one written.
 fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
 
@@ -3241,8 +2701,6 @@ fn link_digest(target: impl IntoIterator<Item = u16>) -> u64 {
     hasher.finish()
 }
 
-/// Deletes what the projection wrote at `path` unless the user made it
-/// their own: what `ProjFS` manages, or what it does not.
 fn release(
     projection: Projection<'_>,
     path: &MountPath,
@@ -3258,17 +2716,13 @@ fn release(
     }
 }
 
-/// Deletes the ordinary file the projection made at `path` while it is
-/// still `state`. It is opened so no writer can hold it, checked on that
-/// handle, and deleted through it: whatever takes its name meanwhile, or
-/// writes it, is the user's.
 fn release_file(
     projection: Projection<'_>, path: &MountPath, state: HostWindowsMetadata,
     owner: &PhysicalEntry,
 ) -> Result<Release, NativeMountError> {
     if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
     let deleted = with_projection_parent(projection.root, projection.root_identity, path, projection.work, |parent, leaf| {
-        delete_file_while_owned(parent, leaf, state, projection.work, Some(owner))
+        delete_file_while_owned(parent, leaf, state, projection.work, owner)
     });
     match deleted {
         Ok(true) => {}
@@ -3286,8 +2740,7 @@ fn release_directory(
     projection: Projection<'_>, path: &MountPath, owner: &PhysicalEntry,
 ) -> Result<Release, NativeMountError> {
     if has_pending_capture(projection.captures, path, projection)? { return Ok(Release::Busy); }
-    // Original namespace/capture admission remains separate from physical
-    // birth credit; cancelled source work cannot authorize publication.
+    // Original namespace/capture admission remains separate from physical birth credit; cancelled source work cannot authorize publication.
     projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
     match retire_physical_entry(owner, projection.work, Some(projection.work.native_materialization_work().cancellation())) {
         Ok(()) => Ok(Release::Done),
@@ -3354,8 +2807,6 @@ fn retire_physical_entry(
     result
 }
 
-/// Only the original protected live SDK instance can retire its placeholder.
-/// A full/dirty entry is not adopted by a digest or a pathname fallback.
 fn release_link(
     projection: Projection<'_>, path: &MountPath, owner: &SdkPhysicalEntry,
 ) -> Result<Release, NativeMountError> {
@@ -3368,9 +2819,6 @@ fn release_link(
     }
 }
 
-/// Clears the tombstone deleting what the projection wrote at `path`
-/// directly leaves, which would hide what is written there next. Only a
-/// tombstone goes: whatever the user made since stays.
 fn clear_tombstone(
     projection: Projection<'_>, relative: PCWSTR,
 ) -> Result<Release, NativeMountError> {
@@ -3384,10 +2832,8 @@ fn clear_tombstone(
     }
 }
 
-/// `ERROR_SHARING_VIOLATION`, as an I/O error reports it.
 const SHARING_VIOLATION: i32 = 32;
 
-/// `PrjDeleteFile` at `relative`, allowed what `update` allows.
 fn prj_delete(
     projection: Projection<'_>, relative: PCWSTR, update: PRJ_UPDATE_TYPES,
 ) -> Result<(), NativeMountError> {
@@ -3398,9 +2844,6 @@ fn prj_delete(
     })
 }
 
-
-/// Removes the directory the projection made at `path` if nothing is left
-/// in it: what the user left in it keeps it.
 fn remove_vacated(
     projection: Projection<'_>, path: &MountPath,
 ) -> Result<(), NativeMountError> {
@@ -3417,15 +2860,6 @@ fn remove_vacated(
     }
 }
 
-/// Writes `entry`, a regular file, at `path` as an ordinary file: the
-/// content the listing named, its times and attributes, all under a staged
-/// name, then given its own name at once, so no reader sees it partly
-/// written. With `replacing`, it takes the place of the file the projection
-/// left there in that state, and only while it is still that and holds no
-/// edit the source has not captured; else what is there is the user's
-/// ([`Placed::Nothing`]) or is held open ([`Placed::Retry`]). `ProjFS` drops
-/// a time set through a writable handle to a placeholder it manages, so no
-/// file of the projection is one.
 fn write_ordinary(
     projection: Projection<'_>, path: &MountPath, entry: &ProjectedEntry,
     replacing: Option<(HostWindowsMetadata, &PhysicalEntry)>, placed: &mut Option<Owned>,
@@ -3436,8 +2870,7 @@ fn write_ordinary(
         if projection.starting && replacing.is_none() {
             return write_directly(projection, path, parent, leaf, entry, placed, record);
         }
-        // No source allocation, staging allocation or native writer is made for
-        // an existing user name. The final move is independently NO-REPLACE.
+        // No source allocation, staging allocation or native writer is made for an existing user name.
         if replacing.is_none() {
             match crate::native_host::stat_windows_leaf_with_work(
                 parent, leaf, &mut &projection.work.native_materialization_work(),
@@ -3449,8 +2882,6 @@ fn write_ordinary(
         }
         static NEXT_STAGING_NAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let sequence = NEXT_STAGING_NAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // This process-local native value does not allocate or perform filesystem
-        // I/O; FILE_CREATE still refuses an actual colliding private name.
         let process = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
         let mut name = [0_u16; 37];
         let encoded = crate::WorkCounters { bytes_encoded: 74, ..crate::WorkCounters::UNCHARGED };
@@ -3464,7 +2895,7 @@ fn write_ordinary(
             name[21 + index] = u16::from(b"0123456789abcdef"[((sequence >> ((15 - index) * 4)) & 15) as usize]);
         }
         host_work.record(encoded).map_err(detach_work_error)?;
-        let mut writer = ProjectedNativeWriter::create_by(projection.work, projection.custody,
+        let mut writer = ProjectedNativeWriter::create_by(projection.work,
             |owner| record(&Owned::ProvisionalFile(owner.clone())),
             || with_staging_directory(projection.root, projection.work, projection.root_identity, projection.staging_custody,
                 |staging| crate::native_host::create_windows_provisional_overlapped_file_with_work(
@@ -3487,9 +2918,7 @@ fn write_ordinary(
             };
             verify_projection_namespace_work(projection)?;
             if let Some((_, original)) = held.as_ref() {
-                // A genuine SDK placeholder is deleted through its live
-                // namespace with flags NONE. FULL state is not a permission:
-                // only this issuer's already-held original creator may retire.
+                // A genuine SDK placeholder is deleted through its live namespace with flags NONE.
                 let sdk = with_projection_relative_name(path, projection.work, |relative|
                     prj_delete(projection, relative, PRJ_UPDATE_TYPES(0)));
                 match sdk {
@@ -3541,8 +2970,6 @@ fn write_ordinary(
     }
 }
 
-/// The times and attributes `entry` names, for its ordinary file. A time
-/// left zero is not set: the moment of writing stays.
 fn ordinary_basic_information(
     entry: &ProjectedEntry,
 ) -> windows::Win32::Storage::FileSystem::FILE_BASIC_INFO {
@@ -3567,25 +2994,22 @@ fn ordinary_basic_information(
     }
 }
 
-/// The actual staged file and its original native-runtime registration. The
-/// cleanup slot is reserved before creation, not guessed after cancellation.
 struct ProjectedNativeWriter<'a> {
     file: Option<acyclic_native_runtime::NativeFile>,
     work: &'a super::NativeMountMeterWork,
     allocation: u64,
     cleanup: Option<crate::materializer::NativeCleanupWrite>,
     provisional: bool,
-    owner: RetainedArc<PhysicalEntry>,
+    owner: Arc<RetainedArcValue<PhysicalEntry>>,
 }
 
 impl<'a> ProjectedNativeWriter<'a> {
     fn create(
         parent: &cap_std::fs::Dir, leaf: &[u16],
         work: &'a super::NativeMountMeterWork,
-        custody: &crate::demand::NativeMountAllocationCustody,
-        record: impl FnOnce(&RetainedArc<PhysicalEntry>) -> Result<(), NativeMountError>,
+        record: impl FnOnce(&Arc<RetainedArcValue<PhysicalEntry>>) -> Result<(), NativeMountError>,
     ) -> Result<Self, NativeMountError> {
-        Self::create_by(work, custody, record, ||
+        Self::create_by(work, record, ||
             crate::native_host::create_windows_provisional_overlapped_file_with_work(
                 parent, leaf, &mut &work.native_materialization_work(),
             ).map_err(detach_work_error))
@@ -3593,8 +3017,7 @@ impl<'a> ProjectedNativeWriter<'a> {
 
     fn create_by(
         work: &'a super::NativeMountMeterWork,
-        custody: &crate::demand::NativeMountAllocationCustody,
-        record: impl FnOnce(&RetainedArc<PhysicalEntry>) -> Result<(), NativeMountError>,
+        record: impl FnOnce(&Arc<RetainedArcValue<PhysicalEntry>>) -> Result<(), NativeMountError>,
         create: impl FnOnce() -> Result<std::fs::File, NativeMountError>,
     ) -> Result<Self, NativeMountError> {
         use std::os::windows::io::AsRawHandle as _;
@@ -3609,7 +3032,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         let transfer_close = materialization.allocation_work().reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
-        let owner = PhysicalEntry::prepare(work, custody, false)?;
+        let owner = PhysicalEntry::prepare(work, false)?;
         *lock_recover(&owner.creator_transfer_close) = Some(transfer_close);
         record(&owner)?;
         let duplicate = materialization.reserve_work(crate::WorkCounters {
@@ -3627,8 +3050,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         owner.delete_on_close.store(true, std::sync::atomic::Ordering::Release);
         let capability = lock_recover(&owner.file);
         let file = capability.as_ref().expect("original returned create capability");
-        // Configure the same kernel-owned cleanup before a read-only final
-        // attribute can be set. There is no cancellation-time disposition loop.
+        // Configure the same kernel-owned cleanup before a read-only final attribute can be set.
         let disposition = FILE_DISPOSITION_INFO_EX { Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
             FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_ON_CLOSE.0
                 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
@@ -3654,8 +3076,7 @@ impl<'a> ProjectedNativeWriter<'a> {
             let _ = cleanup.attempt_recorded(|| drop(writer_file));
             return Err(error);
         }
-        // SAFETY: the existing raw native creator set asynchronous I/O and this
-        // transfer is the handle's sole positional I/O owner.
+        // SAFETY: the existing raw native creator set asynchronous I/O and this transfer is the handle's sole positional I/O owner.
         let file = match unsafe {
             acyclic_native_runtime::NativeFile::from_overlapped_file_measured_unchecked(
                 writer_file, work.native_materialization_work().runtime_meter(),
@@ -3664,7 +3085,6 @@ impl<'a> ProjectedNativeWriter<'a> {
             Ok(file) => file,
             Err((error, returned_file)) => {
                 // A denied import returns its actual original descriptor.
-                // Spend the preborn SDK close before the real physical drop.
                 let _ = cleanup.attempt_recorded(|| drop(returned_file));
                 return Err(detach_work_error(materialization.runtime_error(error)));
             }
@@ -3680,8 +3100,6 @@ impl<'a> ProjectedNativeWriter<'a> {
     fn retire(&mut self) -> Result<(), NativeMountError> {
         let Some(file) = self.file.take() else { return Ok(()); };
         let cleanup = self.cleanup.take().expect("created writer has cleanup custody");
-        // Kept SDK files also own a real positional descriptor. Publication
-        // changes namespace data, not the mandatory before-birth close credit.
         let recorded = cleanup.attempt_recorded(|| drop(file)).1;
         self.work.native_materialization_work().runtime_meter().release(self.allocation);
         self.allocation = 0;
@@ -3747,7 +3165,6 @@ fn finish_projected_file(
 }
 
 /// The real parent duplicate retained by the existing accepted rename control.
-/// Its caller-stack/queued-frame owner carries the original preborn close.
 struct ProjectionParentDescriptor {
     file: Option<std::fs::File>,
     close: Option<crate::materializer::NativeCleanupWrite>,
@@ -3778,8 +3195,7 @@ fn publish_projected_file(
     };
     held_parent.file = Some(projection_native_call(work, false, || {
         let mut duplicated = HANDLE::default();
-        // SAFETY: the actual held parent is duplicated for the accepted control,
-        // so unwind cannot retire it before native completion.
+        // SAFETY: the actual held parent is duplicated for the accepted control, so unwind cannot retire it before native completion.
         unsafe {
             let process = GetCurrentProcess();
             DuplicateHandle(process, HANDLE(parent.as_raw_handle()), process,
@@ -3812,8 +3228,7 @@ fn publish_projected_file(
     wait_native_unit_measured(file.control_bounded_async(move |file, meter| {
         meter.admit_write(0)?;
         let mut status_block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: the control owns aligned information and the duplicated
-        // parent until this exact same-driver request has completed.
+        // SAFETY: the control owns aligned information and the duplicated parent until this exact same-driver request has completed.
         let status = unsafe { NtSetInformationFile(
             HANDLE(file.as_raw_handle()), &raw mut status_block,
             buffer.as_slice().as_ptr().cast(), length,
@@ -3829,14 +3244,12 @@ fn publish_projected_file(
     }, meter).map_err(projection_io_error)?, work)
 }
 
-/// Startup writes use the same positional writer and controls, without a second
-/// staged name. The kernel owns provisional deletion until the final keep call.
 fn write_directly(
     projection: Projection<'_>, path: &MountPath, parent: &cap_std::fs::Dir,
     leaf: &[u16], entry: &ProjectedEntry, placed: &mut Option<Owned>,
     record: &mut impl FnMut(&Owned) -> Result<(), NativeMountError>,
 ) -> Result<Placed, NativeMountError> {
-    let mut writer = match ProjectedNativeWriter::create(parent, leaf, projection.work, projection.custody,
+    let mut writer = match ProjectedNativeWriter::create(parent, leaf, projection.work,
         |owner| record(&Owned::ProvisionalFile(owner.clone()))) {
         Ok(writer) => writer,
         Err(NativeMountError::Io(error)) if matches!(error.kind(),
@@ -3869,8 +3282,7 @@ fn write_directly(
     }
 }
 
-/// Only FILE_CREATE establishes ownership. The original creation capability
-/// and its birth-paid retirement credit never become a pathname-only claim.
+/// Only FILE_CREATE establishes ownership.
 struct StagingDirectoryCustody {
     // Field order keeps original credit live through this handle's real close.
     directory: Option<cap_std::fs::Dir>,
@@ -3896,11 +3308,6 @@ impl Drop for StagingDirectoryCustody {
     fn drop(&mut self) { self.close_directory(); }
 }
 
-/// The directory beside the projection at `root` where its files are
-/// written before they take their names in it; made on first use. Only a
-/// plain directory on the projection's volume serves, checked on the handle
-/// it is then used through: a reparse point would lead elsewhere, and hard
-/// links cross no other volume.
 fn with_staging_directory<T>(
     root: &std::path::Path, work: &super::NativeMountMeterWork,
     expected_root: crate::NativeRootIdentity,
@@ -3918,8 +3325,6 @@ fn with_staging_directory<T>(
                 return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
             }
             stage.identity = Some(identity);
-            // Borrow only for this synchronous creator leaf. Source reads and
-            // queued native controls never retain the private stage mutex.
             return operation(directory);
         }
     }
@@ -3953,9 +3358,6 @@ fn with_staging_directory<T>(
     host_work.record(delta).map_err(detach_work_error)?;
     let mut owned = lock_recover(custody);
     if owned.is_none() {
-        // These are the actual bounded held-capability controls, not guessed
-        // tree costs: reopen, identity and reparse probes; two possible
-        // dispositions; then close the reopened and original handles.
         let cleanup = work.native_materialization_work().allocation_work().reserve_work(crate::WorkCounters {
             backend_read_operations: 3,
             backend_write_operations: 2,
@@ -3985,8 +3387,6 @@ fn with_staging_directory<T>(
     operation(directory)
 }
 
-/// Where the projection at `root` stages its files: a hidden sibling on
-/// the same volume, which the original Open.Link rename can cross.
 #[cfg(test)]
 fn staging_path(root: &std::path::Path) -> PathBuf {
     let name = root
@@ -3996,9 +3396,6 @@ fn staging_path(root: &std::path::Path) -> PathBuf {
     root.with_file_name(format!(".{name}.acyclic-staging"))
 }
 
-/// Move the canonical packet into the same ordered native operation.
-/// OwnedBytes keeps its original allocation custody inseparable from the data,
-/// including cancellation or unwinding after admission.
 fn write_source_chunk(
     projection: Projection<'_>, file: &acyclic_native_runtime::NativeFile,
     offset: u64, packet: crate::kernel::OwnedSourceChunk,
@@ -4015,8 +3412,6 @@ fn write_source_chunk(
     written.and(retired)
 }
 
-/// Writes the content the listing named for `entry` at `path` to `file`;
-/// `false` when the source changed or lost it since.
 fn write_listed_content(
     projection: Projection<'_>, path: &MountPath, entry: &ProjectedEntry,
     file: &acyclic_native_runtime::NativeFile,
@@ -4032,9 +3427,6 @@ fn write_listed_content(
             Ok(())
         });
         if let Err(error) = written {
-            // The source sink interface does not own a native I/O error.
-            // Preserve that exact cause outside the callback and return its
-            // stop marker; it takes precedence over subsequent source errors.
             failure = Some(error);
             return Err(MountSourceError::Stale);
         }
@@ -4108,8 +3500,7 @@ fn open_projection_leaf(
     projection_native_call(work, false, || {
         let mut handle = HANDLE::default();
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
-        // SAFETY: authenticated held parent, borrowed native leaf, and exact
-        // outputs remain live. The final reparse is opened, never followed.
+        // SAFETY: authenticated held parent, borrowed native leaf, and exact outputs remain live.
         let status = unsafe { NtCreateFile(
             &raw mut handle, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             &raw const attributes, &raw mut block, None, FILE_ATTRIBUTE_NORMAL,
@@ -4124,8 +3515,6 @@ fn open_projection_leaf(
     })
 }
 
-/// The ordinary file at `path`, held so no writer can share it, if it is
-/// still `state`; `None` when something else is there.
 fn held_while(
     parent: &cap_std::fs::Dir, leaf: &[u16], state: HostWindowsMetadata,
     work: &super::NativeMountMeterWork,
@@ -4138,8 +3527,6 @@ fn held_while(
     Ok((handle_state_measured(&file, work)? == state).then_some(file))
 }
 
-/// The unchanged original creator under a real no-share-write window. A
-/// filename or matching metadata never supplies this creation capability.
 fn held_original_while(
     original: &PhysicalEntry, expected: HostWindowsMetadata,
     work: &super::NativeMountMeterWork,
@@ -4163,8 +3550,6 @@ fn held_original_while(
     Ok((handle_state_measured(&file, work)? == expected).then_some(file))
 }
 
-/// Current READ authorization plus the original live SDK namespace permits
-/// private cache hydration. It does not authorize authored Source publication.
 fn verify_projection_namespace_work(projection: Projection<'_>) -> Result<(), NativeMountError> {
     if projection.context.0.is_null() {
         return Err(NativeMountError::Lifecycle("cache publication has no original live SDK namespace"));
@@ -4177,143 +3562,17 @@ fn verify_projection_namespace_work(projection: Projection<'_>) -> Result<(), Na
     Ok(())
 }
 
-/// Deletes the symbolic link at `path` if it points to the target with
-/// `digest`. The link itself is opened, not followed, and the object checked
-/// is the one deleted, whatever takes its name meanwhile. `false` when
-/// something else is there.
-fn delete_link(
-    parent: &cap_std::fs::Dir, leaf: &[u16], digest: u64,
-    work: &super::NativeMountMeterWork,
-) -> Result<bool, NativeMountError> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
-    let link = open_projection_leaf(parent, leaf, false, work)?;
-    let mut output = ProjectionBuffer::new(MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize, work)?;
-    output.as_mut().resize(MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize, 0_u8);
-    let delta = crate::WorkCounters {
-        source_bytes_read: u64::from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE), ..crate::WorkCounters::UNCHARGED
-    };
-    let mut host_work = &work.native_materialization_work();
-    host_work.admit(delta).map_err(detach_work_error)?;
-    let mut returned = 0_u32;
-    let read = projection_native_call(work, false, || {
-        // SAFETY: held no-follow link and exact admitted output remain live.
-        unsafe { windows::Win32::System::IO::DeviceIoControl(
-            windows::Win32::Foundation::HANDLE(link.as_raw_handle()),
-            windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT, None, 0,
-            Some(output.as_mut().as_mut_ptr().cast()), MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
-            Some(&raw mut returned), None,
-        ) }.map_err(projection_sdk_io_error)
-    });
-    host_work.record(crate::WorkCounters {
-        source_bytes_read: u64::from(returned), ..crate::WorkCounters::UNCHARGED
-    }).map_err(detach_work_error)?;
-    match read {
-        Err(NativeMountError::Io(error)) if error.raw_os_error() == Some(4390) => return Ok(false),
-        Err(error) => return Err(error),
-        Ok(()) => {}
-    }
-    let data = output.as_slice().get(..returned as usize)
-        .ok_or(NativeMountError::Demand(crate::DemandError::InvalidRequest))?;
-    if symbolic_link_digest_measured(data, work)? != Some(digest) { return Ok(false); }
-    delete_through(&link, work)?;
-    crate::native_host::sync_directory_held_with_work(parent, &mut host_work).map_err(detach_work_error)?;
-    Ok(true)
-}
-
-/// Deletes the ordinary file at `path` if it is still `state`, opened so no
-/// writer can hold it and not followed; `false` when something else is there.
-fn delete_file_while(
-    parent: &cap_std::fs::Dir, leaf: &[u16], state: HostWindowsMetadata,
-    work: &super::NativeMountMeterWork,
-) -> Result<bool, NativeMountError> {
-    delete_file_while_owned(parent, leaf, state, work, None)
-}
-
 fn delete_file_while_owned(
     parent: &cap_std::fs::Dir, leaf: &[u16], state: HostWindowsMetadata,
-    work: &super::NativeMountMeterWork, owner: Option<&PhysicalEntry>,
+    work: &super::NativeMountMeterWork, owner: &PhysicalEntry,
 ) -> Result<bool, NativeMountError> {
-    let Some(file) = held_while(parent, leaf, state, work)? else { return Ok(false); };
-    match owner {
-        Some(owner) => retire_physical_entry(owner, work, Some(work.native_materialization_work().cancellation()))?,
-        None => delete_through(&file, work)?,
-    }
+    let Some(_file) = held_while(parent, leaf, state, work)? else { return Ok(false); };
+    retire_physical_entry(owner, work, Some(work.native_materialization_work().cancellation()))?;
     crate::native_host::sync_directory_held_with_work(parent, &mut &work.native_materialization_work())
         .map_err(detach_work_error)?;
     Ok(true)
 }
 
-/// Deletes the file `file` names, through that handle. A POSIX delete takes
-/// the name at once, also while another process holds it; delete-on-close
-/// serves where that is refused.
-fn delete_through(
-    file: &std::fs::File, work: &super::NativeMountMeterWork,
-) -> Result<(), NativeMountError> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
-        FILE_DISPOSITION_INFO_EX_FLAGS, FileDispositionInfo, FileDispositionInfoEx,
-        SetFileInformationByHandle,
-    };
-    let handle = windows::Win32::Foundation::HANDLE(file.as_raw_handle());
-    let posix = FILE_DISPOSITION_INFO_EX { Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
-        FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0
-            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0,
-    ) };
-    let result = projection_native_call(work, true, || {
-        // SAFETY: DELETE-access held file and correctly sized disposition.
-        unsafe { SetFileInformationByHandle(handle, FileDispositionInfoEx,
-            (&raw const posix).cast(), size_of::<FILE_DISPOSITION_INFO_EX>() as u32) }
-            .map_err(projection_sdk_io_error)
-    });
-    match result {
-        Err(NativeMountError::Io(_)) => {
-            let on_close = FILE_DISPOSITION_INFO { DeleteFile: true };
-            projection_native_call(work, true, || {
-                // SAFETY: the same authenticated handle; this actual fallback
-                // is separately admitted, not folded into a fake batch count.
-                unsafe { SetFileInformationByHandle(handle, FileDispositionInfo,
-                    (&raw const on_close).cast(), size_of::<FILE_DISPOSITION_INFO>() as u32) }
-                    .map_err(projection_sdk_io_error)
-            })
-        }
-        result => result,
-    }
-}
-
-/// Compares the native target without allocating a decoded Vec or HSTRING.
-fn symbolic_link_digest_measured(
-    data: &[u8], work: &super::NativeMountMeterWork,
-) -> Result<Option<u64>, NativeMountError> {
-    work.native_materialization_work().charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(detach_work_error)?;
-    let field = |at: usize| data.get(at..at + 2)
-        .map(|bytes| usize::from(u16::from_le_bytes([bytes[0], bytes[1]])));
-    let Some(tag) = data.get(..4) else { return Ok(None); };
-    if tag != [12, 0, 0, 160] { return Ok(None); }
-    let (Some(offset), Some(length)) = (field(8), field(10)) else { return Ok(None); };
-    if !offset.is_multiple_of(2) || !length.is_multiple_of(2) { return Ok(None); }
-    let Some(target) = data.get(20 + offset..20 + offset + length) else { return Ok(None); };
-    const NT: &[u8] = &[92, 0, 63, 0, 63, 0, 92, 0];
-    const UNC: &[u8] = &[92, 0, 63, 0, 63, 0, 92, 0, 85, 0, 78, 0, 67, 0, 92, 0];
-    let (prefix, target): (&[u16], &[u8]) = if target.starts_with(UNC) {
-        (&[92, 92], &target[UNC.len()..])
-    } else if target.starts_with(NT) { (&[], &target[NT.len()..]) } else { (&[], target) };
-    let delta = crate::WorkCounters {
-        bytes_hashed: target.len() as u64 + prefix.len() as u64 * 2, ..crate::WorkCounters::UNCHARGED
-    };
-    let mut host_work = &work.native_materialization_work();
-    host_work.admit(delta).map_err(detach_work_error)?;
-    let digest = link_digest(prefix.iter().copied().chain(
-        target.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
-    ));
-    host_work.record(delta).map_err(detach_work_error)?;
-    Ok(Some(digest))
-}
-
-
-/// Deletes what `ProjFS` manages at `path` unless the user modified it.
 fn delete_unowned(
     projection: Projection<'_>, path: &MountPath,
 ) -> Result<Release, NativeMountError> {
@@ -4329,7 +3588,6 @@ fn delete_unowned(
         }
     })
 }
-
 
 fn replace_written(
     projection: Projection<'_>, path: &MountPath, written: &WrittenEntry,
@@ -4427,11 +3685,9 @@ fn replace_ordinary(
     })
 }
 
-/// A virtualization context moved to the projection worker. The handle is
-/// an opaque token `ProjFS` accepts from any thread.
 struct SendContext(PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);
 
-// SAFETY: see `SendContext`; its lifetime is bounded by `Projector::finish`.
+// SAFETY: the SDK context remains live until the worker joins.
 unsafe impl Send for SendContext {}
 
 struct SendThreadHandle(std::os::windows::io::RawHandle);
@@ -4443,10 +3699,8 @@ struct SendRuntime(*const Runtime);
 unsafe impl Send for SendRuntime {}
 
 impl SendRuntime {
-    fn run(self, projector: RetainedArc<Projector>, context: SendContext) {
-        // SAFETY: the original physical slot retains Runtime until this run
-        // body returns; only this same producer then enters retirement. Queued
-        // callback scopes retain their own Arc and must drain before its drop.
+    fn run(self, projector: Arc<RetainedArcValue<Projector>>, context: SendContext) {
+        // SAFETY: the original physical slot retains Runtime until this run body returns; only this same producer then enters retirement.
         let runtime = unsafe { &*self.0 };
         projector.run(runtime, context.0);
     }
@@ -4468,17 +3722,12 @@ fn has_pending_capture(
     Ok(false)
 }
 
-
-
 /// The root capability opened before SDK birth, not a later pathname adoption.
 struct ProjectionRootCustody {
     directory: Option<cap_std::fs::Dir>,
     identity: crate::NativeRootIdentity,
     close: crate::materializer::NativeWorkReservation,
 }
-
-
-
 
 impl ProjectionRootCustody {
     fn close_directory(&mut self) {
@@ -4495,9 +3744,7 @@ impl Drop for ProjectionRootCustody {
     fn drop(&mut self) { self.close_directory(); }
 }
 
-
-/// Preborn inline move slot of the existing producer, not Runtime/Projector
-/// state: neither can own an Arc backedge into its own physical Session.
+/// Preborn inline move slot of the existing producer, not Runtime/Projector state: neither can own an Arc backedge into its own physical Session.
 struct WindowsRetirementIngress {
     state: Mutex<WindowsRetirementState>,
     wake: Condvar,
@@ -4515,7 +3762,6 @@ struct WindowsRetirementState {
     terminal: bool,
     owner: Option<ProjFsSession>,
     /// Actual packet custody transferred to the in-flight physical stack loan.
-    /// Not permission, nor a claim that absent public fields are already gone.
     loan_custody: Option<(bool, bool)>,
     failure: Option<NativeMountError>,
     root_identity: Option<crate::NativeRootIdentity>,
@@ -4535,7 +3781,7 @@ impl WindowsRetirementIngress {
         }), wake: Condvar::new() }
     }
 
-    fn run(&self, runtime: SendRuntime, projector: RetainedArc<Projector>) {
+    fn run(&self, runtime: SendRuntime, projector: Arc<RetainedArcValue<Projector>>) {
         let context = {
             let mut state = lock_recover(&self.state);
             while state.context.is_none() && !state.abort {
@@ -4610,8 +3856,6 @@ impl WindowsRetirementIngress {
     }
 }
 
-/// Borrowed stack factory guard. It owns no invented heap frame and never
-/// holds the ingress or original meter mutex across caller root/source IO.
 struct WindowsStartupAbort<'a> {
     ingress: &'a WindowsRetirementIngress,
     projector: &'a Projector,
@@ -4624,16 +3868,14 @@ impl Drop for WindowsStartupAbort<'_> {
     }
 }
 
-/// The actual issuer's successful SDK marking operation and supplied instance
-/// GUID. This is not a grant derived from ambient metadata or a directory ID.
+/// The actual issuer's successful SDK marking operation and supplied instance GUID.
 #[derive(Clone, Copy)]
 pub(super) struct ProjFsNamespaceQualification {
     root_identity: crate::NativeRootIdentity,
     instance_id: GUID,
 }
 
-/// Moves the original funded namespace memo payloads out of the stopped
-/// physical driver. No Runtime, Source, SDK context or physical handle survives.
+/// Moves the original funded namespace memo payloads out of the stopped physical driver.
 pub(super) struct ProjFsNamespaceOutcome {
     capture_failure: Option<NativeMountError>,
     cleanup_failure: Option<NativeMountError>,
@@ -4641,7 +3883,7 @@ pub(super) struct ProjFsNamespaceOutcome {
     pending: MemoMap<MountPath, WrittenEntry>,
     qualification: Option<ProjFsNamespaceQualification>,
     stage: Option<StagingDirectoryCustody>,
-    captures: Option<RetainedArc<Mutex<PostOperationFailures>>>,
+    captures: Option<Arc<RetainedArcValue<Mutex<PostOperationFailures>>>>,
     continuation_ready: bool,
 }
 
@@ -4659,9 +3901,6 @@ impl ProjFsNamespaceOutcome {
         self.captures.as_ref().map_or(0, |queue|
             lock_recover(queue).pending_captures.entries.items.len())
     }
-    pub(super) fn staging_residue(&self) -> Option<(Option<crate::NativeRootIdentity>, &[u16])> {
-        self.stage.as_ref().map(|stage| (stage.identity, stage.name.as_slice()))
-    }
     pub(super) fn first_cleanup_residue(&self) -> Option<(i32, u32)> {
         self.written.iter().chain(self.pending.iter()).find_map(|(_, written)| {
             let Some(Owned::Link(owner)) = written.owned.as_ref() else { return None; };
@@ -4674,23 +3913,20 @@ impl ProjFsNamespaceOutcome {
 /// One process-owned `ProjFS` virtualization context.
 pub(super) struct ProjFsSession {
     context: Option<PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT>,
-    runtime: Option<RetainedArc<Runtime>>,
+    runtime: Option<Arc<RetainedArcValue<Runtime>>>,
     root_custody: Option<ProjectionRootCustody>,
-    /// Original authored execution until drain, then the same identity's
-    /// metadata-only physical frame through every remaining cleanup owner.
+    /// Original authored execution until drain, then the same identity's metadata-only physical frame through every remaining cleanup owner.
     original_stop_work: Option<super::NativeMountMeterWork>,
-    /// One known SDK detach, withheld before the SDK can own a context.
     sdk_stop_credit: Option<crate::materializer::NativeWorkReservation>,
     sdk_info_credit: Option<crate::materializer::NativeWorkReservation>,
     namespace_qualification: Option<ProjFsNamespaceQualification>,
-    /// One join of the sole worker that START may create.
     worker_join_credit: Option<crate::materializer::NativeWorkReservation>,
-    ingress: Option<RetainedArc<WindowsRetirementIngress>>,
-    projector_control: Option<RetainedArc<Projector>>,
+    ingress: Option<Arc<RetainedArcValue<WindowsRetirementIngress>>>,
+    projector_control: Option<Arc<RetainedArcValue<Projector>>>,
     worker_handle_close_credit: Option<crate::materializer::NativeWorkReservation>,
     worker_raw_handle: Option<SendThreadHandle>,
     authored_capture_attempted: bool,
-    capture_residue: Option<RetainedArc<Mutex<PostOperationFailures>>>,
+    capture_residue: Option<Arc<RetainedArcValue<Mutex<PostOperationFailures>>>>,
     namespace_stage: Option<StagingDirectoryCustody>,
     cleanup_failure: Option<NativeMountError>,
     capture_failure: Option<NativeMountError>,
@@ -4701,46 +3937,24 @@ pub(super) struct ProjFsSession {
     first_callback_failure: Mutex<Option<NativeMountCallbackFailure>>,
 }
 
-// SAFETY: opaque ProjFS tokens and native owners move only into the same
-// preborn producer. Callback admission closes and accepted scopes physically
-// drain before SDK stop returns and the callback payload is dropped.
+// SAFETY: opaque ProjFS tokens and native owners move only into the same preborn producer.
 unsafe impl Send for ProjFsSession {}
-// SAFETY: shared methods borrow synchronized controls; SDK stop and handle
-// retirement require exclusive session access. ProjFS tokens are thread-independent.
+// SAFETY: shared methods borrow synchronized controls; SDK stop and handle retirement require exclusive session access.
 unsafe impl Sync for ProjFsSession {}
 
 impl ProjFsSession {
     pub(super) fn start(
-        request: &NativeMountRequest,
-        source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, DriverStartFailure> {
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map_err(|(cause, _)| DriverStartFailure::from(detach_work_error(cause)))?;
-        Self::start_with_work(request, source, &work)
-    }
-
-    /// Starts the same eager projector using the original lifecycle budget,
-    /// ledger, and cancellation. Failed SDK/physical work returns its actual
-    /// driver owner instead of silently performing an unbounded rollback.
-    pub(super) fn start_with_work(
-        request: &NativeMountRequest,
-        source: Arc<dyn MountFilesystem>,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Self, DriverStartFailure> {
-        Self::start_with_meter(request, source, &work.native_mount_work())
-    }
-
-    /// Enters the actual SDK with the caller's original shared engine.
-    pub(super) fn start_with_meter(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-        work: &super::NativeMountMeterWork,
     ) -> Result<Self, DriverStartFailure> {
+        let materialization = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .map_err(|(cause, _)| DriverStartFailure::from(detach_work_error(cause)))?;
+        let work = materialization.native_mount_work();
         let mut out = None;
         let mut retirement = Some(super::NativeMountRetirement {
             retained_source: Some(source.clone()), destination_guard: None, startup_source_watch: None,
             warm_namespace: None,
         });
-        match Self::start_into(request, source, work, &mut out, &mut retirement, |_| Ok(())) {
+        match Self::start_into(request, source, &work, &mut out, &mut retirement, |_| Ok(())) {
             Ok(()) => Ok(out.take().expect("successful startup owns its real driver")),
             Err(error) => match out.take() {
                 Some(session) => Err(DriverStartFailure::retaining_driver(error.error, super::DriverSession::ProjFs(session))),
@@ -4748,7 +3962,6 @@ impl ProjFsSession {
             },
         }
     }
-
 
     pub(super) fn start_into<F>(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
@@ -4786,10 +3999,9 @@ impl ProjFsSession {
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
         let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(work).map_err(detach_work_error)?;
-        let callback_gate = CallbackGate::start_with_meter(work, &custody)?;
-        let metadata_root = retained_arc_on_meter(
-            HostRoot::open_with_work(&request.destination, &mut host_work).map_err(detach_work_error)?,
-            &custody, meter,
+        let callback_gate = CallbackGate::new(&materialization)?;
+        let metadata_root = retained_arc(
+            HostRoot::open_with_work(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
         )?;
         let root_directory = reopen_for_delete_measured(
             &metadata_root.directory_handle(), &mut host_work, None,
@@ -4814,23 +4026,23 @@ impl ProjFsSession {
             root,
             metadata_root,
             writable: request.writable,
-            metadata_baselines: retained_arc_on_meter(Mutex::new(MemoMap::default()), &custody, meter)?,
-            projection: retained_arc_on_meter(Mutex::new(ProjectionCache::default()), &custody, meter)?,
-            projector: retained_arc_on_meter(projector, &custody, meter)?,
-            metadata_probes: retained_arc_on_meter(Mutex::new(MemoMap::default()), &custody, meter)?,
+            metadata_baselines: retained_arc(Mutex::new(MemoMap::default()), meter)?,
+            projection: retained_arc(Mutex::new(ProjectionCache::default()), meter)?,
+            projector: retained_arc(projector, meter)?,
+            metadata_probes: retained_arc(Mutex::new(MemoMap::default()), meter)?,
             capture_probes: std::sync::RwLock::new(Vec::new()),
             flush_gate: Mutex::new(()),
             stop_meter: Mutex::new(super::NativeMountMeterActivation::default()),
             staging_custody: Mutex::new(None),
-            metadata_edits: retained_arc_on_meter(FileLocks::default(), &custody, meter)?,
-            post_operation_failure: retained_arc_on_meter(Mutex::new(PostOperationFailures::default()), &custody, meter)?,
+            metadata_edits: retained_arc(FileLocks::default(), meter)?,
+            post_operation_failure: retained_arc(Mutex::new(PostOperationFailures::default()), meter)?,
             callbacks: callback_gate,
             handler_budget,
             handler_cancellation,
         };
-        let runtime = retained_arc_on_meter(runtime, &custody, meter)?;
-        let ingress = retained_arc_on_meter(
-            WindowsRetirementIngress::new(runtime.metadata_root.identity(), materialization.cancellation().clone()), &custody, meter,
+        let runtime = retained_arc(runtime, meter)?;
+        let ingress = retained_arc(
+            WindowsRetirementIngress::new(runtime.metadata_root.identity(), materialization.cancellation().clone()), meter,
         )?;
         let worker_handle_close_credit = physical_materialization.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -4866,7 +4078,7 @@ impl ProjFsSession {
             let name = name;
             let result = runtime.projector.with_control_meter(runtime, meter, |meter| {
                 installed_callback_work(runtime)?;
-                verify_callback_work(runtime, meter)?;
+                verify_callback_work(runtime, meter, false)?;
                 let root_ptr = PCWSTR::from_raw(name.as_ptr());
                 let guid = guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes()));
                 let (marked_root, identity) = crate::native_host::open_root_directory_identity_with_work(
@@ -4879,8 +4091,7 @@ impl ProjFsSession {
                     .map_err(detach_work_error)?;
                 match warm_namespace {
                     Some(issued) => {
-                        // This original SDK-issued permission is retained by
-                        // the old quiesced owner. Metadata is consistency only.
+                        // This original SDK-issued permission is retained by the old quiesced owner.
                         if issued.root_identity != identity || issued.instance_id != guid
                             || tag != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
                         {
@@ -4897,8 +4108,7 @@ impl ProjFsSession {
                             unsafe { PrjMarkDirectoryAsPlaceholder(root_ptr, PCWSTR::null(), None, &raw const guid) }
                                 .map_err(projection_sdk_io_error)
                         })?;
-                        // Actual Mark ACK issued permission even if a later
-                        // START/info/initialization is denied.
+                        // Actual Mark ACK issued permission even if a later START/info/initialization is denied.
                         session.namespace_qualification = Some(ProjFsNamespaceQualification {
                             root_identity: runtime.metadata_root.identity(), instance_id: guid,
                         });
@@ -4917,7 +4127,7 @@ impl ProjFsSession {
                     options.NotificationMappings = &raw mut notification;
                     options.NotificationMappingsCount = 1;
                 }
-                let context_ptr = std::ptr::from_ref(&****runtime).cast::<c_void>();
+                let context_ptr = std::ptr::from_ref(&***runtime).cast::<c_void>();
                 let (_started_root, identity) = crate::native_host::open_root_directory_identity_with_work(
                     &runtime.root, &mut &meter.native_materialization_work(),
                 ).map_err(detach_work_error)?;
@@ -4925,7 +4135,7 @@ impl ProjFsSession {
                     return Err(crate::DemandError::StaleSource.into());
                 }
                 installed_callback_work(runtime)?;
-                verify_callback_work(runtime, meter)?;
+                verify_callback_work(runtime, meter, false)?;
                 let started = projection_native_call(meter, true, || unsafe {
                     PrjStartVirtualizing(root_ptr, &raw const callbacks,
                         Some(context_ptr), Some(&raw const options))
@@ -4933,8 +4143,7 @@ impl ProjFsSession {
                 });
                 let context = match started {
                     Ok(context) => {
-                        // Save the actual SDK return before preferring its
-                        // callback's original typed cause.
+                        // Save the actual SDK return before preferring its callback's original typed cause.
                         session.context = Some(context);
                         lock_recover(&ingress.state).context = Some(SendContext(context));
                         ingress.wake.notify_all();
@@ -4986,16 +4195,7 @@ impl ProjFsSession {
         self.stop_with_cleanup_wait(&cancellation)
     }
 
-    /// Uses the supplied token only to bound observation of the existing
-    /// producer. No fresh caller allowance funds physical retirement.
-    pub(super) fn stop_measured(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
-        self.stop_with_meter(&work.native_mount_work())
-    }
-
     /// Uses only this driver's original work and accepted SDK/worker credits.
-    /// The token controls this wait, never callback or namespace authority.
-    /// Variable authored capture retains original admission; a returned refusal
-    /// preserves its namespace data and cause while physical owners drain.
     pub(super) fn stop_with_cleanup_wait(
         &mut self, wait: &crate::CancellationToken,
     ) -> Result<(), NativeMountError> {
@@ -5075,30 +4275,23 @@ impl ProjFsSession {
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.callbacks.close_admission();
             runtime.callbacks.drain_cleanup(cleanup_wait)?;
-            // The existing producer has returned from its actual run body.
-            // Writable authored capture remains original authorized work; no
-            // cleanup credit or wait token can authorize new Source publication.
             if runtime.writable && self.context.is_some() && !self.authored_capture_attempted {
                 let original = self.original_stop_work.as_ref().ok_or(NativeMountError::Lifecycle(
                     "authored capture lost its original execution frame",
                 ))?.clone();
                 if let Err(cause) = self.flush_callbacks_with_meter(&original) {
-                    // The returned authored failure is namespace DATA, not an
-                    // active physical job. Never delete its uncaptured content
-                    // or claim publication; drain physical owners independently.
+                    // The returned authored failure is namespace DATA, not an active physical job.
                     self.capture_failure = Some(cause);
                     self.capture_residue = Some(runtime.post_operation_failure.clone());
                 }
                 self.authored_capture_attempted = true;
             }
         }
-        // Drop only the completed/unused FULL authored execution frame after
-        // the real producer/callback fence. These physical control frames keep
-        // exactly the original state/resource/invocation/cancellation identity.
+        // Drop only the completed/unused FULL authored execution frame after the real producer/callback fence.
         let metadata_work = work.native_materialization_work().allocation_work().native_mount_work();
         self.original_stop_work = Some(metadata_work.clone());
         if let Some(retained) = self.runtime.as_mut() {
-            let runtime = &mut Arc::get_mut(retained.value.as_mut().expect("original runtime"))
+            let runtime = &mut Arc::get_mut(retained)
                 .ok_or(NativeMountError::ControlPending)?.value;
             runtime.original_work = runtime.original_work.as_ref().map(|original|
                 original.native_materialization_work().allocation_work().native_mount_work());
@@ -5126,8 +4319,7 @@ impl ProjFsSession {
             loan.started_io(crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(detach_work_error)?;
-            // SAFETY: this original live opaque instance has closed callback
-            // admission and drained both accepted callbacks and producer IO.
+            // SAFETY: this original live opaque instance has closed callback admission and drained both accepted callbacks and producer IO.
             unsafe { PrjStopVirtualizing(context) };
             self.context = None;
             self.sdk_stop_confirmed = true;
@@ -5144,9 +4336,7 @@ impl ProjFsSession {
             let mut host = &metadata_work.native_materialization_work();
             if let Err(cause) = remove_staging_directory_with_cleanup(&retained.staging_custody, &mut host, cleanup_wait, true) {
                 if native_mount_error_code(&cause) != Some(HR_DIRECTORY_NOT_EMPTY) { return Err(cause); }
-                // The real empty-only refusal has finished; its contents are
-                // namespace DATA, not an active physical owner. Preserve its
-                // original name/identity/G while closing only the held handle.
+                // The real empty-only refusal has finished; its contents are namespace DATA, not an active physical owner.
                 self.cleanup_failure = Some(cause);
                 let mut stage = lock_recover(&retained.staging_custody).take()
                     .expect("real refused staging capability");
@@ -5157,9 +4347,6 @@ impl ProjFsSession {
             self.completed_callback_work = failures.completed_callback_work;
             *lock_recover(&self.first_callback_failure) = failures.unreplayable.take();
         }
-        // The marker is persistent SDK instance configuration. This is
-        // physical retirement only, not namespace restoration or user-root
-        // deletion. Dispose actual owned memo caps before their allocation G.
         if let Some(projector) = self.projector_control.as_ref() {
             projector.drop_retired_memos(self.capture_failure.is_some());
         }
@@ -5185,7 +4372,6 @@ impl ProjFsSession {
     }
 
     /// Borrow the real packet owner, including its current physical stack loan.
-    /// Namespace residue is DATA and never stands in for Source custody.
     pub(super) fn retirement_ownership(&self) -> (bool, bool) {
         if let Some(packet) = self.retirement.as_ref() {
             return (packet.destination_guard.is_some(),
@@ -5291,32 +4477,9 @@ impl ProjFsSession {
         })
     }
 
-    /// Actual namespace residue, distinct from successful physical retirement.
-    /// The existing memo payload retains the UTF16 name and allocation owner.
-    pub(super) fn first_namespace_cleanup_residue(&self) -> Option<(i32, u32)> {
-        let projector = self.projector_control.as_ref()?;
-        let state = lock_recover(&projector.state);
-        state.written.iter().chain(state.pending.iter()).find_map(|(_, written)| {
-            let Some(Owned::Link(owner)) = written.owned.as_ref() else { return None; };
-            lock_recover(&owner.namespace_residue).as_ref().map(|residue|
-                (residue.hresult.0, residue.update_causes.0 as u32))
-        })
-    }
-
-
-    /// Evidence that the sole `PrjStopVirtualizing` call completed, not that
-    /// the destination currently exists, is empty, or is no longer a reparse
-    /// point. Physical cleanup can still retain an authenticated root.
+    /// Evidence that the sole `PrjStopVirtualizing` call completed, not that the destination currently exists, is empty, or is no longer a reparse point.
     pub(super) fn namespace_detach_confirmed(&self) -> bool {
         self.ingress.as_ref().map_or(self.sdk_stop_confirmed, |ingress| lock_recover(&ingress.state).namespace_detached)
-    }
-
-    /// The original identity observed for this driver's cleanup authentication.
-    /// It is not a claim that the object or its later pathname still exists.
-    pub(super) fn cleanup_root_identity(&self) -> Option<crate::NativeRootIdentity> {
-        if let Some(ingress) = self.ingress.as_ref() { return lock_recover(&ingress.state).root_identity; }
-        self.root_custody.as_ref().map(|root| root.identity)
-            .or_else(|| self.runtime.as_ref().map(|runtime| runtime.metadata_root.identity()))
     }
 
     /// Identity of the actual held projected root, never a fresh pathname probe.
@@ -5340,11 +4503,6 @@ impl ProjFsSession {
     pub(super) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .map_err(|(cause, _)| detach_work_error(cause))?;
-        self.flush_callbacks_measured(&work)
-    }
-
-    /// Installs the caller's SDK callback scope before any probe or capture.
-    pub(super) fn flush_callbacks_measured(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         self.flush_callbacks_with_meter(&work.native_mount_work())
     }
 
@@ -5360,14 +4518,7 @@ impl ProjFsSession {
     fn flush_callbacks_on_meter(
         &self, runtime: &Runtime, meter: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
-        let _flush = loop {
-            meter.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-            match runtime.flush_gate.try_lock() {
-                Ok(held) => break held,
-                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(HELD_RETRY),
-            }
-        };
+        let _flush = lock_with_meter(&runtime.flush_gate, meter, HELD_RETRY)?;
         flush_callback_gate_measured(
             &runtime.callbacks, runtime.post_operation_failure.as_ref(),
             Some(&runtime.capture_probes), meter,
@@ -5417,7 +4568,7 @@ impl ProjFsSession {
                                 self.verify_authored_capture_work(runtime, meter)?;
                             }
                             Some(false) => {
-                                let (path, mut owned) = clone_mount_components_native(path.components(), meter)?;
+                                let (path, mut owned) = clone_mount_components_native(path.components().len(), path.components().iter(), meter)?;
                                 allocation.absorb(&mut owned)?;
                                 exact.push(path);
                             }
@@ -5440,8 +4591,6 @@ impl ProjFsSession {
         )
     }
 
-    /// Authored Source publication is distinct from private SDK hydration.
-    /// Recheck the same installed authority before and after the real effect.
     fn verify_authored_capture_work(
         &self, runtime: &Runtime, meter: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
@@ -5449,7 +4598,7 @@ impl ProjFsSession {
             return Err(NativeMountError::Lifecycle("read-only SDK namespace cannot publish authored Source data"));
         }
         installed_callback_work(runtime)?;
-        verify_callback_work(runtime, meter)?;
+        verify_callback_work(runtime, meter, false)?;
         if let Some(guard) = runtime.callback_guard.as_ref() {
             super::adapter::CallbackRuntime::existing()?
                 .verify_native_callback_write_guard(guard.as_ref(), meter)?;
@@ -5457,17 +4606,13 @@ impl ProjFsSession {
         Ok(())
     }
 
-    /// Makes a source-side change at one mount-relative path (leading `/`
-    /// optional) visible: the provider forgets memoized source facts, and an
-    /// unmodified file at `path` is replaced by what is written again from
-    /// the source (settled by [`Self::revalidate`]). Locally modified state
-    /// at `path` is authored and stays.
+    /// Makes a source-side change at one mount-relative path (leading `/` optional) visible: the provider forgets memoized source facts, and an unmodified file at `path` is replaced by what is written again from the source (settled by [`Self::revalidate`]).
     pub(super) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let (runtime, context) = self.live()?;
         let text = std::str::from_utf8(path).map_err(|_| crate::DemandError::InvalidRequest)?;
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .map_err(|(cause, _)| detach_work_error(cause))?;
-        runtime.projector.with_projection_work(&runtime, context, false, &work, |projection| {
+        runtime.projector.with_projection_meter(&runtime, context, false, &work.native_mount_work(), |projection| {
             lock_recover(runtime.projection.as_ref()).clear();
             let components = text.split('/').filter(|part| !part.is_empty());
             let mut count = 0_usize;
@@ -5485,22 +4630,19 @@ impl ProjFsSession {
             let encoded = crate::WorkCounters { bytes_encoded: bytes, ..crate::WorkCounters::UNCHARGED };
             let original = projection.work.native_materialization_work();
             original.admit(encoded)?;
-            let (ordinary_bytes, mut native_allocation) = reserve_retained_storage(bytes, projection.custody, projection.work)?;
+            let mut native_allocation = projection.work.native_materialization_work().claim(bytes)?;
             let mut name = Vec::new();
             if let Err(error) = name.try_reserve_exact(units) {
                 drop(name);
-                retire_ordinary_storage(ordinary_bytes, projection.custody)?;
-                return Err(NativeMountError::Allocation(error));
+                    return Err(NativeMountError::Allocation(error));
             }
-            if let Some(allocation) = native_allocation.as_mut() {
-                allocation.reconcile_capacity((name.capacity() * size_of::<u16>()) as u64)?;
-            }
+            native_allocation.reconcile_capacity((name.capacity() * size_of::<u16>()) as u64)?;
             for (index, component) in components.enumerate() {
                 if index != 0 { name.push(u16::from(b'\\')); }
                 name.extend(component.encode_utf16());
             }
             name.push(0);
-            let name = RetainedBuffer { value: Some(name), custody: projection.custody.clone(), bytes: ordinary_bytes, native_allocation, source_ownership: None };
+            let name = RetainedBuffer { value: Some(name), custody: projection.custody.clone(), bytes: 0, native_allocation: Some(native_allocation), source_ownership: None };
             original.record_admitted(encoded)?;
             let mount_path = path_from(PCWSTR::from_raw(name.as_ptr()), projection)?
                 .ok_or(crate::DemandError::InvalidRequest)?;
@@ -5513,19 +4655,10 @@ impl ProjFsSession {
         })
     }
 
-    /// Waits until every change made to the source so far is written into
-    /// the projection: each superseded path written again, each
-    /// changed directory reconciled. A source that reports none of its
-    /// changes has everything checked.
+    /// Waits until every change made to the source so far is written into the projection: each superseded path written again, each changed directory reconciled.
     pub(super) fn revalidate(&self) -> Result<(), NativeMountError> {
         let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .map_err(|(cause, _)| detach_work_error(cause))?;
-        self.revalidate_measured(&work)
-    }
-
-    /// Reuses the original worker, source fence and callback capture barrier.
-    /// SDK callbacks borrow this invocation even if the mount's token expired.
-    pub(super) fn revalidate_measured(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         self.revalidate_with_meter(&work.native_mount_work())
     }
 
@@ -5545,8 +4678,7 @@ impl ProjFsSession {
         })
     }
 
-    /// Transfers only the actual first fatal cause; publication barriers and
-    /// pending paths remain owned by the live runtime.
+    /// Transfers only the actual first fatal cause; publication barriers and pending paths remain owned by the live runtime.
     pub(super) fn take_callback_failure(&self) -> Option<super::NativeMountCallbackFailure> {
         if let Some(ingress) = self.ingress.as_ref() {
             let mut state = lock_recover(&ingress.state);
@@ -5561,9 +4693,7 @@ impl ProjFsSession {
             .or_else(|| lock_recover(&self.first_callback_failure).take())
     }
 
-    /// Completed future SDK requests only. Active lifecycle scopes already
-    /// report through their caller, so are never folded a second time. Live
-    /// allocation sums describe this completion window, not resident memory.
+    /// Completed future SDK requests only.
     pub(super) fn completed_callback_work(&self) -> crate::WorkCounters {
         if let Some(ingress) = self.ingress.as_ref() {
             let state = lock_recover(&ingress.state);
@@ -5575,7 +4705,7 @@ impl ProjFsSession {
     }
 
     #[cfg(test)]
-    fn test_runtime(&self) -> Option<RetainedArc<Runtime>> {
+    fn test_runtime(&self) -> Option<Arc<RetainedArcValue<Runtime>>> {
         self.runtime.clone().or_else(|| self.ingress.as_ref().and_then(|ingress|
             lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.runtime.clone())))
     }
@@ -5592,19 +4722,7 @@ impl ProjFsSession {
             lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.original_stop_work.clone())))
     }
 
-    #[cfg(test)]
-    fn test_sdk_stop_credit(&self) -> Option<crate::WorkCounters> {
-        self.sdk_stop_credit.as_ref().map(|credit| credit.remaining_work()).or_else(|| self.ingress.as_ref().and_then(|ingress|
-            lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.sdk_stop_credit.as_ref().map(|credit| credit.remaining_work()))))
-    }
-
-    #[cfg(test)]
-    fn test_worker_join_credit(&self) -> Option<crate::WorkCounters> {
-        self.worker_join_credit.as_ref().map(|credit| credit.remaining_work()).or_else(|| self.ingress.as_ref().and_then(|ingress|
-            lock_recover(&ingress.state).owner.as_ref().and_then(|owner| owner.worker_join_credit.as_ref().map(|credit| credit.remaining_work()))))
-    }
-
-    fn live(&self) -> Result<(RetainedArc<Runtime>, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
+    fn live(&self) -> Result<(Arc<RetainedArcValue<Runtime>>, PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT), NativeMountError> {
         if let Some(ingress) = self.ingress.as_ref() {
             let state = lock_recover(&ingress.state);
             if state.retiring { return Err(NativeMountError::Lifecycle("ProjFS producer admission is closed")); }
@@ -5624,8 +4742,6 @@ impl Drop for ProjFsSession {
         if self.runtime.is_some() && lock_recover(&projector.worker).is_none()
             && !lock_recover(&ingress.state).drained
         {
-            // No SDK/factory effect exists and the original packet was never
-            // taken from its caller. Mandatory held-root close stays funded.
             return;
         }
         if self.runtime.is_some() || self.retirement.is_some() || self.context.is_some() {
@@ -5644,7 +4760,7 @@ impl Drop for ProjFsSession {
 
 impl Runtime {
     fn birth_worker_with_work(
-        &self, ingress: RetainedArc<WindowsRetirementIngress>, work: &super::NativeMountMeterWork,
+        &self, ingress: Arc<RetainedArcValue<WindowsRetirementIngress>>, work: &super::NativeMountMeterWork,
     ) -> Result<(), NativeMountError> {
         let projector = self.projector.clone();
         let runtime = SendRuntime(std::ptr::from_ref(self));
@@ -5655,8 +4771,6 @@ impl Runtime {
         Ok(())
     }
 
-    /// Uses the original runtime and worker engine; no duplicate root/path
-    /// envelope or cached original-meter alias escapes the lifecycle scope.
     fn attach_workers_with_work(
         &self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, projection: Projection<'_>,
     ) -> Result<(), NativeMountError> {
@@ -5667,23 +4781,8 @@ impl Runtime {
         self.source.observe_view_with_meter(observer, &work).map_err(detach_source_error)
     }
 
-    /// Stops the preexisting worker and removes only its now-empty staging
-    /// directory. Joining borrows the worker; it does not invent SDK-internal
-    /// callback or operating-system costs.
-
-    fn finish_workers_measured<W: crate::native_host::NativeHostWork>(
-        &self, work: &mut W, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
-    ) -> Result<(), NativeMountError>
-    where NativeMountError: From<W::Error> {
-        if let Some(loan) = cleanup { loan.check_wait().map_err(detach_work_error)?; }
-        else { work.check().map_err(detach_work_error)?; }
-        self.projector.finish_measured(work, cleanup)?;
-        remove_staging_directory_measured(&self.staging_custody, work, cleanup.and_then(|loan| loan.cancellation()))
-    }
 }
 
-/// Reports one typed source failure as its distinct Win32 status. Only the
-/// failure class crosses the `ProjFS` boundary; engine detail stays inside.
 fn source_hresult(error: &MountSourceError) -> HRESULT {
     match error.semantic_error() {
         MountSourceError::NotFound => HR_FILE_NOT_FOUND,
@@ -5706,18 +4805,10 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
             if code < 0 { HRESULT(code) } else { HRESULT::from_win32(code as u32) }
         }),
-        MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
-        | MountSourceError::NativeRecordOwnershipConflict(_, _)
-        | MountSourceError::NativeRecordMaterializationInProgress
-        | MountSourceError::NativeRecordIntegrity | MountSourceError::NativeRecordContextTransaction(_, _)
-        | MountSourceError::NativeRecordCorrupt(_, _) | MountSourceError::PublicationRetryLimit => HR_IO_DEVICE,
-        MountSourceError::MutationFinalization { .. } => HR_IO_DEVICE,
         _ => HR_IO_DEVICE,
     }
 }
 
-/// Only the Win32 failure class crosses SDK ABI; the original owned cause
-/// remains in the source error or the runtime's inline first-fatal slot.
 fn materialization_hresult(error: &crate::NativeTreeMaterializationError) -> HRESULT {
     use crate::NativeTreeMaterializationError as Error;
     match error {
@@ -5734,7 +4825,6 @@ fn materialization_hresult(error: &crate::NativeTreeMaterializationError) -> HRE
         }),
         Error::Cancelled => HR_FILE_INVALID,
         Error::AllocationFailed(_) => HR_OUT_OF_MEMORY,
-        Error::Work(_) => HR_IO_DEVICE,
         _ => HR_IO_DEVICE,
     }
 }
@@ -5742,7 +4832,6 @@ fn materialization_hresult(error: &crate::NativeTreeMaterializationError) -> HRE
 fn filesystem_hresult(error: &crate::FsError) -> HRESULT {
     match error {
         crate::FsError::Cancelled(_) | crate::FsError::SourceSnapshotStale => HR_FILE_INVALID,
-        crate::FsError::Work(_) => HR_IO_DEVICE,
         crate::FsError::NativeKernel(error) => materialization_hresult(error),
         crate::FsError::NotFound => HR_FILE_NOT_FOUND,
         crate::FsError::HandleAllocationFailed => HR_OUT_OF_MEMORY,
@@ -5759,11 +4848,9 @@ fn filesystem_failure_is_fatal(error: &crate::FsError) -> bool {
     }
 }
 
-/// Projects only an ABI status; the whole original workspace cause stays owned.
 fn workspace_hresult(error: &crate::WorkspaceError) -> HRESULT {
     match error {
         crate::WorkspaceError::Cancelled(_) => HR_FILE_INVALID,
-        crate::WorkspaceError::Work(_) => HR_IO_DEVICE,
         crate::WorkspaceError::NotFound => HR_FILE_NOT_FOUND,
         crate::WorkspaceError::Filesystem(error) => filesystem_hresult(error),
         crate::WorkspaceError::StaleGeneration | crate::WorkspaceError::StaleSource
@@ -5780,7 +4867,6 @@ fn workspace_failure_is_fatal(error: &crate::WorkspaceError) -> bool {
     }
 }
 
-/// The placeholder `ProjFS` persists for a link described by `info`.
 fn link_placeholder(info: PRJ_FILE_BASIC_INFO) -> PRJ_PLACEHOLDER_INFO {
     PRJ_PLACEHOLDER_INFO {
         FileBasicInfo: info,
@@ -5788,10 +4874,7 @@ fn link_placeholder(info: PRJ_FILE_BASIC_INFO) -> PRJ_PLACEHOLDER_INFO {
     }
 }
 
-
-/// Recovery owns only a capability it actually opened, never an invented
-/// virtualization context from another process. A denied reparse probe keeps
-/// that capability and its learned identity for the same owner's next attempt.
+/// Recovery owns only a capability it actually opened, never an invented virtualization context from another process.
 #[derive(Default)]
 pub(super) struct ProjFsRecoveryControl {
     directory: Option<cap_std::fs::Dir>,
@@ -5816,8 +4899,6 @@ impl ProjFsRecoveryControl {
     ) -> Result<(), NativeMountError> {
         if self.directory.is_some() {
             let credit = self.retirement_close.as_mut().ok_or(NativeMountError::ControlPending)?;
-            // This credit already carries the original administrative issuer.
-            // Physical close needs no namespace permission or renewed stop.
             credit.started_drop_io(crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             });
@@ -5827,17 +4908,13 @@ impl ProjFsRecoveryControl {
         Ok(())
     }
 
-    /// Binds the constructor's actual root observation, independently of the
-    /// sibling fence file identity. No new capability or allocation is made.
+    /// Binds the constructor's actual root observation, independently of the sibling fence file identity.
     pub(super) fn bind_root_identity(&mut self, actual: crate::NativeRootIdentity) {
         debug_assert!(self.directory.is_none(), "bind before acquiring recovery controls");
         self.identity = Some(actual);
     }
 
     /// Corroborates this owner's exact root using the original caller ledger.
-    /// Preserving recovery never deletes cache or calls an SDK detach. Cache-
-    /// only recovery retains the old fail-closed rule: a ProjFS reparse root
-    /// may contain unjoined authored files, metadata or tombstones even empty.
     pub(super) fn recover_measured<W: crate::native_host::NativeHostWork>(
         &mut self,
         destination: &std::path::Path,
@@ -5874,9 +4951,6 @@ impl ProjFsRecoveryControl {
             let observed = crate::native_host::directory_identity_with_work(directory, work)
                 .map_err(detach_work_error)?;
             if self.identity.is_some_and(|identity| identity != observed) {
-                // This freshly observed replacement is not owned by recovery.
-                // Drop its probe capability rather than associating it with
-                // the retained proof for the original root.
                 let _ = self.directory.take();
                 return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
             }
@@ -5899,9 +4973,7 @@ impl ProjFsRecoveryControl {
         Ok(())
     }
 
-    /// Recovery did not call or observe an SDK stop. Neither a dead provider's
-    /// reparse tag nor this control's lack of an SDK handle proves that the
-    /// current public namespace is detached; callers inspect it separately.
+    /// Recovery did not call or observe an SDK stop.
     pub(super) const fn namespace_detach_confirmed(&self) -> bool {
         false
     }
@@ -5911,7 +4983,6 @@ impl ProjFsRecoveryControl {
         self.directory.is_some()
     }
 }
-
 
 pub(super) fn quarantine_crashed_destination(
     destination: &std::path::Path,
@@ -5972,7 +5043,6 @@ pub(super) fn quarantine_crashed_destination(
     Ok(Some(preserved))
 }
 
-
 fn detach_work_error(error: impl Into<NativeMountError>) -> NativeMountError {
     match error.into() {
         NativeMountError::Materialization(crate::NativeTreeMaterializationError::Io(error)) => NativeMountError::Io(error),
@@ -5989,8 +5059,6 @@ fn detach_source_error(error: MountSourceError) -> NativeMountError {
     error.into()
 }
 
-/// Admits exactly one actual native call and records even its failed attempt.
-/// Cancellation after the call cannot erase that executed prefix.
 fn detach_attempt<T, W: crate::native_host::NativeHostWork>(
     work: &mut W,
     cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
@@ -6015,26 +5083,6 @@ fn destination_parent(destination: &std::path::Path) -> Result<&std::path::Path,
     let parent = destination.parent().ok_or(crate::DemandError::InvalidRequest)?;
     Ok(if parent.as_os_str().is_empty() { std::path::Path::new(".") } else { parent })
 }
-
-fn recreate_destination_measured<W: crate::native_host::NativeHostWork>(
-    destination: &std::path::Path, recreated: &mut Option<std::fs::File>, work: &mut W,
-) -> Result<(), NativeMountError>
-where NativeMountError: From<W::Error> {
-    work.check().map_err(detach_work_error)?;
-    if recreated.is_some() { return Ok(()); }
-    let parent = crate::native_host::open_root_directory_with_work(
-        destination_parent(destination).map_err(detach_work_error)?, work,
-    ).map_err(detach_work_error)?;
-    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
-    // FILE_CREATE never adopts a directory that somebody else substituted.
-    crate::native_host::with_wide_path_with_work(std::path::Path::new(leaf), work, |name, work| {
-        let file = crate::native_host::create_windows_new_directory_with_work(&parent, name, work)?;
-        *recreated = Some(file);
-        Ok(())
-    }).map_err(detach_work_error)?;
-    Ok(())
-}
-
 
 fn reopen_for_delete_measured<W: crate::native_host::NativeHostWork>(
     file: &impl std::os::windows::io::AsRawHandle, work: &mut W,
@@ -6102,8 +5150,7 @@ where NativeMountError: From<W::Error> {
     }) {
         return Err(NativeMountError::Lifecycle("original staging probe/disposition credit exhausted; capability retained"));
     }
-    // Reopen only the original creation capability. A renamed original stays
-    // owned; a foreign directory or link at the old spelling is never adopted.
+    // Reopen only the original creation capability.
     let file = reopen_for_delete_measured(directory, work, loan.as_ref())?;
     let reopened = cap_std::fs::Dir::from_std_file(file);
     let result = (|| {
@@ -6121,8 +5168,7 @@ where NativeMountError: From<W::Error> {
         // Atomic empty-only disposition cannot erase foreign staging residue.
         delete_through_measured(&reopened, work, loan.as_ref())
     })();
-    // Closing this temporary physical control is mandatory, even if admission
-    // or the caller was refused after its successful reopen.
+    // Closing this temporary physical control is mandatory, even if admission or the caller was refused after its successful reopen.
     temporary_close.started_drop_io(crate::WorkCounters {
         backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
     });
@@ -6130,24 +5176,10 @@ where NativeMountError: From<W::Error> {
     drop(loan);
     result?;
     // The creation handle's existing owner records and performs its own close.
-    // The creation handle must close too for Windows delete-on-close fallback.
     drop(owned.take());
     Ok(())
 }
 
-#[cfg(test)]
-fn remove_authenticated_destination(
-    destination: &std::path::Path,
-    expected_identity: crate::NativeRootIdentity,
-) -> Result<(), NativeMountError> {
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-        .map_err(|(cause, _)| detach_work_error(cause))?;
-    remove_authenticated_destination_measured(destination, expected_identity, &mut &work).map(|_| ())
-}
-
-/// Observes the physical name without opening it through the stopped provider.
-/// The owned absolute, NUL-terminated native buffer stays admitted through the
-/// real metadata call and drops before its claim is released.
 fn physical_attributes_measured<W: crate::native_host::NativeHostWork>(
     path: &std::path::Path, work: &mut W,
 ) -> Result<Option<u32>, NativeMountError>
@@ -6174,57 +5206,7 @@ where NativeMountError: From<W::Error> {
     }
 }
 
-/// Holds the authenticated root for the entire walk. Every child is opened
-/// relative to that capability with reparses not followed; replacement of the
-/// public path therefore cannot redirect cleanup into another tree.
-fn remove_authenticated_destination_measured<W: crate::native_host::NativeHostWork>(
-    destination: &std::path::Path,
-    expected_identity: crate::NativeRootIdentity,
-    work: &mut W,
-) -> Result<bool, NativeMountError>
-where NativeMountError: From<W::Error> {
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
-    match physical_attributes_measured(destination, work).map_err(detach_work_error)? {
-        None => return Ok(true),
-        Some(attributes) if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 => {}
-        Some(_) => return Err(NativeMountError::InvalidDestination),
-    }
-    let parent = crate::native_host::open_root_directory_with_work(
-        destination_parent(destination).map_err(detach_work_error)?, work,
-    ).map_err(detach_work_error)?;
-    let leaf = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
-    let file = match crate::native_host::with_wide_path_with_work(std::path::Path::new(leaf), work, |name, work| {
-        crate::native_host::open_windows_leaf_handle_with_work(
-            &parent, name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, Some(true), work,
-        )
-    }) {
-        Ok(file) => file,
-        Err(error) => return Err(detach_work_error(error)),
-    };
-    let directory = cap_std::fs::Dir::from_std_file(file);
-    let identity = crate::native_host::directory_identity_with_work(&directory, work).map_err(detach_work_error)?;
-    if identity != expected_identity {
-        return Err(NativeMountError::Demand(crate::DemandError::StaleSource));
-    }
-    match reparse_tag_held_measured(&directory, work, None).map_err(detach_work_error)? {
-        Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS) => {}
-        Some(tag) => return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(tag) }),
-        None => return Ok(false),
-    }
-    remove_projection_tree(&directory, Some(expected_identity), work, None).map_err(detach_work_error)?;
-    drop(directory);
-    // A successful disposition can still be delete-on-close. Do not claim the
-    // root is removed until its own handle dropped and this actual name probe
-    // confirms absence; another directory substituted meanwhile is preserved.
-    if physical_attributes_measured(destination, work).map_err(detach_work_error)?.is_some() {
-        return Err(NativeMountError::Lifecycle("authenticated ProjFS root deletion is still pending; namespace preserved"));
-    }
-    Ok(true)
-}
-
-/// Removes only this owner's originally observed, currently empty physical
-/// root. NT disposition enforces emptiness atomically; no tree walker or path
-/// deletion can accidentally erase authored residue or a substituted root.
+/// Removes only this owner's originally observed, currently empty physical root.
 pub(super) fn remove_empty_recovery_destination_measured<W: crate::native_host::NativeHostWork>(
     destination: &std::path::Path,
     expected: Option<crate::NativeRootIdentity>,
@@ -6258,8 +5240,7 @@ where NativeMountError: From<W::Error> {
     if let Some(tag) = reparse_tag_held_measured(&directory, work, None).map_err(detach_work_error)? {
         return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: Some(tag) });
     }
-    // Both actual disposition attempts refuse a nonempty directory. Foreign
-    // children are never enumerated, opened, followed, or deleted here.
+    // Both actual disposition attempts refuse a nonempty directory.
     delete_through_measured(&directory, work, None).map_err(detach_work_error)?;
     drop(directory);
     if physical_attributes_measured(destination, work).map_err(detach_work_error)?.is_some() {
@@ -6268,105 +5249,8 @@ where NativeMountError: From<W::Error> {
     Ok(())
 }
 
-/// Visits physical entries explicitly instead of hiding recursive traversal in
-/// remove_dir_all. Retry enumeration, authentication probes, and both possible
-/// disposition calls each receive their own admission at the real boundary.
-fn remove_projection_tree<W: crate::native_host::NativeHostWork>(
-    directory: &cap_std::fs::Dir,
-    expected_root: Option<crate::NativeRootIdentity>,
-    work: &mut W,
-    cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
-) -> Result<(), NativeMountError>
-where NativeMountError: From<W::Error> {
-    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
-    let deadline = std::time::Instant::now() + PATIENCE;
-    loop {
-        work.check()?;
-        match remove_directories_in(directory, work) {
-            Err(NativeMountError::Io(error)) if refused_for_now(&error) => {}
-            result => result?,
-        }
-        if let Some(cleanup) = cleanup {
-            let remaining = cleanup.remaining_work();
-            let reads = if expected_root.is_some() { 2 } else { 0 };
-            if remaining.backend_read_operations < reads || remaining.backend_write_operations < 2 {
-                return Err(NativeMountError::Lifecycle(
-                    "original root disposition credit exhausted; capability retained",
-                ));
-            }
-        }
-        if let Some(expected) = expected_root {
-            let information = held_information_measured(directory, work, cleanup)?;
-            let actual = crate::NativeRootIdentity {
-                device: u64::from(information.dwVolumeSerialNumber),
-                object: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
-            };
-            if actual != expected
-                || reparse_tag_held_measured(directory, work, cleanup)?
-                    != Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
-            {
-                return Err(crate::DemandError::StaleSource.into());
-            }
-        }
-        match delete_through_measured(directory, work, cleanup) {
-            Ok(()) => return Ok(()),
-            Err(NativeMountError::Io(error)) if refused_for_now(&error) && std::time::Instant::now() < deadline => {
-                work.check()?;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Whether a real delete was refused by a transient holder or draining filter.
 fn refused_for_now(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(2 | 3 | 5 | 32 | 145 | 369))
-}
-
-fn remove_directories_in<W: crate::native_host::NativeHostWork>(
-    directory: &cap_std::fs::Dir, work: &mut W,
-) -> Result<(), NativeMountError>
-where NativeMountError: From<W::Error> {
-    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
-    let (entries, buffer) = crate::native_host::read_dir_held_with_work(directory, work)
-        .map_err(detach_work_error)?;
-    let mut entries = entries;
-    let result = (|| {
-        while let Some((entry, allocation)) = entries.next_wide_with_work(work)? {
-            let entry = entry;
-            let result = (|| {
-                let file = match crate::native_host::open_windows_leaf_handle_with_work(
-                    directory, &entry.name, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, None, work,
-                ).map_err(detach_work_error) {
-                    Ok(file) => file,
-                    Err(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                    Err(error) => return Err(error),
-                };
-                let attributes = held_information_measured(&file, work, None)?.dwFileAttributes;
-                // A directory link is a leaf, never a recursively followed tree.
-                if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
-                    && attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
-                {
-                    remove_projection_tree(&cap_std::fs::Dir::from_std_file(file), None, work, None)
-                } else if attributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0
-                    && reparse_tag_held_measured(&file, work, None)?
-                        == Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS)
-                {
-                    remove_projection_tree(&cap_std::fs::Dir::from_std_file(file), None, work, None)
-                } else {
-                    delete_through_measured(&file, work, None)
-                }
-            })();
-            drop(entry);
-            work.release(allocation)?;
-            result?;
-        }
-        Ok(())
-    })();
-    drop(entries);
-    work.release(buffer)?;
-    result
 }
 
 fn held_information_measured<W: crate::native_host::NativeHostWork>(
@@ -6437,8 +5321,6 @@ where NativeMountError: From<W::Error> {
     use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
     use windows::Win32::System::IO::DeviceIoControl;
     use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
-    // The ABI has one fixed output maximum. This synchronous leaf needs no
-    // fresh heap allocation or ledger grant merely to authenticate its tag.
     let mut output = std::mem::MaybeUninit::<[u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize]>::uninit();
     let mut returned = 0_u32;
     match detach_attempt(work, cleanup, false, || {
@@ -6448,8 +5330,7 @@ where NativeMountError: From<W::Error> {
             .map_err(Into::into)
     }) {
         Ok(()) if returned >= 4 => {
-            // SAFETY: successful DeviceIoControl initialized at least these
-            // four bytes in the caller-provided ABI-sized output storage.
+            // SAFETY: successful DeviceIoControl initialized at least these four bytes in the caller-provided ABI-sized output storage.
             let tag = unsafe { output.as_ptr().cast::<[u8; 4]>().read() };
             Ok(Some(u32::from_le_bytes(tag)))
         }
@@ -6465,7 +5346,6 @@ fn reparse_tag(
     path: &std::path::Path,
 ) -> Result<(Option<u32>, crate::NativeRootIdentity), NativeMountError> {
     use std::os::windows::fs::OpenOptionsExt;
-    use windows::Win32::Foundation::ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE;
     use windows::Win32::Storage::FileSystem::{
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -6479,68 +5359,13 @@ fn reparse_tag(
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
     let identity = crate::NativeRootIdentity::from_file(&file)
         .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    match reparse_data(&file) {
-        Ok(None) => Ok((None, identity)),
-        Ok(Some(data)) => {
-            let tag = data.first_chunk().copied().ok_or_else(|| {
-                NativeMountError::Driver("reparse response omitted its tag".to_owned())
-            })?;
-            Ok((Some(u32::from_le_bytes(tag)), identity))
-        }
-        // A stopped ProjFS provider can leave an authenticated placeholder
-        // root even when the filter declines to return its reparse payload.
-        Err(error)
-            if error.raw_os_error()
-                == i32::try_from(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0).ok() =>
-        {
-            Ok((
-                Some(windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS),
-                identity,
-            ))
-        }
-        Err(error) => Err(NativeMountError::Driver(error.to_string())),
-    }
+    let mut work = DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+    let tag = reparse_tag_held_measured(&file, &mut work, None)
+        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
+    Ok((tag, identity))
 }
 
-/// The reparse data `file` carries; `None` when it is no reparse point.
-fn reparse_data(file: &std::fs::File) -> std::io::Result<Option<Vec<u8>>> {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows::Win32::Foundation::{ERROR_NOT_A_REPARSE_POINT, HANDLE};
-    use windows::Win32::Storage::FileSystem::MAXIMUM_REPARSE_DATA_BUFFER_SIZE;
-    use windows::Win32::System::IO::DeviceIoControl;
-    use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
-
-    let capacity = usize::try_from(MAXIMUM_REPARSE_DATA_BUFFER_SIZE)
-        .map_err(|_| std::io::Error::other("reparse buffer size overflow"))?;
-    let mut output = vec![0_u8; capacity];
-    let mut returned = 0_u32;
-    // SAFETY: the handle and output buffer remain valid for the synchronous
-    // control call; the output length exactly matches the allocated buffer.
-    let result = unsafe {
-        DeviceIoControl(
-            HANDLE(file.as_raw_handle()),
-            FSCTL_GET_REPARSE_POINT,
-            None,
-            0,
-            Some(output.as_mut_ptr().cast()),
-            MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
-            Some(&raw mut returned),
-            None,
-        )
-    };
-    match result {
-        Ok(()) => {
-            output.truncate(usize::try_from(returned).unwrap_or(capacity));
-            Ok(Some(output))
-        }
-        Err(error) if error.code() == ERROR_NOT_A_REPARSE_POINT.to_hresult() => Ok(None),
-        Err(error) => Err(error.into()),
-    }
-}
-
-
-/// One lock per key, apart from every other key's.
-struct KeyedLocks<K>(Mutex<MemoMap<K, RetainedArc<Mutex<()>>>>);
+struct KeyedLocks<K>(Mutex<MemoMap<K, Arc<RetainedArcValue<Mutex<()>>>>>);
 
 impl<K> Default for KeyedLocks<K> {
     fn default() -> Self {
@@ -6548,12 +5373,9 @@ impl<K> Default for KeyedLocks<K> {
     }
 }
 
-/// One lock per file, keyed by its host identity.
 type FileLocks = KeyedLocks<crate::NativeRootIdentity>;
 
 impl<K: MemoKey> KeyedLocks<K> {
-    /// Existing per-key exclusion, with only newly owned key/control storage
-    /// charged here. A failed retirement leaves the actual slot in custody.
     fn with<T>(
         &self, key: &K, projection: Projection<'_>,
         edit: impl FnOnce() -> Result<T, NativeMountError>,
@@ -6563,20 +5385,13 @@ impl<K: MemoKey> KeyedLocks<K> {
             if let Some(lock) = locks.get(key, projection)? {
                 lock.clone()
             } else {
-                let lock = retained_arc_on_meter(Mutex::new(()), projection.custody, projection.work)?;
+                let lock = retained_arc(Mutex::new(()), projection.work)?;
                 locks.insert(key, lock.clone(), projection)?;
                 lock
             }
         };
         let outcome = (|| {
-            let _held = loop {
-                projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-                match lock.try_lock() {
-                    Ok(held) => break held,
-                    Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                    Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(HELD_RETRY),
-                }
-            };
+            let _held = lock_with_meter(&lock, projection.work, HELD_RETRY)?;
             edit()
         })();
         let retirement = {
@@ -6585,6 +5400,19 @@ impl<K: MemoKey> KeyedLocks<K> {
             else { Ok(()) }
         };
         match outcome { Err(error) => Err(error), Ok(value) => retirement.map(|()| value) }
+    }
+}
+
+fn lock_with_meter<'a, T>(
+    mutex: &'a Mutex<T>, work: &super::NativeMountMeterWork, retry: std::time::Duration,
+) -> Result<MutexGuard<'a, T>, NativeMountError> {
+    loop {
+        work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(retry),
+        }
     }
 }
 
@@ -6602,9 +5430,6 @@ unsafe fn runtime<'a>(
     pointer.as_ref().map(|value| (data, value))
 }
 
-/// Borrows the SDK's exact raw UTF-16 spelling. Only canonical native
-/// components are copied, after their real vector/name capacities are admitted;
-/// no OsString/WTF-8 roundtrip or lossy normalization owns hidden storage.
 fn path_from(
     pointer: PCWSTR, projection: Projection<'_>,
 ) -> Result<Option<RetainedBuffer<MountPath>>, NativeMountError> {
@@ -6615,8 +5440,7 @@ fn path_from(
         projection.work.native_materialization_work().charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
-        // SAFETY: ProjFS owns this NUL-terminated callback spelling through
-        // handler completion; denial precedes even the next borrowed unit.
+        // SAFETY: ProjFS owns this NUL-terminated callback spelling through handler completion; denial precedes even the next borrowed unit.
         let unit = unsafe { *pointer.0.add(length) };
         if unit == 0 { break; }
         length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
@@ -6667,7 +5491,6 @@ unsafe fn empty_destination(
     Ok(unsafe { *pointer.0 == 0 })
 }
 
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct HostWindowsMetadata {
     identity: crate::NativeRootIdentity,
@@ -6714,9 +5537,6 @@ fn host_windows_metadata(
     })
 }
 
-
-/// Drops the owned native name before releasing its original live claim.
-/// The meter lock covers only encoding, never the reentrant native operation.
 fn with_mount_wide_path_on_meter<T>(
     path: &MountPath, meter: &super::NativeMountMeterWork,
     operation: impl FnOnce(&[u16], &super::NativeMountMeterWork) -> Result<T, NativeMountError>,
@@ -6748,7 +5568,7 @@ fn capture_missing_host_ancestors_measured(
 ) -> Result<(), NativeMountError> {
     let work = meter.clone();
     for count in 1..path.components().len() {
-        let (parent, allocation) = clone_mount_components_native(&path.components()[..count], meter)?;
+        let (parent, allocation) = clone_mount_components_native(count, path.components()[..count].iter(), meter)?;
         let result: Result<(), NativeMountError> = (|| {
             if source.lookup_with_meter(&parent, &work).map_err(detach_source_error)?.is_none() {
                 verify_source_write_work(source, meter)?;
@@ -6767,15 +5587,15 @@ fn capture_missing_host_ancestors_measured(
 }
 
 struct MetadataProbeGuard<'a> {
-    probes: &'a Mutex<MemoMap<MountPath, RetainedArc<std::sync::atomic::AtomicUsize>>>,
+    probes: &'a Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>,
     path: &'a MountPath,
-    counter: Option<RetainedArc<std::sync::atomic::AtomicUsize>>,
+    counter: Option<Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>,
     projection: Projection<'a>,
 }
 
 impl<'a> MetadataProbeGuard<'a> {
     fn enter(
-        probes: &'a Mutex<MemoMap<MountPath, RetainedArc<std::sync::atomic::AtomicUsize>>>,
+        probes: &'a Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>,
         path: &'a MountPath, projection: Projection<'a>,
     ) -> Result<Self, NativeMountError> {
         let mut active = lock_recover(probes);
@@ -6783,8 +5603,7 @@ impl<'a> MetadataProbeGuard<'a> {
             Ok(index) => index,
             Err(index) => {
                 let key = path.copy_owned(projection)?;
-                let counter = retained_arc_on_meter(std::sync::atomic::AtomicUsize::new(0),
-                    projection.custody, projection.work)?;
+                let counter = retained_arc(std::sync::atomic::AtomicUsize::new(0), projection.work)?;
                 active.entries.insert(index, (key, counter), projection)?;
                 index
             }
@@ -6797,7 +5616,7 @@ impl<'a> MetadataProbeGuard<'a> {
     }
 
     fn is_active(
-        probes: &Mutex<MemoMap<MountPath, RetainedArc<std::sync::atomic::AtomicUsize>>>,
+        probes: &Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>,
         path: &MountPath, projection: Projection<'_>,
     ) -> Result<bool, NativeMountError> {
         for (active, counter) in lock_recover(probes).iter() {
@@ -6811,8 +5630,6 @@ impl<'a> MetadataProbeGuard<'a> {
         Ok(false)
     }
 
-    /// Decrementing the actual request lifetime cannot be cancelled. A denied
-    /// key shift leaves the physically owned inactive slot for bounded reuse.
     fn finish(&mut self) -> Result<(), NativeMountError> {
         let Some(counter) = self.counter.take() else { return Ok(()); };
         let last = counter.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
@@ -6825,7 +5642,6 @@ impl<'a> MetadataProbeGuard<'a> {
                 Err(error) => Err(error),
             }
         } else { Ok(None) };
-        // The outside map owner must be the last strong physical token.
         drop(counter);
         drop(removed?);
         self.projection.work.native_materialization_work().record_admitted(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)
@@ -6838,7 +5654,7 @@ impl Drop for MetadataProbeGuard<'_> {
 
 fn probe_host_windows_metadata(
     path: &MountPath,
-    probes: &Mutex<MemoMap<MountPath, RetainedArc<std::sync::atomic::AtomicUsize>>>,
+    probes: &Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>,
     projection: Projection<'_>,
 ) -> Result<HostWindowsMetadata, NativeMountError> {
     let mut guard = MetadataProbeGuard::enter(probes, path, projection)?;
@@ -6938,7 +5754,6 @@ fn capture_changed_windows_metadata(
     verify_source_write_work(projection.source, projection.work)
 }
 
-/// Keys one GUID by its little-endian wire bytes.
 fn guid_key(guid: &GUID) -> u128 {
     let mut bytes = [0_u8; 16];
     bytes[0..4].copy_from_slice(&guid.data1.to_le_bytes());
@@ -6948,7 +5763,6 @@ fn guid_key(guid: &GUID) -> u128 {
     u128::from_le_bytes(bytes)
 }
 
-/// Inverse of [`guid_key`].
 fn guid_from_key(key: u128) -> GUID {
     let bytes = key.to_le_bytes();
     GUID::from_values(
@@ -7013,9 +5827,6 @@ fn unix_nanoseconds(windows_ticks: i64) -> Result<i64, NativeMountError> {
         .ok_or_else(|| crate::WorkError::Overflow.into())
 }
 
-
-/// Presented placeholder times round toward the past: a projection must not
-/// fail because its source keeps finer timestamps than Windows can name.
 fn windows_time(field: MetadataField<i64>) -> Option<i64> {
     let MetadataField::Value(unix_nanoseconds) = field else {
         return None;
@@ -7025,9 +5836,7 @@ fn windows_time(field: MetadataField<i64>) -> Option<i64> {
     ))
 }
 
-// Every directory beneath the root is an ordinary one, and the root holds
-// on disk everything the source lists: `ProjFS` merges an enumeration with
-// what is on disk, so the provider enumerates nothing and names nothing.
+// Every directory beneath the root is an ordinary one, and the root holds on disk everything the source lists: `ProjFS` merges an enumeration with what is on disk, so the provider enumerates nothing and names nothing.
 unsafe fn start_directory(
     _callback_data: *const PRJ_CALLBACK_DATA,
     _enumeration_id: *const GUID,
@@ -7058,14 +5867,10 @@ unsafe fn placeholder(_callback_data: *const PRJ_CALLBACK_DATA, _projection: Pro
     HR_FILE_NOT_FOUND
 }
 
-/// Empty owners allocate nothing; their proof is this invocation's original
-/// custody, never a meter alias retained beyond the scoped native operation.
 fn source_empty_vec<T>(projection: Projection<'_>) -> RetainedBuffer<Vec<T>> {
     RetainedBuffer { value: Some(Vec::new()), custody: projection.custody.clone(), bytes: 0, native_allocation: None, source_ownership: None }
 }
 
-/// Reallocation keeps both real backings live through the copy. In particular,
-/// a finite peak allowance cannot treat replacement as a capacity delta.
 fn source_reserve<T>(
     projection: Projection<'_>, value: &mut Vec<T>, live: &mut u64,
     native_allocation: &mut Option<crate::NativeAllocation>, additional: usize,
@@ -7090,24 +5895,15 @@ fn source_reserve<T>(
         return Err(NativeMountError::ControlPending);
     }
     let old_ordinary_bytes = if native_allocation.is_none() { old_bytes } else { 0 };
-    let ordinary_bytes = 0;
     let next_live = live.checked_sub(old_ordinary_bytes).ok_or(crate::WorkError::Overflow)?;
-    let (_, mut replacement_allocation) = reserve_retained_storage(bytes, projection.custody, projection.work)?;
+    let mut replacement_allocation = work.claim(bytes)?;
     let mut replacement = Vec::new();
-    if let Err(error) = replacement.try_reserve_exact(required) {
-        drop(replacement);
-        retire_ordinary_storage(ordinary_bytes, projection.custody)?;
-        return Err(NativeMountError::Allocation(error));
-    }
+    replacement.try_reserve_exact(required).map_err(NativeMountError::Allocation)?;
     let actual = replacement.capacity().checked_mul(width).ok_or(crate::WorkError::Overflow)? as u64;
-    if let Some(allocation) = replacement_allocation.as_mut() {
-        allocation.reconcile_capacity(actual)?;
-    } else {
-        debug_assert_eq!(actual, bytes, "Global reserve-exact reports the admitted ordinary layout");
-    }
+    replacement_allocation.reconcile_capacity(actual)?;
     if aggregate {
         native_allocation.as_mut().expect("the current path retains its native component claims")
-            .absorb(replacement_allocation.as_mut().expect("the same full resource view"))?;
+            .absorb(&mut replacement_allocation)?;
     }
     replacement.append(value);
     drop(std::mem::replace(value, replacement));
@@ -7115,10 +5911,10 @@ fn source_reserve<T>(
     if aggregate {
         native_allocation.as_mut().expect("aggregate physical path ownership").release(old_bytes)?;
     } else {
-        let old_allocation = std::mem::replace(native_allocation, replacement_allocation);
+        let old_allocation = std::mem::replace(native_allocation, Some(replacement_allocation));
         drop(old_allocation);
     }
-    retire_ordinary_storage(old_ordinary_bytes, projection.custody)?;
+    if old_ordinary_bytes != 0 { projection.custody.retire(old_ordinary_bytes)?; }
     work.record_admitted(copied).map_err(detach_work_error)
 }
 
@@ -7128,7 +5924,6 @@ fn source_reserve_vec<T>(
     source_reserve(projection, value.value.as_mut().expect("live source vector"), &mut value.bytes,
         &mut value.native_allocation, additional)
 }
-
 
 fn source_copy_bytes(
     projection: Projection<'_>, bytes: &[u8],
@@ -7144,8 +5939,6 @@ fn source_copy_bytes(
     Ok(owned)
 }
 
-/// Raw UTF-16LE is preserved, including unpaired surrogates. Invalid byte
-/// framing and interior NUL are unrepresentable, not lossy text substitutions.
 fn source_utf16(
     projection: Projection<'_>, bytes: &[u8], terminate: bool,
 ) -> Result<Option<RetainedBuffer<Vec<u16>>>, NativeMountError> {
@@ -7233,8 +6026,6 @@ fn source_path_pop(projection: Projection<'_>, path: &mut RetainedBuffer<MountPa
     Ok(true)
 }
 
-/// What the projection writes for an already-live source component. Moving a
-/// page name here transfers its original claim without another allocation.
 fn projected_entry(
     projection: Projection<'_>, directory: &MountPath, component: RetainedBuffer<Vec<u8>>,
     lookup: MountLookup, pin: Option<MountContentPin>,
@@ -7260,8 +6051,6 @@ fn projected_entry(
     }))
 }
 
-/// Windows links retain their recorded directory bit; otherwise resolve the
-/// exact raw native spelling through measured source and host query leaves.
 fn links_to_directory(
     projection: Projection<'_>, directory: &MountPath, attributes: MetadataField<u32>, target: &[u8],
 ) -> Result<bool, NativeMountError> {
@@ -7294,8 +6083,7 @@ fn resolves_to_directory(
         name.extend_from_slice(target);
         name.push(0);
         projection.work.native_materialization_work().record_admitted(copied).map_err(detach_work_error)?;
-        // Follow the actual host target, rather than returning the reparse
-        // link's directory bit (which would misclassify a broken host link).
+        // Follow the actual host target, rather than returning the reparse link's directory bit (which would misclassify a broken host link).
         let opened = projection_native_call(projection.work, false, || {
             // SAFETY: exact raw units plus NUL remain owned through this call.
             unsafe { CreateFileW(PCWSTR::from_raw(name.as_ptr()), FILE_READ_ATTRIBUTES.0,
@@ -7386,15 +6174,12 @@ impl Drop for SourceListingLease<'_> {
     }
 }
 
-/// A source page is already LIVE in the original ledger. Its remaining
-/// payloads free before release; moved names/cursors subtract their exact
-/// capacity and transfer to the eventual physical consumer.
+/// A source page is already LIVE in the original ledger.
 struct SourceListingPage {
     entries: Vec<super::MountDirectoryEntry>,
     next_cursor: Option<Vec<u8>>,
     ownership: crate::demand::SourcePayloadOwnership,
 }
-
 
 fn source_insert<T>(
     projection: Projection<'_>, entries: &mut RetainedBuffer<Vec<T>>, index: usize, entry: T,
@@ -7410,9 +6195,6 @@ fn source_insert<T>(
     projection.work.native_materialization_work().record_admitted(copied).map_err(detach_work_error)
 }
 
-/// The same sorted producer preserves first-listed case-fold collisions
-/// without an allocating stable sort. Opaque cursor proof is a sorted Vec of
-/// actual moved cursor owners: there is no hash-capacity estimate or clone.
 fn source_listing(
     projection: Projection<'_>, path: &MountPath,
 ) -> Result<RetainedBuffer<Vec<ProjectedEntry>>, NativeMountError> {
@@ -7450,8 +6232,7 @@ fn source_listing(
                         items_examined: 1, ..crate::WorkCounters::UNCHARGED
                     }).map_err(detach_work_error)?;
                     let middle = low + (high - low) / 2;
-                    // SAFETY: both actual native name owners include NUL and
-                    // remain resident throughout the comparison.
+                    // SAFETY: both actual native name owners include NUL and remain resident throughout the comparison.
                     let compared = projection_native_call(projection.work, false, || Ok(unsafe {
                         PrjFileNameCompare(
                             PCWSTR::from_raw(entries[middle].name.as_ptr()),
@@ -7487,8 +6268,6 @@ fn source_listing(
     Ok(entries)
 }
 
-/// `ProjFS` asks only a placeholder for its content, and no file of the
-/// projection is one.
 unsafe fn file_data(
     _callback_data: *const PRJ_CALLBACK_DATA,
     _byte_offset: u64,
@@ -7561,8 +6340,6 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
     result
 }
 
-/// A panic or original-publication uncertainty cannot be turned into a new
-/// host import retry. Preserve its original SDK prefix and namespace fence.
 fn callback_requires_permanent_fence(error: &NativeMountError) -> bool {
     match error {
         NativeMountError::DriverPanicked { .. } | NativeMountError::CallbackDenied { .. } => true,
@@ -7591,8 +6368,7 @@ fn record_post_operation_failure(
     notification: PRJ_NOTIFICATION, retry_path: Option<&MountPath>,
     result: Result<(), NativeMountError>, projection: Projection<'_>,
 ) -> HRESULT {
-    // A successful callback never proves an earlier deferred final-state
-    // capture joined. Leave its original path and serial physically owned.
+    // A successful callback never proves an earlier deferred final-state capture joined.
     let Err(error) = result else { return HR_OK; };
     if callback_requires_permanent_fence(&error) {
         return retain_callback_failure(projection, error);
@@ -7607,7 +6383,7 @@ fn record_post_operation_failure(
     let mut error = Some(error);
     let mut failure = lock_recover(projection.captures);
     if let Some(path) = retry_path {
-        match failure.queue_capture(path, "post-operation capture failed", &mut error, projection) {
+        match failure.queue(path, "post-operation capture failed", &mut error, false, projection) {
             Ok(()) => return result,
             Err(queue_error) => {
                 let result = native_hresult(&queue_error);
@@ -7687,8 +6463,7 @@ unsafe fn notification_with_work(
     if notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
         && (source_is_external || destination_is_external || destination.is_none())
     {
-        // A cross-root link would admit writes that cannot produce this
-        // original projection's notification and source-admission proof.
+        // A cross-root link would admit writes that cannot produce this original projection's notification and source-admission proof.
         return Ok(HR_NOT_SAME_DEVICE);
     }
     if notification == PRJ_NOTIFICATION_PRE_RENAME
@@ -7701,8 +6476,8 @@ unsafe fn notification_with_work(
     }
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         if is_directory {
-            lock_recover(projection.captures).queue_subtree(
-                &path, "new directory awaiting capture", projection)?;
+            lock_recover(projection.captures).queue(
+                &path, "new directory awaiting capture", &mut None, true, projection)?;
         } else { defer_host_capture(projection.captures, &path, projection)?; }
         keep_file_notifications(notification, operation_parameters);
         return Ok(HR_OK);
@@ -7717,8 +6492,6 @@ unsafe fn notification_with_work(
     if notification == PRJ_NOTIFICATION_HARDLINK_CREATED {
         let destination = destination.as_deref().ok_or(crate::DemandError::InvalidRequest)
             .map_err(NativeMountError::Demand)?;
-        // Both final names are real queue producers; either denied prefix
-        // remains physically retained rather than claiming atomic enqueue.
         defer_host_capture(projection.captures, &path, projection)?;
         defer_host_capture(projection.captures, destination, projection)?;
         return Ok(HR_OK);
@@ -7822,15 +6595,7 @@ unsafe fn notification_with_work(
                 }
             }
         } else if notification == PRJ_NOTIFICATION_FILE_RENAMED {
-            let _tree = loop {
-                projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-                match runtime.projector.tree.try_lock() {
-                    Ok(guard) => break guard,
-                    Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                    Err(std::sync::TryLockError::WouldBlock) =>
-                        std::thread::sleep(std::time::Duration::from_millis(1)),
-                }
-            };
+            let _tree = lock_with_meter(&runtime.projector.tree, projection.work, std::time::Duration::from_millis(1))?;
             let current = runtime.projector.current_beneath(projection, &path)?;
             handle_rename_source(&path, source_is_external, destination_is_external,
                 is_directory, destination.as_deref(), projection)?;
@@ -7853,8 +6618,6 @@ unsafe fn notification_with_work(
     result
 }
 
-/// Keeps [`FILE_NOTIFICATIONS`] for a file whose notification set `ProjFS`
-/// lets the provider replace on this callback.
 fn keep_file_notifications(
     notification: PRJ_NOTIFICATION,
     operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS,
@@ -7862,8 +6625,7 @@ fn keep_file_notifications(
     if operation_parameters.is_null() {
         return;
     }
-    // SAFETY: ProjFS supplies the writable union member matching each of
-    // these notifications for the callback's duration.
+    // SAFETY: ProjFS supplies the writable union member matching each of these notifications for the callback's duration.
     unsafe {
         match notification {
             PRJ_NOTIFICATION_NEW_FILE_CREATED | PRJ_NOTIFICATION_FILE_OVERWRITTEN => {
@@ -7885,12 +6647,11 @@ fn handle_rename_source(
         let destination = destination.ok_or(crate::DemandError::InvalidRequest)
             .map_err(NativeMountError::Demand)?;
         return if is_directory {
-            lock_recover(projection.captures).queue_subtree(
-                destination, "imported directory awaiting capture", projection)
+            lock_recover(projection.captures).queue(
+                destination, "imported directory awaiting capture", &mut None, true, projection)
         } else { defer_host_capture(projection.captures, destination, projection) };
     }
     if destination_is_external {
-        // Only this name vanished. No path outside the original root is read.
         return defer_host_capture(projection.captures, source, projection);
     }
     let destination = destination.ok_or(crate::DemandError::InvalidRequest)
@@ -7898,8 +6659,8 @@ fn handle_rename_source(
     let source_work = projection.work.clone();
     if projection.source.lookup_with_meter(source, &source_work).map_err(detach_source_error)?.is_none() {
         return if is_directory {
-            lock_recover(projection.captures).queue_subtree(
-                destination, "renamed directory awaiting capture", projection)
+            lock_recover(projection.captures).queue(
+                destination, "renamed directory awaiting capture", &mut None, true, projection)
         } else { defer_host_capture(projection.captures, destination, projection) };
     }
     verify_source_write_work(projection.source, projection.work)?;
@@ -7909,12 +6670,9 @@ fn handle_rename_source(
     verify_source_write_work(projection.source, projection.work)
 }
 
-/// No handler accepts an asynchronous SDK command or returns E_PENDING.
-/// A cancel notice checks the original configured scope; returning from this
-/// reply attempt is not a physical completion acknowledgement or a new queue.
 unsafe extern "system" fn cancel(callback_data: *const PRJ_CALLBACK_DATA) {
     let Some((_data, runtime)) = (unsafe { runtime(callback_data) }) else { return; };
-    let result = with_callback_meter(runtime, |meter| {
+    let result = with_callback_meter(runtime, false, |meter| {
         meter.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
         provider_stack::run_with_meter(Some(meter), || HR_OK).map(|_| ()).map_err(|error| {
             lock_recover(runtime.post_operation_failure.as_ref())
@@ -7929,17 +6687,15 @@ unsafe extern "system" fn cancel(callback_data: *const PRJ_CALLBACK_DATA) {
     }
 }
 
-/// The `ProjFS` entry point for `callback`: it runs the callback on the
-/// provider's stack, not on the stack of the thread `ProjFS` calls from.
+/// The `ProjFS` entry point for `callback`: it runs the callback on the provider's stack, not on the stack of the thread `ProjFS` calls from.
 macro_rules! on_provider_stack {
     ($level:ident, $callback:ident($data:ident: $data_type:ty $(, $argument:ident: $type:ty)*) $(; authored_write: $write:expr)?) => {{
         unsafe extern "system" fn entry($data: $data_type $(, $argument: $type)*) -> HRESULT {
             let span = callback_span!($level, $callback);
-            // SAFETY: the callback data and its heap-stable runtime remain
-            // owned until the SDK drain has returned every callback.
+            // SAFETY: the callback data and its heap-stable runtime remain owned until the SDK drain has returned every callback.
             let Some((data, runtime)) = (unsafe { runtime($data) }) else { return HR_UNEXPECTED; };
             let authored_write = false $(|| $write)?;
-            let invoked = with_callback_meter_for_role(runtime, authored_write, |meter| {
+            let invoked = with_callback_meter(runtime, authored_write, |meter| {
                 let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(meter)?;
                 let projection = callback_projection(runtime, data, meter, &custody);
                 provider_stack::run_with_meter(Some(meter), || unsafe {
@@ -8009,11 +6765,7 @@ fn callbacks() -> PRJ_CALLBACKS {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CallbackGate, PostOperationFailures, Projector, ReadBasis, flush_callback_gate,
-        record_post_operation_failure,
-        remove_authenticated_destination, source_hresult,
-    };
+    use super::{PostOperationFailures, source_hresult};
     use crate::kernel::FileMetadata;
     use crate::model::{
         AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
@@ -8028,11 +6780,7 @@ mod tests {
     use bytes::Bytes;
     use std::collections::HashSet;
     use std::sync::{Arc, Barrier, Mutex};
-    use windows::Win32::Storage::ProjectedFileSystem::{
-        PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
-        PRJ_VIRTUALIZATION_INSTANCE_INFO, PrjGetVirtualizationInstanceInfo,
-        PrjMarkDirectoryAsPlaceholder, PrjStartVirtualizing, PrjStopVirtualizing,
-    };
+    use windows::Win32::Storage::ProjectedFileSystem::PrjMarkDirectoryAsPlaceholder;
     use windows::core::{GUID, HSTRING, PCWSTR};
 
     fn native_write_test_meter(
@@ -8042,321 +6790,11 @@ mod tests {
             .expect("the actual invocation admits its one original state").native_mount_work()
     }
 
-    #[test]
-    fn native_recovery_resource_denial_retires_the_actual_name_buffer()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let original = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let resource = original.native_materialization_work().native_volume_work(WorkBudget {
-            backend_read_operations: 0, ..WorkBudget::UNBOUNDED
-        })?;
-        let before_live = original.meter().lock().live_allocation_bytes();
-        let mut recovery = super::ProjFsRecoveryControl::default();
-        let error = recovery.recover_measured(root.path(), true, &mut &resource)
-            .expect_err("the full resource view denies the actual GetFileAttributesW probe");
-        assert!(matches!(error, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_read_operations", ..
-        })));
-        assert_eq!(resource.receipt().backend_read_operations, 0);
-        assert_eq!(original.meter().lock().live_allocation_bytes(), before_live,
-            "the native name backing is dropped before its strong allocation guard");
-        assert!(!recovery.controls_pending());
-        assert!(!recovery.namespace_detach_confirmed());
-        assert!(root.path().is_dir());
-        Ok(())
-    }
-
-    #[test]
-    fn native_sdk_arc_clones_keep_one_guard_through_the_actual_payload_drop()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        struct PayloadDrop {
-            original: Arc<crate::demand::NativeDemandReadMeter>,
-            observed_live: Arc<std::sync::atomic::AtomicU64>,
-        }
-        impl Drop for PayloadDrop {
-            fn drop(&mut self) {
-                self.observed_live.store(self.original.lock().live_allocation_bytes(), std::sync::atomic::Ordering::Release);
-            }
-        }
-        let original = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let custody = crate::native_mount::NativeMountAllocationCustody::new_with_meter(&original)?;
-        let resource = original.native_materialization_work().native_volume_work(WorkBudget {
-            allocation_operations: 1, ..WorkBudget::UNBOUNDED
-        })?;
-        let observed_live = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let before_live = original.meter().lock().live_allocation_bytes();
-        let bytes = std::mem::size_of::<super::RetainedArcValue<PayloadDrop>>() as u64;
-        let first = super::retained_arc_on_meter(PayloadDrop {
-            original: Arc::clone(original.meter()), observed_live: Arc::clone(&observed_live),
-        }, &custody, &resource.native_mount_work())?;
-        let before = resource.receipt();
-        let second = first.clone();
-        let weak = Arc::downgrade(&first);
-        drop(first);
-        assert_eq!(resource.receipt(), before, "Arc clones allocate no extra body or guard");
-        assert_eq!(original.meter().lock().live_allocation_bytes(), before_live + bytes);
-        drop(second);
-        assert_eq!(observed_live.load(std::sync::atomic::Ordering::Acquire), before_live + bytes,
-            "the actual SDK payload drops before its one original native guard");
-        assert_eq!(original.meter().lock().live_allocation_bytes(), before_live);
-        assert!(weak.upgrade().is_none(), "the remaining opaque Weak does not own SDK payload");
-        drop(weak);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn native_memo_backing_denial_preserves_its_owner_and_replacement_keeps_the_new_view()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let failure = Mutex::new(PostOperationFailures::default());
-        let (result, _, live) = measured_capture_projection(
-            source.as_ref(), &failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-            |projection| {
-                let original = projection.work.native_materialization_work();
-                let first = original.native_volume_work(WorkBudget {
-                    peak_allocation_bytes: 8, ..WorkBudget::UNBOUNDED
-                })?;
-                let denied = original.native_volume_work(WorkBudget {
-                    allocation_operations: 0, ..WorkBudget::UNBOUNDED
-                })?;
-                let replacement = original.native_volume_work(WorkBudget {
-                    peak_allocation_bytes: 16, ..WorkBudget::UNBOUNDED
-                })?;
-                let first_work = first.native_mount_work();
-                let denied_work = denied.native_mount_work();
-                let replacement_work = replacement.native_mount_work();
-                let mut memo = super::MemoVec::<u64>::default();
-                memo.push(7, super::Projection { work: &first_work, ..projection })?;
-                let before = original.receipt();
-                assert!(matches!(memo.reserve_for(2, super::Projection { work: &denied_work, ..projection }),
-                    Err(super::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
-                        crate::WorkError::BudgetExceeded { counter: "allocation_operations", .. })))));
-                assert_eq!(original.receipt(), before, "denial does not allocate a replacement");
-                assert_eq!(memo.items, [7]);
-                assert!(memo.native_allocation.as_ref().expect("actual native backing").work().shares_resource_allowance(&first));
-                memo.reserve_for(2, super::Projection { work: &replacement_work, ..projection })?;
-                assert_eq!(memo.items, [7]);
-                assert!(memo.native_allocation.as_ref().expect("actual replacement").work().shares_resource_allowance(&replacement));
-                let reused_first = first.claim(8)?;
-                drop(reused_first);
-                drop(memo);
-                Ok(())
-            },
-        );
-        result?;
-        assert_eq!(live, 0);
-        Ok(())
-    }
-
     fn native_write_test_parent(
         root: &std::path::Path,
     ) -> Result<cap_std::fs::Dir, Box<dyn std::error::Error>> {
-        // Runtime services and borrowed parent fixtures precede the invocation;
-        // every file import/request/fence/control inside it uses the real meter.
         acyclic_native_runtime::initialize_native_io_services()?;
         Ok(cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())?)
-    }
-
-    #[test]
-    fn denied_birth_record_precedes_real_native_file_create()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let before = meter.native_materialization_work().receipt();
-        let denied = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody,
-            |_| Err(super::NativeMountError::ControlPending));
-        assert!(matches!(denied, Err(super::NativeMountError::ControlPending)));
-        assert!(!root.path().join("f").exists());
-        assert_eq!(meter.native_materialization_work().receipt().backend_write_operations,
-            before.backend_write_operations, "denied memo publication never attempts FILE_CREATE");
-        Ok(())
-    }
-
-    #[test]
-    fn denied_post_create_disposition_retains_the_actual_creator_and_preserved_data()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        // Two disposition writes, two possible creator/control closes and one
-        // positional close are born first; only FILE_CREATE remains available.
-        let meter = native_write_test_meter(WorkBudget {
-            backend_write_operations: 6, ..WorkBudget::UNBOUNDED
-        }, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut held = None;
-        let created = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody,
-            |owner| { held = Some(owner.clone()); Ok(()) });
-        assert!(matches!(created, Err(super::NativeMountError::Work(_))));
-        let owner = held.expect("the before-effect memo keeps its authentic returned capability");
-        assert!(super::lock_recover(&owner.file).is_some());
-        assert!(owner.delete_on_close.load(std::sync::atomic::Ordering::Acquire));
-        assert_eq!(meter.native_materialization_work().receipt().backend_write_operations, 1);
-        cancellation.cancel();
-        super::close_preserved_physical_entry(&owner, &meter, None)?;
-        assert!(super::lock_recover(&owner.file).is_none());
-        assert!(cancellation.is_cancelled());
-        assert!(root.path().join("f").is_file(), "physical close did not dispose uncaptured namespace data");
-        assert_eq!(meter.native_materialization_work().receipt().backend_write_operations, 3,
-            "only real create, creator-flag clear, and original handle close were charged");
-        drop(owner);
-        assert_eq!(meter.native_materialization_work().receipt().backend_write_operations, 3,
-            "the preserved original handle is never closed twice");
-        Ok(())
-    }
-
-    #[test]
-    fn denied_real_native_import_closes_returned_duplicate_before_release_and_keeps_original_creator()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        let original = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&original)?;
-        let resource = original.native_materialization_work().native_volume_work(WorkBudget {
-            allocation_operations: 1, ..WorkBudget::UNBOUNDED
-        })?;
-        let work = resource.native_mount_work();
-        let mut held = None;
-        let imported = super::ProjectedNativeWriter::create(&parent, &[102], &work, &custody,
-            |owner| { held = Some(owner.clone()); Ok(()) });
-        assert!(matches!(imported, Err(super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "allocation_operations", ..
-        }))));
-        let owner = held.expect("actual before-effect intrinsic owner");
-        assert!(super::lock_recover(&owner.file).is_some());
-        assert_eq!(resource.receipt().backend_write_operations, 3,
-            "real create, initial disposition, and denied import's returned duplicate close");
-        cancellation.cancel();
-        super::close_preserved_physical_entry(&owner, &work, None)?;
-        assert!(super::lock_recover(&owner.file).is_none());
-        assert!(root.path().join("f").exists());
-        assert_eq!(resource.receipt().backend_write_operations, 5,
-            "preservation clears the original provisional flag and closes the actual original handle");
-        drop(owner);
-        assert_eq!(resource.receipt().backend_write_operations, 5);
-        Ok(())
-    }
-
-    #[test]
-    fn original_cancellation_after_intrinsic_birth_record_keeps_its_real_credit()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut original = None;
-        let denied = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |owner| {
-            original = Some(owner.clone());
-            cancellation.cancel();
-            Ok(())
-        });
-        assert!(denied.is_err());
-        let owner = original.expect("the actual funded birth payload is retained");
-        assert!(super::lock_recover(&owner.file).is_none(), "no raw file owner is fabricated");
-        assert_eq!(super::lock_recover(&owner.controls).remaining_work().backend_write_operations, 2);
-        assert!(cancellation.is_cancelled());
-        assert!(!root.path().join("f").exists());
-        drop(owner);
-        Ok(())
-    }
-
-    #[test]
-    fn intrinsic_birth_record_observes_the_returned_file_before_cancelled_retirement()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut original = None;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |owner| {
-            original = Some(owner.clone());
-            Ok(())
-        })?;
-        let owner = original.expect("the original memo retains the same birth payload");
-        assert!(std::sync::Arc::ptr_eq(&owner, &writer.owner));
-        assert!(super::lock_recover(&owner.file).is_some(), "the actual original FILE_CREATE capability is installed");
-        cancellation.cancel();
-        writer.retire()?;
-        drop(writer);
-        let work = meter.native_materialization_work().allocation_work();
-        let mut cleanup = work.native_mount_work();
-        super::retire_physical_entry(&owner, &cleanup, None)?;
-        drop(owner);
-        assert!(cancellation.is_cancelled());
-        assert!(!root.path().join("f").exists());
-        Ok(())
-    }
-
-    #[test]
-    fn measured_writer_exact_output_and_native_call_budget_preserves_a_denied_prefix()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        // Five genuine control/close births precede create, initial on-close
-        // disposition and one WriteFile. Only executed leaves are charged.
-        let meter = native_write_test_meter(WorkBudget {
-            output_bytes: 3, backend_write_operations: 8, ..WorkBudget::UNBOUNDED
-        }, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        let native_meter = meter.native_materialization_work().runtime_meter_owner();
-        super::wait_native_unit_measured(writer.file().write_bounded_async(
-            0, Bytes::from_static(b"abc"), Arc::clone(&native_meter),
-        ).map_err(super::projection_io_error)?, &meter)?;
-        let error = super::wait_native_unit_measured(writer.file().write_bounded_async(
-            3, Bytes::from_static(b"de"), native_meter,
-        ).map_err(super::projection_io_error)?, &meter).expect_err("next physical write is denied");
-        assert!(matches!(error, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "output_bytes", ..
-        })));
-        assert_eq!(std::fs::read(root.path().join("f"))?, b"abc");
-        assert_eq!(meter.meter().lock().work.output_bytes, 3);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 3);
-        writer.retire()?;
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 4);
-        assert!(root.path().join("f").exists(), "the real creator owner still retains this denied prefix");
-        drop(writer);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 5, "actual final creator close is separately charged");
-        assert!(!root.path().join("f").exists());
-        Ok(())
-    }
-
-    #[test]
-    fn measured_file_release_keeps_a_real_replacement_with_another_physical_identity()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let path = root.path().join("f");
-        std::fs::write(&path, b"projected")?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let original = std::fs::File::open(&path)?;
-        let state = super::handle_state_measured(&original, &meter)?;
-        drop(original);
-        std::fs::rename(&path, root.path().join("old-identity"))?;
-        std::fs::write(&path, b"user replacement")?;
-        let writes = meter.meter().lock().work.backend_write_operations;
-        assert!(!super::delete_file_while(&parent, &[102], state, &meter)?);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, writes);
-        assert_eq!(std::fs::read(&path)?, b"user replacement");
-        assert_eq!(std::fs::read(root.path().join("old-identity"))?, b"projected");
-        Ok(())
     }
 
     #[test]
@@ -8367,13 +6805,11 @@ mod tests {
         let parent = native_write_test_parent(root.path())?;
         let cancellation = CancellationToken::new();
         let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
+        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, |_| Ok(()))?;
         let native_meter = meter.native_materialization_work().runtime_meter_owner();
         super::wait_native_unit_measured(writer.file().write_bounded_async(
             0, Bytes::from_static(b"physical"), Arc::clone(&native_meter),
         ).map_err(super::projection_io_error)?, &meter)?;
-        let writes = meter.meter().lock().work.backend_write_operations;
         cancellation.cancel();
         let error = match writer.file().write_bounded_async(
             8, Bytes::from_static(b"not written"), native_meter,
@@ -8384,258 +6820,14 @@ mod tests {
         };
         assert!(matches!(error, super::NativeMountError::Demand(crate::DemandError::Cancelled)));
         assert_eq!(std::fs::read(root.path().join("f"))?, b"physical");
-        assert_eq!(meter.meter().lock().work.output_bytes, 8);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, writes);
         writer.retire()?;
-        assert_eq!(meter.meter().lock().work.backend_write_operations, writes + 1);
         assert_eq!(std::fs::read(root.path().join("f"))?, b"physical",
             "positional-I/O close does not erase the intrinsic owner before its retirement");
         drop(writer);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, writes + 2);
         assert!(!root.path().join("f").exists());
         Ok(())
     }
 
-    #[test]
-    fn same_driver_read_only_handle_preserves_actual_write_and_flush_errors()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        let root = tempfile::tempdir()?;
-        let _parent = native_write_test_parent(root.path())?;
-        let path = root.path().join("read-only-handle");
-        std::fs::write(&path, b"original")?;
-        let file = std::fs::OpenOptions::new().read(true)
-            .custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0)
-            .open(&path)?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let import_close = meter.native_materialization_work().reserve_cleanup_write()?;
-        // SAFETY: fixture opened this sole I/O owner for overlapped access.
-        let file = match unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_measured_unchecked(
-            file, meter.native_materialization_work().runtime_meter(),
-        ) } {
-            Ok(file) => { drop(import_close); file },
-            Err((error, returned_file)) => {
-                let _ = import_close.attempt_recorded(|| drop(returned_file));
-                return Err(error.into());
-            }
-        };
-        let native_meter = meter.native_materialization_work().runtime_meter_owner();
-        let write = super::wait_native_unit_measured(file.write_bounded_async(
-            0, Bytes::from_static(b"replacement"), Arc::clone(&native_meter),
-        ).map_err(super::projection_io_error)?, &meter).expect_err("real read-only handle refuses WriteFile");
-        assert!(matches!(&write, super::NativeMountError::Io(error)
-            if error.kind() == std::io::ErrorKind::PermissionDenied));
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 1);
-        assert_eq!(meter.meter().lock().work.output_bytes, 0);
-        let flush = super::wait_native_unit_measured(file.sync_bounded_async(
-            acyclic_native_runtime::Durability::Full, native_meter,
-        ).map_err(super::projection_io_error)?, &meter).expect_err("actual FlushFileBuffers requires write access");
-        assert!(matches!(&flush, super::NativeMountError::Io(error)
-            if error.kind() == std::io::ErrorKind::PermissionDenied));
-        assert_eq!(meter.meter().lock().work.durability_operations, 1);
-        assert_eq!(std::fs::read(&path)?, b"original");
-        let allocation = file.logical_owned_bytes();
-        drop(file);
-        meter.meter().lock().release(allocation)?;
-        Ok(())
-    }
-
-    #[test]
-    fn measured_atomic_publish_keeps_user_identity_and_retries_the_same_staged_file()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        std::fs::write(root.path().join("t"), b"user")?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        let native_meter = meter.native_materialization_work().runtime_meter_owner();
-        super::wait_native_unit_measured(writer.file().write_bounded_async(
-            0, Bytes::from_static(b"complete"), native_meter,
-        ).map_err(super::projection_io_error)?, &meter)?;
-        let state = super::handle_state_measured(writer.file().as_file(), &meter)?;
-        let before = meter.meter().lock().work.backend_write_operations;
-        let error = super::publish_projected_file(writer.file(), &parent, &[116], &meter)
-            .expect_err("actual NO-REPLACE native move cannot replace the user");
-        assert!(matches!(&error, super::NativeMountError::Io(error)
-            if error.kind() == std::io::ErrorKind::AlreadyExists));
-        assert_eq!(meter.meter().lock().work.backend_write_operations, before + 2,
-            "the real rename attempt and its original preborn parent-duplicate close both execute");
-        assert_eq!(std::fs::read(root.path().join("t"))?, b"user");
-        crate::native_host::keep_windows_created_file_with_work(
-            writer.file().as_file(), &mut &meter.native_materialization_work(),
-        )?;
-        writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-        super::publish_projected_file(writer.file(), &parent, &[110], &meter)?;
-        writer.provisional = false;
-        assert_eq!(super::handle_state_measured(writer.file().as_file(), &meter)?.identity, state.identity);
-        writer.retire()?;
-        writer.owner.retain_metadata_control(&meter)?;
-        let state = writer.owner.final_state(&meter)?;
-        assert!(super::held_original_while(&writer.owner, state, &meter)?.is_some(),
-            "the issuer no longer keeps WRITE access that blocks its own consistency window");
-        assert!(!root.path().join("f").exists());
-        assert_eq!(std::fs::read(root.path().join("n"))?, b"complete");
-        super::retire_physical_entry(&writer.owner, &meter, None)?;
-        assert!(!root.path().join("n").exists(), "the same original Open.Link moved to n");
-        assert_eq!(std::fs::read(root.path().join("t"))?, b"user");
-        Ok(())
-    }
-
-    #[test]
-    fn denied_rename_name_copy_closes_the_actual_parent_duplicate_and_keeps_the_creator()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        let original = meter.native_materialization_work();
-        let resource = original.native_volume_work(WorkBudget {
-            bytes_copied: 0, ..WorkBudget::UNBOUNDED
-        })?;
-        let error = super::publish_projected_file(writer.file(), &parent, &[110], &resource.native_mount_work())
-            .expect_err("the actual native rename name cannot be copied");
-        assert!(matches!(error, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "bytes_copied", ..
-        })));
-        assert_eq!(resource.receipt().backend_read_operations, 1, "actual DuplicateHandle happened before copy denial");
-        assert_eq!(resource.receipt().backend_write_operations, 1, "original accepted close happened before real descriptor Drop");
-        assert_eq!(resource.receipt().bytes_copied, 0);
-        assert!(super::lock_recover(&writer.owner.file).is_some());
-        assert!(root.path().join("f").is_file());
-        assert!(!root.path().join("n").exists(), "no rename effect or published name was invented");
-        writer.retire()?;
-        Ok(())
-    }
-
-    #[test]
-    fn moved_creator_retirement_never_adopts_a_foreign_replacement_name()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        super::wait_native_unit_measured(writer.file().write_bounded_async(
-            0, Bytes::from_static(b"original"), meter.native_materialization_work().runtime_meter_owner(),
-        ).map_err(super::projection_io_error)?, &meter)?;
-        crate::native_host::keep_windows_created_file_with_work(
-            writer.file().as_file(), &mut &meter.native_materialization_work(),
-        )?;
-        writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-        super::publish_projected_file(writer.file(), &parent, &[110], &meter)?;
-        writer.provisional = false;
-        writer.retire()?;
-        writer.owner.retain_metadata_control(&meter)?;
-        let original = writer.owner.final_state(&meter)?;
-        std::fs::rename(root.path().join("n"), root.path().join("m0"))?;
-        std::fs::write(root.path().join("n"), b"foreign")?;
-        let held = super::held_original_while(&writer.owner, original, &meter)?
-            .expect("the genuine original creator moved, not its replacement");
-        super::retire_physical_entry(&writer.owner, &meter, None)?;
-        drop(held);
-        assert!(!root.path().join("m0").exists());
-        assert_eq!(std::fs::read(root.path().join("n"))?, b"foreign");
-        Ok(())
-    }
-
-    #[test]
-    fn cancelled_metadata_derivation_retains_the_actual_creator_until_its_prepaid_close()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let cancellation = CancellationToken::new();
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        crate::native_host::keep_windows_created_file_with_work(
-            writer.file().as_file(), &mut &meter.native_materialization_work(),
-        )?;
-        writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-        writer.provisional = false;
-        writer.retire()?;
-        cancellation.cancel();
-        let before = meter.native_materialization_work().receipt();
-        assert!(writer.owner.retain_metadata_control(&meter).is_err());
-        assert!(super::lock_recover(&writer.owner.file).is_some());
-        assert!(super::lock_recover(&writer.owner.creator_transfer_close).is_some());
-        assert_eq!(meter.native_materialization_work().receipt(), before,
-            "original cancellation denies ReOpen before any new physical attempt");
-        super::close_preserved_physical_entry(&writer.owner, &meter, None)?;
-        assert!(super::lock_recover(&writer.owner.file).is_none());
-        assert_eq!(meter.native_materialization_work().receipt().backend_write_operations,
-            before.backend_write_operations + 1);
-        assert!(root.path().join("f").is_file());
-        assert!(cancellation.is_cancelled());
-        Ok(())
-    }
-
-    #[test]
-    fn measured_parent_flush_denial_keeps_an_actual_published_file_for_retry()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let parent = native_write_test_parent(root.path())?;
-        let meter = native_write_test_meter(WorkBudget {
-            durability_operations: 0, ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new());
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let mut writer = super::ProjectedNativeWriter::create(&parent, &[102], &meter, &custody, |_| Ok(()))?;
-        let native_meter = meter.native_materialization_work().runtime_meter_owner();
-        super::wait_native_unit_measured(writer.file().write_bounded_async(
-            0, Bytes::from_static(b"published"), native_meter,
-        ).map_err(super::projection_io_error)?, &meter)?;
-        let state = super::handle_state_measured(writer.file().as_file(), &meter)?;
-        crate::native_host::keep_windows_created_file_with_work(
-            writer.file().as_file(), &mut &meter.native_materialization_work(),
-        )?;
-        writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-        super::publish_projected_file(writer.file(), &parent, &[110], &meter)?;
-        writer.provisional = false;
-        let flush = crate::native_host::sync_directory_held_with_work(
-            &parent, &mut &meter.native_materialization_work(),
-        ).expect_err("original durability budget denies the actual flush");
-        assert!(matches!(flush, crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-            counter: "durability_operations", ..
-        })));
-        assert_eq!(meter.meter().lock().work.durability_operations, 0);
-        assert_eq!(super::handle_state_measured(writer.file().as_file(), &meter)?.identity, state.identity);
-        writer.retire()?;
-        assert_eq!(std::fs::read(root.path().join("n"))?, b"published");
-        Ok(())
-    }
-
-    #[test]
-    fn measured_root_authentication_rejects_a_real_substitution_before_any_write()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let fixture = tempfile::tempdir()?;
-        let root = fixture.path().join("mount");
-        std::fs::create_dir(&root)?;
-        let original = crate::NativeRootIdentity::of_root_path(&root)?;
-        std::fs::rename(&root, fixture.path().join("original"))?;
-        std::fs::create_dir(&root)?;
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let path = windows_path("f");
-        let error = super::with_projection_parent(&root, original, &path, &meter, |parent, leaf| {
-            crate::native_host::create_windows_file_with_work(
-                parent, leaf, &mut &meter.native_materialization_work(),
-            ).map(drop).map_err(super::detach_work_error)
-        }).expect_err("replacement is not the original mount root");
-        assert!(matches!(error, super::NativeMountError::Demand(crate::DemandError::StaleSource)));
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 0);
-        assert!(!root.join("f").exists());
-        Ok(())
-    }
-
-    /// The originally created staging capability survives a rename. A link
-    /// substituted at its former spelling is never opened or adopted.
     #[test]
     fn staging_keeps_original_capability_when_a_link_replaces_its_spelling() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -8667,56 +6859,6 @@ mod tests {
     }
 
     #[test]
-    fn birth_paid_stage_cleanup_preserves_original_cancellation_and_real_capability()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let parent = tempfile::tempdir()?;
-        let root = parent.path().join("mount");
-        std::fs::create_dir(&root)?;
-        let cancellation = CancellationToken::new();
-        let meter = native_write_test_meter(WorkBudget::UNBOUNDED, &cancellation);
-        let original = meter.native_materialization_work();
-        let identity = crate::NativeRootIdentity::of_root_path(&root)?;
-        let custody = Mutex::new(None);
-        super::with_staging_directory(&root, &meter, identity, &custody, |_| Ok(()))?;
-        let stage = super::staging_path(&root);
-        let created = crate::NativeRootIdentity::of_root_path(&stage)?;
-        let moved = parent.path().join("held-original");
-        std::fs::rename(&stage, &moved)?;
-        std::fs::create_dir(&stage)?;
-        let foreign = crate::NativeRootIdentity::of_root_path(&stage)?;
-        cancellation.cancel();
-        let denied_wait = CancellationToken::new();
-        denied_wait.cancel();
-        let before = original.receipt();
-        assert!(super::remove_staging_directory_measured(
-            &custody, &mut &original, Some(&denied_wait),
-        ).is_err());
-        assert_eq!(original.receipt(), before);
-        {
-            let retained = custody.lock().expect("actual staging owner");
-            let retained = retained.as_ref().expect("refused wait retains original owner");
-            assert_eq!(retained.identity, Some(created));
-            assert_eq!(retained.cleanup.remaining_work().backend_read_operations, 3);
-            assert_eq!(retained.temporary_close.remaining_work().backend_write_operations, 1);
-            assert_eq!(retained.original_close.remaining_work().backend_write_operations, 1);
-        }
-        super::remove_staging_directory_measured(
-            &custody, &mut &original, Some(&CancellationToken::new()),
-        )?;
-        let after = original.receipt();
-        assert!(cancellation.is_cancelled(), "cleanup never clears original cancellation");
-        assert_eq!(after.allocation_operations, before.allocation_operations);
-        assert_eq!(after.backend_read_operations, before.backend_read_operations + 3);
-        assert_eq!(after.backend_write_operations, before.backend_write_operations + 3,
-            "one original disposition and both physically closed handles");
-        assert!(custody.lock().expect("retired stage owner").is_none());
-        assert!(!moved.exists());
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&stage)?, foreign);
-        Ok(())
-    }
-
-    #[test]
     fn staging_never_adopts_an_existing_empty_sibling()
         -> Result<(), Box<dyn std::error::Error>>
     {
@@ -8736,187 +6878,6 @@ mod tests {
         assert!(super::lock_recover(&custody).is_none());
         assert_eq!(crate::NativeRootIdentity::of_root_path(&staging)?, foreign);
         assert_eq!(std::fs::read_dir(&staging)?.count(), 0);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 1, "one actual denied FILE_CREATE");
-        assert_eq!(meter.meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[test]
-    fn staging_identity_denial_retains_the_same_cap_for_an_exact_budget_retry()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let parent = tempfile::tempdir()?;
-        let root = parent.path().join("mount");
-        std::fs::create_dir(&root)?;
-        let root_identity = crate::NativeRootIdentity::of_root_path(&root)?;
-        // Measure the real authentication prelude, including this host's root
-        // normalization, before admitting only that prefix in the actual create.
-        let baseline = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let baseline_materialization = baseline.native_materialization_work();
-        let mut host_work = &baseline_materialization;
-        drop(crate::native_host::open_root_directory_identity_with_work(&root, &mut host_work)?);
-        drop(crate::native_host::open_root_directory_with_work(parent.path(), &mut host_work)?);
-        let pre_create_reads = baseline.meter().lock().work.backend_read_operations;
-        let meter = native_write_test_meter(WorkBudget {
-            backend_read_operations: pre_create_reads + 3, backend_write_operations: 5,
-            ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new());
-        let custody = Mutex::new(None);
-        let error = super::with_staging_directory(&root, &meter, root_identity, &custody, |_| Ok(()))
-            .err().expect("the actual post-create identity probe is denied");
-        assert!(matches!(error, crate::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_read_operations", ..
-        })));
-        assert!(super::lock_recover(&custody).as_ref().expect("actual creation capability").identity.is_none());
-        assert_eq!(meter.meter().lock().work.backend_read_operations, pre_create_reads);
-        assert_eq!(meter.meter().lock().work.backend_write_operations, 1);
-        let name_bytes = super::lock_recover(&custody).as_ref().expect("actual born name").name.as_slice().len() as u64 * 2;
-        assert_eq!(meter.meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes() + name_bytes,
-            "the original name remains physically owned after the real identity refusal");
-        let staging = super::staging_path(&root);
-        let created = crate::NativeRootIdentity::of_root_path(&staging)?;
-        let retained = parent.path().join("retained-staging");
-        std::fs::rename(&staging, &retained)?;
-        std::fs::create_dir(&staging)?;
-        let foreign = crate::NativeRootIdentity::of_root_path(&staging)?;
-        let retry = native_write_test_meter(WorkBudget {
-            backend_read_operations: 1, backend_write_operations: 0, allocation_operations: 1,
-            ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new());
-        super::with_staging_directory(&root, &retry, root_identity, &custody, |_| Ok(()))?;
-        assert_eq!(super::lock_recover(&custody).as_ref().expect("same creation capability").identity, Some(created));
-        assert_eq!(retry.meter().lock().work.backend_read_operations, 1, "only the actual retained-cap identity probe; no duplicate directory");
-        assert_eq!(retry.meter().lock().work.backend_write_operations, 0);
-        assert_eq!(retry.meter().lock().work.allocation_operations, 1, "only its original accounting state");
-        assert_eq!(retry.meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        let reopen = native_write_test_meter(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let original = super::with_staging_directory(&root, &reopen, root_identity, &custody,
-            |original| crate::native_host::directory_identity_with_work(
-                original, &mut &reopen.native_materialization_work(),
-            ).map_err(super::detach_work_error))?;
-        assert_eq!(original, created);
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&staging)?, foreign);
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&retained)?, created);
-        assert_eq!(std::fs::read_dir(&staging)?.count(), 0);
-        assert_eq!(reopen.meter().lock().work.backend_write_operations, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn recovery_read_denial_does_not_probe_or_take_native_root_controls()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let authored = root.path().join("authored");
-        std::fs::write(&authored, b"preserve")?;
-        let token = crate::CancellationToken::new();
-        let mut work = crate::NativeMaterializationWork::new(crate::WorkBudget { backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED }, &token).expect("the actual phase admits its one original native state");
-        let mut control = super::ProjFsRecoveryControl::default();
-        assert!(matches!(
-            control.recover_measured(root.path(), true, &mut &work),
-            Err(super::NativeMountError::Work(_)),
-        ));
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert!(!control.controls_pending());
-        assert!(!control.namespace_detach_confirmed());
-        assert_eq!(std::fs::read(&authored)?, b"preserve");
-        Ok(())
-    }
-
-    #[test]
-    fn recovery_reparse_probe_denial_retains_real_capability_for_retry()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let authored = root.path().join("authored");
-        std::fs::write(&authored, b"preserve")?;
-        let token = crate::CancellationToken::new();
-        let mut control = super::ProjFsRecoveryControl::default();
-        let mut observation = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token).expect("the actual phase admits its one original native state");
-        control.recover_measured(root.path(), false, &mut &observation)?;
-        assert!(!control.controls_pending());
-        assert!(!control.namespace_detach_confirmed());
-        assert!(observation.receipt().backend_read_operations > 0);
-        assert_eq!(observation.receipt().backend_write_operations, 0);
-
-        // Preserve mode observes the same concrete path/open/identity prefix.
-        // Disposable mode's next actual DeviceIoControl probe is denied; its
-        // fixed ABI output storage no longer needs a separate heap allowance.
-        let mut bounded = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: observation.receipt().backend_read_operations,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &token).expect("the actual phase admits its one original native state");
-        assert!(matches!(
-            control.recover_measured(root.path(), true, &mut &bounded),
-            Err(super::NativeMountError::Work(_)),
-        ));
-        assert!(control.controls_pending());
-        assert_eq!(bounded.receipt().allocation_operations, observation.receipt().allocation_operations);
-        assert_eq!(bounded.receipt().backend_read_operations, observation.receipt().backend_read_operations);
-        assert_eq!(bounded.receipt().backend_write_operations, 0);
-        assert_eq!(bounded.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(std::fs::read(&authored)?, b"preserve");
-
-        let mut retry = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token).expect("the actual phase admits its one original native state");
-        control.recover_measured(root.path(), true, &mut &retry)?;
-        assert!(!control.controls_pending());
-        assert!(!control.namespace_detach_confirmed());
-        assert_eq!(retry.receipt().backend_write_operations, 0);
-        assert_eq!(retry.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(std::fs::read(&authored)?, b"preserve");
-        Ok(())
-    }
-
-    #[test]
-    fn administrative_retirement_closes_actual_directory_with_original_prebirth_credit()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
-        let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("authored"), b"retain")?;
-        let token = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
-            .map_err(|(error, _)| error)?;
-        let mut control = super::ProjFsRecoveryControl::default();
-        control.prepare_retirement(&original)?;
-        let observation = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).map_err(|(error, _)| error)?;
-        control.recover_measured(root.path(), false, &mut &observation)?;
-        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: observation.receipt().backend_read_operations,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &crate::CancellationToken::new()).map_err(|(error, _)| error)?;
-        assert!(matches!(
-            control.recover_measured(root.path(), true, &mut &denied),
-            Err(super::NativeMountError::Work(_)),
-        ));
-        assert!(control.controls_pending());
-        let handle = windows::Win32::Foundation::HANDLE(
-            control.directory.as_ref().expect("actual denied-probe capability").as_raw_handle(),
-        );
-        let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: query the actual retained directory handle and fixed output.
-        unsafe { GetFileInformationByHandle(handle, &raw mut information) }?;
-        let before = original.receipt();
-        token.cancel();
-        control.retire_controls_with_work(&original)?;
-        // SAFETY: this non-owning stale value is queried, never dereferenced or
-        // closed again. No handle-opening operation intervenes after retirement.
-        let closed = unsafe { GetFileInformationByHandle(handle, &raw mut information) }
-            .expect_err("the original actual directory handle was physically closed");
-        assert_eq!(closed.code().0 & 0xffff, 6, "ERROR_INVALID_HANDLE");
-        assert!(!control.controls_pending());
-        assert!(!control.namespace_detach_confirmed());
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations + 1);
-        assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-        control.retire_controls_with_work(&original)?;
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations + 1);
-        assert_eq!(std::fs::read(root.path().join("authored"))?, b"retain");
         Ok(())
     }
 
@@ -8951,8 +6912,6 @@ mod tests {
             Err(super::NativeMountError::Demand(crate::DemandError::StaleSource)),
         ));
         assert!(control.controls_pending());
-        assert_eq!(retry.receipt().backend_write_operations, 0);
-        assert_eq!(retry.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         assert_eq!(std::fs::read(root.join("replacement"))?, b"replacement");
         assert_eq!(std::fs::read(residue.join("original"))?, b"original");
         Ok(())
@@ -8964,15 +6923,6 @@ mod tests {
     {
         let parent = tempfile::tempdir()?;
         let token = crate::CancellationToken::new();
-        let baseline = parent.path().join("baseline");
-        std::fs::create_dir(&baseline)?;
-        let baseline_identity = crate::capture_root_identity(&baseline)?;
-        let mut observed = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token).expect("the actual phase admits its one original native state");
-        super::remove_empty_recovery_destination_measured(&baseline, Some(baseline_identity), &mut &observed)?;
-        assert!(!baseline.exists());
-        let actual_dispositions = observed.receipt().backend_write_operations;
-        assert!((1..=2).contains(&actual_dispositions), "one actual POSIX disposition and only its supported fallback");
-
         let root = parent.path().join("root");
         std::fs::create_dir(&root)?;
         let identity = crate::capture_root_identity(&root)?;
@@ -8981,16 +6931,9 @@ mod tests {
             super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut &denied),
             Err(super::NativeMountError::Work(_)),
         ));
-        assert_eq!(denied.receipt().backend_write_operations, 0);
-        assert_eq!(denied.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         assert!(root.is_dir());
-        let mut exact = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: actual_dispositions,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &token).expect("the actual phase admits its one original native state");
+        let exact = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token).map_err(|(cause, _)| cause)?;
         super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut &exact)?;
-        assert_eq!(exact.receipt().backend_write_operations, actual_dispositions);
-        assert_eq!(exact.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         assert!(!root.exists());
 
         std::fs::create_dir(&root)?;
@@ -9001,7 +6944,6 @@ mod tests {
             super::remove_empty_recovery_destination_measured(&root, Some(identity), &mut &nonempty),
             Err(super::NativeMountError::Io(_)),
         ));
-        assert_eq!(nonempty.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         assert_eq!(std::fs::read(root.join("authored"))?, b"must not be recursively removed");
         Ok(())
     }
@@ -9017,43 +6959,7 @@ mod tests {
             super::remove_empty_recovery_destination_measured(root.path(), None, &mut &work),
             Err(super::NativeMountError::Demand(crate::DemandError::StaleSource)),
         ));
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         assert!(root.path().is_dir());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn projfs_name_order_differs_from_sdk_cursor_order()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        for name in ["éclair", "Zebra", "entry000", "Alpha"] {
-            source.create_file(&windows_path(name), FileMetadata::default())?;
-        }
-        let alpha = windows_name("Alpha");
-        let lower_alpha = windows_name("alpha");
-        assert!(alpha < lower_alpha, "the source cursor uses raw bytes, not native case folding");
-        let expected = ["Alpha", "entry000", "Zebra", "éclair"]
-            .map(|name| name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>());
-        let read = |projection: super::Projection<'_>| {
-            assert!(super::same_projfs_name_with_work(&alpha, &lower_alpha, projection.work)?);
-            let projected = super::source_listing(projection, &MountPath::root())?;
-            assert_eq!(projected.len(), expected.len());
-            for (entry, name) in projected.iter().zip(&expected) {
-                assert_eq!(entry.name.as_slice(), name.as_slice());
-            }
-            drop(projected);
-            Ok(())
-        };
-        let cancellation = CancellationToken::new();
-        let (result, exact, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, read);
-        result?;
-        assert_eq!(live, 0);
-        let (result, counters, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, read);
-        result?;
-        counters.verify(exact)?;
-        assert_eq!(live, 0);
         Ok(())
     }
 
@@ -9070,7 +6976,30 @@ mod tests {
         MountPath::root().child(windows_name(name))
     }
 
-    /// One writable Windows-profile checkout, not yet mounted.
+    async fn memory_native_workspace(
+        source_root: &std::path::Path, name: &str,
+    ) -> Result<crate::LazyWorkspace<
+        crate::MemoryAuthorityBackend, crate::MemoryObjectBackend,
+        crate::demand::native::NativeDemandSource, crate::MemoryLazyWorkspaceStore,
+    >, Box<dyn std::error::Error>> {
+        let demand = crate::demand::native::NativeDemandSource::open(
+            source_root, crate::model::FilesystemProfile::Windows, crate::model::VolumeLimits::default(), None, None,
+        ).await?;
+        Ok(crate::LazyWorkspace::attach_with_config(
+            &Fs::memory(), name, Arc::new(demand), crate::MemoryLazyWorkspaceStore::default(),
+            VolumeConfig::native(Lifecycle::Ephemeral),
+        ).await?)
+    }
+
+    fn external_edit(destination: &std::path::Path, command: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new("cmd.exe").args(["/D", "/C", command]).current_dir(destination),
+            std::time::Duration::from_secs(120), 8 * 1024 * 1024,
+        )?;
+        assert!(output.status.success(), "{command} failed: {output:?}");
+        Ok(())
+    }
+
     async fn windows_checkout_source() -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
         windows_checkout_source_with_work(None).await
     }
@@ -9161,7 +7090,6 @@ mod tests {
         let crate::NativeMountError::StartupFailed(mut cold) = cold else { panic!("cold failure retains actual controls"); };
         assert!(matches!(cold.error(), crate::NativeMountError::UnsafeRecoveryDestination { .. }));
         cold.owner_mut().stop_with_cleanup_wait(&CancellationToken::new())?;
-        // Cold refusal retired its source gate; use another genuinely new source.
         let checkout = fresh.native_namespace_lineage().expect("original stock alias")
             .owner.retain().downcast::<SharedCheckout<
                 crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
@@ -9179,8 +7107,6 @@ mod tests {
         Ok(())
     }
 
-    /// Exercises the actual source/native leaves with one original invocation;
-    /// fixture construction and borrowed input paths are outside that boundary.
     fn measured_source_leaf(
         source: &dyn MountFilesystem, budget: WorkBudget, cancellation: &CancellationToken,
         operation: impl FnOnce(super::Projection<'_>) -> Result<(), super::NativeMountError>,
@@ -9209,23 +7135,15 @@ mod tests {
         (result, work.receipt(), payload_live)
     }
 
-    fn measured_capture_projection(
-        source: &dyn MountFilesystem, failure: &Mutex<PostOperationFailures>,
-        budget: WorkBudget, cancellation: &CancellationToken,
-        operation: impl FnOnce(super::Projection<'_>) -> Result<(), super::NativeMountError>,
-    ) -> (Result<(), super::NativeMountError>, crate::WorkCounters, u64) {
-        measured_source_leaf(source, budget, cancellation, |projection| {
-            operation(super::Projection { captures: failure, ..projection })
-        })
-    }
 
     fn queue_capture_fixture(
         source: &dyn MountFilesystem, failure: &Mutex<PostOperationFailures>,
         path: &MountPath, reason: &'static str,
     ) {
-        measured_capture_projection(source, failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
+        measured_source_leaf(source, WorkBudget::UNBOUNDED, &CancellationToken::new(),
             |projection| failure.lock().expect("capture fixture")
-                .queue_capture(path, reason, &mut None, projection)).0.expect("actual capture producer");
+                .queue(path, reason, &mut None, false, super::Projection { captures: failure, ..projection }))
+            .0.expect("actual capture producer");
     }
 
     fn capture_serial_fixture(failure: &Mutex<PostOperationFailures>, path: &MountPath) -> u64 {
@@ -9233,18 +7151,8 @@ mod tests {
             .find(|(key, _)| *key == path).expect("actual pending path").1.serial
     }
 
-    fn measured_callback_flush_fixture(
-        callbacks: &CallbackGate, failure: &Mutex<PostOperationFailures>,
-        probes: Option<&std::sync::RwLock<Vec<(MountPath, u64, bool)>>>,
-        work: &crate::NativeMaterializationWork,
-        capture: impl FnMut(&[(MountPath, u64, bool)], &crate::native_mount::NativeMountMeterWork)
-            -> Result<(), super::NativeMountError>,
-    ) -> Result<(), super::NativeMountError> {
-        super::flush_callback_gate_measured(callbacks, failure, probes, &work.native_mount_work(), capture)
-    }
-
     #[tokio::test]
-    async fn source_listing_pages_preserve_native_order_and_exact_budget()
+    async fn source_listing_pages_preserve_native_order_and_name_ownership()
         -> Result<(), Box<dyn std::error::Error>>
     {
         let source = windows_checkout_source().await?;
@@ -9277,64 +7185,20 @@ mod tests {
             assert_eq!(projection.work.meter().lock().live_allocation_bytes(), baseline);
             Ok(())
         };
-        let (observed, exact, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, read);
+        let (observed, _, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, read);
         observed?;
-        assert_eq!(live, 0);
-        assert!(exact.backend_read_operations > 0);
-        assert!(exact.items_examined >= u64::from(count));
-        let (bounded, counters, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, read);
-        bounded?;
-        counters.verify(exact)?;
-        assert_eq!(live, 0);
-
-        let denied = WorkBudget { items_examined: exact.items_examined - 1, ..exact };
-        let (failure, prefix, live) = measured_source_leaf(source.as_ref(), denied, &cancellation, read);
-        assert!(matches!(failure, Err(super::NativeMountError::Work(_))));
-        prefix.verify(denied)?;
-        assert!(prefix.backend_read_operations > 0, "a denied late comparison retains actual page reads");
-        assert_eq!(live, 0, "all partial page/name/cursor owners physically retired");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn source_utf16_preserves_surrogates_and_denies_the_exact_copy_prefix()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let cancellation = CancellationToken::new();
-        let raw = [0x00, 0xd8, b'A', 0];
-        let decode = |projection| {
-            let decoded = super::source_utf16(projection, &raw, true)?
-                .ok_or(super::NativeMountError::Lifecycle("raw Windows name rejected"))?;
-            assert_eq!(decoded.as_slice(), &[0xd800, 65, 0]);
-            drop(decoded);
-            Ok(())
-        };
-        let (observed, exact, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, decode);
-        observed?;
-        assert_eq!(live, 0);
-        assert_eq!(exact.bytes_copied, 4);
-        let (bounded, counters, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, decode);
-        bounded?;
-        counters.verify(exact)?;
-        assert_eq!(live, 0);
-        let denied = WorkBudget { bytes_copied: 3, ..exact };
-        let (failure, prefix, live) = measured_source_leaf(source.as_ref(), denied, &cancellation, decode);
-        assert!(matches!(failure, Err(super::NativeMountError::Work(_))));
-        assert_eq!(prefix.bytes_copied, 2);
-        prefix.verify(denied)?;
         assert_eq!(live, 0);
         Ok(())
     }
 
     #[tokio::test]
-    async fn callback_raw_path_preserves_spelling_and_exact_denied_prefix()
+    async fn callback_raw_path_preserves_opaque_spelling()
         -> Result<(), Box<dyn std::error::Error>>
     {
         let source = windows_checkout_source().await?;
         let raw = [0xd800, 65, 92, 98, 46, 84, 88, 84, 0];
         let cancellation = CancellationToken::new();
-        let parse = |projection| {
+        let parse = |projection: super::Projection<'_>| {
             let path = super::path_from(PCWSTR::from_raw(raw.as_ptr()), projection)?
                 .ok_or(super::NativeMountError::Lifecycle("valid raw callback spelling rejected"))?;
             assert_eq!(path.components.len(), 2);
@@ -9343,290 +7207,8 @@ mod tests {
             drop(path);
             Ok(())
         };
-        let (observed, exact, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, parse);
+        let (observed, _, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, parse);
         observed?;
-        assert_eq!(live, 0);
-        assert_eq!(exact.bytes_encoded, 14);
-        let (bounded, counters, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, parse);
-        bounded?;
-        counters.verify(exact)?;
-        assert_eq!(live, 0);
-        let denied = WorkBudget { bytes_encoded: exact.bytes_encoded - 1, ..exact };
-        let failure = Mutex::new(PostOperationFailures::default());
-        let (result, prefix, live) = measured_capture_projection(
-            source.as_ref(), &failure, denied, &cancellation, |projection| {
-                let cause = parse(projection).expect_err("the actual second name encoding is denied");
-                assert!(super::retain_callback_failure(projection, cause).is_err());
-                Ok(())
-            },
-        );
-        result?;
-        prefix.verify(denied)?;
-        assert_eq!(prefix.bytes_encoded, 4, "the first raw name remains in the true prefix");
-        assert_eq!(live, 0);
-        let mut failure = failure.lock().expect("actual fatal callback slot");
-        let record = failure.unreplayable.take().expect("the original callback cause was retained inline");
-        assert!(matches!(record.cause, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "bytes_encoded", ..
-        })));
-        assert_eq!(record.work, prefix);
-        assert!(failure.unreplayable_barrier, "moving the diagnostic never resets the publication fence");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn original_panic_and_publication_uncertainty_never_allocate_a_capture_retry()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let path = windows_path("uncertain.txt");
-        let errors = [
-            super::NativeMountError::DriverPanicked {
-                operation: "original SDK callback",
-                panic: Mutex::new(Box::new(73_u32) as Box<dyn std::any::Any + Send>),
-            },
-            super::NativeMountError::Source(MountSourceError::Indeterminate),
-            super::NativeMountError::Source(MountSourceError::OriginalSnapshotUnavailable),
-            super::NativeMountError::Source(MountSourceError::NativeRecordMaterializationInProgress),
-            super::NativeMountError::Materialization(crate::NativeTreeMaterializationError::IndeterminatePreparation),
-            super::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)),
-            super::NativeMountError::Source(MountSourceError::WorkspaceCause(
-                crate::WorkspaceError::Work(crate::WorkError::Overflow))),
-            super::NativeMountError::Source(MountSourceError::WorkspaceCause(
-                crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::IndeterminatePreparation)))),
-            super::NativeMountError::Source(MountSourceError::WorkspaceCause(
-                crate::WorkspaceError::Cancelled(crate::CancellationError))),
-            super::NativeMountError::Source(MountSourceError::WorkspaceCause(
-                crate::WorkspaceError::Filesystem(crate::FsError::Cancelled(crate::CancellationError)))),
-        ];
-        for error in errors {
-            let expected_status = if matches!(&error,
-                super::NativeMountError::Source(MountSourceError::WorkspaceCause(crate::WorkspaceError::Cancelled(_)))
-                    | super::NativeMountError::Source(MountSourceError::WorkspaceCause(
-                        crate::WorkspaceError::Filesystem(crate::FsError::Cancelled(_)))))
-            { super::HR_FILE_INVALID } else { super::HR_IO_DEVICE };
-            let failure = Mutex::new(PostOperationFailures::default());
-            let (result, _, live) = measured_capture_projection(
-                source.as_ref(), &failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-                |projection| {
-                    let original = projection.work.meter().lock().work;
-                    assert_eq!(super::record_post_operation_failure(
-                        super::PRJ_NOTIFICATION_NEW_FILE_CREATED, Some(&path), Err(error), projection,
-                    ), expected_status);
-                    assert_eq!(projection.work.meter().lock().work, original,
-                        "the fatal branch moves the original cause without new payload or operation");
-                    let mut failure = failure.lock().expect("original callback slot");
-                    assert!(failure.pending_captures.is_empty(), "uncertainty is not a new import");
-                    let record = failure.unreplayable.take().expect("actual first cause");
-                    assert_eq!(record.work, original);
-                    assert!(failure.unreplayable_barrier, "query never clears the namespace fence");
-                    match record.cause {
-                        super::NativeMountError::DriverPanicked { panic, .. } => {
-                            let payload = panic.into_inner().expect("original panic custody");
-                            assert_eq!(payload.downcast_ref::<u32>(), Some(&73));
-                        }
-                        super::NativeMountError::Source(error) => assert!(matches!(error,
-                            MountSourceError::Indeterminate | MountSourceError::OriginalSnapshotUnavailable
-                                | MountSourceError::NativeRecordMaterializationInProgress
-                                | MountSourceError::WorkspaceCause(crate::WorkspaceError::Work(crate::WorkError::Overflow))
-                                | MountSourceError::WorkspaceCause(crate::WorkspaceError::Cancelled(_))
-                                | MountSourceError::WorkspaceCause(crate::WorkspaceError::Filesystem(crate::FsError::Cancelled(_)))
-                                | MountSourceError::WorkspaceCause(crate::WorkspaceError::Filesystem(
-                                    crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::IndeterminatePreparation))))),
-                        super::NativeMountError::Materialization(error) => assert!(matches!(error,
-                            crate::NativeTreeMaterializationError::IndeterminatePreparation
-                                | crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))),
-                        _ => panic!("original typed cause changed"),
-                    }
-                    Ok(())
-                },
-            );
-            result?;
-            assert_eq!(live, 0);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn native_static_diagnostics_project_only_the_original_kind_without_fencing()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        for (kind, expected) in [
-            (crate::native_mount::NativeSourceTextKind::Engine, super::HR_IO_DEVICE),
-            (crate::native_mount::NativeSourceTextKind::Invalid, super::HR_INVALID_DATA),
-            (crate::native_mount::NativeSourceTextKind::Unsupported, super::HR_NOT_SUPPORTED),
-        ] {
-            let error = super::NativeMountError::Source(MountSourceError::NativeStaticText {
-                kind, text: "original static diagnostic",
-            });
-            assert_eq!(super::native_hresult(&error), expected);
-            assert!(!super::callback_requires_permanent_fence(&error));
-            let failure = Mutex::new(PostOperationFailures::default());
-            let (result, _, live) = measured_capture_projection(
-                source.as_ref(), &failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-                |projection| {
-                    let before = projection.work.native_materialization_work().receipt();
-                    assert_eq!(super::retain_callback_failure(projection, error), expected);
-                    assert_eq!(projection.work.native_materialization_work().receipt(), before);
-                    let failure = failure.lock().expect("original callback slot");
-                    assert!(!failure.unreplayable_barrier);
-                    assert!(failure.unreplayable.is_none() && failure.pending_captures.is_empty());
-                    Ok(())
-                },
-            );
-            result?;
-            assert_eq!(live, 0);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn typed_native_work_keeps_normal_absence_terminal_without_a_fatal_fence()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let errors = [
-            super::NativeMountError::Materialization(
-                crate::NativeTreeMaterializationError::Io(std::io::Error::from_raw_os_error(2))),
-            super::NativeMountError::Source(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::Io(std::io::Error::from_raw_os_error(2)))),
-        ];
-        for error in errors {
-            assert_eq!(super::native_hresult(&error), super::HR_FILE_NOT_FOUND);
-            assert!(!super::callback_requires_permanent_fence(&error));
-            let failure = Mutex::new(PostOperationFailures::default());
-            let (result, _, live) = measured_capture_projection(
-                source.as_ref(), &failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-                |projection| {
-                    let original = projection.work.meter().lock().work;
-                    assert_eq!(super::retain_callback_failure(projection, error), super::HR_FILE_NOT_FOUND);
-                    assert_eq!(projection.work.meter().lock().work, original);
-                    let failure = failure.lock().expect("actual callback slot");
-                    assert!(failure.unreplayable.is_none());
-                    assert!(!failure.unreplayable_barrier);
-                    Ok(())
-                },
-            );
-            result?;
-            assert_eq!(live, 0);
-        }
-        assert_eq!(source_hresult(&MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::Cancelled)), super::HR_FILE_INVALID);
-        let mut buffer = Vec::<u8>::new();
-        let allocation = buffer.try_reserve_exact(usize::MAX).expect_err("impossible actual Vec capacity");
-        assert_eq!(source_hresult(&MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::AllocationFailed(allocation))), super::HR_OUT_OF_MEMORY);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn ordinary_native_record_failures_do_not_claim_partial_publication()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let errors = [
-            (MountSourceError::NativeRecordIntegrity, super::HR_IO_DEVICE),
-            (MountSourceError::NativeRecordLockTimeout(std::path::PathBuf::new(), None), super::HR_IO_DEVICE),
-            (MountSourceError::NativeRecordOwnershipConflict(std::path::PathBuf::new(), None), super::HR_IO_DEVICE),
-            (MountSourceError::NativeRecordIo(std::io::Error::from_raw_os_error(2), None), super::HR_FILE_NOT_FOUND),
-            (MountSourceError::PublicationRetryLimit, super::HR_IO_DEVICE),
-            (MountSourceError::WorkspaceCause(crate::WorkspaceError::NotFound), super::HR_FILE_NOT_FOUND),
-            (MountSourceError::WorkspaceCause(crate::WorkspaceError::NotDirectory), super::HR_IO_DEVICE),
-            (MountSourceError::WorkspaceCause(crate::WorkspaceError::Filesystem(crate::FsError::NotFound)), super::HR_FILE_NOT_FOUND),
-            (MountSourceError::WorkspaceCause(crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::Io(std::io::Error::from_raw_os_error(2))))), super::HR_FILE_NOT_FOUND),
-        ];
-        for (source_error, expected_status) in errors {
-            assert_eq!(source_hresult(&source_error), expected_status);
-            let error = super::NativeMountError::Source(source_error);
-            assert!(!super::callback_requires_permanent_fence(&error));
-            let failure = Mutex::new(PostOperationFailures::default());
-            let (result, _, live) = measured_capture_projection(
-                source.as_ref(), &failure, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-                |projection| {
-                    let original = projection.work.meter().lock().work;
-                    assert_eq!(super::retain_callback_failure(projection, error), expected_status);
-                    assert_eq!(projection.work.meter().lock().work, original);
-                    let failure = failure.lock().expect("actual callback slot");
-                    assert!(!failure.unreplayable_barrier);
-                    assert!(failure.unreplayable.is_none());
-                    Ok(())
-                },
-            );
-            result?;
-            assert_eq!(live, 0);
-        }
-        assert_eq!(source_hresult(&MountSourceError::NativeUnsupported), super::HR_NOT_SUPPORTED);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn callback_cancellation_after_raw_path_retains_the_executed_prefix()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let raw = [65, 92, 66, 0];
-        let cancellation = CancellationToken::new();
-        let (result, prefix, live) = measured_source_leaf(
-            source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, |projection| {
-                let path = super::path_from(PCWSTR::from_raw(raw.as_ptr()), projection)?
-                    .ok_or(super::NativeMountError::Lifecycle("valid callback path rejected"))?;
-                cancellation.cancel();
-                let result = projection.work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED).map_err(super::detach_work_error);
-                drop(path);
-                result
-            },
-        );
-        assert!(matches!(result, Err(super::NativeMountError::Demand(crate::DemandError::Cancelled))));
-        assert_eq!(prefix.bytes_encoded, 4);
-        assert!(prefix.items_examined > 0);
-        assert!(prefix.peak_allocation_bytes > 0);
-        assert_eq!(live, 0, "cancellation retires the actual already-built path");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn source_link_host_query_is_raw_and_denied_before_the_real_probe()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
-        let source = windows_checkout_source().await?;
-        let temporary = tempfile::tempdir()?;
-        let target = temporary.path().join(std::ffi::OsString::from_wide(&[0xd800, 120]));
-        std::fs::create_dir(&target)?;
-        let raw: Vec<u16> = target.as_os_str().encode_wide().collect();
-        let cancellation = CancellationToken::new();
-        let query = |projection| {
-            assert!(super::resolves_to_directory(projection, &MountPath::root(), &raw, 0)?);
-            Ok(())
-        };
-        let (observed, exact, live) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED, &cancellation, query);
-        observed?;
-        assert_eq!(exact.backend_read_operations, 2);
-        assert_eq!(live, 0);
-        let (bounded, counters, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, query);
-        bounded?;
-        counters.verify(exact)?;
-        assert_eq!(live, 0);
-        let denied = WorkBudget { backend_read_operations: 0, ..exact };
-        let (failure, prefix, live) = measured_source_leaf(source.as_ref(), denied, &cancellation, query);
-        assert!(matches!(failure, Err(super::NativeMountError::Work(_))));
-        assert_eq!(prefix.backend_read_operations, 0);
-        assert_eq!(live, 0);
-        let denied = WorkBudget { backend_read_operations: 1, ..exact };
-        let (failure, prefix, live) = measured_source_leaf(source.as_ref(), denied, &cancellation, query);
-        assert!(matches!(failure, Err(super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_read_operations", ..
-        }))));
-        assert_eq!(prefix.backend_read_operations, 1, "the real raw target handle opened before the stat denial");
-        prefix.verify(denied)?;
-        assert_eq!(live, 0, "the actual held handle and UTF-16 buffer are dropped after late denial");
-        cancellation.cancel();
-        let (failure, prefix, live) = measured_source_leaf(source.as_ref(), exact, &cancellation, query);
-        assert!(matches!(failure, Err(super::NativeMountError::Source(MountSourceError::Cancelled))));
-        assert_eq!(prefix, crate::WorkCounters::UNCHARGED);
         assert_eq!(live, 0);
         Ok(())
     }
@@ -9650,8 +7232,7 @@ mod tests {
             let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true)
                 .custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0)
                 .open(&destination)?;
-            // SAFETY: this fresh FILE_FLAG_OVERLAPPED handle has no independent
-            // I/O or completion-port association; the fixture transfers it.
+            // SAFETY: this fresh FILE_FLAG_OVERLAPPED handle has no independent I/O or completion-port association; the fixture transfers it.
             let file = unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file)? };
             let (result, counters, live) = measured_source_leaf(source.as_ref(), budget, &cancellation, |projection| {
                 let entries = super::source_listing(projection, &MountPath::root())?;
@@ -9668,23 +7249,15 @@ mod tests {
         observed?;
         assert_eq!(written, content);
         assert_eq!(live, 0);
-        assert!(exact.backend_write_operations >= 2);
-        let (bounded, counters, live, written) = run(exact, "exact")?;
-        bounded?;
-        counters.verify(exact)?;
-        assert_eq!(written, content);
-        assert_eq!(live, 0);
         let denied = WorkBudget { backend_write_operations: 1, ..exact };
         let (failure, prefix, live, written) = run(denied, "denied")?;
         assert!(matches!(failure, Err(super::NativeMountError::Work(_))));
         prefix.verify(denied)?;
-        assert_eq!(prefix.backend_write_operations, 1);
         assert_eq!(written, content[..super::WRITE_CHUNK_BYTES as usize]);
         assert_eq!(live, 0, "accepted native packet completion retired before the source loan returned");
         Ok(())
     }
 
-    /// Mounts `source` writable at a fresh destination.
     fn mount_source(
         source: &Arc<MemorySource>,
     ) -> Result<
@@ -9726,382 +7299,6 @@ mod tests {
             Arc::clone(source) as Arc<dyn MountFilesystem>,
         ).map_err(|failure| failure.error)?;
         Ok((root, destination, session))
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn actual_sdk_query_callback_uses_the_original_exact_source_budget()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        source.create_file(&windows_path("Query.TXT"), FileMetadata::default())?;
-        let (_root, _destination, mut session) = mount_driver_source(&source)?;
-        let retained_runtime = session.test_runtime().expect("actual live SDK callback owner");
-        let runtime = &***retained_runtime;
-        let raw = [81, 117, 101, 114, 121, 46, 84, 88, 84, 0];
-        let data = super::PRJ_CALLBACK_DATA {
-            NamespaceVirtualizationContext: session.test_context().expect("actual started SDK context"),
-            InstanceContext: std::ptr::from_ref(runtime).cast_mut().cast::<std::ffi::c_void>(),
-            FilePathName: PCWSTR::from_raw(raw.as_ptr()),
-            ..Default::default()
-        };
-        let callback = super::callbacks().QueryFileNameCallback.expect("the installed actual SDK entry");
-        // SAFETY: this is the live driver's real heap-stable context; the raw
-        // spelling and callback structure remain borrowed through completion.
-        assert_eq!(unsafe { callback(&data) }, super::HR_OK);
-        let after_success = runtime.post_operation_failure.lock().expect("actual completed request")
-            .completed_callback_work;
-        assert!(after_success.bytes_encoded >= 18);
-        let missing_raw = [78, 111, 116, 72, 101, 114, 101, 0];
-        let missing = super::PRJ_CALLBACK_DATA {
-            FilePathName: PCWSTR::from_raw(missing_raw.as_ptr()),
-            ..data
-        };
-        assert_eq!(unsafe { callback(&missing) }, super::HR_FILE_NOT_FOUND);
-        let after_missing = runtime.post_operation_failure.lock().expect("actual completed ENOENT")
-            .completed_callback_work;
-        assert!(after_missing.bytes_encoded >= after_success.bytes_encoded + 14,
-            "the actual absent-name request contributes its terminal receipt too");
-        assert!(after_missing.backend_read_operations > after_success.backend_read_operations);
-        let invoke = |budget| -> Result<crate::WorkCounters, super::NativeMountError> {
-            let mut work = crate::NativeMaterializationWork::new(budget, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-            runtime.projector.with_control_work(runtime, &mut work, |_| {
-                assert_eq!(unsafe { callback(&data) }, super::HR_OK);
-                Ok(())
-            })?;
-            Ok(work.receipt())
-        };
-        let exact = invoke(WorkBudget::UNBOUNDED)?;
-        assert!(exact.backend_read_operations > 0, "the callback performs the actual source lookup");
-        assert!(exact.bytes_encoded >= 18, "the SDK's exact spelling is parsed in the same scope");
-        invoke(exact)?.verify(exact)?;
-        assert_eq!(runtime.post_operation_failure.lock().expect("actual completed request window")
-            .completed_callback_work, after_missing,
-            "active exact lifecycle scopes are already measured and never folded a second time");
-        assert!(runtime.post_operation_failure.lock().expect("actual callback state").unreplayable.is_none());
-        drop(retained_runtime);
-        session.stop()?;
-        assert!(session.test_runtime().is_none(), "the SDK returned before its actual callback owner dropped");
-        assert_eq!(session.completed_callback_work(), after_missing,
-            "the same completed future window survives physical Runtime drop without SDK stop double counting");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn installed_guard_denial_awaits_its_paid_future_before_provider_exchange()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        #[derive(Debug)]
-        struct Denied;
-        impl std::fmt::Display for Denied {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("original fixture authority denied")
-            }
-        }
-        impl std::error::Error for Denied {}
-        struct Guard;
-        impl crate::native_mount::NativeMountCallbackGuard for Guard {
-            fn check<'a>(
-                &'a self, work: &'a crate::native_mount::NativeMountMeterWork,
-            ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, super::NativeMountError> {
-                crate::native_mount::NativeMountCallbackFuture::new_guarded(work, || async {
-                    tokio::task::yield_now().await;
-                    Err::<(), _>(Denied)
-                })
-            }
-            fn check_write<'a>(
-                &'a self, work: &'a crate::native_mount::NativeMountMeterWork,
-            ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, super::NativeMountError> {
-                crate::native_mount::NativeMountCallbackFuture::new_guarded(work, || async {
-                    tokio::task::yield_now().await;
-                    Err::<(), _>(Denied)
-                })
-            }
-        }
-        let original = crate::NativeMaterializationWork::new(WorkBudget {
-            backend_write_operations: 5, ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new()).expect("the actual original state is admitted");
-        let full = original.native_mount_work();
-        let source = windows_checkout_source_with_work(Some(&full)).await?;
-        let source = Arc::new(Arc::try_unwrap(source).ok().expect("unpublished fixture source")
-            .with_native_callback_guard(Arc::new(Guard)));
-        let root = tempfile::tempdir()?;
-        let destination = root.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        let request = crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination, writable: true,
-        };
-        let mut failure = super::ProjFsSession::start_with_meter(
-            &request, source as Arc<dyn MountFilesystem>, &full,
-        ).err().expect("the actual original namespace READ authority denies startup");
-        assert!(matches!(&failure.error, super::NativeMountError::CallbackDenied { .. }));
-        let Some(crate::native_mount::DriverSession::ProjFs(mut session)) = failure.retained_driver.take()
-            else { panic!("pre-SDK controls remain owned"); };
-        let runtime = session.test_runtime().expect("actual installed callback payload");
-        let before = original.receipt();
-        let live = original.native_read_meter().lock().live_allocation_bytes();
-        let failure = super::with_callback_meter(&runtime, |_| -> Result<(), super::NativeMountError> {
-            panic!("authorization failure precedes provider exchange and source effects")
-        }).expect_err("the actual installed verifier rejects this callback");
-        let super::NativeMountError::CallbackDenied { source, custody } = &failure.cause
-            else { panic!("the original typed authorization failure must remain owned"); };
-        assert!(std::error::Error::source(source.as_ref()).is_some_and(|cause| cause.is::<Denied>()));
-        assert_eq!(super::native_hresult(&failure.cause), windows::core::HRESULT::from_win32(5));
-        assert!(super::callback_requires_permanent_fence(&failure.cause));
-        assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-        assert_eq!(original.native_read_meter().lock().live_allocation_bytes(), live + custody.bytes(),
-            "completed verification releases its future and wake body; only the original failure box remains");
-        drop(failure);
-        assert_eq!(original.native_read_meter().lock().live_allocation_bytes(), live);
-        let runtime_ptr: &super::Runtime = &runtime;
-        let data = super::PRJ_CALLBACK_DATA {
-            InstanceContext: std::ptr::from_ref(runtime_ptr).cast_mut().cast::<std::ffi::c_void>(),
-            ..Default::default()
-        };
-        let callback = super::callbacks().QueryFileNameCallback.expect("actual installed SDK entry");
-        // SAFETY: the installed runtime remains heap-stable for this callback.
-        // Authorization denies before the unused SDK context or name is read.
-        assert_eq!(unsafe { callback(&data) }, windows::core::HRESULT::from_win32(5));
-        let retained = super::take_callback_failure(&runtime).expect("the actual callback retains its whole failure");
-        let super::NativeMountError::CallbackDenied { source, custody } = &retained.cause
-            else { panic!("the fatal slot retains the authentic boxed cause"); };
-        assert!(std::error::Error::source(source.as_ref()).is_some_and(|cause| cause.is::<Denied>()));
-        assert_eq!(original.native_read_meter().lock().live_allocation_bytes(), live + custody.bytes());
-        assert!(super::lock_recover(runtime.post_operation_failure.as_ref()).unreplayable_barrier);
-        assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-        drop(retained);
-        assert_eq!(original.native_read_meter().lock().live_allocation_bytes(), live);
-        drop(runtime);
-        session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn current_read_guard_cannot_authorize_authored_source_capture()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        #[derive(Debug)]
-        struct ReadOnly;
-        impl std::fmt::Display for ReadOnly {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("the original authority grants READ only")
-            }
-        }
-        impl std::error::Error for ReadOnly {}
-        struct Guard;
-        impl crate::native_mount::NativeMountCallbackGuard for Guard {
-            fn check<'a>(
-                &'a self, work: &'a crate::native_mount::NativeMountMeterWork,
-            ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, super::NativeMountError> {
-                crate::native_mount::NativeMountCallbackFuture::new_guarded(work, || async {
-                    Ok::<(), ReadOnly>(())
-                })
-            }
-            fn check_write<'a>(
-                &'a self, work: &'a crate::native_mount::NativeMountMeterWork,
-            ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, super::NativeMountError> {
-                crate::native_mount::NativeMountCallbackFuture::new_guarded(work, || async {
-                    tokio::task::yield_now().await;
-                    Err::<(), _>(ReadOnly)
-                })
-            }
-        }
-        let original = crate::NativeMaterializationWork::new(WorkBudget {
-            backend_write_operations: 5, ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new())?;
-        let full = original.native_mount_work();
-        let source = windows_checkout_source_with_work(Some(&full)).await?;
-        let source = Arc::new(Arc::try_unwrap(source).ok().expect("unpublished original fixture source")
-            .with_native_callback_guard(Arc::new(Guard)));
-        let root = tempfile::tempdir()?;
-        let destination = root.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        let request = crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination, writable: true,
-        };
-        let mut failure = super::ProjFsSession::start_with_meter(
-            &request, source as Arc<dyn MountFilesystem>, &full,
-        ).err().expect("the original SDK write budget denies marking before its effect");
-        let Some(crate::native_mount::DriverSession::ProjFs(mut session)) = failure.retained_driver.take()
-            else { panic!("the actual preborn physical owner remains"); };
-        let runtime = session.test_runtime().expect("original installed guard payload");
-        let before = original.receipt();
-        super::verify_callback_work(&runtime, &full)?;
-        let cause = session.verify_authored_capture_work(&runtime, &full)
-            .expect_err("a writable configuration cannot upgrade the actual READ authority");
-        assert!(matches!(&cause, super::NativeMountError::CallbackDenied { .. }));
-        assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-        assert!(super::lock_recover(runtime.post_operation_failure.as_ref()).pending_captures.entries.items.is_empty());
-        let denied = super::with_callback_meter_for_role::<()>(&runtime, true, |_| {
-            panic!("READ-only authority cannot construct an authored notification exchange")
-        }).expect_err("notification admission must request WRITE before its provider frame");
-        assert!(matches!(&denied.cause, super::NativeMountError::CallbackDenied { .. }));
-        assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-        drop(denied);
-        drop(cause);
-        drop(runtime);
-        session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        assert!(session.physical_retirement_complete());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn installed_native_callback_reuses_its_binding_without_an_active_lifecycle_scope()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        for with_resource in [false, true] {
-            let cancellation = CancellationToken::new();
-            let original = crate::NativeMaterializationWork::new(WorkBudget {
-                backend_write_operations: 5, ..WorkBudget::UNBOUNDED
-            }, &cancellation).expect("the original accounting state is admitted");
-            let resource = if with_resource { Some(original.native_volume_work(WorkBudget::UNBOUNDED)?) } else { None };
-            let bound = resource.as_ref().unwrap_or(&original);
-            let full = bound.native_mount_work();
-            let source = windows_checkout_source_with_work(Some(&full)).await?;
-            let root = tempfile::tempdir()?;
-            let destination = root.path().join("projection");
-            std::fs::create_dir(&destination)?;
-            let request = crate::NativeMountRequest {
-                mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-                destination, writable: true,
-            };
-            let mut failure = super::ProjFsSession::start_with_meter(
-                &request, source as Arc<dyn MountFilesystem>, &full,
-            ).err().expect("the real SDK write boundary is denied");
-            let Some(crate::native_mount::DriverSession::ProjFs(mut session)) = failure.retained_driver.take()
-                else { panic!("the actual pre-SDK callback control is retained"); };
-            let runtime = session.test_runtime().expect("installed callback payload");
-            assert!(super::lock_recover(&runtime.stop_meter).upgrade().is_none());
-            let before = original.receipt();
-            super::with_callback_meter(&runtime, |active| {
-                let active = active.native_materialization_work();
-                assert!(active.shares_ledger(bound) && active.shares_resource_allowance(bound),
-                    "native binding, not the presence of a resource allowance, selects the original work");
-                assert!(super::same_callback_work(&full, &active.native_mount_work()),
-                    "capture origin and invocation are retained with the original ledger and allowance");
-                Ok(())
-            }).map_err(|failure| failure.cause)?;
-            assert_eq!(original.receipt(), before, "the callback did not create another accounting state");
-            let different = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .expect("the unrelated invocation admits its own state");
-            let different_before = different.receipt();
-            assert!(matches!(super::verify_callback_work(&runtime, &different.native_mount_work()),
-                Err(super::NativeMountError::Lifecycle(_))));
-            let different_resource = bound.native_volume_work(WorkBudget::UNBOUNDED)?;
-            let resource_before = original.receipt();
-            assert!(matches!(super::verify_callback_work(&runtime, &different_resource.native_mount_work()),
-                Err(super::NativeMountError::Lifecycle(_))),
-                "a shared meter cannot substitute a different resource allowance");
-            assert_eq!(different.receipt(), different_before);
-            assert_eq!(original.receipt(), resource_before);
-            drop(different_resource);
-            let before = original.receipt();
-            cancellation.cancel();
-            let failure = super::with_callback_meter(&runtime, |_| -> Result<(), super::NativeMountError> {
-                panic!("revoked original binding cannot enter provider exchange or native IO")
-            }).expect_err("the original cancellation remains authoritative");
-            assert!(matches!(failure.cause, super::NativeMountError::Demand(crate::DemandError::Cancelled) | super::NativeMountError::Source(MountSourceError::Stale)));
-            assert_eq!(original.receipt(), before);
-            drop(runtime);
-            session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn startup_sdk_denial_keeps_plain_root_and_returns_the_actual_control_owner()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let root = tempfile::tempdir()?;
-        let destination = root.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        let authored = destination.join("authored.txt");
-        std::fs::write(&authored, b"not a projection")?;
-        let request = crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination: destination.clone(), writable: true,
-        };
-        let cancellation = CancellationToken::new();
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget { backend_write_operations: 5, ..WorkBudget::UNBOUNDED }, &cancellation).expect("four genuine control births plus the actual std worker start are admitted");
-        let started = super::ProjFsSession::start_with_meter(
-            &request, Arc::clone(&source) as Arc<dyn MountFilesystem>, &work.native_mount_work(),
-        );
-        let mut failure = match started {
-            Err(failure) => failure,
-            Ok(mut session) => {
-                session.stop()?;
-                panic!("there is no unreserved SDK mark write");
-            }
-        };
-        assert!(matches!(failure.error, crate::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_write_operations", ..
-        })));
-        assert_eq!(work.receipt().backend_write_operations, 1, "the actual original producer thread was created");
-        assert!(work.receipt().backend_read_operations > 0, "real plain-root probes ran");
-        let Some(crate::native_mount::DriverSession::ProjFs(mut session)) = failure.retained_driver.take()
-            else { panic!("the actual allocated callback control must remain owned"); };
-        assert!(session.test_runtime().is_some());
-        assert!(session.test_context().is_none(), "SDK start was never reached");
-        assert!(!session.namespace_detach_confirmed());
-        let before_stop = work.receipt();
-        session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        assert_eq!(work.receipt().allocation_operations, before_stop.allocation_operations,
-            "pre-SDK stop allocates no additional physical controls");
-        assert_eq!(work.receipt().backend_read_operations, before_stop.backend_read_operations);
-        assert_eq!(work.receipt().backend_write_operations, before_stop.backend_write_operations + 2,
-            "only the actual original root handle close and real worker join execute");
-        assert!(session.test_runtime().is_none());
-        assert!(!session.namespace_detach_confirmed(), "no SDK stop was invented");
-        assert_eq!(std::fs::read(authored)?, b"not a projection");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits marking a ProjFS virtualization root"]
-    async fn denied_sdk_start_retains_the_actual_marked_issuer_after_physical_drain()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let source = windows_checkout_source().await?;
-        let root = tempfile::tempdir()?;
-        let destination = root.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        let original_identity = crate::NativeRootIdentity::of_root_path(&destination)?;
-        let request = crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination: destination.clone(), writable: false,
-        };
-        // Four actual physical suffix births plus std spawn and SDK mark;
-        // no caller allowance remains for the actual SDK START attempt.
-        let work = crate::NativeMaterializationWork::new(WorkBudget {
-            backend_write_operations: 6, ..WorkBudget::UNBOUNDED
-        }, &CancellationToken::new())?;
-        let mut failure = super::ProjFsSession::start_with_meter(
-            &request, source as Arc<dyn MountFilesystem>, &work.native_mount_work(),
-        ).err().expect("the original write allowance denies START after successful marking");
-        assert!(matches!(failure.error, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "backend_write_operations", ..
-        })));
-        assert_eq!(work.receipt().backend_write_operations, 2);
-        let Some(crate::native_mount::DriverSession::ProjFs(mut session)) = failure.retained_driver.take()
-            else { panic!("the actual SDK marking prefix retains its original driver"); };
-        assert!(session.test_context().is_none(), "no SDK context was fabricated");
-        assert!(session.retired_namespace_qualification().is_none(), "the actual physical producer has not drained");
-        session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        assert!(session.physical_retirement_complete());
-        let issued = session.retired_namespace_qualification().expect("real successful SDK mark issued this namespace");
-        assert_eq!(issued.root_identity, original_identity);
-        assert_eq!(issued.instance_id, super::guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes())));
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&destination)?, original_identity);
-        assert!(!session.namespace_detach_confirmed(), "START was denied, so SDK Stop is never claimed");
-        let outcome = session.take_namespace_outcome().expect("the same issued namespace metadata moves to its original carrier");
-        assert!(outcome.qualification().is_some());
-        Ok(())
     }
 
     #[tokio::test]
@@ -10159,195 +7356,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn revalidation_control_denial_keeps_the_same_sdk_driver_and_is_retryable()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
-        let context = session.test_context().expect("actual started SDK context");
-        let root_identity = session.native_root_identity().expect("actual held projected root");
-        assert_eq!(root_identity, session.test_runtime().expect("actual runtime").metadata_root.identity());
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget { peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(), ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        assert!(matches!(session.revalidate_measured(&mut work),
-            Err(crate::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-                counter: "peak_allocation_bytes", ..
-            }))));
-        assert_eq!(session.test_context(), Some(context));
-        assert!(session.test_runtime().is_some());
-        assert!(!session.namespace_detach_confirmed());
-        assert!(destination.is_dir());
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.receipt().allocation_operations, 1);
-        let mut retry = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        {
-                let work = retry.native_mount_work();
-                let meter = retry.native_read_meter();
-                let scope = session.begin_original_work(&work)?;
-                let overlapping = scope.try_clone_for_io()?;
-                let resource = work.native_materialization_work().native_volume_work(WorkBudget::UNBOUNDED)?;
-                let before = work.native_materialization_work().receipt();
-                assert!(matches!(session.begin_original_work(&resource.native_mount_work()),
-                    Err(super::NativeMountError::ControlPending)),
-                    "same original meter with a different resource view is not the active scope");
-                assert_eq!(work.native_materialization_work().receipt(), before,
-                    "different full view is rejected before SDK or source work");
-                let mut different = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-                assert!(matches!(session.begin_original_work(&different.native_mount_work()),
-                    Err(super::NativeMountError::ControlPending)));
-                assert_eq!(different.receipt().backend_read_operations, 0);
-                assert_eq!(different.receipt().backend_write_operations, 0);
-                session.revalidate_with_meter(&work)?;
-                session.flush_callbacks_with_meter(&work)?;
-                assert_eq!(session.native_root_identity(), Some(root_identity));
-                let active = super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter)
-                    .upgrade().expect("outer original scope remains active");
-                assert!(Arc::ptr_eq(active.meter(), meter), "nested lifecycle scopes restore the same original engine");
-                drop(active);
-                drop(scope);
-                let active = super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter)
-                    .upgrade().expect("non-LIFO overlapping scope still owns the original engine");
-                assert!(Arc::ptr_eq(active.meter(), meter));
-                drop(active);
-                drop(overlapping);
-                assert!(super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter).upgrade().is_none(),
-                    "no original engine alias escapes the shared lifecycle scope");
-                let full_resource = resource.native_mount_work();
-                let before = resource.receipt();
-                let scope = session.begin_original_work(&full_resource)?;
-                let queued_scope = scope.try_clone_for_io()?;
-                let active = super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter)
-                    .upgrade().expect("queued resource scope is active").native_materialization_work();
-                assert!(active.shares_ledger(&resource) && active.shares_resource_allowance(&resource),
-                    "queued SDK activation preserves the exact original resource view");
-                assert_eq!(resource.receipt(), before, "scope aliases allocate no extra controls");
-                drop(active);
-                drop(scope);
-                assert!(super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter).upgrade().is_some(),
-                    "queued physical scope survives caller scope drop");
-                drop(queued_scope);
-                assert!(super::lock_recover(&session.test_runtime().expect("actual runtime").stop_meter).upgrade().is_none());
-        }
-        session.stop()?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn waiting_real_worker_inherits_the_original_live_scope_not_cancelled_future_policy()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let (_root, _destination, mut session) = mount_driver_source(&source)?;
-        let runtime = session.test_runtime().expect("actual Arc callback runtime");
-        runtime.handler_cancellation.cancel();
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        {
-            let _gate = super::lock_recover(&runtime.projector.scope_gate);
-            runtime.projector.retry();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !super::lock_recover(&runtime.projector.state).relisting {
-                if std::time::Instant::now() >= deadline {
-                    return Err(super::NativeMountError::Lifecycle("actual worker did not reach its scope gate"));
-                }
-                std::thread::sleep(super::HELD_RETRY);
-            }
-            let _scope = session.begin_original_work(&work.native_mount_work())?;
-            // The worker chose its round before the scope appeared. Holding
-            // the gate makes a second future ledger unable to complete it.
-            runtime.projector.settle_measured(&work)?;
-            assert!(super::lock_recover(&runtime.projector.state).failure.is_none());
-        }
-        assert!(!session.namespace_detach_confirmed());
-        drop(runtime);
-        session.stop_measured(&mut crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state"))?;
-        assert!(session.namespace_detach_confirmed());
-        Ok(())
-    }
-
-    #[test]
-    fn real_worker_join_consumes_only_birth_credit_after_original_cancellation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget {
-            backend_write_operations: 2, ..WorkBudget::UNBOUNDED
-        }, &cancellation).expect("one original constructor ledger");
-        let meter = original.native_mount_work();
-        let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(&meter)?;
-        let projector = {
-            let policy = meter.meter().lock();
-            Projector::new_with_work(&custody, &policy)
-        };
-        let mut credit = original.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        })?;
-        let worker = super::projection_native_call(&meter, true, || {
-            std::thread::Builder::new().spawn(|| {})
-        })?;
-        *super::lock_recover(&projector.worker) = Some(worker);
-        let before = original.receipt();
-        cancellation.cancel();
-        let refused_wait = CancellationToken::new();
-        refused_wait.cancel();
-        {
-            let loan = credit.cleanup_loan(&refused_wait);
-            assert!(matches!(projector.finish_measured(&mut &original, Some(&loan)),
-                Err(super::NativeMountError::Demand(crate::DemandError::Cancelled))));
-        }
-        assert!(super::lock_recover(&projector.worker).is_some(),
-            "wait refusal preserves the actual join handle");
-        assert_eq!(original.receipt(), before);
-        assert_eq!(credit.remaining_work().backend_write_operations, 1);
-        let wait = CancellationToken::new();
-        {
-            let loan = credit.cleanup_loan(&wait);
-            assert!(loan.original_work().shares_allocation_context(&original));
-            projector.finish_measured(&mut &original, Some(&loan))?;
-        }
-        assert!(super::lock_recover(&projector.worker).is_none());
-        assert!(cancellation.is_cancelled(), "joining never replaces original cancellation");
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations + 1);
-        assert_eq!(credit.remaining_work().backend_write_operations, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn cleanup_wait_refusal_keeps_the_real_sdk_owner_and_original_birth_credit()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
-        let original = session.test_original_stop_work().expect("constructor's actual work")
-            .native_materialization_work().allocation_work();
-        let before = original.receipt();
-        let accepted = session.test_sdk_stop_credit().expect("SDK birth credit");
-        assert_eq!(accepted.backend_write_operations, 1);
-        assert_eq!(session.test_worker_join_credit().expect("worker birth credit").backend_write_operations, 1);
-        let wait = CancellationToken::new();
-        wait.cancel();
-        assert!(matches!(session.stop_with_cleanup_wait(&wait),
-            Err(super::NativeMountError::Demand(crate::DemandError::Cancelled))));
-        assert_eq!(original.receipt(), before, "refused wait is not an actual SDK operation");
-        assert_eq!(session.test_sdk_stop_credit().expect("same held birth credit"), accepted);
-        assert!(session.test_context().is_some());
-        assert!(session.test_runtime().is_some());
-        assert!(destination.is_dir());
-        let mut info = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
-        // SAFETY: refusal retained the actual live SDK context.
-        unsafe { PrjGetVirtualizationInstanceInfo(session.test_context().expect("live context"), &raw mut info) }?;
-        session.stop_with_cleanup_wait(&CancellationToken::new())?;
-        assert!(session.namespace_detach_confirmed());
-        assert!(session.physical_retirement_complete());
-        assert!(session.test_original_stop_work().is_none());
-        assert!(session.test_sdk_stop_credit().is_none());
-        assert!(session.test_worker_join_credit().is_none());
-        assert!(destination.is_dir());
-        assert_eq!(std::fs::read_dir(destination)?.count(), 0);
-        assert!(original.receipt().backend_write_operations > before.backend_write_operations,
-            "the same original ledger records the actual retirement prefix");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn cleanup_wait_refusal_preserves_a_renamed_original_stage_and_foreign_replacement()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
@@ -10368,8 +7376,6 @@ mod tests {
         denied_wait.cancel();
         assert!(session.stop_with_cleanup_wait(&denied_wait).is_err());
         assert_eq!(original.receipt(), before);
-        assert_eq!(session.test_sdk_stop_credit().expect("unspent SDK birth credit").backend_write_operations, 1);
-        assert_eq!(session.test_worker_join_credit().expect("unspent worker join credit").backend_write_operations, 1);
         assert!(session.test_context().is_some());
         assert!(session.test_runtime().is_some());
         assert!(!session.namespace_detach_confirmed());
@@ -10383,24 +7389,6 @@ mod tests {
         assert!(!moved.exists());
         assert_eq!(crate::NativeRootIdentity::of_root_path(&stage)?, foreign,
             "retirement never adopts or removes the substituted sibling");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn measured_stop_uses_only_original_birth_credits_not_caller_write_allowance()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
-        let identity = session.native_root_identity().expect("actual held root");
-        let work = crate::NativeMaterializationWork::new(WorkBudget { backend_write_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new())
-            .expect("the caller admits its own observation state only");
-        let before = work.receipt();
-        session.stop_measured(&work)?;
-        assert_eq!(work.receipt(), before, "caller allowance is not cleanup funding or namespace permission");
-        assert!(session.physical_retirement_complete());
-        assert!(session.namespace_detach_confirmed());
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&destination)?, identity, "original user root is not recreated");
         Ok(())
     }
 
@@ -10466,59 +7454,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn measured_stop_removes_the_held_original_stage_and_preserves_a_foreign_replacement()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
-        let prepare = session.test_original_stop_work().expect("actual original producer admission");
-        let runtime = session.test_runtime().expect("actual callback runtime");
-        super::with_staging_directory(
-            &destination, &prepare, runtime.metadata_root.identity(), &runtime.staging_custody, |_| Ok(()),
-        )?;
-        let stage = super::staging_path(&destination);
-        let moved = stage.with_extension("owned-before-replacement");
-        std::fs::rename(&stage, &moved)?;
-        std::fs::create_dir(&stage)?;
-        let foreign = crate::NativeRootIdentity::of_root_path(&stage)?;
-        drop(runtime);
-        drop(prepare);
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        session.stop_measured(&mut work)?;
-        assert!(session.test_context().is_none());
-        assert!(session.namespace_detach_confirmed());
-        assert!(session.test_runtime().is_none());
-        assert!(session.physical_retirement_complete());
-        assert_eq!(crate::NativeRootIdentity::of_root_path(&stage)?, foreign);
-        assert!(!moved.exists(), "the held original was physically retired, despite its rename");
-        assert!(destination.is_dir());
-        assert!(stage.is_dir(), "foreign namespace data is not removed with a user root");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn measured_stop_cancellation_preserves_the_actual_driver_and_namespace()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let seed = windows_path("seed.txt");
-        source.create_file(&seed, FileMetadata::default())?;
-        source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
-        let cancellation = CancellationToken::new();
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).expect("the actual phase admits its one original native state");
-        let before = work.receipt();
-        cancellation.cancel();
-        session.stop_measured(&mut work).expect_err("original cancellation must win");
-        assert_eq!(work.receipt(), before);
-        assert!(session.test_context().is_some());
-        assert!(session.test_runtime().is_some());
-        assert_eq!(std::fs::read(destination.join("seed.txt"))?, b"seed");
-        session.stop()?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn original_capture_cancellation_preserves_dirty_data_and_retires_physical_owners()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
@@ -10551,220 +7486,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn measured_root_recreation_has_one_exact_create_boundary()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let parent = tempfile::tempdir()?;
-        let destination = parent.path().join("projection");
-        let mut recreated = None;
-        let mut denied = crate::NativeMaterializationWork::new(WorkBudget { backend_write_operations: 0, ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        let error = super::recreate_destination_measured(&destination, &mut recreated, &mut &denied)
-            .expect_err("create-only boundary is denied");
-        assert!(matches!(error, crate::NativeMountError::Work(_)));
-        assert_eq!(denied.receipt().backend_write_operations, 0);
-        assert_eq!(denied.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert!(!destination.exists());
-        assert!(recreated.is_none());
-        let mut admitted = crate::NativeMaterializationWork::new(WorkBudget { backend_write_operations: 1, ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        super::recreate_destination_measured(&destination, &mut recreated, &mut &admitted)?;
-        assert_eq!(admitted.receipt().backend_write_operations, 1);
-        assert_eq!(admitted.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert!(destination.is_dir());
-        assert!(recreated.is_some());
-        let mut retained_retry = crate::NativeMaterializationWork::new(WorkBudget { backend_read_operations: 0, backend_write_operations: 0,
-            allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        super::recreate_destination_measured(&destination, &mut recreated, &mut &retained_retry)?;
-        assert_eq!(retained_retry.receipt().backend_read_operations, 0);
-        assert_eq!(retained_retry.receipt().backend_write_operations, 0);
-        assert_eq!(retained_retry.receipt().allocation_operations, 1, "the retained root required no allocation beyond its original accounting state");
-        drop(recreated.take());
-        std::fs::write(destination.join("do-not-adopt"), b"authored")?;
-        let mut repeated = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        super::recreate_destination_measured(&destination, &mut recreated, &mut &repeated)
-            .expect_err("FILE_CREATE must not adopt another root");
-        assert_eq!(std::fs::read(destination.join("do-not-adopt"))?, b"authored");
-        assert_eq!(repeated.receipt().backend_write_operations, 1);
-        assert_eq!(repeated.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        Ok(())
-    }
-
-    #[test]
-    fn measured_physical_walk_keeps_an_exact_deleted_prefix_when_the_root_write_is_denied()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows::Win32::Storage::FileSystem::{
-            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
-        let parent = tempfile::tempdir()?;
-        let destination = parent.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        std::fs::write(destination.join("child"), b"projected")?;
-        let file = std::fs::OpenOptions::new()
-            .access_mode(DELETE.0 | FILE_GENERIC_READ.0)
-            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&destination)?;
-        let directory = cap_std::fs::Dir::from_std_file(file);
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget { backend_write_operations: 1, ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        let error = super::remove_projection_tree(&directory, None, &mut &work, None)
-            .expect_err("the actual root disposition is denied after its child was removed");
-        assert!(matches!(error, super::NativeMountError::Work(_)));
-        assert_eq!(work.receipt().backend_write_operations, 1);
-        assert!(work.receipt().backend_read_operations > 0);
-        assert!(work.receipt().items_examined > 0);
-        assert!(work.receipt().peak_allocation_bytes >= 64 * 1024, "the real native enumeration buffer was admitted");
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert!(destination.is_dir());
-        assert!(!destination.join("child").exists(), "the receipt preserves actual completed prefix work");
-        super::remove_projection_tree(&directory, None, &mut &crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state"), None)?;
-        drop(directory);
-        assert!(!destination.exists());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn measured_callback_snapshot_denial_preserves_the_original_capture_serial() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let callbacks = CallbackGate::start().expect("callback gate");
-        let failures = Mutex::new(PostOperationFailures::default());
-        let path = windows_path("authored.txt");
-        queue_capture_fixture(source.as_ref(), &failures, &path, "unjoined write");
-        let serial = capture_serial_fixture(&failures, &path);
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget { peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(), ..WorkBudget::UNBOUNDED }, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        let error = measured_callback_flush_fixture(&callbacks, &failures, None, &mut work, |_, _| {
-            panic!("a denied snapshot must never enter source capture")
-        }).expect_err("snapshot envelope is admitted before allocation");
-        assert!(matches!(error, crate::NativeMountError::Work(_)));
-        assert_eq!(work.receipt().allocation_operations, 1);
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(capture_serial_fixture(&failures, &path), serial);
-    }
-
-    #[tokio::test]
-    async fn callback_snapshot_copy_budget_denies_the_actual_final_shift() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let callbacks = CallbackGate::start().expect("callback gate");
-        let failure = Mutex::new(PostOperationFailures::default());
-        let deep = windows_path("a").child(windows_name("child"));
-        let shallow = windows_path("z");
-        queue_capture_fixture(source.as_ref(), &failure, &deep, "deep pending");
-        queue_capture_fixture(source.as_ref(), &failure, &shallow, "shallow pending");
-        let serial = capture_serial_fixture(&failure, &deep);
-        let cancellation = CancellationToken::new();
-        let observe = |budget| {
-            let mut work = crate::NativeMaterializationWork::new(budget, &cancellation).expect("the actual phase admits its one original native state");
-            let error = measured_callback_flush_fixture(&callbacks, &failure, None, &mut work, |paths, _| {
-                assert_eq!(paths[0].0, shallow);
-                assert_eq!(paths[1].0, deep);
-                Err(super::NativeMountError::ControlPending)
-            }).expect_err("observe the original snapshot without joining its serials");
-            assert!(matches!(error, super::NativeMountError::ControlPending));
-            assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-            work.receipt()
-        };
-        let exact = observe(WorkBudget::UNBOUNDED);
-        let bounded = observe(exact);
-        bounded.verify(exact).expect("same actual snapshot fits its exact grant");
-        let denied = WorkBudget { bytes_copied: exact.bytes_copied - 1, ..exact };
-        let mut work = crate::NativeMaterializationWork::new(denied, &cancellation).expect("the actual phase admits its one original native state");
-        let error = measured_callback_flush_fixture(&callbacks, &failure, None, &mut work, |_, _| {
-            panic!("the final physical insertion shift was not admitted")
-        }).expect_err("one fewer byte denies the real shift");
-        assert!(matches!(error, super::NativeMountError::Work(crate::WorkError::BudgetExceeded {
-            counter: "bytes_copied", ..
-        })));
-        assert_eq!(work.receipt().bytes_copied,
-            exact.bytes_copied - std::mem::size_of::<(MountPath, u64, bool)>() as u64);
-        work.receipt().verify(denied).expect("actual copied prefix stays within the grant");
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert_eq!(capture_serial_fixture(&failure, &deep), serial);
-    }
-
-    #[tokio::test]
-    async fn measured_callback_capture_failure_preserves_typed_work_and_releases_its_controls() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let callbacks = CallbackGate::start().expect("callback gate");
-        let failures = Mutex::new(PostOperationFailures::default());
-        let path = windows_path("authored.txt");
-        queue_capture_fixture(source.as_ref(), &failures, &path, "unjoined write");
-        let serial = capture_serial_fixture(&failures, &path);
-        let probes = std::sync::RwLock::new(Vec::new());
-        let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-        let expected = crate::WorkError::BudgetExceeded {
-            counter: "object_bytes_read", observed: 7, maximum: 6,
-        };
-        let error = measured_callback_flush_fixture(&callbacks, &failures, Some(&probes), &mut work, |paths, work| {
-            assert_eq!(paths[0].0, path);
-            assert_eq!(probes.read().expect("borrowed probes").len(), 1);
-            work.native_materialization_work().charge(crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED })
-                .map_err(super::detach_work_error)?;
-            Err(super::detach_source_error(MountSourceError::Work(expected)))
-        }).expect_err("typed source admission failure must fence cleanup");
-        assert!(matches!(error, crate::NativeMountError::Work(error) if error == expected));
-        assert_eq!(work.receipt().backend_read_operations, 1);
-        assert!(work.receipt().peak_allocation_bytes > 0);
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
-        assert!(probes.read().expect("retired controls").is_empty());
-        assert_eq!(capture_serial_fixture(&failures, &path), serial);
-    }
-
-    #[test]
-    fn measured_callback_drain_observes_original_cancellation_while_controls_stay_live() {
-        let callbacks = CallbackGate::start().expect("callback gate");
-        let entered = Barrier::new(2);
-        let release = Barrier::new(2);
-        let cancellation = CancellationToken::new();
-        std::thread::scope(|scope| {
-            let worker = scope.spawn(|| {
-                let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-                callbacks.call_observed(0, &work.native_mount_work(), || {
-                    entered.wait();
-                    release.wait();
-                }, |value| value).expect("callback admitted");
-            });
-            entered.wait();
-            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).expect("the actual phase admits its one original native state");
-            let before = work.receipt();
-            let cancel = scope.spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                cancellation.cancel();
-            });
-            callbacks.drain_measured(&work.native_mount_work())
-                .expect_err("cancellation interrupts the real gate wait");
-            assert_eq!(work.receipt(), before, "borrowed controls have no invented cost");
-            assert_eq!(*callbacks.active.lock().expect("live callback count"), 1);
-            release.wait();
-            worker.join().expect("callback finishes");
-            cancel.join().expect("canceller finishes");
-            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-            callbacks.drain_measured(&work.native_mount_work())
-                .expect("later invocation drains the same controls");
-        });
-    }
-
-    #[test]
-    fn rejected_provider_controls_keep_the_original_typed_failure_and_root_fence() {
-        let callbacks = CallbackGate::start().expect("callback gate");
-        let expected = crate::WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes", observed: 16, maximum: 0,
-        };
-        let failures = Mutex::new(PostOperationFailures {
-            provider_control_failure: Some(super::provider_stack::ProviderFailure::Work(expected)),
-            ..PostOperationFailures::default()
-        });
-        for _ in 0..2 {
-            let mut work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("the actual phase admits its one original native state");
-            let before = work.receipt();
-            let error = measured_callback_flush_fixture(&callbacks, &failures, None, &mut work, |_, _| {
-                panic!("an unexecuted authored handler cannot be forgotten by a later flush")
-            }).expect_err("unreplayable provider controls retain namespace custody");
-            assert!(matches!(error, crate::NativeMountError::Work(error) if error == expected));
-            assert_eq!(work.receipt(), before, "retained failure is borrowed, not newly executed");
-            assert!(failures.lock().expect("retained control fault").provider_control_failure.is_some());
-        }
-    }
-
     fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<String>> {
         let mut names = std::fs::read_dir(directory)?
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
@@ -10789,10 +7510,7 @@ mod tests {
         let projected = destination.join("seed.txt");
         assert_eq!(std::fs::read(&projected)?, b"seed");
 
-        // Excluding FILE_SHARE_DELETE models a background compiler or language
-        // server that outlives the host tool boundary. ProjFS can stop, but the
-        // authenticated projection cannot be reclaimed while this handle is
-        // alive, so an in-place native-view transition must not be published.
+        // Excluding FILE_SHARE_DELETE models a background compiler or language server that outlives the host tool boundary.
         let mut late = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -10811,10 +7529,8 @@ mod tests {
         late.flush()?;
         drop(late);
 
-        // The provider is already stopped, so no callback can authenticate or
-        // publish this write. A later physical view must quarantine the old
-        // epoch rather than pretending that the late write joined the SDK.
-        assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+        // The provider is already stopped, so no callback can authenticate or publish this write.
+        assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
         session.stop()?;
         Ok(())
     }
@@ -10887,8 +7603,7 @@ mod tests {
         source.create_file(&seed, FileMetadata::default())?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
-        // ProjFS notifies the provider only of other processes' I/O. One
-        // handle stays open across the rename and writes afterwards.
+        // ProjFS notifies the provider only of other processes' I/O.
         let script = "$seed = Join-Path $env:ACYCLIC_FS_TEST_ROOT 'seed.txt';
             $moved = Join-Path $env:ACYCLIC_FS_TEST_ROOT 'moved.txt';
             $h = [IO.File]::Open($seed, 'Open', 'ReadWrite', 'ReadWrite,Delete');
@@ -10917,17 +7632,7 @@ mod tests {
         let source = windows_checkout_source().await?;
         let (_root, destination, mut session) = mount_source(&source)?;
         // ProjFS notifies the provider only of other processes' I/O.
-        let external = |command: &str| -> Result<(), Box<dyn std::error::Error>> {
-            let output = acyclic_native_runtime::process_output(
-                std::process::Command::new("cmd.exe")
-                    .args(["/D", "/C", command])
-                    .current_dir(&destination),
-                std::time::Duration::from_secs(120),
-                8 * 1024 * 1024,
-            )?;
-            assert!(output.status.success(), "{command} failed: {output:?}");
-            Ok(())
-        };
+        let external = |command: &str| external_edit(&destination, command);
         let content = |name: &str| -> Result<Vec<u8>, MountSourceError> {
             let path = windows_path(name);
             let length = source.lookup(&path)?.ok_or(MountSourceError::NotFound)?;
@@ -10939,7 +7644,6 @@ mod tests {
         external("echo first> created.txt")?;
         session.flush_callbacks()?;
         assert_eq!(content("created.txt")?, b"first\r\n");
-        // Each change after the first capture is its own later boundary.
         external("echo second> created.txt")?;
         session.flush_callbacks()?;
         assert_eq!(content("created.txt")?, b"second\r\n");
@@ -10969,26 +7673,11 @@ mod tests {
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
-        // A source-side create advances the source view, which the
-        // projection follows once revalidated.
         source.create_file(&windows_path("b.txt"), FileMetadata::default())?;
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
-        // Creates and removals through the mount stay exact before and after
-        // the provider captures them into the source. ProjFS notifies the
-        // provider only of other processes' I/O.
-        let external = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
-                .args(["/D", "/C", "echo c> c.txt && del b.txt"])
-                .current_dir(&destination),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )?;
-        assert!(
-            external.status.success(),
-            "external edit failed: {external:?}"
-        );
+        external_edit(&destination, "echo c> c.txt && del b.txt")?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
         session.flush_callbacks()?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
@@ -10998,9 +7687,6 @@ mod tests {
         Ok(())
     }
 
-    /// A link is projected with its target, as a placeholder or, where the
-    /// volume refuses link placeholders, as an ordinary link, and follows a
-    /// source that points it elsewhere.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>>
@@ -11029,8 +7715,6 @@ mod tests {
         Ok(())
     }
 
-    /// Runs `script` in another process: `ProjFS` notifies the provider only
-    /// of other processes' I/O.
     fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
         acyclic_native_runtime::spawn_process_tree(
             std::process::Command::new("powershell.exe").args([
@@ -11055,9 +7739,6 @@ mod tests {
         }
     }
 
-    /// A time set through a writable handle stays, on disk and in the
-    /// source, for empty files and others, also while another process reads
-    /// the files: every file of the projection is an ordinary file.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_time_set_through_a_writable_handle_stays() -> Result<(), Box<dyn std::error::Error>>
@@ -11119,7 +7800,6 @@ mod tests {
         Ok(())
     }
 
-    /// A file another process opened follows its source.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
@@ -11129,7 +7809,6 @@ mod tests {
         source.write_range(&tracked, 0, Bytes::from_static(b"before"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("tracked.txt");
-        // Opened as editors do, sharing write access.
         succeeded(powershell(&format!(
             "[IO.File]::Open('{}', 'Open', 'Read', 'ReadWrite').Close()",
             projected.display()
@@ -11143,8 +7822,6 @@ mod tests {
         Ok(())
     }
 
-    /// What another process writes to a projected file stays, and reaches
-    /// the source.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
@@ -11198,114 +7875,51 @@ mod tests {
         Ok(())
     }
 
-    /// A directory the source puts in place of a projected link replaces it.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn a_directory_replaces_a_projected_link() -> Result<(), Box<dyn std::error::Error>> {
-        let source = windows_checkout_source().await?;
-        let name = windows_path("name");
-        source.create_symbolic_link(
-            &name,
-            Bytes::from(windows_name("target.txt")),
-            FileMetadata::default(),
-        )?;
-        let (_root, destination, mut session) = mount_source(&source)?;
-        source.remove(&name, None)?;
-        source.create_directory(&name, FileMetadata::default())?;
-        session.revalidate()?;
-        assert!(std::fs::symlink_metadata(destination.join("name"))?.is_dir());
-        session.stop()?;
-        Ok(())
-    }
-
-    /// A link another process holds open while the source puts a directory
-    /// in its place gives way to that directory once it is closed.
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn a_directory_replaces_a_link_held_open_once_closed()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn held_links_are_removed_or_replaced_once_closed() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::windows::fs::OpenOptionsExt as _;
         use windows::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
         };
-
-        let source = windows_checkout_source().await?;
-        let name = windows_path("name");
-        source.create_symbolic_link(
-            &name,
-            Bytes::from(windows_name("target.txt")),
-            FileMetadata::default(),
-        )?;
-        let (_root, destination, mut session) = mount_source(&source)?;
-        let projected = destination.join("name");
-        // Shares no delete access, so nothing can delete it while held.
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ.0)
-            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&projected)?;
-        source.remove(&name, None)?;
-        source.create_directory(&name, FileMetadata::default())?;
-        let inner = name.child(windows_name("inner.txt"));
-        source.create_file(&inner, FileMetadata::default())?;
-        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
-        let closer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            drop(held);
-        });
-        session.revalidate()?;
-        closer.join().map_err(|_| "closer panicked")?;
-        let held_by = || format!("the mount holds {:?}", sorted_names(&destination));
-        let kind = std::fs::symlink_metadata(&projected)
-            .map_err(|error| format!("the directory: {error}; {}", held_by()))?;
-        assert!(kind.is_dir(), "not a directory: {kind:?}");
-        let inner = std::fs::read(projected.join("inner.txt")).map_err(|error| {
-            format!("its file: {error}; it holds {:?}", sorted_names(&projected))
-        })?;
-        assert_eq!(inner, b"inner");
-        session.stop()?;
+        for directory in [false, true] {
+            let source = windows_checkout_source().await?;
+            let name = windows_path("name");
+            source.create_symbolic_link(
+                &name, Bytes::from(windows_name("target.txt")), FileMetadata::default(),
+            )?;
+            let (_root, destination, mut session) = mount_source(&source)?;
+            let projected = destination.join("name");
+            // No delete sharing: replacement must wait for this handle.
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ.0)
+                .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+                .open(&projected)?;
+            source.remove(&name, None)?;
+            if directory {
+                source.create_directory(&name, FileMetadata::default())?;
+                let inner = name.child(windows_name("inner.txt"));
+                source.create_file(&inner, FileMetadata::default())?;
+                source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+            }
+            let closer = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(held);
+            });
+            session.revalidate()?;
+            closer.join().map_err(|_| "closer panicked")?;
+            if directory {
+                assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+            } else {
+                assert!(sorted_names(&destination)?.is_empty());
+            }
+            session.stop()?;
+        }
         Ok(())
     }
 
-    /// A link another process holds open goes once it is closed: its
-    /// removal is tried again, not given up.
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn a_link_held_open_goes_once_closed() -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        use windows::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        };
-
-        let source = windows_checkout_source().await?;
-        let link = windows_path("link");
-        source.create_symbolic_link(
-            &link,
-            Bytes::from(windows_name("target.txt")),
-            FileMetadata::default(),
-        )?;
-        let (_root, destination, mut session) = mount_source(&source)?;
-        let projected = destination.join("link");
-        // Shares no delete access, so nothing can delete it while held.
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ.0)
-            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&projected)?;
-        source.remove(&link, None)?;
-        let closer = std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            drop(held);
-        });
-        session.revalidate()?;
-        closer.join().map_err(|_| "closer panicked")?;
-        assert!(sorted_names(&destination)?.is_empty());
-        session.stop()?;
-        Ok(())
-    }
-
-    /// What the user put in place of a projected link stays when the source
-    /// removes the link.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Error>> {
@@ -11350,7 +7964,6 @@ mod tests {
             0,
             Bytes::from_static(b"listed"),
         )?;
-        // A path absent before appears, listed and opened alike.
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
         assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
@@ -11405,102 +8018,16 @@ mod tests {
         Ok(())
     }
 
-    /// Revalidation waits while a superseded path is pending, which
-    /// it is until its outcome is recorded, even once every change has been
-    /// served, and returns as soon as it is settled.
-    #[tokio::test]
-    async fn edits_of_one_file_run_one_at_a_time() -> Result<(), Box<dyn std::error::Error>> {
-        use super::{FileLocks, lock_recover};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let source = windows_checkout_source().await?;
-        let cancellation = CancellationToken::new();
-        let (result, _, _) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED,
-            &cancellation, |projection| {
-                let locks = FileLocks::default();
-                let file = projection.root_identity;
-                let running = AtomicUsize::new(0);
-                let most = AtomicUsize::new(0);
-                std::thread::scope(|scope| {
-                    for _ in 0..8 {
-                        scope.spawn(|| {
-                            for _ in 0..50 {
-                                locks.with(&file, projection, || {
-                                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
-                                    most.fetch_max(now, Ordering::SeqCst);
-                                    std::thread::yield_now();
-                                    running.fetch_sub(1, Ordering::SeqCst);
-                                    Ok(())
-                                }).expect("unbounded synchronized edit");
-                            }
-                        });
-                    }
-                });
-                assert_eq!(most.load(Ordering::SeqCst), 1);
-                assert!(lock_recover(&locks.0).is_empty());
-                Ok(())
-            });
-        result?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn settling_waits_for_every_pending_placeholder() -> Result<(), Box<dyn std::error::Error>> {
-        use super::{Projector, WrittenEntry};
-        use crate::FileId;
-        use crate::native_mount::ViewStamp;
-        let source = windows_checkout_source().await?;
-        let cancellation = CancellationToken::new();
-        let (result, _, _) = measured_source_leaf(source.as_ref(), WorkBudget::UNBOUNDED,
-            &cancellation, |projection| {
-                let projector = Arc::new(Projector::new());
-                let path = MountPath::root().child(b"held".to_vec());
-                super::lock_recover(&projector.state).pending.insert(&path, WrittenEntry {
-                    file_id: FileId::new(), owned: None, facts: None,
-                    basis: Some(ReadBasis { stamp: ViewStamp::current(), binding: 0 }),
-                }, projection)?;
-                let settled = std::thread::spawn({
-                    let projector = Arc::clone(&projector);
-                    let meter = projection.work.clone();
-                    move || projector.settle_measured(&meter)
-                });
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                assert!(!settled.is_finished(), "settled while a placeholder is pending");
-                super::lock_recover(&projector.state).pending.remove(&path, projection)?;
-                projector.changed.notify_all();
-                settled.join().map_err(|_| super::NativeMountError::Lifecycle("settle panicked"))??;
-                Ok(())
-            });
-        result?;
-        Ok(())
-    }
-
-    /// A superseded path another handle holds open is replaced once
-    /// that handle closes; revalidation never returns while it still
-    /// describes the superseded source.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_held_placeholder_is_replaced_before_revalidation_returns()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::native::NativeDemandSource;
 
         let root = tempfile::tempdir()?;
         let source_root = root.path().join("source");
         std::fs::create_dir(&source_root)?;
         std::fs::write(source_root.join("held.txt"), b"old")?;
-        let demand = NativeDemandSource::open(
-            &source_root,
-            crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(),
-        )
-        .await?;
-        let lazy = crate::LazyWorkspace::attach_with_config(
-            &Fs::memory(),
-            "held-placeholder",
-            Arc::new(demand),
-            crate::MemoryLazyWorkspaceStore::default(),
-            VolumeConfig::native(Lifecycle::Ephemeral),
-        )
-        .await?;
+        let lazy = memory_native_workspace(&source_root, "held-placeholder").await?;
         let destination = root.path().join("mount");
         std::fs::create_dir(&destination)?;
         let mount = Arc::new(
@@ -11534,13 +8061,10 @@ mod tests {
         Ok(())
     }
 
-    /// A read-only source file is written read-only too; a change to
-    /// the source still replaces it, so revalidation never leaves it stale.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::native::NativeDemandSource;
 
         let root = tempfile::tempdir()?;
         let source_root = root.path().join("source");
@@ -11553,20 +8077,7 @@ mod tests {
         };
         std::fs::write(&source_file, b"old")?;
         set_read_only(true)?;
-        let demand = NativeDemandSource::open(
-            &source_root,
-            crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(),
-        )
-        .await?;
-        let lazy = crate::LazyWorkspace::attach_with_config(
-            &Fs::memory(),
-            "read-only-placeholder",
-            Arc::new(demand),
-            crate::MemoryLazyWorkspaceStore::default(),
-            VolumeConfig::native(Lifecycle::Ephemeral),
-        )
-        .await?;
+        let lazy = memory_native_workspace(&source_root, "read-only-placeholder").await?;
         let destination = root.path().join("mount");
         std::fs::create_dir(&destination)?;
         let mount = lazy
@@ -11594,8 +8105,7 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn a_file_holds_only_the_content_its_listing_named()
     -> Result<(), Box<dyn std::error::Error>> {
-        // A file is written from a lookup, or from the listing that
-        // projected its name; either names exactly the listed content.
+        // A file is written from a lookup, or from the listing that projected its name; either names exactly the listed content.
         for listed_first in [false, true] {
             writes_only_promised_content(listed_first).await?;
         }
@@ -11605,7 +8115,6 @@ mod tests {
     async fn writes_only_promised_content(
         listed_first: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::native::NativeDemandSource;
         use std::io::Write as _;
 
         let root = tempfile::tempdir()?;
@@ -11613,20 +8122,7 @@ mod tests {
         std::fs::create_dir(&source_root)?;
         std::fs::write(source_root.join("changed.txt"), b"before")?;
         std::fs::write(source_root.join("stable.txt"), b"stable")?;
-        let demand = NativeDemandSource::open(
-            &source_root,
-            crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(),
-        )
-        .await?;
-        let lazy = crate::LazyWorkspace::attach_with_config(
-            &Fs::memory(),
-            "pinned-projfs",
-            Arc::new(demand),
-            crate::MemoryLazyWorkspaceStore::default(),
-            VolumeConfig::native(Lifecycle::Ephemeral),
-        )
-        .await?;
+        let lazy = memory_native_workspace(&source_root, "pinned-projfs").await?;
         let destination = root.path().join("mount");
         std::fs::create_dir(&destination)?;
         let mount = lazy
@@ -11638,7 +8134,6 @@ mod tests {
         if listed_first {
             assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
         }
-        // Both are written.
         assert_eq!(std::fs::metadata(destination.join("changed.txt"))?.len(), 6);
         assert_eq!(std::fs::metadata(destination.join("stable.txt"))?.len(), 6);
 
@@ -11650,8 +8145,7 @@ mod tests {
         changed.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1 << 30))?;
         drop(changed);
 
-        // The file holds the version the listing named, or was already
-        // written again from the new one: never a mix.
+        // The file holds the version the listing named, or was already written again from the new one: never a mix.
         let read = std::fs::read(destination.join("changed.txt"))?;
         assert!(
             read == b"before" || read == b"after!",
@@ -11664,10 +8158,6 @@ mod tests {
         Ok(())
     }
 
-    /// A directory projected from the source renames like any other (a
-    /// directory `ProjFS` projected on demand never could), and a file moved
-    /// with it, never opened before, still reads its content: `ProjFS` asks
-    /// for it by the path it was written at.
     #[tokio::test]
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn projected_directories_rename_and_what_moved_with_them_reads()
@@ -11682,7 +8172,7 @@ mod tests {
         let demand = NativeDemandSource::open(
             &source_root,
             crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(),
+            crate::model::VolumeLimits::default(), None, None,
         )
         .await?;
         let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
@@ -11713,14 +8203,7 @@ mod tests {
         };
         assert_eq!(listed(&destination.join("pkg"))?, ["shared.rs", "sub"]);
         // ProjFS reports only other processes' I/O to its provider.
-        let moved = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
-                .args(["/D", "/C", "move pkg lib"])
-                .current_dir(&destination),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )?;
-        assert!(moved.status.success(), "move failed: {moved:?}");
+        external_edit(&destination, "move pkg lib")?;
         let read = |path: &std::path::Path| {
             std::fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))
         };
@@ -11733,46 +8216,6 @@ mod tests {
         mount.sync().await?;
         assert!(lazy.lookup("/lib/sub/deep.rs").await.is_ok());
         assert!(lazy.lookup("/pkg").await.is_err());
-        mount.unmount().await?;
-        Ok(())
-    }
-
-    /// A live projection lists a lazy workspace's unauthored source entries.
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn a_lazy_workspace_lists_through_the_projection()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use crate::demand::native::NativeDemandSource;
-
-        let root = tempfile::tempdir()?;
-        let source_root = root.path().join("source");
-        std::fs::create_dir(&source_root)?;
-        std::fs::write(source_root.join("a.txt"), b"a")?;
-        std::fs::write(source_root.join("b.rs"), b"b")?;
-        let demand = NativeDemandSource::open(
-            &source_root,
-            crate::model::FilesystemProfile::Windows,
-            crate::model::VolumeLimits::default(),
-        )
-        .await?;
-        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let lazy = crate::LazyWorkspace::attach_with_config(
-            &engine,
-            "listed-projfs",
-            Arc::new(demand),
-            crate::LocalCoreStateStore::open_owned(root.path().join("core"))?,
-            VolumeConfig::native(Lifecycle::Ephemeral),
-        )
-        .await?;
-        let destination = root.path().join("mount");
-        std::fs::create_dir(&destination)?;
-        let mount = lazy
-            .mount(
-                &destination,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        assert_eq!(sorted_names(&destination)?, ["a.txt", "b.rs"]);
         mount.unmount().await?;
         Ok(())
     }
@@ -11794,183 +8237,48 @@ mod tests {
         assert!(!statuses.contains(&super::HR_UNEXPECTED));
     }
 
-    #[test]
-    #[ignore = "requires a host that permits starting a ProjFS provider"]
-    fn minimal_virtualization_starts() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let root_identity = crate::capture_root_identity(root.path())?;
-        let wide = HSTRING::from(root.path().as_os_str());
-        let guid = GUID::from_values(0, 0, 0, [0; 8]);
-        // SAFETY: all referenced values remain live for these synchronous calls.
-        unsafe {
-            PrjMarkDirectoryAsPlaceholder(
-                PCWSTR::from_raw(wide.as_ptr()),
-                PCWSTR::null(),
-                None,
-                &raw const guid,
-            )
-        }?;
-        // No Acyclic source, notification mappings, or mount setup participates.
-        let callbacks = super::callbacks();
-        // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
-        let context = unsafe {
-            PrjStartVirtualizing(
-                PCWSTR::from_raw(wide.as_ptr()),
-                &raw const callbacks,
-                None,
-                None,
-            )
-        };
-        match context {
-            Ok(context) => {
-                // SAFETY: the successful call returned the sole live context.
-                unsafe { PrjStopVirtualizing(context) };
-                // A crash leaves the designation in place. The provider must
-                // be able to restart without marking or clearing that root.
-                // SAFETY: `wide` and `callbacks` outlive the synchronous start call.
-                let restarted = unsafe {
-                    PrjStartVirtualizing(
-                        PCWSTR::from_raw(wide.as_ptr()),
-                        &raw const callbacks,
-                        None,
-                        None,
+    #[tokio::test]
+    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+    async fn external_edits_survive_remount() -> Result<(), Box<dyn std::error::Error>> {
+        for (rename, name, content) in [
+            (false, "metadata.txt", &b"unchanged contents"[..]),
+            (true, "original.txt", &b"original"[..]),
+        ] {
+            let root = tempfile::tempdir()?;
+            let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
+            let workspace = engine.create_workspace("edits-projfs").await?;
+            let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+            transaction.create_file(&format!("/{name}"), Bytes::from_static(content), FileMetadata::default()).await?;
+            transaction.commit().await?;
+            let first = root.path().join("first-mount");
+            std::fs::create_dir(&first)?;
+            let mount = workspace.mount(&first, MountOptions::read_write().publication(MountPublication::Manual)).await?;
+            let projected = first.join(name);
+            for _ in 0..3 { assert_eq!(std::fs::read(&projected)?, content); }
+            if rename {
+                external_edit(&first, "ren original.txt renamed.txt && echo replacement> original.txt")?;
+            } else {
+                let status = tokio::task::spawn_blocking(move || {
+                    acyclic_native_runtime::process_status(
+                        std::process::Command::new("attrib").arg("+R").arg(projected),
+                        std::time::Duration::from_secs(120),
                     )
-                }?;
-                let mut instance = PRJ_VIRTUALIZATION_INSTANCE_INFO::default();
-                // SAFETY: `restarted` is live and `instance` is a writable output.
-                unsafe { PrjGetVirtualizationInstanceInfo(restarted, &raw mut instance) }?;
-                assert_eq!(instance.InstanceID, guid);
-                // SAFETY: `restarted` is the sole live context from the restart.
-                unsafe { PrjStopVirtualizing(restarted) };
+                }).await??;
+                assert!(status.success(), "attrib failed with {status}");
             }
-            Err(error) => {
-                remove_authenticated_destination(root.path(), root_identity)?;
-                return Err(error.into());
+            mount.sync().await?;
+            mount.unmount().await?;
+            let second = root.path().join("second-mount");
+            std::fs::create_dir(&second)?;
+            let remount = workspace.mount(&second, MountOptions::read_write().publication(MountPublication::Manual)).await?;
+            if rename {
+                assert_eq!(std::fs::read(second.join("renamed.txt"))?, b"original");
+                assert_eq!(std::fs::read(second.join(name))?, b"replacement\r\n");
+            } else {
+                assert!(std::fs::metadata(second.join(name))?.permissions().readonly());
             }
+            remount.unmount().await?;
         }
-        remove_authenticated_destination(root.path(), root_identity)?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn rustc_links_object_files_created_inside_projection()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("rustc-projfs").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
-        transaction
-            .create_file(
-                "/acyclic-workflow.rs",
-                Bytes::from_static(b"fn main() { println!(\"ok\"); }\n"),
-                crate::kernel::FileMetadata::default(),
-            )
-            .await?;
-        transaction.commit().await?;
-        let path = root.path().join("mount");
-        std::fs::create_dir(&path)?;
-        let mount = workspace
-            .mount(
-                &path,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        let compiler_path = path.clone();
-        let output = tokio::task::spawn_blocking(move || {
-            acyclic_native_runtime::process_output(
-                std::process::Command::new("rustc")
-                    .current_dir(compiler_path)
-                    .args([
-                        "--edition",
-                        "2021",
-                        "acyclic-workflow.rs",
-                        "-o",
-                        "acyclic-workflow-bin.exe",
-                    ]),
-                std::time::Duration::from_secs(120),
-                8 * 1024 * 1024,
-            )
-        })
-        .await??;
-        assert!(
-            output.status.success(),
-            "rustc failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        mount.sync().await?;
-        let executable = path.join("acyclic-workflow-bin.exe");
-        let execution = tokio::task::spawn_blocking(move || {
-            acyclic_native_runtime::process_output(
-                &mut std::process::Command::new(executable),
-                std::time::Duration::from_secs(120),
-                8 * 1024 * 1024,
-            )
-        })
-        .await??;
-        assert!(execution.status.success());
-        assert_eq!(execution.stdout, b"ok\n");
-        mount.unmount().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn external_metadata_only_change_survives_remount()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("metadata-projfs").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
-        transaction
-            .create_file(
-                "/metadata.txt",
-                Bytes::from_static(b"unchanged contents"),
-                crate::kernel::FileMetadata::default(),
-            )
-            .await?;
-        transaction.commit().await?;
-
-        let first = root.path().join("first-mount");
-        std::fs::create_dir(&first)?;
-        let mount = workspace
-            .mount(
-                &first,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        let projected = first.join("metadata.txt");
-        for _ in 0..3 {
-            assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
-        }
-        let status = tokio::task::spawn_blocking(move || {
-            acyclic_native_runtime::process_status(
-                std::process::Command::new("attrib")
-                    .arg("+R")
-                    .arg(projected),
-                std::time::Duration::from_secs(120),
-            )
-        })
-        .await??;
-        assert!(status.success(), "attrib failed with {status}");
-        mount.sync().await?;
-        mount.unmount().await?;
-
-        let second = root.path().join("second-mount");
-        std::fs::create_dir(&second)?;
-        let remount = workspace
-            .mount(
-                &second,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        assert!(
-            std::fs::metadata(second.join("metadata.txt"))?
-                .permissions()
-                .readonly(),
-            "metadata-only edits must survive synchronization and remount"
-        );
-        remount.unmount().await?;
         Ok(())
     }
 
@@ -12001,17 +8309,9 @@ mod tests {
             )
             .await?;
         // ProjFS notifies the provider only of other processes' I/O.
-        let external = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
-                .args(["/D", "/C", "ren before.txt after.txt"])
-                .current_dir(&destination),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )?;
-        assert!(external.status.success(), "rename failed: {external:?}");
+        external_edit(&destination, "ren before.txt after.txt")?;
         mount.sync().await?;
-        // The rename moved the written file; nothing writes it again,
-        // which would take it away from under a reader for a moment.
+        // The rename moved the written file; nothing writes it again, which would take it away from under a reader for a moment.
         let renamed = destination.join("after.txt");
         assert_eq!(
             std::fs::metadata(&renamed)?.file_attributes()
@@ -12020,74 +8320,6 @@ mod tests {
         );
         assert_eq!(std::fs::read(&renamed)?, b"unread");
         mount.unmount().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-    async fn projected_file_rename_and_replacement_survive_remount()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-        let workspace = engine.create_workspace("replace-projfs").await?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
-        transaction
-            .create_file(
-                "/original.txt",
-                Bytes::from_static(b"original"),
-                crate::kernel::FileMetadata::default(),
-            )
-            .await?;
-        transaction.commit().await?;
-
-        let first = root.path().join("first-mount");
-        std::fs::create_dir(&first)?;
-        let mount = workspace
-            .mount(
-                &first,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        let original = first.join("original.txt");
-        for _ in 0..3 {
-            assert_eq!(std::fs::read(&original)?, b"original");
-        }
-        // ProjFS notifies the provider only of other processes' I/O.
-        let external = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
-                .args([
-                    "/D",
-                    "/C",
-                    "ren original.txt renamed.txt && echo replacement> original.txt",
-                ])
-                .current_dir(&first),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )?;
-        assert!(
-            external.status.success(),
-            "external edit failed: {external:?}"
-        );
-        mount.sync().await?;
-        mount.unmount().await?;
-
-        let second = root.path().join("second-mount");
-        std::fs::create_dir(&second)?;
-        let remount = workspace
-            .mount(
-                &second,
-                MountOptions::read_write().publication(MountPublication::Manual),
-            )
-            .await?;
-        assert_eq!(
-            std::fs::read(second.join("renamed.txt")).expect("renamed path after remount"),
-            b"original"
-        );
-        assert_eq!(
-            std::fs::read(second.join("original.txt")).expect("replacement after remount"),
-            b"replacement\r\n"
-        );
-        remount.unmount().await?;
         Ok(())
     }
 
@@ -12131,20 +8363,7 @@ mod tests {
             WatchBatch::Changes { .. }
         ));
 
-        let external = acyclic_native_runtime::process_output(
-            std::process::Command::new("cmd.exe")
-                .arg("/D")
-                .arg("/C")
-                .arg("ren original.txt renamed.txt && echo replacement> original.txt")
-                .current_dir(&destination),
-            std::time::Duration::from_secs(120),
-            8 * 1024 * 1024,
-        )?;
-        assert!(
-            external.status.success(),
-            "external projected rename failed: {}",
-            String::from_utf8_lossy(&external.stderr)
-        );
+        external_edit(&destination, "ren original.txt renamed.txt && echo replacement> original.txt")?;
         let limits = crate::model::VolumeLimits::default();
         let expected_path =
             |path| -> Result<crate::kernel::NamespacePath, Box<dyn std::error::Error>> {
@@ -12248,7 +8467,7 @@ mod tests {
                 )
                 .await?;
         }
-        for name in ["Alpha", "Zebra", "éclair"] {
+        for name in ["Alpha", "Zebra", "Ã©clair"] {
             transaction
                 .create_file(
                     &format!("/{name}"),
@@ -12300,7 +8519,7 @@ mod tests {
                 for index in 0..300 {
                     assert!(entries.contains(std::ffi::OsStr::new(&format!("entry{index:03}"))));
                 }
-                for name in ["Alpha", "Zebra", "éclair"] {
+                for name in ["Alpha", "Zebra", "Ã©clair"] {
                     assert!(entries.contains(std::ffi::OsStr::new(name)));
                 }
             }
@@ -12348,13 +8567,9 @@ mod tests {
         ));
         assert!(control.controls_pending(), "actual probe capability remains owned after refusal");
         assert!(!control.namespace_detach_confirmed(), "no SDK stop was observed");
-        assert!(work.receipt().backend_read_operations > 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.native_read_meter().lock().live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         control.recover_measured(root.path(), false, &mut &crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token).expect("the actual phase admits its one original native state")).expect("preserving recovery corroborates root without deleting authored residue");
         assert!(!control.controls_pending());
         assert_eq!(std::fs::read(root.path().join("authored")).expect("preserved residue"), b"preserve");
-        remove_authenticated_destination(root.path(), root_identity).expect("test cleanup");
     }
 
     #[test]
@@ -12378,184 +8593,15 @@ mod tests {
             )
         }
         .expect("mark replacement projection root");
-        let rejected = remove_authenticated_destination(replacement.path(), original_identity)
-            .expect_err("different root must not be removed");
+        let token = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
+            .map_err(|(cause, _)| cause).expect("original work");
+        let rejected = super::remove_empty_recovery_destination_measured(
+            replacement.path(), Some(original_identity), &mut &work,
+        ).expect_err("different root must not be removed");
         assert!(matches!(rejected, super::NativeMountError::Demand(crate::DemandError::StaleSource)));
         assert!(replacement.path().exists());
-        remove_authenticated_destination(replacement.path(), replacement_identity)
-            .expect("remove test-owned projection");
-    }
-
-    #[tokio::test]
-    async fn failed_post_operation_capture_retries_at_sync() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let executor = CallbackGate::start().expect("callback gate");
-        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        let path = windows_path("changed");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                record_post_operation_failure(PRJ_NOTIFICATION_PRE_DELETE, None,
-                    Err(super::NativeMountError::Lifecycle("capture failed")), projection);
-                assert!(failure.lock().expect("capture state").pending_captures.is_empty());
-                record_post_operation_failure(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-                    Some(&path), Err(super::NativeMountError::Lifecycle("capture failed")), projection);
-                Ok(())
-            }).0.expect("original callback producer");
-        let error = flush_callback_gate(&executor, Arc::clone(&failure), |_| {
-            Err(MountSourceError::Invalid("transient failure".to_owned()))
-        }).expect_err("failed retry fences publication");
-        assert!(error.to_string().contains("transient failure"));
-        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(())).expect("successful original retry");
-        assert!(failure.lock().expect("failure state").pending_captures.is_empty());
-    }
-
-    #[tokio::test]
-    async fn newer_capture_is_not_cleared_by_an_older_flush() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let executor = CallbackGate::start().expect("callback gate");
-        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        let path = windows_path("changed");
-        queue_capture_fixture(source.as_ref(), &failure, &path, "first write");
-        let (result, _, _) = measured_capture_projection(source.as_ref(), &failure,
-            WorkBudget::UNBOUNDED, &CancellationToken::new(), |projection| {
-                super::flush_callback_gate_measured(&executor, &failure, None, projection.work, |paths, meter| {
-                    failure.lock().expect("capture state").queue_capture(&paths[0].0, "second write",
-                        &mut None, super::Projection { work: meter, ..projection })
-                })
-            });
-        assert!(matches!(result, Err(super::NativeMountError::ControlPending)));
-        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(())).expect("later original flush");
-    }
-
-    #[tokio::test]
-    async fn successful_close_does_not_erase_renamed_pending_capture() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let failure = Mutex::new(PostOperationFailures::default());
-        let from = windows_path("save");
-        let destination = windows_path("final");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                {
-                    let mut pending = failure.lock().expect("capture state");
-                    pending.queue_capture(&from, "new file", &mut None, projection)?;
-                    pending.rename_pending_captures(&from, &destination, projection)?;
-                }
-                record_post_operation_failure(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-                    Some(&destination), Ok(()), projection);
-                assert!(failure.lock().expect("capture state").pending_captures.contains_key(&destination, projection)?);
-                Ok(())
-            }).0.expect("original close and rename producers");
-    }
-
-    #[tokio::test]
-    async fn rename_retries_failed_capture_at_destination() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let executor = CallbackGate::start().expect("callback gate");
-        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        let from = windows_path("old");
-        let destination = windows_path("new");
-        let nested = from.child(windows_name("nested"));
-        let nested_destination = destination.child(windows_name("nested"));
-        let unrelated = windows_path("other");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                let mut failures = failure.lock().expect("capture state");
-                failures.queue_capture(&from, "old capture failed", &mut None, projection)?;
-                failures.queue_capture(&nested, "nested capture failed", &mut None, projection)?;
-                failures.queue_capture(&unrelated, "other capture failed", &mut None, projection)?;
-                failures.queue_subtree(&destination, "renamed directory", projection)?;
-                failures.rename_pending_captures(&from, &destination, projection)?;
-                assert!(!failures.pending_captures.contains_key(&from, projection)?);
-                assert!(failures.pending_captures.get(&destination, projection)?.expect("destination").subtree);
-                Ok(())
-            }).0.expect("actual source rename queue");
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&captured);
-        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
-            observed.lock().expect("captured paths").extend(paths.iter().map(|(path, _, _)| path.clone()));
-            Ok(())
-        }).expect("renamed captures recover");
-        let captured = captured.lock().expect("captured paths");
-        assert!(captured.contains(&destination));
-        assert!(captured.contains(&nested_destination));
-        assert!(captured.contains(&unrelated));
-        assert!(!captured.contains(&from));
-    }
-
-    #[tokio::test]
-    async fn later_path_capture_keeps_pending_subtree_scope() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let failure = Mutex::new(PostOperationFailures::default());
-        let path = windows_path("imported-directory");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                let mut failures = failure.lock().expect("capture state");
-                failures.queue_subtree(&path, "rename pending", projection)?;
-                failures.queue_capture(&path, "close pending", &mut None, projection)?;
-                assert!(failures.pending_captures.get(&path, projection)?.expect("pending directory").subtree);
-                Ok(())
-            }).0.expect("same original pending subtree");
-    }
-
-    #[tokio::test]
-    async fn renamed_directory_capture_precedes_its_children() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let executor = CallbackGate::start().expect("callback gate");
-        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        let parent = windows_path("renamed");
-        let child = parent.child(windows_name("child"));
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                let mut failures = failure.lock().expect("capture state");
-                failures.queue_capture(&child, "child write", &mut None, projection)?;
-                failures.queue_subtree(&parent, "directory rename", projection)
-            }).0.expect("actual pending parent and child");
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let captures = Arc::clone(&observed);
-        flush_callback_gate(&executor, Arc::clone(&failure), move |paths| {
-            captures.lock().expect("capture order").extend(paths.iter().map(|(path, _, subtree)| (path.clone(), *subtree)));
-            Ok(())
-        }).expect("parent and child capture");
-        assert_eq!(*observed.lock().expect("capture order"), vec![(parent, true), (child, false)]);
-    }
-
-    #[tokio::test]
-    async fn rename_matches_windows_case_spelling() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let failure = Mutex::new(PostOperationFailures::default());
-        let from = windows_path("Old");
-        let callback_source = windows_path("old");
-        let destination = windows_path("New");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                let mut failures = failure.lock().expect("capture state");
-                failures.queue_capture(&from, "capture failed", &mut None, projection)?;
-                failures.rename_pending_captures(&callback_source, &destination, projection)?;
-                assert!(!failures.pending_captures.contains_key(&from, projection)?);
-                assert!(failures.pending_captures.contains_key(&destination, projection)?);
-                Ok(())
-            }).0.expect("same SDK case-folded producer");
-    }
-
-    #[tokio::test]
-    async fn callback_admitted_after_first_stop_barrier_prevents_cleanup() {
-        let source = windows_checkout_source().await.expect("actual checkout");
-        let executor = CallbackGate::start().expect("callback gate");
-        let failure = Arc::new(Mutex::new(PostOperationFailures::default()));
-        flush_callback_gate(&executor, Arc::clone(&failure), |_| Ok(())).expect("first barrier");
-        let path = windows_path("late-object");
-        measured_capture_projection(source.as_ref(), &failure, WorkBudget::UNBOUNDED,
-            &CancellationToken::new(), |projection| {
-                let result = executor.call_observed(0, projection.work,
-                    || Err(super::NativeMountError::Lifecycle("late capture failed")),
-                    |result| record_post_operation_failure(PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED,
-                        Some(&path), result, projection))?;
-                assert_eq!(result, super::HR_IO_DEVICE);
-                Ok(())
-            }).0.expect("original admitted late callback");
-        assert!(flush_callback_gate(&executor, Arc::clone(&failure), |_| {
-            Err(MountSourceError::Invalid("late capture failed".to_owned()))
-        }).expect_err("second barrier prevents cleanup").to_string().contains("late capture failed"));
+        assert_eq!(crate::capture_root_identity(replacement.path()).expect("retained root"), replacement_identity);
     }
 
 }

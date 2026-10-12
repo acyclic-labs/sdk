@@ -3701,10 +3701,10 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let path = self.path(operation)?;
         let remaining = self.work.remaining().map_err(native_root_error)?;
         let mut value_custody = self.work.retain_owned(0).map_err(native_root_error)?;
-        let value = crate::contract::json_value_bounded_native_trusted(
+        let value = crate::contract::json_value_bounded(
             &journal.journal, crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
                 maximum_items: remaining.items_examined, maximum_depth: 256 },
-            crate::wire::ErrorCode::Storage, &mut |charge| {
+            Some(crate::wire::ErrorCode::Storage), &mut |charge| {
                 native_codec_charge_typed(charge, &self.work, &mut value_custody).map_err(native_root_error)
             },
         );
@@ -4045,7 +4045,7 @@ fn native_canonical<T: serde::Serialize + ?Sized>(
     };
     let mut custody = work.retain_owned(0).map_err(native_root_error)?;
     let mut raw_custody: Option<acyclic_fs::NativeAllocation> = None;
-    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| {
+    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut |charge| {
         match charge {
             crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
                 let mut reservation = work.retain_owned(maximum_owned_bytes).map_err(native_root_error)?;

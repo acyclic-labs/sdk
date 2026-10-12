@@ -328,7 +328,7 @@ fn effect_identity(
         &("harness/v2/task-effect", task, command),
         JsonBounds { maximum_bytes: remaining.bytes_encoded,
             maximum_items: remaining.items_examined, maximum_depth: 256 },
-        &mut |charge| {
+        None, &mut |charge| {
             let result = (|| match charge {
                 JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
                     bytes_encoded: bytes, items_examined: items, ..WorkCounters::default()

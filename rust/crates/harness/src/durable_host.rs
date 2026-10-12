@@ -40,6 +40,8 @@ use std::{
 use tokio::sync::Mutex;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::store::history::HistoryIo as _;
+#[cfg(feature = "filesystem")]
+use crate::scheduler::LeaseFence;
 
 mod headless;
 pub use headless::TaskVolumeSnapshot;
@@ -543,6 +545,7 @@ pub struct TaskJournalOwner<P> {
     extensions: Option<crate::core::ExtensionAdmission>,
     extension_schemas: Option<crate::core::SchemaRegistry>,
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
+    invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     readonly_original: Option<(OperationSpec, LeaseFence)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1065,7 +1068,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 &self.fence,crate::contract::JsonBounds {
                     maximum_bytes:remaining.bytes_encoded,maximum_items:remaining.items_examined,
                     maximum_depth:256,
-                },&mut |charge| crate::store::history::HistoryIo::codec_charge(&mut io,charge),
+                },None, &mut |charge| crate::store::history::HistoryIo::codec_charge(&mut io,charge),
             )?;
             crate::store::history::HistoryIo::hashed_bytes(&mut io,encoded.len() as u64)?;
             let digest = blake3::hash(&encoded);
@@ -1210,11 +1213,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
             if io.is_some() {
-                crate::contract::validate_json_schema_value_with_io(
+                crate::contract::validate_json_schema_value(
                     &self.output_schema, value, "task output", io,
                 )?;
             } else {
-                crate::tool::validate_value(&self.output_schema, value, "task output")?;
+                crate::tool::validate_value(&self.output_schema, value, "task output", None)?;
             }
         }
         Ok(())
@@ -1313,7 +1316,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &self.readonly_original {
             if original.0.operation_id != self.operation_id()
-                || (&original.1) != &self.fence {
+                || &original.1 != &self.fence {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "READ owner differs from its protected original reservation",
@@ -1820,11 +1823,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.authenticated_binding_agent_with_work(&mut Some(&mut io))
     }
 
-    pub(crate) fn authenticated_fork_agent(&self) -> Result<crate::AgentId> {
-        if !self.input_grants.contains(capability::FORK_PUBLISH) {
-            return Err(Error::Unauthorized("task scope lacks fork:publish".into()));
+    pub(crate) fn authenticated_fork_agent(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<crate::AgentId> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        self.input_agent.ok_or_else(|| Error::Unauthorized("task has no authenticated current agent".into()))
+        if !self.input_grants.contains(capability::FORK_PUBLISH) {
+            return Err(Self::grant_denied(work, "task scope lacks fork:publish"));
+        }
+        self.input_agent.ok_or_else(|| Self::grant_denied(work, "task has no authenticated current agent"))
     }
 
     pub(crate) fn binding_origin(&self) -> (TaskId, [u8;32], &crate::scheduler::LeaseFence) {
@@ -2085,15 +2094,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
     }
 
-    pub(crate) fn authenticate_fork_parent(&self, parent: &Authority) -> Result<()> {
-        self.authenticated_fork_agent()?;
+    pub(crate) fn authenticate_fork_parent(
+        &self, parent: &Authority, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.authenticated_fork_agent(work)?;
         let audience = match &self.input_created {
-            Some(access) => access.current_content(&mut None)?.and_then(|binding| binding.authority.as_ref()),
+            Some(access) => access.current_content(work)?.and_then(|binding| binding.authority.as_ref()),
             None if self.input_is_root => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
             None => None,
-        }.ok_or_else(|| Error::Unauthorized("current caller has no authenticated publication audience".into()))?;
+        }.ok_or_else(|| Self::grant_denied(work, "current caller has no authenticated publication audience"))?;
+        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
         if audience != parent {
-            return Err(Error::Unauthorized("fork parent differs from the current caller audience".into()));
+            return Err(Self::grant_denied(work, "fork parent differs from the current caller audience"));
         }
         Ok(())
     }
@@ -2296,7 +2308,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 maximum_depth: 256,
             };
             let encoded = crate::contract::canonical_json_bytes_bounded(
-                &self.fence, bounds, &mut |charge| io.codec_charge(charge),
+                &self.fence, bounds, None, &mut |charge| io.codec_charge(charge),
             )?;
             io.retain_owned((encoded.capacity() - encoded.len()) as u64)?;
             encoded
@@ -3687,7 +3699,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                             "task output failed validation"));
                     }
                 } else {
-                    crate::tool::validate_value(&admission.output_schema, &value, "task output")?;
+                    crate::tool::validate_value(&admission.output_schema, &value, "task output", None)?;
                 }
                 let bytes = crate::store::history::canonical_bytes_with_work(
                     &value, admission.limits.file_bytes, work,
@@ -3865,12 +3877,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        let declaration = (&original.0);
+        let declaration = &original.0;
         declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
-            || binding.fence() != (&original.1)
+            || binding.fence() != &original.1
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
@@ -4181,7 +4193,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
-            if original.0.operation_id != operation || (&original.1) != fence.as_ref() {
+            if original.0.operation_id != operation || &original.1 != fence.as_ref() {
                 return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "original READ reservation differs from its protected native preparation"));
             }
@@ -4258,10 +4270,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(native) = &native {
             self.machines.validate_checkpoint_with_native_work(&workflow.initial, native)?;
         } else {
-            self.machines.validate_checkpoint(&workflow.initial)?;
+            self.machines.validate_checkpoint(&workflow.initial, None)?;
         }
         #[cfg(target_arch = "wasm32")]
-        self.machines.validate_checkpoint(&workflow.initial)?;
+        self.machines.validate_checkpoint(&workflow.initial, None)?;
         let fence = match fence {
             std::borrow::Cow::Owned(fence) => fence,
             std::borrow::Cow::Borrowed(fence) => host_fence_with_work(fence, work)?,
@@ -4730,7 +4742,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
             || admission.machine.digest == [0; 32]
-            || self.machines.resolve_with_work(&admission.machine, work)?.is_none()
+            || self.machines.resolve(&admission.machine, work)?.is_none()
         {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Invalid,
                 "task and machine identities disagree"));
@@ -5454,7 +5466,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || !parent_matches
             || admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine).is_none()
+            || self.machines.resolve(&admission.machine, &mut None)?.is_none()
         {
             return Err(Self::admission_boundary(
                 work, crate::wire::ErrorCode::Conflict,
@@ -5737,7 +5749,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || request.machine.name != request.task.name
             || request.machine.version != request.task.version
             || request.machine.digest == [0; 32]
-            || self.machines.resolve(&request.machine).is_none()
+            || self.machines.resolve(&request.machine, &mut None)?.is_none()
         {
             return Err(Error::Invalid(
                 "batch implementation or policy is invalid".into(),
@@ -5775,7 +5787,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
-        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input")?;
+        let input = crate::contract::compile_json_schema(&request.input_schema, "batch input", None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {
                 Error::Invalid(format!("batch input failed validation: {error}"))

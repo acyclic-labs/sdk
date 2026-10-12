@@ -1209,8 +1209,8 @@ pub(super) fn context_contract_native<T: Serialize>(
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
             crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
-        crate::contract::json_value_bounded_native_trusted(value, bounds,
-            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))
+        crate::contract::json_value_bounded(value, bounds,
+            Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge))
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody())),
@@ -2002,7 +2002,7 @@ fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&Conte
 
 fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
     if let Some(selected) = &input.selected_context {
-        selected.validate_for_input_with_io(&input.input, io)?;
+        selected.validate_for_input(&input.input, io)?;
     }
     Ok(())
 }

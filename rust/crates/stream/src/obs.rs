@@ -4,7 +4,6 @@ use std::pin::Pin;
 use tracing::Span;
 
 /// Owns a span and its creating dispatcher through polling and destruction.
-/// Entering a span alone does not select the subscriber used to close parent references.
 pub(crate) struct OwnedSpan {
     span: Span,
     dispatch: tracing::Dispatch,
@@ -69,7 +68,6 @@ impl Drop for OwnedSpan {
 
 pin_project_lite::pin_project! {
     /// Polls and destroys the pinned inner value under the owned context.
-    /// This also covers nested instrumented futures and stream adapters.
     pub(crate) struct Scoped<T> {
         #[pin]
         inner: Option<T>,

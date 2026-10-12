@@ -1,5 +1,4 @@
 //! Bounded logical Objects provider; native publication meters the same atomic engine.
-//! Native Memory owns each actual table event; Local physical events belong to its runtime.
 use std::collections::BTreeMap;
 use std::ops::Bound;
 use std::sync::{Arc, Mutex};
@@ -60,21 +59,19 @@ pub struct MemoryObjects {
     #[cfg(feature = "local")]
     defer_local: bool,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct State {
-    buckets: BTreeMap<String, Bucket>,
-    uploads: BTreeMap<String, Upload>,
-    receipts: OrdMap<SharedText, Receipt>,
+    buckets: OrdMap<SharedInfo<String>, Bucket>,
+    uploads: OrdMap<SharedInfo<String>, Upload>,
+    receipts: OrdMap<SharedInfo<String>, Receipt>,
     sequence: u64,
     /// Body bytes of every stored object, maintained by [`stored_bytes`].
     object_bytes: usize,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<ReadAllocation>,
 }
 #[derive(Clone)]
 struct Bucket {
-    info: wire::Bucket,
-    objects: OrdMap<SharedText, Stored>,
+    info: SharedInfo<wire::Bucket>,
+    objects: OrdMap<SharedInfo<String>, Stored>,
 }
 // Equality lets a commit find what changed by walking only the subtrees two
 // persistent maps do not share (`OrdMap::diff`).
@@ -85,10 +82,10 @@ struct Stored {
 }
 #[derive(Clone)]
 struct Upload {
-    bucket: String,
-    key: String,
-    metadata: Option<wire::ObjectMetadata>,
-    parts: BTreeMap<u32, (wire::UploadedPart, StoredBody)>,
+    bucket: SharedInfo<String>,
+    key: SharedInfo<String>,
+    metadata: SharedInfo<Option<wire::ObjectMetadata>>,
+    parts: OrdMap<u32, (SharedInfo<wire::UploadedPart>, StoredBody)>,
 }
 #[derive(Clone, PartialEq)]
 struct Receipt {
@@ -99,73 +96,27 @@ struct Receipt {
     kind: u32,
 }
 
-// Persistent-map path copies only clone immutable owners. The physical text,
-// metadata and retry bytes retain their original claim until the final alias.
 #[derive(Clone)]
-struct SharedText(Arc<TextOwner>);
-struct TextOwner {
-    text: String,
+struct SharedInfo<T = wire::ObjectInfo>(Arc<InfoOwner<T>>);
+struct InfoOwner<T = wire::ObjectInfo> {
+    info: T,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<ReadAllocation>,
 }
-impl SharedText {
-    fn as_str(&self) -> &str { &self.0.text }
+impl<T> AsRef<T> for SharedInfo<T> {
+    fn as_ref(&self) -> &T { &self.0.info }
 }
-impl From<String> for SharedText {
-    fn from(text: String) -> Self {
-        Self(Arc::new(TextOwner {
-            text,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
-        }))
-    }
+impl<T> std::ops::Deref for SharedInfo<T> {
+    type Target = T;
+    fn deref(&self) -> &T { self.as_ref() }
 }
-impl std::borrow::Borrow<str> for SharedText {
-    fn borrow(&self) -> &str { self.as_str() }
-}
-impl std::ops::Deref for SharedText {
-    type Target = str;
-    fn deref(&self) -> &str { self.as_str() }
-}
-impl std::fmt::Display for SharedText {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.as_str(), f)
-    }
-}
-impl PartialEq for SharedText {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.as_str() == other.as_str()
-    }
-}
-impl Eq for SharedText {}
-impl PartialOrd for SharedText {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
-}
-impl Ord for SharedText {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.as_str().cmp(other.as_str()) }
-}
-
-#[derive(Clone)]
-struct SharedInfo(Arc<InfoOwner>);
-struct InfoOwner {
-    info: wire::ObjectInfo,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<ReadAllocation>,
-}
-impl AsRef<wire::ObjectInfo> for SharedInfo {
-    fn as_ref(&self) -> &wire::ObjectInfo { &self.0.info }
-}
-impl std::ops::Deref for SharedInfo {
-    type Target = wire::ObjectInfo;
-    fn deref(&self) -> &wire::ObjectInfo { self.as_ref() }
-}
-impl PartialEq for SharedInfo {
+impl<T: PartialEq> PartialEq for SharedInfo<T> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0) || self.as_ref() == other.as_ref()
     }
 }
-impl From<wire::ObjectInfo> for SharedInfo {
-    fn from(info: wire::ObjectInfo) -> Self {
+impl<T> From<T> for SharedInfo<T> {
+    fn from(info: T) -> Self {
         Self(Arc::new(InfoOwner {
             info,
             #[cfg(not(target_arch = "wasm32"))]
@@ -173,23 +124,8 @@ impl From<wire::ObjectInfo> for SharedInfo {
         }))
     }
 }
-impl Clone for State {
-    fn clone(&self) -> Self {
-        Self {
-            buckets: self.buckets.clone(),
-            uploads: self.uploads.clone(),
-            receipts: self.receipts.clone(),
-            sequence: self.sequence,
-            object_bytes: self.object_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
-        }
-    }
-}
 
-/// Updates `next`'s object byte total from `before`'s by walking only the
-/// object subtrees the two states do not share, so quota admission costs the
-/// change, not the store size. Returns that total plus in-progress upload parts.
+/// Updates `next`'s object byte total from `before`'s by walking only the object subtrees the two states do not share, so quota admission costs the change, not the store size.
 fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
     let sum = |bucket: &Bucket| {
         bucket.objects.values().try_fold(0_usize, |total, object| {
@@ -242,10 +178,6 @@ impl MemoryObjects {
         Ok(state)
     }
     /// Creates the infrastructure-free SDK composition with an existing `default` bucket.
-    ///
-    /// The bootstrap bucket has an epoch creation time. Cursor authentication entropy is
-    /// obtained on first pagination; failure returns `Unavailable`, never an unsigned token.
-    /// No cardinality limit is added to the composition's existing 64 MiB byte limit.
     #[must_use]
     pub fn with_default_bucket() -> (Self, wire::BucketRef) {
         let bucket = wire::BucketRef {
@@ -253,12 +185,12 @@ impl MemoryObjects {
         };
         let mut state = State::default();
         state.buckets.insert(
-            bucket.name.clone(),
+            bucket.name.clone().into(),
             Bucket {
                 info: wire::Bucket {
                     bucket: Some(bucket.clone()),
                     created_at: Some(prost_types::Timestamp::default()),
-                },
+                }.into(),
                 objects: OrdMap::new(),
             },
         );
@@ -280,9 +212,6 @@ impl MemoryObjects {
     }
 
     /// Synchronously admits one bucket for a native SDK composition.
-    ///
-    /// # Errors
-    /// Rejects invalid names, unavailable entropy/time or insufficient entry capacity.
     pub fn with_bucket(
         name: impl Into<String>,
         options: MemoryOptions,
@@ -297,9 +226,9 @@ impl MemoryObjects {
                 created_at: Some(timestamp()?),
             };
             state.buckets.insert(
-                name,
+                name.into(),
                 Bucket {
-                    info: info.clone(),
+                    info: info.clone().into(),
                     objects: OrdMap::new(),
                 },
             );
@@ -325,9 +254,7 @@ impl MemoryObjects {
         })
     }
 
-    // A failed mutation rolls back both publication and its receipt. Persistent ordered
-    // maps share unchanged entries, so admission does not copy the entire object store
-    // and retained retry inventory. Only the committed state owns current representations.
+    // Failed mutations roll back publication and receipt together.
     fn mutate<R: Message + Default + 'static>(
         &self,
         digest: [u8; 32],
@@ -348,7 +275,6 @@ impl MemoryObjects {
     ) -> Result<R, Error> {
         self.mutate_locked_engine(
             guard, digest, identity,
-            |state| Ok(state.clone()),
             |receipt| R::decode(receipt.response.as_slice()).map_err(|_| Unavailable.into()),
             action,
             |response, identity| {
@@ -389,10 +315,9 @@ impl MemoryObjects {
         guard: &mut State,
         digest: [u8; 32],
         identity: &Option<wire::MutationIdentity>,
-        clone_state: impl FnOnce(&State) -> Result<State, E>,
         replay: impl FnOnce(&Receipt) -> Result<R, E>,
         action: impl FnOnce(&mut State) -> Result<R, E>,
-        receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedText, Receipt), E>,
+        receipt: impl FnOnce(&R, &wire::MutationIdentity) -> Result<(SharedInfo<String>, Receipt), E>,
         commit: impl FnOnce(&State, &mut State) -> Result<(), E>,
         before_publish: impl FnOnce() -> Result<(), E>,
     ) -> Result<R, E> {
@@ -405,7 +330,7 @@ impl MemoryObjects {
             if receipt.digest != digest { return Err(Error::from(IdempotencyMismatch).into()); }
             return replay(receipt);
         }
-        let mut next = clone_state(guard)?;
+        let mut next = guard.clone();
         let response = action(&mut next)?;
         if let Some(identity) = identity {
             let (key, receipt) = receipt(&response, identity)?;
@@ -436,40 +361,25 @@ impl MemoryObjects {
     ) -> Vec<Result<wire::ObjectInfo, Error>> {
         let mut staged = self.clone();
         staged.defer_local = true;
-        let mut input = requests.into_iter().peekable();
+        let mut input = requests.into_iter();
         let mut results = Vec::with_capacity(input.len());
-        while input.peek().is_some() {
-            // Group puts while their bounded record bytes fit one private
-            // record, so a typical small publish costs one synchronization.
+        loop {
+            let Some(count) = put_group_sizes(input.as_slice()).next() else { break; };
             let mut next = state.clone();
-            let mut bytes = 0_usize;
-            let mut batch = Vec::new();
-            while let Some((query, body)) = input.next_if(|(query, body)| {
-                let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
-                let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
-                if fits {
-                    bytes = total;
-                }
-                fits
-            }) {
-                batch.push(staged.put_locked(&mut next, &query, body));
+            let start = results.len();
+            for (query, body) in input.by_ref().take(count) {
+                results.push(staged.put_locked(&mut next, &query, body));
             }
-            if next.sequence == state.sequence {
-                results.extend(batch);
-                continue;
-            }
-            let committed = self
-                .journal
-                .as_ref()
-                .ok_or(Error::from(Unavailable))
-                .and_then(|journal| journal.commit(state, &mut next));
-            match committed {
-                Ok(()) => {
-                    *state = next;
-                    results.extend(batch);
-                }
-                Err(error) => {
-                    results.extend(batch.into_iter().map(|result| result.and(Err(error))));
+            if next.sequence != state.sequence {
+                match self.journal.as_ref().ok_or(Error::from(Unavailable))
+                    .and_then(|journal| journal.commit(state, &mut next))
+                {
+                    Ok(()) => *state = next,
+                    Err(error) => {
+                        for result in &mut results[start..] {
+                            if result.is_ok() { *result = Err(error); }
+                        }
+                    }
                 }
             }
         }
@@ -502,7 +412,6 @@ impl MemoryObjects {
             |query, body| put_digest_measured(query, body, meter),
             |state, digest, name, body| self.mutate_locked_engine(
                 state, digest, &query.mutation,
-                |state| clone_state_measured(state, meter),
                 |receipt| {
                     let info = receipt.put_info.as_ref().ok_or(Error::from(Unavailable))?;
                     let mut allocation = ReadAllocation::empty(meter);
@@ -525,13 +434,13 @@ impl MemoryObjects {
                         let returned = clone_native_info(&info, meter, &mut returned_allocation)?;
                         Ok((info, ObjectsPutReceipt::new(returned, Some(returned_allocation))))
                     },
-                    |key| SharedText::new_measured(key, meter)),
+                    |key| SharedInfo::<String>::text(key, meter)),
                 |response, identity| {
                     let encoded = encode_measured(response.info(), meter)?;
                     let mut allocation = ReadAllocation::empty(meter);
                     let info = clone_native_info(response.info(), meter, &mut allocation)?;
                     let info = SharedInfo::new_measured(info, allocation, meter)?;
-                    Ok((SharedText::new_measured(&identity.idempotency_key, meter)?, Receipt {
+                    Ok((SharedInfo::<String>::text(&identity.idempotency_key, meter)?, Receipt {
                         digest,
                         response: encoded,
                         put_info: Some(info),
@@ -742,7 +651,7 @@ fn publish_engine<R, E: From<Error>>(
     condition: &Option<wire::Preconditions>,
     body: StoredBody,
     info: impl FnOnce(&mut State, u64) -> Result<(SharedInfo, R), E>,
-    copy_key: impl FnOnce(&str) -> Result<SharedText, E>,
+    copy_key: impl FnOnce(&str) -> Result<SharedInfo<String>, E>,
 ) -> Result<R, E> {
     let current = state.buckets.get(bucket).ok_or(Error::from(NotFound))?.objects.get(key);
     check_condition(condition, current)?;
@@ -755,7 +664,7 @@ fn publish_engine<R, E: From<Error>>(
 fn upload<'a>(state: &'a State, bucket: &str, key: &str, id: &str) -> Result<&'a Upload, Error> {
     request::upload_id(id)?;
     let value = state.uploads.get(id).ok_or(Error::from(NotFound))?;
-    if value.bucket != bucket || value.key != key {
+    if value.bucket.as_str() != bucket || value.key.as_str() != key {
         return Err(NotFound.into());
     }
     Ok(value)
@@ -912,98 +821,38 @@ fn clone_native_metadata(
     Ok(None)
 }
 
+impl std::borrow::Borrow<str> for SharedInfo<String> {
+    fn borrow(&self) -> &str { self.as_str() }
+}
+impl std::fmt::Display for SharedInfo<String> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.as_ref().fmt(f) }
+}
+impl<T: Eq> Eq for SharedInfo<T> {}
+impl<T: Ord> PartialOrd for SharedInfo<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+}
+impl<T: Ord> Ord for SharedInfo<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.as_ref().cmp(other.as_ref()) }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-impl SharedText {
-    fn new_measured(value: &str, meter: &Arc<dyn NativeReadMeter>) -> Result<Self, NativeObjectsError> {
+impl SharedInfo<String> {
+    fn text(value: &str, meter: &Arc<dyn NativeReadMeter>) -> Result<Self, NativeObjectsError> {
         let mut allocation = ReadAllocation::empty(meter);
         let text = clone_native_text(value, meter, &mut allocation)?;
-        let control = std::mem::size_of::<TextOwner>();
+        Self::new_measured(text, allocation, meter)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T> SharedInfo<T> {
+    fn new_measured(info: T, mut allocation: ReadAllocation, meter: &Arc<dyn NativeReadMeter>) -> Result<Self, NativeObjectsError> {
+        let control = std::mem::size_of::<InfoOwner<T>>();
         meter.admit_codec(0, control as u64, 0)?;
-        let mut owner = ReadAllocation::new(meter, control)?;
-        allocation.absorb(&mut owner)?;
-        let result = Self(Arc::new(TextOwner { text, _allocation: Some(allocation) }));
+        allocation.absorb(&mut ReadAllocation::new(meter, control)?)?;
+        let result = Self(Arc::new(InfoOwner { info, _allocation: Some(allocation) }));
         meter.record_codec(0, control as u64, 0)?;
         Ok(result)
     }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl SharedInfo {
-    fn new_measured(
-        info: wire::ObjectInfo,
-        allocation: ReadAllocation,
-        meter: &Arc<dyn NativeReadMeter>,
-    ) -> Result<Self, NativeObjectsError> {
-        let mut retained = InfoOwner { info, _allocation: Some(allocation) };
-        let control = std::mem::size_of::<InfoOwner>();
-        meter.admit_codec(0, control as u64, 0)?;
-        let mut owner = ReadAllocation::new(meter, control)?;
-        retained._allocation.as_mut().expect("metadata custody is present").absorb(&mut owner)?;
-        let result = Self(Arc::new(retained));
-        meter.record_codec(0, control as u64, 0)?;
-        Ok(result)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn clone_state_measured(
-    before: &State,
-    meter: &Arc<dyn NativeReadMeter>,
-) -> Result<State, NativeObjectsError> {
-    meter.check()?;
-    let mut allocation = ReadAllocation::empty(meter);
-    let mut next = State {
-        receipts: before.receipts.clone(),
-        sequence: before.sequence,
-        object_bytes: before.object_bytes,
-        ..State::default()
-    };
-    for (name, bucket) in &before.buckets {
-        let name = clone_native_text(name, meter, &mut allocation)?;
-        let info = wire::Bucket {
-            bucket: bucket.info.bucket.as_ref().map(|value| {
-                clone_native_text(&value.name, meter, &mut allocation)
-                    .map(|name| wire::BucketRef { name })
-            }).transpose()?,
-            created_at: bucket.info.created_at,
-        };
-        let bytes = std::mem::size_of::<(String, Bucket)>();
-        let mut entry = ReadAllocation::adopt(meter, bytes)?;
-        meter.admit_codec(0, bytes as u64, 0)?;
-        allocation.absorb(&mut entry)?;
-        next.buckets.insert(name, Bucket { info, objects: bucket.objects.clone() });
-        meter.record_codec(0, bytes as u64, 0)?;
-    }
-    for (id, upload) in &before.uploads {
-        let id = clone_native_text(id, meter, &mut allocation)?;
-        let mut copied = Upload {
-            bucket: clone_native_text(&upload.bucket, meter, &mut allocation)?,
-            key: clone_native_text(&upload.key, meter, &mut allocation)?,
-            metadata: clone_native_metadata(&upload.metadata, meter, &mut allocation)?,
-            parts: BTreeMap::new(),
-        };
-        for (number, (part, body)) in &upload.parts {
-            let part = wire::UploadedPart {
-                part_number: part.part_number,
-                etag: clone_native_text(&part.etag, meter, &mut allocation)?,
-                size: part.size,
-            };
-            let bytes = std::mem::size_of::<(u32, (wire::UploadedPart, StoredBody))>();
-            let mut entry = ReadAllocation::adopt(meter, bytes)?;
-            meter.admit_codec(0, bytes as u64, 0)?;
-            allocation.absorb(&mut entry)?;
-            copied.parts.insert(*number, (part, body.clone()));
-            meter.record_codec(0, bytes as u64, 0)?;
-        }
-        let bytes = std::mem::size_of::<(String, Upload)>();
-        let mut entry = ReadAllocation::adopt(meter, bytes)?;
-        meter.admit_codec(0, bytes as u64, 0)?;
-        allocation.absorb(&mut entry)?;
-        next.uploads.insert(id, copied);
-        meter.record_codec(0, bytes as u64, 0)?;
-    }
-    next._allocation = Some(allocation);
-    Ok(next)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1266,7 +1115,7 @@ impl NativeBatchObjects for MemoryObjects {
                         let mut requests = input.data.drain(..);
                         for plan in plans.values.drain(..) {
                             let start = results.values.len();
-                            let mut next = match clone_state_measured(&state, &meter) {
+                            let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::Admission) {
                                 Ok(next) => next,
                                 Err(error) => {
                                     plan.failure.set(error)?;
@@ -1315,7 +1164,7 @@ struct NativePutGroup {
     failure: Arc<super::NativeObjectsSharedFailure>,
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[cfg(feature = "local")]
 fn put_group_sizes(
     requests: &[(wire::PutObjectHeader, OwnedBytes)],
 ) -> impl Iterator<Item = usize> + '_ {
@@ -1345,7 +1194,7 @@ impl ObjectsProvider for MemoryObjects {
                 request::create_bucket_digest(&query)?,
                 &query.mutation,
                 |state| {
-                    if state.buckets.contains_key(&query.name) {
+                    if state.buckets.contains_key(query.name.as_str()) {
                         return Err(AlreadyExists.into());
                     }
                     let info = wire::Bucket {
@@ -1355,9 +1204,9 @@ impl ObjectsProvider for MemoryObjects {
                         created_at: Some(timestamp()?),
                     };
                     state.buckets.insert(
-                        query.name.clone(),
+                        query.name.clone().into(),
                         Bucket {
-                            info: info.clone(),
+                            info: info.clone().into(),
                             objects: OrdMap::new(),
                         },
                     );
@@ -1375,7 +1224,7 @@ impl ObjectsProvider for MemoryObjects {
                 .buckets
                 .get(name)
                 .ok_or(Error::from(NotFound))?
-                .info
+                .info.as_ref()
                 .clone())
         })
         .await
@@ -1394,7 +1243,7 @@ impl ObjectsProvider for MemoryObjects {
                         .buckets
                         .get(name)
                         .is_some_and(|bucket| !bucket.objects.is_empty())
-                        || state.uploads.values().any(|upload| upload.bucket == name)
+                        || state.uploads.values().any(|upload| upload.bucket.as_str() == name)
                     {
                         return Err(PreconditionFailed.into());
                     }
@@ -1539,10 +1388,7 @@ impl ObjectsProvider for MemoryObjects {
                 let cursor = self.decode_cursor(&query)?;
                 let state = self.lock_state()?;
                 let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
-                // Logical entries (keys and common prefixes) never sort below the keys
-                // that produce them, so the scan starts strictly after the cursor and
-                // stops at `limit + 1` entries, skipping each common-prefix group by
-                // seeking to its successor.
+                // Scan strictly after the cursor until one page is full.
                 let mut lower = match &cursor {
                     Some(cursor) if *cursor >= query.prefix => Bound::Excluded(cursor.clone()),
                     _ => Bound::Included(query.prefix.clone()),
@@ -1629,12 +1475,12 @@ impl ObjectsProvider for MemoryObjects {
                         }
                         let id = next_id(state)?;
                         state.uploads.insert(
-                            id.clone(),
+                            id.clone().into(),
                             Upload {
-                                bucket: name.to_owned(),
-                                key: query.object_key.clone(),
-                                metadata: query.metadata.clone(),
-                                parts: BTreeMap::new(),
+                                bucket: name.to_owned().into(),
+                                key: query.object_key.clone().into(),
+                                metadata: query.metadata.clone().into(),
+                                parts: OrdMap::new(),
                             },
                         );
                         Ok(wire::MultipartUpload { upload_id: id })
@@ -1671,12 +1517,12 @@ impl ObjectsProvider for MemoryObjects {
                         };
                         state
                             .uploads
-                            .get_mut(&query.upload_id)
+                            .get_mut(query.upload_id.as_str())
                             .ok_or(Error::from(NotFound))?
                             .parts
                             .insert(
                                 query.part_number,
-                                (receipt.clone(), StoredBody::memory(body.clone())),
+                                (receipt.clone().into(), StoredBody::memory(body.clone())),
                             );
                         Ok(receipt)
                     },
@@ -1708,7 +1554,7 @@ impl ObjectsProvider for MemoryObjects {
                 let page: Vec<_> = parts
                     .by_ref()
                     .take(limit)
-                    .map(|(part, _)| part.clone())
+                    .map(|(part, _)| part.as_ref().clone())
                     .collect();
                 let truncated = parts.next().is_some();
                 obs::record!("items" = page.len());
@@ -1753,7 +1599,7 @@ impl ObjectsProvider for MemoryObjects {
                                 .parts
                                 .get(&selected.part_number)
                                 .ok_or(Error::from(PreconditionFailed))?;
-                            if selected != receipt
+                            if selected != receipt.as_ref()
                                 || (index + 1 < query.parts.len() && body.len() < 5 * 1024 * 1024)
                             {
                                 return Err(PreconditionFailed.into());
@@ -1766,7 +1612,7 @@ impl ObjectsProvider for MemoryObjects {
                         if size > self.options.maximum_bytes {
                             return Err(QuotaExceeded.into());
                         }
-                        let metadata = value.metadata.clone();
+                        let metadata = value.metadata.as_ref().clone();
                         let mut bodies = Vec::with_capacity(query.parts.len());
                         for selected in &query.parts {
                             bodies.push(
@@ -1789,7 +1635,7 @@ impl ObjectsProvider for MemoryObjects {
                                 length: size,
                             },
                         )?;
-                        state.uploads.remove(&query.upload_id);
+                        state.uploads.remove(query.upload_id.as_str());
                         Ok(info)
                     },
                 )
@@ -1808,11 +1654,11 @@ impl ObjectsProvider for MemoryObjects {
                 request::abort_multipart_digest(&query)?,
                 &query.mutation,
                 |state| {
-                    if state.uploads.contains_key(&query.upload_id) {
+                    if state.uploads.contains_key(query.upload_id.as_str()) {
                         upload(state, name, &query.object_key, &query.upload_id)?;
                     }
                     Ok(wire::AbortMultipartResponse {
-                        existed: state.uploads.remove(&query.upload_id).is_some(),
+                        existed: state.uploads.remove(query.upload_id.as_str()).is_some(),
                     })
                 },
             )

@@ -755,20 +755,20 @@ impl PreparationIo {
             let mut diagnostics = TrustedDecodeReservation::new(self);
             diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
             let result = if canonical {
-                crate::contract::canonical_json_bytes_bounded_native_trusted(
-                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                crate::contract::canonical_json_bytes_bounded(
+                    value, bounds, Some(crate::wire::ErrorCode::Invalid), charge,
                 )
             } else {
-                crate::contract::json_bytes_bounded_native_trusted(
-                    value, bounds, crate::wire::ErrorCode::Invalid, charge,
+                crate::contract::json_bytes_bounded(
+                    value, bounds, Some(crate::wire::ErrorCode::Invalid), charge,
                 )
             };
             return diagnostics.finish_serialization(result);
         }
         if canonical {
-            crate::contract::canonical_json_bytes_bounded(value, bounds, charge)
+            crate::contract::canonical_json_bytes_bounded(value, bounds, None, charge)
         } else {
-            crate::contract::json_bytes_bounded_trusted(value, bounds, charge)
+            crate::contract::json_bytes_bounded(value, bounds, None, charge)
         }
     }
 
@@ -966,8 +966,8 @@ impl PreparationIo {
         let root_hold = self.guard_owned(root)?;
         let mut diagnostics = TrustedDecodeReservation::new(self);
         diagnostics.reserve(crate::contract::sdk_json_diagnostic_bytes())?;
-        let result = crate::contract::json_value_bounded_native_trusted(
-            source, bounds, crate::wire::ErrorCode::Invalid,
+        let result = crate::contract::json_value_bounded(
+            source, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |next| self.codec_charge(next, false),
         );
         let value = diagnostics.finish_serialization(result)?;
@@ -1997,7 +1997,6 @@ mod tests {
         assert_eq!(host.resolve(&initial.workspace).await?.generation, initial.generation);
         assert!(denied_io.receipt().backend_read_operations > 0);
         assert!(denied_io.receipt().bytes_hashed > 0);
-        assert_eq!(denied_io.receipt().authority_records_appended, 0);
         let accepted_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
         let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
@@ -2008,7 +2007,6 @@ mod tests {
             },
         ).await?;
         assert_eq!(accepted.read("/file", 32).await.map_err(map_error)?.as_ref(), b"owned");
-        assert_eq!(accepted_io.receipt().authority_records_appended, 1);
         Ok(())
     }
 

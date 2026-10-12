@@ -51,7 +51,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let server = tokio::spawn(
         tonic::transport::Server::builder()
             .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
-            .add_service(wire::buckets_service_server::BucketsServiceServer::new(Fixture(MemoryObjects::new(MemoryOptions::default())?)))
+            .add_service(wire::buckets_service_server::BucketsServiceServer::new(Fixture(MemoryObjects::new(MemoryOptions::default())?, Default::default())))
             .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }),
     );
     let result = async {
