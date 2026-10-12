@@ -5,17 +5,19 @@ use wasm_bindgen_test::wasm_bindgen_test;
 #[wasm_bindgen_test]
 async fn browser_live_admission_rejection_and_owned_cancellation_need_no_tokio_runtime() {
     let group = TaskGroup::new(1, None).unwrap();
-    let handle = group.spawn(async { 17_u32 }).await;
+    let Admission::Accepted(handle) = group.spawn(OperationId::new(), async { 17_u32 }).await
+    else { panic!("task rejected"); };
     assert!(matches!(handle.result().await, Outcome::Succeeded(17)));
-    let pending = group.spawn(futures::future::pending::<u32>()).await;
+    let Admission::Accepted(pending) = group.spawn(OperationId::new(), futures::future::pending::<u32>()).await
+    else { panic!("task rejected"); };
     let original = *pending.id();
     let owned = pending.result();
     drop(owned);
     sleep_millis(1).await.unwrap();
-    assert!(!group.state.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active.contains_key(&original));
+    assert!(matches!(group.spawn(original, async { 18_u32 }).await, Admission::Accepted(_)));
     group.close();
-    let rejected = group.spawn(async { 18_u32 }).await;
-    assert!(matches!(rejected.result().await, Outcome::Failed { .. }));
+    let rejected = group.spawn(OperationId::new(), async { 18_u32 }).await;
+    assert!(matches!(rejected, Admission::Rejected { .. }));
 }
 
 #[wasm_bindgen_test]

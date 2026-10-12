@@ -1020,16 +1020,15 @@ where
             })
         };
         let operation = OperationId::from_bytes(task.into_bytes());
-        let (context, custody) = if allow_settlement {
-            self.harness.durable_context_for_reconciliation_with_native_work(
-                task, operation, fence, mailbox, work,
-            ).await?
+        let purpose = if allow_settlement {
+            crate::runtime::NativeContextPurpose::Reconciliation { fence, mailbox }
         } else {
-            self.harness.durable_context_for_dispatch_with_native_work(
-                task, operation, fence, mailbox, work,
-            ).await?
+            crate::runtime::NativeContextPurpose::Dispatch { fence, mailbox }
         };
-        context.into_native_shared(custody, work)
+        let (context, custody) = self.harness.open_durable_context(
+            task, operation, crate::runtime::ContextSource::Native { work, purpose },
+        ).await?;
+        context.into_native_shared(custody.expect("native owner context retains its original custody"), work)
     }
 
     /// Opens the original owner-fenced journal and returns its exact task/turn namespace.

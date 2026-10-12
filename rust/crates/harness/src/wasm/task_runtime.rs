@@ -1,4 +1,5 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
+use crate::runtime::TaskSpawner as _;
 
 use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
@@ -17,7 +18,7 @@ use crate::{
     },
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -191,16 +192,6 @@ struct WasmBrowserStreamLimits {
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
-struct WasmBrowserSessionLimits {
-    active_tasks: u64,
-    total_tasks: u64,
-    depth: u32,
-    model_steps: u64,
-}
-
-#[derive(Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-#[tsify(large_number_types_as_bigints)]
 struct WasmBrowserTaskOptions {
     filesystem_database: String,
     stream_database: String,
@@ -212,7 +203,8 @@ struct WasmBrowserTaskOptions {
     volume: VolumeRef,
     limits: WasmLimitsInput,
     run_limits: WasmTaskRunLimitsInput,
-    session_limits: WasmBrowserSessionLimits,
+    #[tsify(type = "{ active_tasks: bigint; total_tasks: bigint; depth: number; model_steps: bigint }")]
+    session_limits: SessionLimits,
     concurrency: u32,
     maximum_payload_bytes: u64,
     #[serde(default)]
@@ -308,7 +300,9 @@ impl ToolExecutor for HostTool {
     }
 }
 impl ToolProjection for HostTool {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        self.supports_native_projection(work)?;
         let invocation = to_js(invocation)
             .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
         let result = to_js(result)
@@ -317,7 +311,8 @@ impl ToolProjection for HostTool {
             .project
             .call2(&JsValue::UNDEFINED, &invocation, &result)
             .map_err(|_| Error::Invalid("tool projection failed".into()))?;
-        from_js(value).map_err(|_| Error::Invalid("tool projection is invalid".into()))
+        from_js(value).map(|value| (value, None))
+            .map_err(|_| Error::Invalid("tool projection is invalid".into()))
     }
 }
 
@@ -706,7 +701,6 @@ impl WasmTaskRuntime {
                 }
             }
         }
-        let limits = options.session_limits;
         let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
             filesystem.clone(),
@@ -717,12 +711,7 @@ impl WasmTaskRuntime {
             &registry.tasks,
             &registry.machines,
             &tools,
-            SessionLimits {
-                active_tasks: limits.active_tasks,
-                total_tasks: limits.total_tasks,
-                depth: limits.depth,
-                model_steps: limits.model_steps,
-            },
+            options.session_limits,
             options.concurrency as usize,
             options.maximum_payload_bytes,
             Arc::new(acyclic_stream::SystemUnixMillisClock),

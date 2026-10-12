@@ -1,5 +1,6 @@
 //! Pure validation for hosted Stream HTTP response payloads.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value};
 
 type Result<T = ()> = std::result::Result<T, &'static str>;
@@ -49,44 +50,7 @@ fn path(value: &Value) -> Result {
 }
 
 pub(crate) fn decode_base64(value: &str) -> Option<Vec<u8>> {
-    if !value.len().is_multiple_of(4) {
-        return None;
-    }
-    let mut output = Vec::with_capacity(value.len() / 4 * 3);
-    let bytes = value.as_bytes();
-    let (chunks, _) = bytes.as_chunks::<4>();
-    for (index, &[a_byte, b_byte, c_byte, d_byte]) in chunks.iter().enumerate() {
-        let a = sextet(a_byte)?;
-        let b = sextet(b_byte)?;
-        let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
-        let d = if d_byte == b'=' { 0 } else { sextet(d_byte)? };
-        if c_byte == b'=' {
-            if d_byte != b'=' || b & 0x0f != 0 || index + 1 != bytes.len() / 4 {
-                return None;
-            }
-        } else if d_byte == b'=' && (c & 0x03 != 0 || index + 1 != bytes.len() / 4) {
-            return None;
-        }
-        output.push(a << 2 | b >> 4);
-        if c_byte != b'=' {
-            output.push(b << 4 | c >> 2);
-        }
-        if d_byte != b'=' {
-            output.push(c << 6 | d);
-        }
-    }
-    Some(output)
-}
-
-fn sextet(value: u8) -> Option<u8> {
-    match value {
-        b'A'..=b'Z' => Some(value - b'A'),
-        b'a'..=b'z' => Some(value - b'a' + 26),
-        b'0'..=b'9' => Some(value - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
+    STANDARD.decode(value).ok()
 }
 
 pub(crate) fn bytes(value: &Value) -> Result<Vec<u8>> {
