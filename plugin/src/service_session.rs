@@ -514,9 +514,12 @@ impl PiSession {
             ).await.map_err(|(source, custody)| RootError::NativeLineage { source, custody })?.into_parts();
             drop(lineage.0);
             drop(lineage.1);
-            let mut workspace_name = binding.project_volumes.get(key)
+            let mut io = acyclic_harness::store::history::native_work_io(original_native_work)
+                .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
+            let workspace_name = binding.project_volumes.get(key)
                 .ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root lost its project volume" })?
-                .storage_name_with_native_work(original_native_work)?;
+                .storage_name(&mut Some(&mut io))?;
+            let mut workspace_name = (workspace_name, io.into_custody());
             context_roots.push(WorkspaceContextRoot {
                 root_id: WorkspaceRootId::from_bytes(root.root_id), source_path: root.path.clone(),
                 workspace_id: handle.workspace.workspace().id(),
