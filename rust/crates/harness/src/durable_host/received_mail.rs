@@ -368,7 +368,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
                     }
                     if &binding.volume == payload.volume() {
-                        reader = Some(binding.binding.1.as_ref());
+                        reader = Some(binding.binding.reader.as_ref());
                         break;
                     }
                 }
