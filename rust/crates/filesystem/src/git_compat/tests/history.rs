@@ -88,20 +88,7 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
             ..
         })
     ));
-    let child = WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new(
-            "feature-run",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("valid workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let child = workspace_identity([9; 16], "feature-run");
     let branch_executor = TestExecutor::returning(GitFilesystemResult::Forked {
         workspace_id: child,
     });
@@ -145,20 +132,7 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
         )
         .await
         .expect("initial commit");
-    let child = WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new(
-            "recover-run",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("valid workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let child = workspace_identity([9; 16], "recover-run");
     repository
         .run(
             GitCommand::Branch {
@@ -247,20 +221,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
         ));
     }
 
-    let child = WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new(
-            "merge-control",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("valid workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let child = workspace_identity([9; 16], "merge-control");
     let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     pending_merge(&continued, child).await;
     assert_eq!(
@@ -333,27 +294,8 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
 
 #[tokio::test]
 async fn filtered_commit_completes_and_clears_its_transition() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-filtered-commit",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x6b; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-filtered-commit").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6b; 16])).await;
     transaction
         .write_text("/keep.txt", "keep")
         .await
@@ -366,9 +308,8 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live");
+        .expect("live")
+        .value;
     let repository = GitCompatRepository::new(workspace.id(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared {
         transition,
@@ -396,7 +337,10 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     .await
     .expect("capture");
     let proof = captured
-        .verified_proof(transition.operation_id())
+        .authenticated_proof(
+            transition.operation_id(),
+            &crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new()),
+        )
         .await
         .expect("verified proof");
     let result = GitFilesystemResult::Captured {
@@ -424,16 +368,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     assert!(commit.tracked_paths.contains("keep.txt"));
     assert!(!commit.tracked_paths.contains("drop.tmp"));
 
-    let mut ignored_only = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x6c; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let mut ignored_only = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6c; 16])).await;
     ignored_only
         .write_text("/new.tmp", "not committed")
         .await
@@ -442,9 +377,8 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     let live_after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live after ignored change");
+        .expect("live after ignored change")
+        .value;
     let GitCommandOutput::Prepared { transition, .. } = repository
         .execute(
             GitCommand::Commit {
@@ -611,20 +545,7 @@ async fn distributed_publication_records_one_idempotent_merge_commit() {
     else {
         panic!("expected initial commit");
     };
-    let source = WorkspaceId::derive(
-        [0x51; 16],
-        &WorkspaceName::new(
-            "publication-source",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let source = workspace_identity([0x51; 16], "publication-source");
     repository
         .register_branch_workspace("agents/child", source, Some(initial.id), false)
         .await
@@ -774,16 +695,7 @@ async fn every_branch_requests_and_registers_a_distinct_workspace() {
     assert_eq!(source_tree, tree(4));
     assert!(head.is_none());
     assert!(switch);
-    let child = WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new("feature", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("valid workspace name")
-            .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let child = workspace_identity([9; 16], "feature");
     repository
         .complete_transition_result(
             transition,

@@ -43,7 +43,19 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         work.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let head = self.0.historical_head(authority).await?;
+        let cancellation = CancellationToken::new();
+        let mut historical = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let head = self
+            .0
+            .snapshot(authority, &mut historical)
+            .await
+            .map_err(|error| match error {
+                AuthorityStoreError::CorruptStatic(message) => {
+                    AuthorityStoreError::Corrupt(message.to_owned())
+                }
+                error => error,
+            })?
+            .head;
         work.record(authority_read_work(2))?;
         work.work.verify(work.budget)?;
         Ok(head)

@@ -28,7 +28,6 @@ pub struct JoinCommitWitness {
 }
 
 impl JoinCommitWitness {
-
     pub(super) fn operation_context(self) -> Digest {
         workspace_join_context(
             self.source_workspace,
@@ -48,7 +47,10 @@ impl JoinCommitWitness {
     }
 }
 
-pub(super) fn hash_merge_resolution(hasher: &mut blake3::Hasher, resolution: &MergeConflictResolution) {
+pub(super) fn hash_merge_resolution(
+    hasher: &mut blake3::Hasher,
+    resolution: &MergeConflictResolution,
+) {
     let hash_side = |hasher: &mut blake3::Hasher, side: MergeConflictSide| {
         hasher.update(&[match side {
             MergeConflictSide::Base => 0,
@@ -148,106 +150,182 @@ pub(super) fn hash_file_payload(hasher: &mut blake3::Hasher, payload: FilePayloa
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
     pub(crate) async fn workspace_head_state(
         &self,
         workspace: &Volume<A, O>,
-        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<(GenerationId, Head), WorkspaceError> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let (root, head) = workspace.resolve_head_generation_with_native_work(original, cancellation).await?;
+            let (root, head, _) = workspace
+                .resolve_head_generation(original, cancellation)
+                .await?;
             return Ok((GenerationId::new(root.digest), head));
         }
-        let result = workspace.resolve_head_generation(accounting.remaining()?, cancellation).await;
-        let backend = match &result { Ok((_, _, work)) => *work, Err(failure) => *failure.work, };
-        let prior = accounting.spent();
-        accounting.record_completed(backend).map_err(|error| match error {
-            FsError::Work(WorkError::Overflow) => FsError::RootReadWorkMerge {
-                prior, backend, error: WorkError::Overflow,
-            }, error => error,
-        })?;
+        let result = workspace
+            .resolve_head_generation(accounting.remaining()?, cancellation)
+            .await
+            .map(|receipt| receipt.value);
+        let backend = match &result {
+            Ok((_, _, work)) => *work,
+            Err(failure) => *failure.work,
+        };
+        accounting.record_completed(backend)?;
         let (root, head, _) = result.map_err(|failure| failure.error)?;
         Ok((GenerationId::new(root.digest), head))
     }
 
     pub(crate) async fn workspace_operation_generation(
-        &self, workspace: &Volume<A, O>, operation_id: OperationId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<(Option<(GenerationId, DurableCommit)>, KernelOwnedAllocation), WorkspaceError> {
-        let mut native = None;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            cancellation.check().map_err(FsError::from)?;
-            let observed = ({ let __authority_args = (volume_authority_id(workspace.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(FsError::from)?;
-            native = Some((observed, KernelOwnedAllocation::Standalone));
-        }
-        let observed = match native {
-            Some(observed) => observed, None => {
-                let result = self.observe_volume_operation(
-                    workspace.id, operation_id, accounting.remaining()?, cancellation,
-                ).await;
-                let spent = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-                let (_, work, _, _) = accounting.standalone_parts().expect("standalone operation accounting");
-                work.try_add_assign(&spent).map_err(FsError::from)?;
-                (result.map_err(|failure| WorkspaceError::from(failure.error))?.value, KernelOwnedAllocation::Standalone)
-            }
-        };
-        let generation = observed.0.as_ref().map(|record| {
-            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            if record.operation_id != operation_id { return Err(FsError::InvalidAuthorityHistory); }
-            generation_from_record(record, workspace.id, accounting).map(|root| GenerationId::new(root.digest))
-        }).transpose()?;
-        Ok((generation.zip(observed.0), observed.1))
+        &self,
+        workspace: &Volume<A, O>,
+        operation_id: OperationId,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(Option<(GenerationId, DurableCommit)>, KernelOwnedAllocation), WorkspaceError>
+    {
+        accounting.check()?;
+        let mut work = authority_work(accounting, cancellation)?;
+        let result = self
+            .inner
+            .authority
+            .find_operation(volume_authority_id(workspace.id), operation_id, &mut work)
+            .await;
+        record_authority_work(accounting, &work)?;
+        let record = result.map_err(FsError::from)?;
+        let allocation = KernelOwnedAllocation::Standalone;
+        let generation = record
+            .as_ref()
+            .map(|record| {
+                accounting.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                if record.operation_id != operation_id {
+                    return Err(FsError::InvalidAuthorityHistory);
+                }
+                generation_from_record(record, workspace.id, accounting)
+                    .map(|root| GenerationId::new(root.digest))
+            })
+            .transpose()?;
+        Ok((generation.zip(record), allocation))
     }
 
     /// Verifies the exact publication identity of a committed workspace join.
     pub(crate) async fn verify_workspace_join_commit<W: FsWork>(
-        &self, target: &Volume<A, O>, witness: &JoinCommitWitness, budget: W, cancellation: &CancellationToken,
+        &self,
+        target: &Volume<A, O>,
+        witness: &JoinCommitWitness,
+        budget: W,
+        cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
         let standalone = readonly_standalone_live(&accounting).is_some();
         let result = async {
-            if !standalone { accounting.check()?; }
-            if target.id != witness.target_workspace || witness.maximum_generations == 0
-                || witness.maximum_changes == 0 || witness.maximum_conflicts == 0
-                || witness.source_workspace == witness.target_workspace || witness.expected_target == witness.result_generation
-            { return Ok(false); }
+            if !standalone {
+                accounting.check()?;
+            }
+            if target.id != witness.target_workspace
+                || witness.maximum_generations == 0
+                || witness.maximum_changes == 0
+                || witness.maximum_conflicts == 0
+                || witness.source_workspace == witness.target_workspace
+                || witness.expected_target == witness.result_generation
+            {
+                return Ok(false);
+            }
             let mut native = None;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                let observed = ({ let __authority_args = (volume_authority_id(target.id), witness.operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(FsError::from)?;
-                native = Some((observed, KernelOwnedAllocation::Standalone));
+                let observed = ({
+                    let mut authority = crate::AuthorityWork::native((original), (cancellation));
+                    self.inner
+                        .authority
+                        .find_operation(
+                            (volume_authority_id(target.id)),
+                            (witness.operation_id),
+                            &mut authority,
+                        )
+                        .await
+                        .map(|value| (value, KernelOwnedAllocation::Standalone))
+                })
+                .map_err(FsError::from)?;
+                native = Some((
+                    observed.0,
+                    observed.1,
+                ));
             }
             let observed = match native {
-                Some(observed) => observed, None => {
-                    let observed = self.observe_volume_operation(target.id, witness.operation_id, accounting.remaining()?, cancellation).await;
-                    let completed = match &observed { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-                    *accounting.standalone_parts().expect("standalone join verification").1 = completed;
-                    (observed.map_err(WorkspaceError::engine)?.value, KernelOwnedAllocation::Standalone)
+                Some(observed) => observed,
+                None => {
+                    let observed = self
+                        .observe_volume_operation(
+                            target.id,
+                            witness.operation_id,
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await;
+                    let completed = match &observed {
+                        Ok(receipt) => receipt.work,
+                        Err(failure) => *failure.work,
+                    };
+                    *accounting
+                        .standalone_parts()
+                        .expect("standalone join verification")
+                        .1 = completed;
+                    (
+                        observed.map_err(WorkspaceError::engine)?.value,
+                        KernelOwnedAllocation::Standalone,
+                    )
                 }
             };
-            let Some(commit) = observed.0.as_ref() else { return Ok(false); };
+            let Some(commit) = observed.0.as_ref() else {
+                return Ok(false);
+            };
             let generation = generation_from_record(commit, target.id, &mut accounting)?;
-            if generation.digest != witness.result_generation.digest() { return Ok(false); }
+            if generation.digest != witness.result_generation.digest() {
+                return Ok(false);
+            }
             let hashing = WorkCounters {
-                bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64 + 3 * 16 + 4 * 32 + 1 + 3 * 4,
+                bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64
+                    + 3 * 16
+                    + 4 * 32
+                    + 1
+                    + 3 * 4,
                 ..WorkCounters::UNCHARGED
             };
-            if !standalone { accounting.admit(hashing)?; }
+            if !standalone {
+                accounting.admit(hashing)?;
+            }
             let context = witness.operation_context();
-            if !standalone { accounting.record_completed(hashing)?; }
+            if !standalone {
+                accounting.record_completed(hashing)?;
+            }
             let request = PublishGenerationRequest {
-                authority_id: volume_authority_id(target.id), volume_id: target.id, epoch: witness.expected_head.epoch,
-                expected: witness.expected_head, operation_id: witness.operation_id,
-                generation_root: ObjectId { kind: ObjectKind::GenerationRoot, digest: witness.result_generation.digest() },
+                authority_id: volume_authority_id(target.id),
+                volume_id: target.id,
+                epoch: witness.expected_head.epoch,
+                expected: witness.expected_head,
+                operation_id: witness.operation_id,
+                generation_root: ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: witness.result_generation.digest(),
+                },
             };
-            let expected = if standalone { contextual_publication_fingerprint(request, context) } else {
-                contextual_publication_fingerprint_with_accounting(request, context, &mut accounting)?
+            let expected = if standalone {
+                contextual_publication_fingerprint(request, context)
+            } else {
+                contextual_publication_fingerprint_with_accounting(
+                    request,
+                    context,
+                    &mut accounting,
+                )?
             };
             Ok(commit.fingerprint == expected)
-        }.await;
+        }
+        .await;
         budget.finish(result, &accounting)
     }
 }
-

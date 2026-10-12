@@ -11,48 +11,79 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        self.put_accounted(object_id, bytes, false, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(crate::async_storage::object_error)
-    }
+                self.put_accounted(
+                    object_id,
+                    bytes,
+                    false,
+                    &mut KernelAccounting::native(work, cancellation),
+                )
+                .await
+                .map_err(crate::async_storage::object_error)
+            }
             .await;
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_accounted(object_id, bytes, false, &mut accounting).await {
-            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            match self
+                .put_accounted(object_id, bytes, false, &mut accounting)
+                .await
+            {
+                Ok(()) => Ok(crate::OperationReceipt {
+                    value: (),
+                    work: accounting.spent(),
+                }),
+                Err(error) => Err(OperationFailure::new(
+                    crate::async_storage::object_error(error),
+                    accounting.spent(),
+                )),
+            }
         }
-    }
         .await;
         context.accept(result)
     }
 
     async fn put_hashed(
-        &self, object: crate::storage::HashedObject,
+        &self,
+        object: crate::storage::HashedObject,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        let (object_id, bytes) = object.into_parts();
-        self.put_accounted(object_id, bytes, true, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(crate::async_storage::object_error)
-    }
+                let (object_id, bytes) = object.into_parts();
+                self.put_accounted(
+                    object_id,
+                    bytes,
+                    true,
+                    &mut KernelAccounting::native(work, cancellation),
+                )
+                .await
+                .map_err(crate::async_storage::object_error)
+            }
             .await;
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        let (object_id, bytes) = object.into_parts();
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_accounted(object_id, bytes, true, &mut accounting).await {
-            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
+            let (object_id, bytes) = object.into_parts();
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            match self
+                .put_accounted(object_id, bytes, true, &mut accounting)
+                .await
+            {
+                Ok(()) => Ok(crate::OperationReceipt {
+                    value: (),
+                    work: accounting.spent(),
+                }),
+                Err(error) => Err(OperationFailure::new(
+                    crate::async_storage::object_error(error),
+                    accounting.spent(),
+                )),
+            }
         }
-    }
         .await;
         context.accept(result)
     }
@@ -66,36 +97,46 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        self.put_many_accounted(writes, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(crate::async_storage::object_error)
-    }
+                self.put_many_accounted(writes, &mut KernelAccounting::native(work, cancellation))
+                    .await
+                    .map_err(crate::async_storage::object_error)
+            }
             .await;
         }
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_many_accounted(writes, &mut accounting).await {
-            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            match self.put_many_accounted(writes, &mut accounting).await {
+                Ok(()) => Ok(crate::OperationReceipt {
+                    value: (),
+                    work: accounting.spent(),
+                }),
+                Err(error) => Err(OperationFailure::new(
+                    crate::async_storage::object_error(error),
+                    accounting.spent(),
+                )),
+            }
         }
-    }
         .await;
         context.accept(result)
     }
 
     async fn flush_before_publish(
-        &self, _scope: crate::async_storage::PublicationScope<'_>,
+        &self,
+        _scope: crate::async_storage::PublicationScope<'_>,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        Ok(crate::PublicationHold::none())
-    }
+                cancellation
+                    .check()
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
+                work.admit(WorkCounters::UNCHARGED)?;
+                Ok(crate::PublicationHold::none())
+            }
             .await;
         }
         Ok(crate::PublicationHold::none())
@@ -113,14 +154,16 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let (read, _custody) = self.read_accounted(object_id, maximum_bytes, &mut accounting)
-            .await.map_err(crate::async_storage::object_error)?;
-        match read.retention {
-            ObjectReadRetention::Shared => Ok(read),
-            ObjectReadRetention::Owned { .. } => {
+                let mut accounting = KernelAccounting::native(work, cancellation);
+                let (read, _custody) = self
+                    .read_accounted(object_id, maximum_bytes, &mut accounting)
+                    .await
+                    .map_err(crate::async_storage::object_error)?;
+                match read.retention {
+                    ObjectReadRetention::Shared => Ok(read),
+                    ObjectReadRetention::Owned { .. } => {
                         crate::async_storage::owned_read(read, work)
-        }
+                    }
                 }
             }
             .await;
@@ -128,12 +171,21 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.read_accounted(object_id, maximum_bytes, &mut accounting).await {
-            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            match self
+                .read_accounted(object_id, maximum_bytes, &mut accounting)
+                .await
+            {
+                Ok((value, _custody)) => Ok(crate::OperationReceipt {
+                    value,
+                    work: accounting.spent(),
+                }),
+                Err(error) => Err(OperationFailure::new(
+                    crate::async_storage::object_error(error),
+                    accounting.spent(),
+                )),
+            }
         }
-    }
         .await;
         context.accept(result)
     }
@@ -147,15 +199,17 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
             return async {
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let (reads, custody) = self.read_many_accounted(requests, &mut accounting)
-            .await.map_err(crate::async_storage::object_error)?;
-        match custody {
-            KernelOwnedAllocation::NativeOriginal(custody) => {
+                let mut accounting = KernelAccounting::native(work, cancellation);
+                let (reads, custody) = self
+                    .read_many_accounted(requests, &mut accounting)
+                    .await
+                    .map_err(crate::async_storage::object_error)?;
+                match custody {
+                    KernelOwnedAllocation::NativeOriginal(custody) => {
                         crate::async_storage::native_read_batch(reads, custody)
                     }
                     KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
-        }
+                }
             }
             .await
             .map(|(values, allocation)| (values, Some(allocation)));
@@ -163,18 +217,25 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.read_many_accounted(requests, &mut accounting).await {
-            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
+            let mut accounting = KernelAccounting::standalone(budget, cancellation);
+            match self.read_many_accounted(requests, &mut accounting).await {
+                Ok((value, _custody)) => Ok(crate::OperationReceipt {
+                    value,
+                    work: accounting.spent(),
+                }),
+                Err(error) => Err(OperationFailure::new(
+                    crate::async_storage::object_error(error),
+                    accounting.spent(),
+                )),
+            }
         }
-    }
         .await;
         context.accept(result).map(|values| (values, None))
     }
 
     async fn contains(
-        &self, object_id: ObjectId,
+        &self,
+        object_id: ObjectId,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -185,22 +246,28 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let cancellation = context.cancellation;
         let result = async {
             match {
-                let __object_args = (object_id, budget.object_bytes_read, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let authority_input_1 = budget.object_bytes_read;
+
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result = self
-                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .read(object_id, authority_input_1, &mut __object_work)
                     .await;
                 __object_work.receipt(__object_result)
             } {
-            Ok(receipt) => Ok(crate::OperationReceipt { value: true, work: receipt.work }),
-            Err(failure) if matches!(failure.error, ObjectStoreError::Missing) => {
-                    Ok(crate::OperationReceipt { value: false, work: *failure.work })
+                Ok(receipt) => Ok(crate::OperationReceipt {
+                    value: true,
+                    work: receipt.work,
+                }),
+                Err(failure) if matches!(failure.error, ObjectStoreError::Missing) => {
+                    Ok(crate::OperationReceipt {
+                        value: false,
+                        work: *failure.work,
+                    })
                 }
                 Err(failure) => Err(failure),
-        }
+            }
         }
         .await;
         context.accept(result)
     }
-
 }

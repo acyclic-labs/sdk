@@ -1,7 +1,7 @@
 use super::*;
 use crate::native_host::HostRoot;
 
-/// Checks the existing root and prospective operation through held identities.
+/// Validates a prospective recovery location using held root identities.
 pub fn validate_native_preparation_location(
     root: &Path,
     operation: &Path,
@@ -15,7 +15,7 @@ pub fn validate_native_preparation_location(
             Err(NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
-                existing = existing.parent().ok_or(error)?;
+                existing = existing.parent().ok_or(error)?
             }
             Err(error) => return Err(error),
         }
@@ -24,10 +24,7 @@ pub fn validate_native_preparation_location(
         .strip_prefix(existing)
         .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?;
     for component in suffix.components() {
-        work.charge(crate::WorkCounters {
-            source_entries_visited: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        work.charge(NativeResourceCredit::Items.delta(1))?;
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
@@ -48,48 +45,40 @@ pub(super) fn validate_layout(
     let operation = operation.open_dir_held(Path::new(""), &mut &*work)?;
     #[cfg(unix)]
     let nested = {
-        let (root, _root_allocation) =
-            crate::native_host::canonical_directory_path_held_with_work(root, &mut &*work)?;
-        let (operation, operation_allocation) =
-            crate::native_host::canonical_directory_path_held_with_work(operation, &mut &*work)?;
-        let (prospective, _allocation) = work.path(&operation, Some(suffix))?;
-        drop(operation);
-        drop(operation_allocation);
-        work.charge(crate::WorkCounters {
-            items_examined: root
-                .as_os_str()
-                .len()
-                .checked_add(prospective.as_os_str().len())
-                .ok_or(crate::WorkError::Overflow)? as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        let (root, _root) = crate::native_host::canonical_directory_path_held(root, &mut &*work)?;
+        let (operation, _operation) =
+            crate::native_host::canonical_directory_path_held(operation, &mut &*work)?;
+        let (prospective, _prospective) = work.path(&operation, Some(suffix))?;
+        work.charge(
+            NativeResourceCredit::Items
+                .delta((root.as_os_str().len() + prospective.as_os_str().len()) as u64),
+        )?;
         prospective.starts_with(&root) || root.starts_with(&prospective)
     };
     #[cfg(windows)]
     let nested = {
-        let (root, _root_allocation) =
-            crate::native_host::canonical_directory_wide_with_work(&root, &mut &*work)?;
+        let (root, _root) = crate::native_host::canonical_directory_wide(&root, &mut &*work)?;
         let (mut operation, mut allocation) =
-            crate::native_host::canonical_directory_wide_with_work(&operation, &mut &*work)?;
+            crate::native_host::canonical_directory_wide(&operation, &mut &*work)?;
         if !suffix.as_os_str().is_empty() {
-            with_native_walk_leaf(suffix, work, |suffix| {
+            crate::native_host::with_wide_path(suffix, &mut &*work, |suffix, _meter| {
                 let separator = usize::from(operation.last() != Some(&92));
+                let count = separator
+                    .checked_add(suffix.len())
+                    .ok_or(crate::WorkError::Overflow)?;
                 let needed = operation
                     .len()
-                    .checked_add(separator)
-                    .and_then(|length| length.checked_add(suffix.len()))
+                    .checked_add(count)
                     .ok_or(crate::WorkError::Overflow)?;
-                let delta = crate::WorkCounters {
-                    bytes_copied: owned_size(suffix.len() + separator, 2)?,
-                    ..crate::WorkCounters::UNCHARGED
-                };
+                let delta = NativeResourceCredit::Copy.delta(owned_size(count, 2)?);
                 work.admit(delta)?;
                 if needed > operation.capacity() {
                     allocation.grow(owned_size(needed - operation.capacity(), 2)?)?;
-                    operation
-                        .try_reserve_exact(needed - operation.len())
-                        .map_err(NativeTreeMaterializationError::AllocationFailed)?;
-                    allocation.reconcile_capacity(owned_size(operation.capacity(), 2)?)?;
+                    let reserved = operation.try_reserve_exact(needed - operation.len());
+                    let reconciled =
+                        allocation.reconcile_capacity(owned_size(operation.capacity(), 2)?);
+                    reserved.map_err(NativeTreeMaterializationError::AllocationFailed)?;
+                    reconciled?;
                 }
                 if separator != 0 {
                     operation.push(92);
@@ -98,13 +87,7 @@ pub(super) fn validate_layout(
                 work.spent(delta)
             })?;
         }
-        work.charge(crate::WorkCounters {
-            items_examined: root
-                .len()
-                .checked_add(operation.len())
-                .ok_or(crate::WorkError::Overflow)? as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
+        work.charge(NativeResourceCredit::Items.delta((root.len() + operation.len()) as u64))?;
         fn contains(parent: &[u16], child: &[u16]) -> bool {
             child.starts_with(parent)
                 && (parent.last() == Some(&92)
@@ -117,12 +100,4 @@ pub(super) fn validate_layout(
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
     Ok(())
-}
-pub(super) fn edit_path(edit: &MaterializationEdit) -> &str {
-    match edit {
-        MaterializationEdit::Install { path, .. }
-        | MaterializationEdit::Remove { path }
-        | MaterializationEdit::SetMetadata { path, .. } => path,
-        MaterializationEdit::Rename { from, .. } => from,
-    }
 }

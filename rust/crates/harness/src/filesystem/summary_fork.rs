@@ -17,8 +17,8 @@ type References = BTreeMap<[u8; 32], FileRef>;
 
 pub(super) fn summary_keys(key: &IdempotencyKey, io: Option<&PreparationIo>) -> Result<[IdempotencyKey; 2]> {
     Ok([
-        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-payloads", key.as_str()), io)?)?,
-        IdempotencyKey::new(crate::contract::preparation_format(format_args!("{}:summary-context", key.as_str()), io)?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}:summary-payloads", key.as_str()), work))?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}:summary-context", key.as_str()), work))?)?,
     ])
 }
 
@@ -28,7 +28,8 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
     for file in prepared.context().messages.iter().flat_map(|message| message.content.file_refs())
         .chain(prepared.context().metadata.values()) {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
-        let key = super::task_runtime::observed::digest(file, io, u64::MAX)?;
+        let key = crate::executor::with_history_io(io, |work|
+            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
         let file = crate::executor::with_history_io(io, |work| file.copy(work))?;
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
@@ -43,7 +44,8 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
 
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
     fn replace(file: &mut FileRef, replacements: &References, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(copy) = replacements.get(&super::task_runtime::observed::digest(file, io, u64::MAX)?) {
+        if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work|
+            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?) {
             *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
         Ok(())
@@ -86,7 +88,7 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
     for (key, source) in payloads {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
-        let path = crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), work))?;
         copies.insert(*key, crate::executor::with_history_io(io, |work| FileRef::new(
             child.copy(work)?, path, fork_preparer_io::clone_text(generation, io)?,
             FileDescriptor::new(*source.descriptor().sha256(), source.descriptor().byte_length(),
@@ -130,7 +132,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         native_creation_guard,
     ).await?;
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
+    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(reference)
 }
 
@@ -140,7 +142,7 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<Option<GenerationRef>> {
     let Some(generation) = fork_preparer_io::operation_generation(controller.host, workspace, key, io).await? else { return Ok(None); };
     fork_preparer_io::retain(&generation, io).await?;
-    let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
+    let reference = fork_preparer_io::generation_ref(&controller.host.provider, generation.id(), io)?;
     Ok(Some(reference))
 }
 
@@ -273,7 +275,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
-                    path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?, bytes });
+                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), work))?, bytes });
             }
             publish(self, &workspace, initial_generation, &writes, &keys[0], io, preparation,
                 #[cfg(not(target_arch = "wasm32"))] native_creation_guard).await?

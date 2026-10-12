@@ -49,50 +49,6 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         ))
     }
 
-    pub(super) async fn historical_head(
-        &self,
-        authority_id: AuthorityId,
-    ) -> Result<Head, AuthorityStoreError> {
-        let records = stream_path(authority_id, "/records")?;
-        let epochs = stream_path(authority_id, "/epochs")?;
-        let record_tail = self
-            .provider
-            .tail(records.clone())
-            .await
-            .map_err(map_stream_error)?;
-        let epoch_tail = self
-            .provider
-            .tail(epochs.clone())
-            .await
-            .map_err(map_stream_error)?;
-        if record_tail == 0 || epoch_tail == 0 {
-            return Err(AuthorityStoreError::Corrupt(
-                "authority genesis paths are empty".to_owned(),
-            ));
-        }
-        let epoch_record = read_one(self.provider.as_ref(), epochs, epoch_tail - 1).await?;
-        let epoch = decode_epoch(&epoch_record.value, EPOCH_DOMAIN, false)?;
-        Ok(if record_tail == 1 {
-            let genesis = read_one(self.provider.as_ref(), records, 0).await?;
-            let _genesis_epoch = decode_epoch(&genesis.value, GENESIS_DOMAIN, false)?;
-            Head::genesis(epoch)
-        } else {
-            let record = read_one(self.provider.as_ref(), records, record_tail - 1).await?;
-            let durable = decode_record(&record)?;
-            validate_record(authority_id, &record, &durable)?;
-            if durable.sequence.get().saturating_add(1) != record_tail {
-                return Err(AuthorityStoreError::Corrupt(
-                    "Stream sequence does not match filesystem authority sequence".to_owned(),
-                ));
-            }
-            Head {
-                epoch,
-                sequence: durable.sequence,
-                digest: durable.digest,
-            }
-        })
-    }
-
     pub(super) async fn is_retired(
         &self,
         authority_id: AuthorityId,
@@ -128,46 +84,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         };
         let result = async {
             self.authority_require_live(authority, meter).await?;
-            let records = meter.path(authority, "/records", None)?;
-            let epochs = meter.path(authority, "/epochs", None)?;
-            let record_tail = self.tail(records.clone(), meter).await?;
-            let epoch_tail = self.tail(epochs.clone(), meter).await?;
-            if record_tail == 0 || epoch_tail == 0 {
-                return Err(AuthorityStoreError::CorruptStatic(
-                    "authority genesis paths are empty",
-                ));
-            }
-            let epoch_record = self.record(epochs.clone(), epoch_tail - 1, meter).await?;
-            let epoch = meter.decode_epoch(&epoch_record.0.value, EPOCH_DOMAIN)?;
-            drop(epoch_record);
-            let epochs_bytes = epochs.as_str().len() as u64;
-            drop(epochs);
-            meter.release(epochs_bytes)?;
-            let record = self.record(records.clone(), record_tail - 1, meter).await?;
-            let head = if record_tail == 1 {
-                meter.decode_epoch(&record.0.value, GENESIS_DOMAIN)?;
-                Head::genesis(epoch)
-            } else {
-                let durable = meter.decode_durable(&record.0.value)?;
-                let digest = meter.durable_digest(authority, &durable)?;
-                if digest != durable.digest
-                    || durable.sequence.get().checked_add(1) != Some(record_tail)
-                {
-                    return Err(AuthorityStoreError::CorruptStatic(
-                        "Stream authority record or sequence mismatch",
-                    ));
-                }
-                Head {
-                    epoch,
-                    sequence: durable.sequence,
-                    digest: durable.digest,
-                }
-            };
-            drop(record);
-            let records_bytes = records.as_str().len() as u64;
-            drop(records);
-            meter.release(records_bytes)?;
-            Ok(AuthoritySnapshot { head, epoch_tail })
+            self.snapshot(authority, meter).await
         }
         .await;
         if result.is_err() && !meter.is_native() {
@@ -179,6 +96,53 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             meter.release(remaining)?;
         }
         result
+    }
+
+    pub(super) async fn snapshot(
+        &self,
+        authority: AuthorityId,
+        meter: &mut AuthorityWork<'_>,
+    ) -> Result<AuthoritySnapshot, AuthorityStoreError> {
+        let records = meter.path(authority, "/records", None)?;
+        let epochs = meter.path(authority, "/epochs", None)?;
+        let record_tail = self.tail(records.clone(), meter).await?;
+        let epoch_tail = self.tail(epochs.clone(), meter).await?;
+        if record_tail == 0 || epoch_tail == 0 {
+            return Err(AuthorityStoreError::CorruptStatic(
+                "authority genesis paths are empty",
+            ));
+        }
+        let epoch_record = self.record(epochs.clone(), epoch_tail - 1, meter).await?;
+        let epoch = meter.decode_epoch(&epoch_record.0.value, EPOCH_DOMAIN)?;
+        drop(epoch_record);
+        let epochs_bytes = epochs.as_str().len() as u64;
+        drop(epochs);
+        meter.release(epochs_bytes)?;
+        let record = self.record(records.clone(), record_tail - 1, meter).await?;
+        let head = if record_tail == 1 {
+            meter.decode_epoch(&record.0.value, GENESIS_DOMAIN)?;
+            Head::genesis(epoch)
+        } else {
+            let durable = meter.decode_durable(&record.0.value)?;
+            let digest = meter.durable_digest(authority, &durable)?;
+            if digest != durable.digest
+                || durable.sequence.get().checked_add(1) != Some(record_tail)
+            {
+                return Err(AuthorityStoreError::CorruptStatic(
+                    "Stream authority record or sequence mismatch",
+                ));
+            }
+            Head {
+                epoch,
+                sequence: durable.sequence,
+                digest: durable.digest,
+            }
+        };
+        drop(record);
+        let records_bytes = records.as_str().len() as u64;
+        drop(records);
+        meter.release(records_bytes)?;
+        Ok(AuthoritySnapshot { head, epoch_tail })
     }
 
     pub(super) async fn authority_require_live(

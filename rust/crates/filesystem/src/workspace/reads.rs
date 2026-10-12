@@ -147,7 +147,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 }
                 Ok(records.value)
             }.await;
-            result.map(|value| crate::FsReceipt { value, work }).map_err(|error| crate::OperationFailure::new(error, work))
+            result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| crate::OperationFailure::new(error, work))
         }).await
     }
 }

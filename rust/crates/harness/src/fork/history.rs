@@ -44,29 +44,18 @@ impl InheritedConversationPrefix {
                 "too many attached agents for inherited context".into(),
             ));
         }
-        let mut readers = BTreeSet::new();
-        for reader in attached_agents {
+        for (index, reader) in attached_agents.iter().enumerate() {
             owned.checkpoint()?;
-            if !readers.contains(reader) {
-                owned.slots::<AgentId>(1)?;
-                readers.insert(*reader);
+            for prior in &attached_agents[..index] {
+                owned.checkpoint()?;
+                if prior == reader {
+                    return Err(owned.invalid("inherited attached agents are invalid"));
+                }
             }
         }
-        if readers.len() != attached_agents.len() {
-            return Err(Error::Invalid(
-                "inherited attached agents are invalid".into(),
-            ));
-        }
         let message_digest = conversation.history_prefix_digest(through_sequence, &mut None)?;
-        let attached_bytes = attached_agents.len() as u64 * std::mem::size_of::<AgentId>() as u64;
-        if !attached_agents.is_empty() && let Some(observer) = owned.work().as_deref_mut() {
-            observer.admit_allocation(attached_bytes)?;
-            observer.copy_bytes(attached_bytes)?;
-        }
-        let attached_agents = attached_agents.to_vec();
-        if let Some(observer) = owned.work().as_deref_mut() {
-            observer.retain_owned(attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
-        }
+        let attached_agents = crate::core::copy_copy_vector(attached_agents, &mut owned)?;
+        owned.transfer();
         Ok(Self {
             format_version: 3,
             parent,
@@ -77,7 +66,6 @@ impl InheritedConversationPrefix {
             message_digest,
         })
     }
-
 }
 
 /// A finite, authenticated archive selection used only during explicit fork preparation.
@@ -95,11 +83,12 @@ impl PreparedForkHistory {
         parent: Authority,
         parent_revision: u64,
         conversation: crate::conversation::ConversationState,
-        #[cfg(feature = "filesystem")]
-        attestation: [u8; 32],
+        #[cfg(feature = "filesystem")] attestation: [u8; 32],
     ) -> Self {
         Self {
-            parent, parent_revision, conversation,
+            parent,
+            parent_revision,
+            conversation,
             #[cfg(feature = "filesystem")]
             attestation,
         }
@@ -107,15 +96,21 @@ impl PreparedForkHistory {
 
     /// Original parent whose indexed records were authenticated.
     #[must_use]
-    pub const fn parent(&self) -> &Authority { &self.parent }
+    pub const fn parent(&self) -> &Authority {
+        &self.parent
+    }
 
     /// Exact canonical event cut of the archive selection.
     #[must_use]
-    pub const fn parent_revision(&self) -> u64 { self.parent_revision }
+    pub const fn parent_revision(&self) -> u64 {
+        self.parent_revision
+    }
 
     /// Inclusive logical message cut, independent of parent residency.
     #[must_use]
-    pub fn through_sequence(&self) -> u64 { self.conversation.logical_revision() }
+    pub fn through_sequence(&self) -> u64 {
+        self.conversation.logical_revision()
+    }
 
     #[cfg(feature = "filesystem")]
     pub(crate) const fn conversation(&self) -> &crate::conversation::ConversationState {
@@ -124,22 +119,36 @@ impl PreparedForkHistory {
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify(
-        &self, verifier: &crate::core::AuthorityVerifier,
+        &self,
+        verifier: &crate::core::AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify_audience(&self.parent, work)?;
-        let digest = self.conversation.history_prefix_digest(self.through_sequence(), work)?;
-        if self.attestation != verifier.fork_history_selection_proof_with_work(
-            self.parent_revision, self.through_sequence(), self.conversation.agent, digest, work,
-        )? {
+        let digest = self
+            .conversation
+            .history_prefix_digest(self.through_sequence(), work)?;
+        if self.attestation
+            != verifier.fork_history_selection_proof_with_work(
+                self.parent_revision,
+                self.through_sequence(),
+                self.conversation.agent,
+                digest,
+                work,
+            )?
+        {
             #[cfg(not(target_arch = "wasm32"))]
-            if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
+            if work
+                .as_ref()
+                .is_some_and(|work| work.original_native_work().is_some())
+            {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "fork archive belongs to another issuer",
                 });
             }
-            return Err(Error::Unauthorized("fork archive belongs to another issuer".into()));
+            return Err(Error::Unauthorized(
+                "fork archive belongs to another issuer".into(),
+            ));
         }
         Ok(())
     }

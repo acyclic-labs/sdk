@@ -5,7 +5,8 @@ use crate::cancellation::CancellationToken;
 use crate::memory::MemoryObjectStore;
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
+    ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
+    ObjectStoreError,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,18 +87,13 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(&self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -118,17 +114,16 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        Self::own_read(
-            &{
-                    let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::read(&self.inner,
-                        __object_args.0,
-                        __object_args.1,
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            Self::own_read(
+                &{
+                    let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                    let __object_result = AsyncObjectStore::read(
+                        &self.inner,
+                        object_id,
+                        maximum_bytes,
                         &mut __object_work,
                     )
                     .await;
@@ -165,15 +160,13 @@ impl AsyncObjectStore for OwnedReadObjectStore {
         let budget = context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
         let result = async {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            cancellation
+                .check()
+                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
             {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }

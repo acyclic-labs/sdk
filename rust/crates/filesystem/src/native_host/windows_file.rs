@@ -1,13 +1,11 @@
 use super::*;
 
-#[cfg(windows)]
 pub(crate) struct StagedWindowsFile {
     pub(super) parent: Dir,
     /// Deletes the staged name when closed.
     pub(super) guard: File,
 }
 
-#[cfg(windows)]
 impl Drop for StagedWindowsFile {
     fn drop(&mut self) {
         use windows::Win32::Storage::FileSystem::{
@@ -32,7 +30,6 @@ impl Drop for StagedWindowsFile {
     }
 }
 
-#[cfg(windows)]
 impl StagedWindowsFile {
     pub(crate) fn create(parent: Dir) -> io::Result<Self> {
         use cap_std::fs::OpenOptionsExt as _;
@@ -68,12 +65,10 @@ impl StagedWindowsFile {
 }
 
 /// Whether a file of `length` bytes can be block cloned at all.
-#[cfg(windows)]
 pub(super) fn clonable_windows_length(length: u64) -> bool {
     length >= 4 * 1024 && i64::try_from(length).is_ok()
 }
 
-#[cfg(windows)]
 pub(super) fn windows_leaf_name<W: NativeHostWork>(
     path: &[u16],
     work: &mut W,
@@ -105,7 +100,6 @@ pub(super) fn windows_leaf_name<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(crate) fn create_windows_wide_at<W: NativeHostWork>(
     directory: &Dir,
     path: &[u16],
@@ -158,7 +152,6 @@ pub(crate) fn create_windows_wide_at<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(crate) fn create_windows_directory<W: NativeHostWork>(
     directory: &Dir,
     name: &[u16],
@@ -175,7 +168,6 @@ pub(crate) fn create_windows_directory<W: NativeHostWork>(
     Ok(file)
 }
 
-#[cfg(windows)]
 pub(super) fn windows_set_information<T>(
     file: &File,
     information: &T,
@@ -199,7 +191,6 @@ pub(super) fn windows_set_information<T>(
     Ok(())
 }
 
-#[cfg(windows)]
 pub(crate) fn keep_windows_created_file<W: NativeHostWork>(
     file: &File,
     work: &mut W,
@@ -213,7 +204,6 @@ pub(crate) fn keep_windows_created_file<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(crate) fn open_windows_leaf_handle<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
@@ -246,7 +236,6 @@ pub(crate) fn open_windows_leaf_handle<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(crate) fn create_windows_symbolic_link<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
@@ -274,7 +263,6 @@ pub(crate) fn create_windows_symbolic_link<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
     target: &[u16],
     work: &mut W,
@@ -384,7 +372,6 @@ pub(super) fn with_windows_symlink_packet<W: NativeHostWork, T>(
     operation(buffer, work)
 }
 
-#[cfg(windows)]
 pub(super) fn set_windows_symlink_packet<W: NativeHostWork>(
     file: &File,
     buffer: &[u8],
@@ -409,7 +396,6 @@ pub(super) fn set_windows_symlink_packet<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
 pub(crate) fn open_windows_leaf_with_options<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
@@ -431,10 +417,7 @@ pub(crate) fn open_windows_leaf_with_options<W: NativeHostWork>(
                 work,
             )?
         }
-        NativeOpenOptions::CreateNew => {
-            create_windows_wide_at(parent, name, false, false, false, false, work)?
-        }
-        NativeOpenOptions::ReadWriteCreateNew => {
+        NativeOpenOptions::CreateNew | NativeOpenOptions::ReadWriteCreateNew => {
             create_windows_wide_at(parent, name, false, false, false, false, work)?
         }
         NativeOpenOptions::ReadWriteCreate => {
@@ -447,22 +430,17 @@ pub(crate) fn open_windows_leaf_with_options<W: NativeHostWork>(
     }
     Ok(file)
 }
-#[cfg(windows)]
 pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
     directory: bool,
-    expected: Option<crate::NativeRootIdentity>,
+    expected: Option<NativeRootIdentity>,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::{
         FILE_DISPOSITION_INFORMATION, FileDispositionInformation,
     };
-    use windows::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, DELETE, FILE_READ_ATTRIBUTES, GetFileInformationByHandle,
-        SYNCHRONIZE,
-    };
+    use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
     let file = open_windows_leaf_handle(
         parent,
         name,
@@ -471,22 +449,7 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
         work,
     )?;
     if let Some(expected) = expected {
-        let observed = work.attempt_io(READ, || {
-            let mut information = BY_HANDLE_FILE_INFORMATION::default();
-            // SAFETY: this is the same held DELETE handle that will receive the disposition.
-            unsafe {
-                GetFileInformationByHandle(
-                    windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
-                    &raw mut information,
-                )
-                .map_err(io::Error::from)?;
-            }
-            Ok(crate::NativeRootIdentity {
-                device: u64::from(information.dwVolumeSerialNumber),
-                object: u64::from(information.nFileIndexHigh) << 32
-                    | u64::from(information.nFileIndexLow),
-            })
-        })?;
+        let observed = file_identity_and_length(&file, work)?.0;
         if observed != expected {
             return Err(io::Error::other("held deletion target identity changed").into());
         }
@@ -500,8 +463,7 @@ pub(crate) fn remove_windows_leaf<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
-pub(crate) fn rename_windows_leaf<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn rename_windows_leaf<W: SourceDemandReadWork>(
     from: &Dir,
     name: &[u16],
     to: &Dir,
@@ -535,16 +497,15 @@ pub(crate) fn rename_windows_leaf<W: crate::demand::SourceDemandReadWork>(
     )
 }
 
-#[cfg(windows)]
 impl HostRoot {
-    pub(crate) fn create_overlapped_file_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_overlapped_file_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
     ) -> Result<File, DemandError> {
         self.create_windows_file_wide(path, true, false, work)
     }
-    pub(super) fn create_windows_file_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(super) fn create_windows_file_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         overlapped: bool,
@@ -557,7 +518,7 @@ impl HostRoot {
             .map(|(directory, _)| directory)?;
         create_windows_wide_at(&parent, leaf, false, overlapped, false, temporary, work)
     }
-    pub(crate) fn create_dir_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
@@ -569,7 +530,7 @@ impl HostRoot {
         create_windows_wide_at(&parent, leaf, true, false, false, false, work)?;
         Ok(())
     }
-    pub(crate) fn create_dir_all_held_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir_all_held_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,
@@ -595,7 +556,7 @@ impl HostRoot {
             identity: identity,
         })
     }
-    pub(crate) fn hard_link_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn hard_link_wide<W: SourceDemandReadWork>(
         &self,
         source: &[u16],
         destination: &[u16],
@@ -632,7 +593,7 @@ impl HostRoot {
             work,
         )
     }
-    pub(crate) fn clone_file_from_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn clone_file_from_wide<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
         source: &[u16],
@@ -666,7 +627,7 @@ impl HostRoot {
         drop(target);
         cloned
     }
-    pub(crate) fn symlink_file_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn symlink_file_wide<W: SourceDemandReadWork>(
         &self,
         target: &[u16],
         destination: &[u16],
@@ -680,7 +641,6 @@ impl HostRoot {
     }
 }
 
-#[cfg(windows)]
 pub(super) fn set_windows_name<W: NativeHostWork>(
     file: &File,
     parent: &Dir,
@@ -689,49 +649,29 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
     class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    use std::mem::{offset_of, size_of};
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
-    windows_wide_name(name, work, W::invalid_request, |_, work| {
-        let name_bytes = name
-            .len()
+    windows_wide_name(name, work, W::invalid_request)?.ok_or_else(W::invalid_request)?;
+    let copied = WorkCounters {
+        bytes_copied: (name.len() as u64)
             .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?;
-        let offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
-        let length = offset
-            .checked_add(name_bytes)
-            .ok_or(crate::WorkError::Overflow)?
-            .max(size_of::<FILE_RENAME_INFORMATION>());
-        let copied = WorkCounters {
-            bytes_copied: name_bytes as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(copied)?;
-        let (mut storage, allocation) = buffer::<u64, _>(length.div_ceil(8), work)?;
-        let result = (|| {
-            work.record(copied)?;
-            storage.resize(length.div_ceil(8), 0);
-            let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-            // SAFETY: link and rename use identical native headers; aligned storage includes the complete UTF-16 tail.
-            unsafe {
-                (*information).Anonymous.ReplaceIfExists = replace;
-                (*information).RootDirectory =
-                    windows::Win32::Foundation::HANDLE(parent.as_raw_handle());
-                (*information).FileNameLength =
-                    u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?;
-                std::ptr::copy_nonoverlapping(
-                    name.as_ptr(),
-                    information.cast::<u8>().add(offset).cast::<u16>(),
-                    name.len(),
-                );
-            }
-            work.attempt_io(WRITE, || {
-                windows_name_packet_once(file, &storage, length as u32, class)
-            })
-        })();
-        drop(storage);
-        work.release(allocation)?;
-        result
-    })?
-    .ok_or_else(W::invalid_request)
+            .ok_or(crate::WorkError::Overflow)?,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(copied)?;
+    let (storage, allocation, length) =
+        windows_name_packet(parent, name.iter().copied(), name.len(), replace, work)?;
+    let result = (|| {
+        work.record(copied)?;
+        work.attempt_io(WRITE, || {
+            windows_name_packet_once(
+                file,
+                &storage,
+                length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>() as u32),
+                class,
+            )
+        })
+    })();
+    drop(storage);
+    work.release(allocation)?;
+    result
 }

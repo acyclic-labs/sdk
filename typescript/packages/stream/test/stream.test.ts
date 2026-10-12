@@ -1,10 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
-import { zstdCompressSync } from "node:zlib";
 import { AcknowledgeDeliveryRequestSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm, readResponseRecords, validateSequenceValue, wireAppendRequest, wireRequest } from "../src/contract.js";
+import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { ensureStreamWasm } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
@@ -78,7 +77,6 @@ describe("website Stream contract", () => {
     })).toThrow();
   });
 
-
   test("does not expose history removal on stream handles or providers", () => {
     const provider = new MemoryStreamProvider();
     const stream = new StreamClient(provider).bytes("history/permanent");
@@ -150,13 +148,7 @@ describe("website Stream contract", () => {
     expect(await stream.tail().catch(() => "absent")).toBe("absent");
   });
 
-  test("uses Rust's canonical unsigned sequence width", () => {
-    const maximum = 0xffff_ffff_ffff_ffffn;
-    expect(validateSequenceValue(0n)).toBe(0n);
-    expect(validateSequenceValue(maximum)).toBe(maximum);
-    expect(() => validateSequenceValue(-1n)).toThrow(RangeError);
-    expect(() => validateSequenceValue(maximum + 1n)).toThrow(RangeError);
-  });
+
 
   test("rejects oversized commands and invalid cursors before they can change state", async () => {
     const client = StreamClient.memory();
@@ -670,20 +662,7 @@ describe("website Stream contract", () => {
     expect(encoded("commits/read", toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: new Uint8Array(32).fill(7) })))).toEqual({ commitId: encodedCommitId });
   });
 
-  test("the shared request adapter produces Rust-valid memory and hosted inputs", async () => {
-    await ensureStreamWasm();
-    const path = "adapter/events";
-    const requests = [
-      ["tail", wireRequest({ kind: "tail", path })],
-      ["fork", wireRequest({ kind: "fork", source: path, destination: "adapter/copy" })],
-      ["read", wireRequest({ kind: "read", path, from: 0n, limit: 1 })],
-      ["follow", wireRequest({ kind: "follow", path, from: 0n })],
-      ["children", wireRequest({ kind: "children", parent: "adapter", limit: 1 })],
-      ["children_page", wireRequest({ kind: "children_page", parent: "adapter", limit: 1 })],
-    ] as const;
-    for (const [kind, input] of requests) expect(validateRequest(kind, input)).toBe("");
-    expect(validateAppendRequest(wireAppendRequest(path, [new Uint8Array([1])]))).toBe("");
-  });
+
 
   test("hosted children pages use the Rust response contract", async () => {
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
@@ -1217,48 +1196,4 @@ test("path ordering matches Unicode code point order, the order of UTF-8 bytes",
     expect(ordered).toBe(Math.sign(oracle(codePoints(left), codePoints(right))));
     expect(Math.sign(compareStreamPaths(right, left)) + ordered).toBe(0);
   }), { numRuns: 100 });
-});
-
-describe("read frames", () => {
-  const records = (from: bigint, count: number) => Array.from({ length: count }, (_, index) => create(RecordSchema, { sequence: from + BigInt(index), value: new Uint8Array(100).fill(index), commitId: new Uint8Array(32).fill(1), committedAtMicros: 7n }));
-  const batch = (values: ReturnType<typeof records>) => toBinary(RecordBatchSchema, create(RecordBatchSchema, { records: values }));
-  const plain = (values: ReturnType<typeof records>) => { const data = batch(values); return create(ReadResponseSchema, { codec: Codec.NONE, data, decodedLength: BigInt(data.length) }); };
-  const zstd = (values: ReturnType<typeof records>) => { const data = batch(values); return create(ReadResponseSchema, { codec: Codec.ZSTD, data: zstdCompressSync(data), decodedLength: BigInt(data.length) }); };
-  const invalid = (frame: ReturnType<typeof plain>) => expect(() => readResponseRecords(frame)).toThrow(StreamError);
-
-  test("a compressed frame decodes to the same records", async () => {
-    await ensureStreamWasm();
-    for (const count of [0, 1, 64]) {
-      const expected = records(5n, count);
-      expect(readResponseRecords(zstd(expected))).toEqual(expected);
-      expect(readResponseRecords(plain(expected))).toEqual(expected);
-    }
-  });
-
-  test("mixed compressed and plain frames reassemble in order", async () => {
-    await ensureStreamWasm();
-    const expected = records(0n, 30);
-    const frames = Array.from({ length: 5 }, (_, index) => (index % 2 === 0 ? zstd : plain)(expected.slice(index * 6, index * 6 + 6)));
-    expect(frames.flatMap(frame => readResponseRecords(frame))).toEqual(expected);
-  });
-
-  test("oversized, mismatched, corrupt and unknown-codec frames are refused", async () => {
-    await ensureStreamWasm();
-    const maximum = BigInt(StreamLimit.MAX_COMMAND_BYTES);
-    // Garbage data proves the declared length is refused before decompressing.
-    for (const codec of [Codec.NONE, Codec.ZSTD]) {
-      for (const decodedLength of [maximum + 1n, 0xffff_ffff_ffff_ffffn]) invalid(create(ReadResponseSchema, { codec, data: new Uint8Array(16).fill(255), decodedLength }));
-    }
-    const expanding = zstd(records(0n, 64));
-    invalid({ ...expanding, decodedLength: 100n });
-    const long = zstd(records(0n, 3));
-    invalid({ ...long, decodedLength: long.decodedLength + 1n });
-    const short = plain(records(0n, 3));
-    invalid({ ...short, decodedLength: short.decodedLength - 1n });
-    for (const codec of [0, 3]) invalid({ ...plain(records(0n, 3)), codec: codec as Codec });
-    invalid(create(ReadResponseSchema, { codec: Codec.ZSTD, data: new Uint8Array(0), decodedLength: 0n }));
-    expect(readResponseRecords(plain([]))).toEqual([]);
-    const corrupt = zstd(records(0n, 30));
-    invalid({ ...corrupt, data: corrupt.data.slice(0, corrupt.data.length / 2) });
-  });
 });

@@ -581,21 +581,28 @@ impl<'a> AuthorityWork<'a> {
         bytes: &[u8],
         domain: &[u8],
     ) -> Result<Epoch, AuthorityStoreError> {
-        if !self.is_native() {
-            return decode_epoch(bytes, domain, false);
-        }
-        let copies = if bytes.len() == domain.len().saturating_add(8) && bytes.starts_with(domain) {
-            8
-        } else {
-            0
-        };
+        let bytes = record_bytes::<8>(bytes, domain);
         let delta = WorkCounters {
-            bytes_copied: copies,
+            bytes_copied: if bytes.is_some() { 8 } else { 0 },
             ..WorkCounters::default()
         };
-        self.admit(delta)?;
-        let result = decode_epoch(bytes, domain, true);
-        self.charge(delta)?;
+        if self.is_native() {
+            self.admit(delta)?;
+        }
+        let result = bytes
+            .ok_or_else(|| authority_corrupt("invalid Stream epoch record", self))
+            .and_then(|bytes| {
+                Epoch::new(u64::from_le_bytes(*bytes)).map_err(|error| {
+                    if self.is_native() {
+                        AuthorityStoreError::CorruptStatic("zero Stream epoch")
+                    } else {
+                        AuthorityStoreError::Corrupt(error.to_string())
+                    }
+                })
+            });
+        if self.is_native() {
+            self.charge(delta)?;
+        }
         result
     }
 

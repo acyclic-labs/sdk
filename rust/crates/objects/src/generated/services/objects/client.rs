@@ -26,45 +26,6 @@ where
         self.inner = self.inner.max_encoding_message_size(limit);
         self
     }
-    pub async fn put_object(
-        &mut self,
-        request: impl tonic::IntoStreamingRequest<Message = super::PutObjectRequest>,
-    ) -> std::result::Result<tonic::Response<super::ObjectInfo>, tonic::Status> {
-        self.inner
-            .ready()
-            .await
-            .map_err(|e| tonic::Status::unknown(format!("Service was not ready: {}", e.into())))?;
-        let codec = tonic_prost::ProstCodec::default();
-        let path =
-            http::uri::PathAndQuery::from_static("/acyclic.objects.v1.ObjectsService/PutObject");
-        let mut req = request.into_streaming_request();
-        req.extensions_mut().insert(GrpcMethod::new(
-            "acyclic.objects.v1.ObjectsService",
-            "PutObject",
-        ));
-        self.inner.client_streaming(req, path, codec).await
-    }
-    pub async fn get_object(
-        &mut self,
-        request: impl tonic::IntoRequest<super::GetObjectRequest>,
-    ) -> std::result::Result<
-        tonic::Response<tonic::codec::Streaming<super::GetObjectResponse>>,
-        tonic::Status,
-    > {
-        self.inner
-            .ready()
-            .await
-            .map_err(|e| tonic::Status::unknown(format!("Service was not ready: {}", e.into())))?;
-        let codec = tonic_prost::ProstCodec::default();
-        let path =
-            http::uri::PathAndQuery::from_static("/acyclic.objects.v1.ObjectsService/GetObject");
-        let mut req = request.into_request();
-        req.extensions_mut().insert(GrpcMethod::new(
-            "acyclic.objects.v1.ObjectsService",
-            "GetObject",
-        ));
-        self.inner.server_streaming(req, path, codec).await
-    }
     unary_client! {
         "acyclic.objects.v1.ObjectsService";
         (head_object, HeadObjectRequest, HeadObjectResponse, "HeadObject"),

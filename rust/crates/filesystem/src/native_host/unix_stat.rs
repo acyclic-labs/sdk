@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn root_path_identity<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
-) -> Result<crate::NativeRootIdentity, W::Error> {
+) -> Result<NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
         let stat = stat_unix_fd_at(libc::AT_FDCWD, path.as_os_str(), false, work)?;
@@ -14,7 +14,7 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
             )
             .into());
         }
-        Ok(crate::NativeRootIdentity {
+        Ok(NativeRootIdentity {
             device: stat.dev(),
             object: stat.ino(),
         })
@@ -31,45 +31,10 @@ pub(super) fn clone_directory<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    #[cfg(unix)]
-    {
-        use std::os::fd::FromRawFd as _;
-        loop {
-            native_read(work)?;
-            // SAFETY: the held descriptor remains live and fcntl returns a new owner.
-            let fd = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
-            if fd >= 0 {
-                return Ok(Dir::from_std_file(unsafe { File::from_raw_fd(fd) }));
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error.into());
-            }
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
-        use windows::Win32::Foundation::{DUPLICATE_SAME_ACCESS, DuplicateHandle, HANDLE};
-        use windows::Win32::System::Threading::GetCurrentProcess;
-        native_read(work)?;
-        let mut duplicated = HANDLE::default();
-        // SAFETY: both handles belong to this process and the output receives a new owner.
-        unsafe {
-            let process = GetCurrentProcess();
-            DuplicateHandle(
-                process,
-                HANDLE(directory.as_raw_handle()),
-                process,
-                &mut duplicated,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .map_err(|error| {
-                W::Error::from(io::Error::from_raw_os_error(error.code().0 & 0xffff))
-            })?;
-            Ok(Dir::from_std_file(File::from_raw_handle(duplicated.0)))
+    loop {
+        match work.attempt_io(READ, || directory.try_clone()) {
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
     }
 }
@@ -122,15 +87,6 @@ pub(super) fn open_unix_at<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn stat_unix_at<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    work: &mut W,
-) -> Result<HostStat, W::Error> {
-    stat_unix_fd_at(directory.as_raw_fd(), name, false, work)
-}
-
-#[cfg(unix)]
 pub(crate) fn stat_leaf<W: NativeHostWork>(
     directory: &Dir,
     name: &OsStr,
@@ -164,7 +120,7 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
     unix_name(name, work, |name, work| {
         #[cfg(target_os = "linux")]
         loop {
-            native_read(work)?;
+            work.started_io(READ)?;
             match rustix::fs::statx(
                 directory,
                 name,
@@ -200,7 +156,7 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
             }
         }
         loop {
-            native_read(work)?;
+            work.started_io(READ)?;
             #[cfg(target_os = "linux")]
             let result = if empty_path {
                 rustix::fs::fstat(directory)

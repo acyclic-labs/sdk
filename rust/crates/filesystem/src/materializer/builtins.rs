@@ -80,9 +80,7 @@ impl NativeMaterializationWork {
     {
         guard().await?;
         let held = self.builtin_root(root, expected).map_err(E::from)?;
-        let mut parent = held
-            .open_dir_held(Path::new(""), &mut &*self)
-            .map_err(E::from)?;
+        let mut parent = held;
         for component in relative
             .parent()
             .unwrap_or_else(|| Path::new(""))
@@ -92,22 +90,24 @@ impl NativeMaterializationWork {
                 return Err(E::from(NativeTreeMaterializationError::InvalidLayout));
             };
             guard().await?;
-            let opened = crate::native_host::open_builtin_directory_with_work(
-                &parent,
-                Path::new(name),
-                create_parents,
-                &mut &*self,
-            );
+            let opened = self
+                .with_original_leaf(|state| {
+                    if create_parents {
+                        parent.create_dir_all_held(Path::new(name), state)
+                    } else {
+                        parent.open_child(Path::new(name), state)
+                    }
+                })
+                .map_err(native_materialization_work_error);
             let checked = guard().await;
             parent = opened.map_err(E::from)?;
             checked?;
             self.builtin_root(root, expected).map_err(E::from)?;
         }
-        let parent_identity =
-            crate::native_host::directory_identity(&parent, &mut &*self).map_err(E::from)?;
+        let parent_identity = parent.identity();
         guard().await?;
-        let opened = crate::native_host::open_leaf_with_work(
-            &parent,
+        let opened = crate::native_host::open_leaf(
+            &parent.directory,
             Path::new(
                 relative
                     .file_name()
@@ -126,8 +126,7 @@ impl NativeMaterializationWork {
         )
         .map_err(E::from)?;
         let (identity, _) =
-            crate::native_host::file_identity_and_length_with_work(&file, &mut &*self)
-                .map_err(E::from)?;
+            crate::native_host::file_identity_and_length(&file, &mut &*self).map_err(E::from)?;
         self.validate_builtin(root, expected, relative, parent_identity, identity)
             .map_err(E::from)?;
         Ok((file, parent_identity, identity))
@@ -152,7 +151,7 @@ impl NativeMaterializationWork {
                 actual,
             });
         }
-        let actual = crate::native_host::entry_identity_with_work(
+        let actual = crate::native_host::entry_identity(
             &parent,
             Path::new(
                 relative
@@ -211,8 +210,7 @@ impl NativeMaterializationWork {
         guard().await?;
         self.validate_builtin(root, expected, relative, held.1, held.2)
             .map_err(E::from)?;
-        let before =
-            crate::native_host::stat_file_with_work(&held.0, &mut &*self).map_err(E::from)?;
+        let before = crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
         if before.len() > maximum as u64 {
             return Err(E::from(NativeTreeMaterializationError::PayloadTooLarge {
                 maximum: maximum as u64,
@@ -278,8 +276,7 @@ impl NativeMaterializationWork {
         }
         self.validate_builtin(root, expected, relative, held.1, held.2)
             .map_err(E::from)?;
-        let after =
-            crate::native_host::stat_file_with_work(&held.0, &mut &*self).map_err(E::from)?;
+        let after = crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
         if before.len() != after.len()
             || before
                 .modified()
@@ -333,8 +330,7 @@ impl NativeMaterializationWork {
             )
             .await?;
         let stamp = if let Some(expected_hash) = expected_sha256 {
-            let stamp =
-                crate::native_host::stat_file_with_work(&held.0, &mut &*self).map_err(E::from)?;
+            let stamp = crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
             let bytes = self
                 .read_held(
                     root,
@@ -372,8 +368,8 @@ impl NativeMaterializationWork {
                 .map_err(E::from)?;
             if written == 0 {
                 if let Some(stamp) = &stamp {
-                    let current = crate::native_host::stat_file_with_work(&held.0, &mut &*self)
-                        .map_err(E::from)?;
+                    let current =
+                        crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
                     if current.len() != stamp.len()
                         || current
                             .modified()
@@ -415,7 +411,7 @@ impl NativeMaterializationWork {
             written += count;
         }
         let truncated =
-            crate::native_host::truncate_file_with_work(&held.0, content.len() as u64, &mut &*self);
+            crate::native_host::truncate_file(&held.0, content.len() as u64, &mut &*self);
         let checked = guard().await;
         truncated.map_err(E::from)?;
         checked?;
@@ -444,22 +440,26 @@ impl NativeMaterializationWork {
                 Ok(held.identity())
             };
         }
-        let root = held.open_dir_held(Path::new(""), &mut &*self)?;
-        let parent = crate::native_host::create_directories_held(
-            &root,
-            relative.parent().unwrap_or_else(|| Path::new("")),
-            &mut &*self,
-        )?;
+        let parent = self
+            .with_original_leaf(|state| {
+                held.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), state)
+            })
+            .map_err(native_materialization_work_error)?;
         let leaf = Path::new(
             relative
                 .file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
         );
         let directory = if require_new {
-            crate::native_host::create_new_directory_held_with_work(&parent, leaf, &mut &*self)?
+            self.with_original_leaf(|state| parent.create_dir(leaf, state))
+                .map_err(native_materialization_work_error)?;
+            crate::native_host::sync_directory_held(&parent.directory, &mut &*self)?;
+            self.with_original_leaf(|state| parent.open_child(leaf, state))
+                .map_err(native_materialization_work_error)?
         } else {
-            crate::native_host::create_directories_held(&parent, leaf, &mut &*self)?
+            self.with_original_leaf(|state| parent.create_dir_all_held(leaf, state))
+                .map_err(native_materialization_work_error)?
         };
-        crate::native_host::directory_identity(&directory, &mut &*self)
+        Ok(directory.identity())
     }
 }

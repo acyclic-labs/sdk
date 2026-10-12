@@ -1,7 +1,7 @@
 use super::*;
 
 impl HostRoot {
-    pub(crate) fn create_file<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_file<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -28,7 +28,7 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn create_dir<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -44,7 +44,7 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn create_dir_all_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir_all_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -66,7 +66,7 @@ impl HostRoot {
         }
     }
     #[cfg(unix)]
-    pub(crate) fn symlink<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn symlink<W: SourceDemandReadWork>(
         &self,
         target: &OsStr,
         destination: &Path,
@@ -82,7 +82,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
-    pub(crate) fn set_permissions_without_open<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn set_permissions_without_open<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -104,7 +104,7 @@ impl HostRoot {
     }
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn create_fifo_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_fifo_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -121,7 +121,7 @@ impl HostRoot {
     }
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", all(test, target_os = "macos")))]
-    pub(crate) fn create_device_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_device_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -141,7 +141,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
-    pub(crate) fn bind_unix_socket<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn bind_unix_socket<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -153,7 +153,7 @@ impl HostRoot {
 }
 
 #[cfg(unix)]
-pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     parent: &Dir,
     leaf: &std::ffi::CStr,
     work: &mut W,
@@ -192,7 +192,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     };
     #[cfg(target_os = "macos")]
     let base = {
-        native_read(work)?;
+        work.started_io(READ)?;
         // SAFETY: F_GETPATH writes no more than PATH_MAX into this live buffer.
         if unsafe { libc::fcntl(parent.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
@@ -221,7 +221,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     {
         address.sun_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + length + 1) as u8;
     }
-    native_write(work)?;
+    work.charge(WRITE)?;
     #[cfg(target_os = "linux")]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
@@ -234,7 +234,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     #[cfg(target_os = "macos")]
     {
-        native_write(work)?;
+        work.charge(WRITE)?;
         if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -251,9 +251,14 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        let through_descriptor = stat_unix_at(parent, OsStr::from_bytes(leaf.to_bytes()), work)?;
+        let through_descriptor = stat_unix_fd_at(
+            parent.as_raw_fd(),
+            OsStr::from_bytes(leaf.to_bytes()),
+            false,
+            work,
+        )?;
         let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-        native_read(work)?;
+        work.started_io(READ)?;
         if unsafe { libc::lstat(path.as_ptr().cast(), observed.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -304,11 +309,9 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Storage::FileSystem::{
-            FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
+            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
         };
-        use windows::Win32::Foundation::HANDLE;
         use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let access = DELETE
             | SYNCHRONIZE
@@ -330,43 +333,17 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
             }
         }
         let units = wide_units(to_name.as_os_str(), work)?;
-        let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
-        let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
-        let bytes = header
-            .checked_add(name_bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        let words = bytes
-            .max(std::mem::size_of::<FILE_RENAME_INFORMATION>())
-            .div_ceil(8);
-        let mut allocation = work.claim(words as u64 * 8)?;
-        let mut buffer = Vec::new();
-        let reserved = buffer.try_reserve_exact(words);
-        let reconciled = work.reconcile_allocation(&mut allocation, buffer.capacity() as u64 * 8);
+        let encoded = WorkCounters {
+            bytes_encoded: (units as u64)
+                .checked_mul(2)
+                .ok_or(crate::WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        };
+        work.admit(encoded)?;
+        let (buffer, allocation, length) =
+            windows_name_packet(to, to_name.as_os_str().encode_wide(), units, false, work)?;
         let result = (|| {
-            reserved.map_err(W::allocation_failed).and(reconciled)?;
-            buffer.resize(words, 0u64);
-            let encoded = WorkCounters {
-                bytes_encoded: name_bytes as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.admit(encoded)?;
             work.record(encoded)?;
-            let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
-            // SAFETY: aligned storage covers the fields and entire UTF-16 tail.
-            unsafe {
-                std::ptr::addr_of_mut!((*information).RootDirectory)
-                    .write(HANDLE(to.as_handle().as_raw_handle()));
-                std::ptr::addr_of_mut!((*information).FileNameLength)
-                    .write(u32::try_from(name_bytes).map_err(|_| crate::WorkError::Overflow)?);
-                let tail = buffer.as_mut_ptr().cast::<u8>().add(header).cast::<u16>();
-                for (index, unit) in to_name.as_os_str().encode_wide().enumerate() {
-                    if unit == 0 {
-                        return Err(W::invalid_request());
-                    }
-                    tail.add(index).write(unit);
-                }
-            }
-            let length = u32::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
             work.attempt_io(WRITE, || {
                 windows_name_packet_once(
                     &file,
@@ -430,35 +407,23 @@ pub(super) fn open_windows_held<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
-pub(crate) fn set_file_attributes_held(
-    parent: &Dir,
-    name: &Path,
-    attributes: u32,
-    expected: Option<NativeRootIdentity>,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
-    sync_windows_metadata_held(parent, name, Some(attributes), expected, &mut &*work)
-}
-
 pub(crate) fn sync_file_held<W: NativeHostWork>(
     #[cfg(unix)] file: &impl std::os::fd::AsRawFd,
     #[cfg(windows)] file: &impl std::os::windows::io::AsRawHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
     loop {
-        let error = work.attempt_io(
+        let result = work.attempt_io(
             WorkCounters {
                 durability_operations: 1,
                 ..WorkCounters::UNCHARGED
             },
-            || Ok(sync_held_descriptor_once(file).err()),
-        )?;
-        match error {
+            || sync_held_descriptor_once(file),
+        );
+        match result {
             #[cfg(unix)]
-            Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Some(error) => return Err(error.into()),
-            None => return Ok(()),
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
     }
 }

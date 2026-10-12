@@ -79,10 +79,6 @@ pub trait NativeReadMeter: Send + Sync {
     fn admit_bytes(&self, maximum: usize) -> io::Result<()>;
     /// Admits one read attempt and its maximum byte transfer before dispatch.
     fn admit_read(&self, maximum: usize) -> io::Result<()>;
-    /// Preflights additional read attempts before their native boundary.
-    fn admit_operations(&self, additional: u64) -> io::Result<()>;
-    /// Records the number of native read attempts actually made.
-    fn record_operations(&self, completed: u64) -> io::Result<()>;
     /// Records bytes actually returned by the native read.
     fn record_read(&self, bytes: usize) -> io::Result<()>;
     /// Checks the completed logical read before constructing an owned chunk.
@@ -93,10 +89,6 @@ pub trait NativeReadMeter: Send + Sync {
     fn admit_write(&self, maximum: usize) -> io::Result<()>;
     /// Records bytes actually accepted by the native write.
     fn record_write(&self, bytes: usize) -> io::Result<()>;
-    /// Preflights additional write attempts before their native boundary.
-    fn admit_write_operations(&self, additional: u64) -> io::Result<()>;
-    /// Records the number of native write attempts actually made.
-    fn record_write_operations(&self, completed: u64) -> io::Result<()>;
     /// Admits and records one actual durability attempt before dispatch.
     fn admit_durability(&self) -> io::Result<()>;
     /// Reserves one mandatory native cleanup attempt before acquiring custody.

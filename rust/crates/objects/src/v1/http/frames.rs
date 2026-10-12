@@ -27,16 +27,7 @@ pub(super) fn line(
         return Ok(bytes.into());
     };
     let (mut bytes, mut allocation) = json::encode_native(name, frame, controls)?;
-    if bytes.len() == bytes.capacity() {
-        allocation.grow(1).map_err(|error| controls.fail(error))?;
-        bytes
-            .try_reserve_exact(1)
-            .map_err(|error| controls.fail(controls.meter.allocation_failed(error)))?;
-        allocation
-            .reconcile_capacity(bytes.capacity())
-            .map_err(|error| controls.fail(error))?;
-    }
-    bytes.push(b'\n');
+    controls.append(&mut bytes, &mut allocation, b"\n")?;
     if bytes.len() > JSON_FRAME_BYTES {
         return Err(controls.fail(
             NativeObjectsError::from(Error::from(wire::ErrorCode::QuotaExceeded))
@@ -103,36 +94,17 @@ impl Frames {
                 if size > JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
                     return Err(response::invalid());
                 }
+                let chunk = self.chunk.split_to(size);
                 if let Some(controls) = &self.controls {
-                    let needed = self.pending.len() + size;
-                    if needed > self.pending.capacity() {
-                        let allocation = self
-                            .pending_allocation
+                    controls.append(
+                        &mut self.pending,
+                        self.pending_allocation
                             .as_mut()
-                            .expect("native pending custody");
-                        allocation
-                            .grow(needed - self.pending.capacity())
-                            .map_err(|error| controls.fail(error))?;
-                        self.pending
-                            .try_reserve_exact(needed - self.pending.len())
-                            .map_err(|error| {
-                                controls.fail(controls.meter.allocation_failed(error))
-                            })?;
-                        allocation
-                            .reconcile_capacity(self.pending.capacity())
-                            .map_err(|error| controls.fail(error))?;
-                    }
-                    controls
-                        .meter
-                        .admit_codec(0, size as u64, 0)
-                        .map_err(|error| controls.fail(error))?;
-                }
-                self.pending.extend_from_slice(&self.chunk.split_to(size));
-                if let Some(controls) = &self.controls {
-                    controls
-                        .meter
-                        .record_codec(0, size as u64, 0)
-                        .map_err(|error| controls.fail(error))?;
+                            .expect("native pending custody"),
+                        &chunk,
+                    )?;
+                } else {
+                    self.pending.extend_from_slice(&chunk);
                 }
                 if newline.is_some() {
                     self.pending.pop();

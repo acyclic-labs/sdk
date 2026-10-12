@@ -62,28 +62,17 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
             let read = store
                 .read(request.object_id, request.maximum_bytes, &mut read_work)
                 .await;
-            #[cfg(not(target_arch = "wasm32"))]
-            if read_work.original.is_some() {
-                values.0.push(read?);
-                continue;
+            if accounting.standalone_parts().is_some() {
+                let retained = match &read {
+                    Ok(ObjectRead {
+                        retention: crate::storage::ObjectReadRetention::Owned { logical_bytes },
+                        ..
+                    }) => *logical_bytes,
+                    _ => 0,
+                };
+                merge_completed_object_read(accounting, read_work.spent(), retained)?;
             }
-            let result = read_work.receipt(read);
-            match result {
-                Ok(receipt) => {
-                    let retained = match receipt.value.retention {
-                        crate::storage::ObjectReadRetention::Shared => 0,
-                        crate::storage::ObjectReadRetention::Owned { logical_bytes } => {
-                            logical_bytes
-                        }
-                    };
-                    merge_completed_object_read(accounting, receipt.work, retained)?;
-                    values.0.push(receipt.value);
-                }
-                Err(failure) => {
-                    merge_completed_object_read(accounting, *failure.work, 0)?;
-                    return Err(failure.error.into());
-                }
-            }
+            values.0.push(read?);
         }
         accounting.charge(crate::performance::WorkCounters {
             items_returned: item_count,

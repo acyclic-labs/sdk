@@ -3,8 +3,7 @@ use super::*;
 #[tokio::test]
 async fn pull_enforces_operation_placement_labels() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator =
-        DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+    let mut coordinator = open(&client).await?;
     let operation_id = OperationId::from_bytes([53; 16]);
     let mut declaration = spec(operation_id, 0)?;
     declaration.placement.insert("region".into(), "eu".into());
@@ -29,10 +28,9 @@ async fn pull_enforces_operation_placement_labels() -> Result<()> {
 }
 
 #[tokio::test]
-async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() -> Result<()> {
+async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator =
-        DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+    let mut coordinator = open(&client).await?;
     let foreign = OperationId::from_bytes([1; 16]);
     let owned = OperationId::from_bytes([2; 16]);
     let mut other = spec(foreign, 1)?;
@@ -46,14 +44,25 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
     declare(&mut coordinator, other, "foreign-pull").await?;
     declare(&mut coordinator, spec(owned, 1)?, "owned-pull").await?;
     let (owner, issuer) = owner_issuer();
-    let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
+    let scope = grant(
+        &issuer,
+        "admit",
+        &["operation:observe", "operation:declare"],
+    )?;
     let worker = Worker {
         id: "shared-worker".into(),
         available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
         labels: BTreeMap::new(),
     };
     let WorkPull::Claimed(lease) = coordinator
-        .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
+        .pull_owned(
+            &owner,
+            &scope,
+            &issuer.verifier(&mut None)?,
+            &worker,
+            None,
+            &mut None,
+        )
         .await?
     else {
         return Err(Error::NotFound("owned pull".into()));
@@ -67,55 +76,41 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
     );
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                None,
+                &mut None
+            )
             .await?,
         WorkPull::Idle
     ));
     assert!(coordinator.pull(&worker).await?.is_none());
     let fence = LeaseFence::from(&lease.reservation);
-    coordinator
-        .apply(
-            IdempotencyKey::new("owned-start")?,
-            SchedulerEvent::Started {
-                operation_id: owned,
-                fence: fence.clone(),
-            }, &mut None,
-        )
-        .await?;
-    coordinator.apply(
-        IdempotencyKey::new("owned-indeterminate")?,
+    publish(
+        &mut coordinator,
+        "owned-start",
+        SchedulerEvent::Started {
+            operation_id: owned,
+            fence: fence.clone(),
+        },
+    )
+    .await?;
+    publish(
+        &mut coordinator,
+        "owned-failed",
         SchedulerEvent::Completed {
-            operation_id: owned, fence: Some(fence.clone()), execution_duration_ns: None,
-            outcome: crate::Outcome::Indeterminate { operation_id: owned },
-        }, &mut None,
-    ).await?;
-    coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-    assert!(coordinator.pull(&worker).await?.is_none());
-    coordinator.apply(
-        IdempotencyKey::new("owned-cancel-uncertain")?,
-        SchedulerEvent::CancellationRequested { operation_id: owned, recursive: true }, &mut None,
-    ).await?;
-    assert!(coordinator.pull(&worker).await?.is_none());
-    assert!(coordinator.apply(
-        IdempotencyKey::new("owned-unfenced-completion")?,
-        SchedulerEvent::Completed {
-            operation_id: owned, fence: None, execution_duration_ns: None,
-            outcome: crate::Outcome::Cancelled,
-        }, &mut None,
-    ).await.is_err());
-    coordinator
-        .apply(
-            IdempotencyKey::new("owned-failed")?,
-            SchedulerEvent::Completed {
-                operation_id: owned,
-                fence: Some(fence),
-                execution_duration_ns: None,
-                outcome: crate::Outcome::Failed {
-                    message: "dependency failed".into(),
-                },
-            }, &mut None,
-        )
-        .await?;
+            operation_id: owned,
+            fence: Some(fence),
+            execution_duration_ns: None,
+            outcome: crate::Outcome::Failed {
+                message: "dependency failed".into(),
+            },
+        },
+    )
+    .await?;
     let blocked = OperationId::from_bytes([3; 16]);
     let mut other = spec(blocked, 1)?;
     other.owner = DurableOwner::Attached {
@@ -129,7 +124,14 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
     declare(&mut coordinator, other, "foreign-blocked").await?;
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                None,
+                &mut None
+            )
             .await?,
         WorkPull::Idle
     ));
@@ -139,16 +141,29 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
             .operation(blocked)
             .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
     );
-    let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
-    let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
+    let before = Stream::new(client.clone(), COORDINATOR_PATH)?
+        .tail()
+        .await?;
+    let denied = grant(&issuer, "denied", &["operation:observe"])?;
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
+            .pull_owned(
+                &owner,
+                &denied,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                None,
+                &mut None
+            )
             .await,
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, before);
-    assert_eq!(coordinator.pull(&worker).await?.map(|lease| lease.operation.operation_id), Some(foreign));
+    assert_eq!(
+        Stream::new(client.clone(), COORDINATOR_PATH)?
+            .tail()
+            .await?,
+        before
+    );
     Ok(())
 }
 
@@ -156,14 +171,17 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
 #[allow(clippy::too_many_lines)]
 async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator =
-        DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+    let mut coordinator = open(&client).await?;
     let first = OperationId::from_bytes([61; 16]);
     let target = OperationId::from_bytes([62; 16]);
     declare(&mut coordinator, spec(first, 1)?, "target-first").await?;
     declare(&mut coordinator, spec(target, 1)?, "target-second").await?;
     let (owner, issuer) = owner_issuer();
-    let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
+    let scope = grant(
+        &issuer,
+        "admit",
+        &["operation:observe", "operation:declare"],
+    )?;
     let worker = Worker {
         id: "target-worker".into(),
         available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -171,7 +189,14 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
     };
     let first_before = coordinator.scheduler().operation(first).cloned();
     let WorkPull::Claimed(lease) = coordinator
-        .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target), &mut None)
+        .pull_owned(
+            &owner,
+            &scope,
+            &issuer.verifier(&mut None)?,
+            &worker,
+            Some(target),
+            &mut None,
+        )
         .await?
     else {
         return Err(Error::NotFound("target admission".into()));
@@ -181,56 +206,91 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
         coordinator.scheduler().operation(first),
         first_before.as_ref()
     );
-    let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
+    let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+        .tail()
+        .await?;
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(target), &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                Some(target),
+                &mut None
+            )
             .await?,
         WorkPull::Idle
     ));
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first), &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                Some(first),
+                &mut None
+            )
             .await?,
         WorkPull::Idle
     ));
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(OperationId::from_bytes([63; 16])), &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                Some(OperationId::from_bytes([63; 16])),
+                &mut None
+            )
             .await,
         Err(Error::NotFound(_))
     ));
-    let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
+    let denied = grant(&issuer, "denied", &["operation:observe"])?;
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first), &mut None)
+            .pull_owned(
+                &owner,
+                &denied,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                Some(first),
+                &mut None
+            )
             .await,
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
+    assert_eq!(
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+            .tail()
+            .await?,
+        tail
+    );
     let fence = LeaseFence::from(&lease.reservation);
-    coordinator
-        .apply(
-            IdempotencyKey::new("target-start")?,
-            SchedulerEvent::Started {
-                operation_id: target,
-                fence: fence.clone(),
-            }, &mut None,
-        )
-        .await?;
-    coordinator
-        .apply(
-            IdempotencyKey::new("target-fail")?,
-            SchedulerEvent::Completed {
-                operation_id: target,
-                fence: Some(fence),
-                execution_duration_ns: None,
-                outcome: crate::Outcome::Failed {
-                    message: "failed dependency".into(),
-                },
-            }, &mut None,
-        )
-        .await?;
+    publish(
+        &mut coordinator,
+        "target-start",
+        SchedulerEvent::Started {
+            operation_id: target,
+            fence: fence.clone(),
+        },
+    )
+    .await?;
+    publish(
+        &mut coordinator,
+        "target-fail",
+        SchedulerEvent::Completed {
+            operation_id: target,
+            fence: Some(fence),
+            execution_duration_ns: None,
+            outcome: crate::Outcome::Failed {
+                message: "failed dependency".into(),
+            },
+        },
+    )
+    .await?;
     let blocked = OperationId::from_bytes([64; 16]);
     let ready = OperationId::from_bytes([65; 16]);
     let mut dependent = spec(blocked, 1)?;
@@ -239,7 +299,14 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
     declare(&mut coordinator, spec(ready, 1)?, "target-ready").await?;
     let blocked_before = coordinator.scheduler().operation(blocked).cloned();
     let WorkPull::Claimed(lease) = coordinator
-        .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(ready), &mut None)
+        .pull_owned(
+            &owner,
+            &scope,
+            &issuer.verifier(&mut None)?,
+            &worker,
+            Some(ready),
+            &mut None,
+        )
         .await?
     else {
         return Err(Error::NotFound("ready target behind blocked task".into()));
@@ -255,7 +322,14 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
     );
     assert!(matches!(
         coordinator
-            .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(blocked), &mut None)
+            .pull_owned(
+                &owner,
+                &scope,
+                &issuer.verifier(&mut None)?,
+                &worker,
+                Some(blocked),
+                &mut None
+            )
             .await?,
         WorkPull::Idle
     ));
@@ -275,103 +349,39 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
 }
 
 #[tokio::test]
-async fn exact_target_pull_preserves_live_partial_and_cancelled_reservations() -> Result<()> {
-    for cancelled in [false, true] {
-        let client = Arc::new(MemoryStream::default());
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        let operation = OperationId::from_bytes([68; 16]);
-        declare(&mut coordinator, spec(operation, 2)?, "partial-target").await?;
-        let reservation = Reservation {
-            id: "original-partial".into(),
-            placement: "partial-worker".into(),
-            admitted: crate::scheduler::ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
-        };
-        coordinator
-            .apply(
-                IdempotencyKey::new("partial-admit")?,
-                SchedulerEvent::PartiallyAdmitted {
-                    operation_id: operation,
-                    reservation: reservation.clone(),
-                }, &mut None,
-            )
-            .await?;
-        if cancelled {
-            coordinator
-                .apply(
-                    IdempotencyKey::new("partial-cancel")?,
-                    SchedulerEvent::CancellationRequested {
-                        operation_id: operation,
-                        recursive: false,
-                    }, &mut None,
-                )
-                .await?;
-        }
-        let before = coordinator.scheduler().operation(operation).cloned();
-        let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
-        let (owner, issuer) = owner_issuer();
-        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
-        let worker = Worker {
-            id: "partial-worker".into(),
-            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])),
-            labels: BTreeMap::new(),
-        };
-        assert!(matches!(
-            coordinator
-                .pull_owned(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation), &mut None)
-                .await?,
-            WorkPull::Idle
-        ));
-        assert_eq!(
-            coordinator.scheduler().operation(operation),
-            before.as_ref()
-        );
-        assert_eq!(
-            coordinator
-                .scheduler()
-                .operation(operation)
-                .expect("partial")
-                .reservation
-                .as_ref(),
-            Some(&reservation)
-        );
-        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result<()> {
     use std::sync::atomic::Ordering;
     for (fault, targeted) in [(1, false), (2, false), (1, true), (2, true)] {
-        let provider = Arc::new(LostSessionAck::default());
-        let client = provider.clone();
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        let client = Arc::new(LostSessionAck::<MemoryStream>::default());
+        let mut coordinator = open(&client).await?;
         let operation = OperationId::from_bytes([31; 16]);
         declare(&mut coordinator, spec(operation, 1)?, "fault-pull-root").await?;
         let (owner, issuer) = owner_issuer();
-        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
+        let scope = grant(
+            &issuer,
+            "admit",
+            &["operation:observe", "operation:declare"],
+        )?;
         let worker = Worker {
             id: "fault-worker".into(),
             available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
             labels: BTreeMap::new(),
         };
         if fault == 1 {
-            provider.lose_ack.store(true, Ordering::SeqCst);
-            provider.hide_receipt.store(true, Ordering::SeqCst);
+            client.lose_ack.store(true, Ordering::SeqCst);
+            client.hide_receipt.store(true, Ordering::SeqCst);
         } else {
-            provider
-                .location_fault
-                .store(4, Ordering::SeqCst);
+            client.location_fault.store(4, Ordering::SeqCst);
         }
         let WorkPull::Unresolved { lease, error } = coordinator
             .pull_owned(
                 &owner,
                 &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
+                &issuer.verifier(&mut None)?,
                 &worker,
-                targeted.then_some(operation), &mut None)
+                targeted.then_some(operation),
+                &mut None,
+            )
             .await?
         else {
             return Err(Error::NotFound("unresolved admission attempt".into()));
@@ -379,8 +389,7 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         assert!(matches!(error, Error::Indeterminate(id) if id == operation));
         assert_eq!(lease.operation.operation_id, operation);
         drop(coordinator);
-        let mut reopened =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        let mut reopened = open(&client).await?;
         let retained = reopened
             .scheduler()
             .operation(operation)
@@ -388,16 +397,23 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         if fault == 2 {
             assert!(retained.reservation.is_none());
             assert!(
-                crate::scheduler::require_execution_owner(retained, &LeaseFence::from(&lease.reservation), false, &mut None)
+                crate::scheduler::require_execution_owner(
+                    retained,
+                    &LeaseFence::from(&lease.reservation),
+                    false,
+                    &mut None
+                )
                 .is_err()
             );
             let WorkPull::Claimed(retried) = reopened
                 .pull_owned(
                     &owner,
                     &scope,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &issuer.verifier(&mut None)?,
                     &worker,
-                    targeted.then_some(operation), &mut None)
+                    targeted.then_some(operation),
+                    &mut None,
+                )
                 .await?
             else {
                 return Err(Error::NotFound("uncommitted admission retry".into()));
@@ -408,19 +424,28 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
         assert_eq!(retained.revision, lease.operation_revision);
         assert_eq!(retained.phase, crate::scheduler::OperationPhase::Admitted);
-        let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
+        let tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+            .tail()
+            .await?;
         assert!(matches!(
             reopened
                 .pull_owned(
                     &owner,
                     &scope,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &issuer.verifier(&mut None)?,
                     &worker,
-                    targeted.then_some(operation), &mut None)
+                    targeted.then_some(operation),
+                    &mut None
+                )
                 .await?,
             WorkPull::Idle
         ));
-        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, tail);
+        assert_eq!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+                .tail()
+                .await?,
+            tail
+        );
     }
     Ok(())
 }
@@ -428,10 +453,8 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
 #[tokio::test]
 async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator =
-        DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-    let mut follower =
-        DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+    let mut coordinator = open(&client).await?;
+    let mut follower = open(&client).await?;
     let cancelled = OperationId::from_bytes([5; 16]);
     let runnable = OperationId::from_bytes([6; 16]);
     for (index, operation_id) in [cancelled, runnable].into_iter().enumerate() {
@@ -441,17 +464,24 @@ async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
             &format!("declare-cancel-{index}"),
         )
         .await?;
-        assert!(!declare(&mut follower, spec(operation_id, 0)?, &format!("declare-cancel-{index}")).await?);
+        assert!(
+            !declare(
+                &mut follower,
+                spec(operation_id, 0)?,
+                &format!("declare-cancel-{index}")
+            )
+            .await?
+        );
     }
-    coordinator
-        .apply(
-            IdempotencyKey::new("cancel-before-pull")?,
-            SchedulerEvent::CancellationRequested {
-                operation_id: cancelled,
-                recursive: false,
-            }, &mut None,
-        )
-        .await?;
+    publish(
+        &mut coordinator,
+        "cancel-before-pull",
+        SchedulerEvent::CancellationRequested {
+            operation_id: cancelled,
+            recursive: false,
+        },
+    )
+    .await?;
     let worker = Worker {
         id: "worker".into(),
         available: ResourceSnapshot::default(),

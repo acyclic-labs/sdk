@@ -44,19 +44,16 @@ fn fixture_journal(
     }
 }
 
-pub(super) fn receipt(
+fn run(
     budget: WorkBudget,
     cancellation: &CancellationToken,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<(), NativeExchangeError>,
-) -> Result<crate::OperationReceipt<()>, (NativeExchangeError, WorkCounters)> {
+) -> Result<WorkCounters, (NativeExchangeError, WorkCounters)> {
     let work = NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| (error.into(), work))?;
     let result = operation(&work);
     result
-        .map(|value| crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        })
+        .map(|()| work.receipt())
         .map_err(|error| (error, work.receipt()))
 }
 
@@ -121,13 +118,13 @@ fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io()
 -> Result<(), Box<dyn std::error::Error>> {
     let (temporary, live, prepared) = entries()?;
     let cancellation = CancellationToken::new();
-    let failure = receipt(WorkBudget::default(), &cancellation, |work| {
+    let failure = run(WorkBudget::default(), &cancellation, |work| {
         exchange_native_entries(&live, &prepared, work)
     })
     .expect_err("zero allowance");
     assert_eq!(failure.1, WorkCounters::default());
     cancellation.cancel();
-    let failure = receipt(finite_entry_budget(), &cancellation, |work| {
+    let failure = run(finite_entry_budget(), &cancellation, |work| {
         exchange_native_entries(&live, &prepared, work)
     })
     .expect_err("cancelled");
@@ -153,7 +150,7 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
             budget.durability_operations = 0;
         }
         let cancellation = CancellationToken::new();
-        let failure = receipt(budget, &cancellation, |work| {
+        let failure = run(budget, &cancellation, |work| {
             exchange_native_entries(&live, &prepared, work)
         })
         .expect_err("journal admission denied before physical edits");
@@ -169,7 +166,7 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
         assert!(!scratch.exists());
         assert_eq!(fs::read(&live)?, b"before");
         assert_eq!(fs::read(&prepared)?, b"after");
-        receipt(finite_entry_budget(), &cancellation, |work| {
+        run(finite_entry_budget(), &cancellation, |work| {
             exchange_native_entries(&live, &prepared, work)
         })
         .expect("the real durable request remains retryable");
@@ -186,7 +183,7 @@ fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix()
     let (temporary, live, prepared) = entries()?;
     let mut budget = finite_entry_budget();
     budget.durability_operations = 0;
-    let failure = receipt(budget, &CancellationToken::new(), |work| {
+    let failure = run(budget, &CancellationToken::new(), |work| {
         exchange_native_entries(&live, &prepared, work)
     })
     .expect_err("durability denied");
@@ -243,7 +240,7 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
     fs::write(&other, b"unrelated request")?;
     entry_witness_fixture(&live, &prepared, &witness);
     let cancellation = CancellationToken::new();
-    let failure = receipt(finite_entry_budget(), &cancellation, |work| {
+    let failure = run(finite_entry_budget(), &cancellation, |work| {
         exchange_native_entries(&live, &other, work)
     })
     .expect_err("original request path identity remains authoritative");
@@ -256,7 +253,7 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
     assert_eq!(fs::read(&live)?, b"before");
     assert_eq!(fs::read(&prepared)?, b"after");
     assert_eq!(fs::read(&other)?, b"unrelated request");
-    receipt(finite_entry_budget(), &cancellation, |work| {
+    run(finite_entry_budget(), &cancellation, |work| {
         exchange_native_entries(&live, &prepared, work)
     })
     .expect("original rolled-back request proceeds to actual publication");
@@ -282,7 +279,7 @@ fn bounded_entry_recovery_finishes_in_the_original_other_parent()
     entry_witness_fixture(&live, &prepared, &witness);
     fs::rename(&live, &scratch)?;
     fs::rename(&prepared, &live)?;
-    receipt(finite_entry_budget(), &CancellationToken::new(), |work| {
+    run(finite_entry_budget(), &CancellationToken::new(), |work| {
         recover_native_entry_exchange(&live, work)
     })
     .expect("held original other-parent recovery");
@@ -305,13 +302,13 @@ fn bounded_entry_recovery_keeps_the_same_lost_ack_decision()
     fs::rename(&prepared, &live)?;
     fs::rename(&scratch, &prepared)?;
     let cancellation = CancellationToken::new();
-    let recovered = receipt(finite_entry_budget(), &cancellation, |work| {
+    let recovered = run(finite_entry_budget(), &cancellation, |work| {
         recover_native_entry_exchange(&live, work)
     })
     .expect("restart recovers original decision");
-    assert!(recovered.work.backend_write_operations > 0);
+    assert!(recovered.backend_write_operations > 0);
     assert!(!witness.exists());
-    receipt(finite_entry_budget(), &cancellation, |work| {
+    run(finite_entry_budget(), &cancellation, |work| {
         recover_native_entry_exchange(&live, work)
     })
     .expect("reopened cleanup is idempotent");
@@ -336,7 +333,7 @@ fn bounded_entry_recovery_never_adopts_a_replacement_preimage()
         }
         fs::rename(&live, &saved)?;
         fs::write(&live, b"user replacement")?;
-        let failure = receipt(finite_entry_budget(), &CancellationToken::new(), |work| {
+        let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
             recover_native_entry_exchange(&live, work)
         })
         .expect_err("replacement is not original authority");
@@ -412,7 +409,7 @@ fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation()
     journal.seek(std::io::SeekFrom::Start(96))?;
     journal.write_all(&u64::MAX.to_le_bytes())?;
     drop(journal);
-    let failure = receipt(finite_entry_budget(), &CancellationToken::new(), |work| {
+    let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
         recover_native_entry_exchange(&live, work)
     })
     .expect_err("overflowing buffer length rejected");
@@ -439,7 +436,7 @@ fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data()
     let mut journal = fs::OpenOptions::new().append(true).open(&witness)?;
     journal.write_all(b"user trailing bytes")?;
     drop(journal);
-    let failure = receipt(finite_entry_budget(), &CancellationToken::new(), |work| {
+    let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
         recover_native_entry_exchange(&live, work)
     })
     .expect_err("noncanonical witness retained");
@@ -469,7 +466,7 @@ fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), Box<dyn st
         .join(std::ffi::OsString::from_wide(&prepared_name));
     fs::write(&live, b"before")?;
     fs::write(&prepared, b"after")?;
-    receipt(finite_entry_budget(), &CancellationToken::new(), |work| {
+    run(finite_entry_budget(), &CancellationToken::new(), |work| {
         exchange_native_entries(&live, &prepared, work)
     })
     .expect("raw native exchange");
