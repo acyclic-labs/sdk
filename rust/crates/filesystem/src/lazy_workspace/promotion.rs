@@ -48,15 +48,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let mut transaction =
             crate::Transaction::from_checkout(&self.workspace, checkout, key, false);
         if let Some(parent) = parent_path(path) {
-            transaction
-                .create_dirs(parent, ctx, cancellation(ctx))
-                .await?;
+            accounted!(ctx, |work, cancel| transaction
+                .create_dir_all(parent, work, cancel))?;
         }
         self.apply_resolved_promotion(&mut transaction, path, lookup, maximum, ctx)
             .await?;
         self.commit(&mut transaction, permit, ctx).await
     }
-    pub(super) async fn apply_resolved_promotion(
+
+    /// Stages an inspected identity in an unpublished transaction.
+    pub async fn apply_resolved_promotion(
         &self,
         transaction: &mut crate::Transaction<A, O>,
         path: &str,
@@ -71,8 +72,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     .hard_link(authored, path, work, cancel))?;
             }
             LazyLookup::Shadow { record, .. } => {
-                accounted!(ctx, |work, cancel| transaction
-                    .restore_record(path, *record, work, cancel))?;
+                let path = self.namespace_path(path, ctx)?;
+                let mut operations = Owned::allocate(1, ctx)?;
+                crate::Transaction::<A, O>::push_mutation(
+                    &mut operations,
+                    Owned::new(
+                        crate::kernel::Mutation::Restore {
+                            path: path.value,
+                            record: *record,
+                        },
+                        path.allocation,
+                        path.bytes,
+                    ),
+                    ctx,
+                )?;
+                transaction
+                    .checkout
+                    .mutate_owned_with_accounting(operations, ctx, cancellation(ctx))
+                    .await?;
             }
             LazyLookup::Source { source, node } => {
                 self.populate_source_node(transaction, path, *source, *node, maximum, ctx)
@@ -162,9 +179,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 crate::Transaction::for_checkout_candidate(&self.workspace, candidate, work, cancel)
             })?;
             if let Some(parent) = parent_path(path) {
-                transaction
-                    .create_dirs(parent, ctx, cancellation(ctx))
-                    .await?;
+                accounted!(ctx, |work, cancel| transaction
+                    .create_dir_all(parent, work, cancel))?;
             }
             let changed = self
                 .apply_resolved_promotion(&mut transaction, path, &lookup.0, maximum, ctx)

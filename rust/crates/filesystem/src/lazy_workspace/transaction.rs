@@ -152,15 +152,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 idempotency_key,
                 false,
             );
-            let staged = accounted!(ctx, |work, cancel| transaction.mutate(
-                path,
-                |path| Ok::<_, WorkspaceError>(AuthoredMutation::Remove {
-                    path,
-                    expected_file_id: Some(actual)
-                }),
-                work,
-                cancel
-            ));
+            let staged = accounted!(ctx, |work, cancel| transaction
+                .remove_if(path, actual, work, cancel));
             if let Err(error) = staged {
                 self.recover_pending_remove(ctx).await?;
                 return Err(error);

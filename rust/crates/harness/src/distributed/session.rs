@@ -186,7 +186,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Some(receipt)
             }
             Ok(AppendOutcome::TailConflict { .. }) => None,
-            Err(error) if coordinator_retry_conflict(&error) => None,
+            Err(error) if error.code() == wire::ErrorCode::Conflict => None,
             Err(error) => return Err(error),
         };
         self.refresh(request.work()).await?;
@@ -230,7 +230,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             if &existing != event
                 || digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         event,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         custody.work(),

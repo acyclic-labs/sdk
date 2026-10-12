@@ -200,68 +200,33 @@ impl CompositeForkVerifier {
         ))
     }
 
-    /// Verifies direct references and complete attachment manifests after provider-wide resource capture has been attested.
-    pub(in crate::fork) async fn verify_references(
+    // Verify each exact file once across direct refs and complete manifests.
+    async fn verify_references(
         &self,
         seed: &ForkSeed,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
         let mut verified_files = BTreeSet::new();
         let mut reference_bytes = BTreeMap::new();
-        self.verify_reference_files(seed, &mut verified_files, &mut reference_bytes, owned)
-            .await?;
-        self.verify_attachment_manifests(seed, &mut verified_files, &mut reference_bytes, owned)
-            .await
-    }
-
-    pub(in crate::fork) async fn verify_reference_files<'a>(
-        &'a self,
-        seed: &ForkSeed,
-        verified_files: &mut BTreeSet<[u8; 32]>,
-        reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
-        owned: &mut CodecQuota<'_, '_>,
-    ) -> Result<()> {
         for file in seed
             .inherited_context
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
         {
-            let capability = owned.file_digest(file)?;
-            if verified_files.contains(&capability) {
-                continue;
-            }
-            owned.slots::<[u8; 32]>(1)?;
-            verified_files.insert(capability);
-            let verifier = self.provider(file.volume().provider(), owned)?;
-            reserve_reference_bytes(reference_bytes, verifier.as_ref(), file, owned)?;
-            let future = verifier.verify_file(seed, file, owned.work())?;
-            let bytes = frame_bytes(&future);
-            let result = future.await;
-            release_frame(result, bytes, owned.work())?;
+            self.verify_file(seed, file, &mut verified_files, &mut reference_bytes, owned)
+                .await?;
         }
-        Ok(())
-    }
-
-    pub(in crate::fork) async fn verify_attachment_manifests<'a>(
-        &'a self,
-        seed: &ForkSeed,
-        verified_files: &mut BTreeSet<[u8; 32]>,
-        reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
-        owned: &mut CodecQuota<'_, '_>,
-    ) -> Result<()> {
         let mut manifest_members = 0_usize;
         for manifest in &seed.attachment_manifests {
-            let manifest_capability = owned.file_digest(manifest)?;
+            self.verify_file(
+                seed,
+                manifest,
+                &mut verified_files,
+                &mut reference_bytes,
+                owned,
+            )
+            .await?;
             let verifier = self.provider(manifest.volume().provider(), owned)?;
-            if !verified_files.contains(&manifest_capability) {
-                owned.slots::<[u8; 32]>(1)?;
-                verified_files.insert(manifest_capability);
-                reserve_reference_bytes(reference_bytes, verifier.as_ref(), manifest, owned)?;
-                let future = verifier.verify_file(seed, manifest, owned.work())?;
-                let bytes = frame_bytes(&future);
-                let result = future.await;
-                release_frame(result, bytes, owned.work())?;
-            }
             let (bytes, retained) =
                 read_fork_manifest(verifier.as_ref(), seed, manifest, owned.work()).await?;
             if let Err(error) = owned.adopt(retained) {
@@ -285,25 +250,39 @@ impl CompositeForkVerifier {
             }
             Self::verify_manifest_grants(seed, manifest, &items, owned)?;
             for item in items {
-                let item_capability = owned.file_digest(&item.file)?;
-                if !verified_files.contains(&item_capability) {
-                    owned.slots::<[u8; 32]>(1)?;
-                    verified_files.insert(item_capability);
-                    let member_verifier = self.provider(item.file.volume().provider(), owned)?;
-                    reserve_reference_bytes(
-                        reference_bytes,
-                        member_verifier.as_ref(),
-                        &item.file,
-                        owned,
-                    )?;
-                    let future = member_verifier.verify_file(seed, &item.file, owned.work())?;
-                    let bytes = frame_bytes(&future);
-                    let result = future.await;
-                    release_frame(result, bytes, owned.work())?;
-                }
+                self.verify_file(
+                    seed,
+                    &item.file,
+                    &mut verified_files,
+                    &mut reference_bytes,
+                    owned,
+                )
+                .await?;
             }
         }
         Ok(())
+    }
+
+    async fn verify_file<'a>(
+        &'a self,
+        seed: &ForkSeed,
+        file: &FileRef,
+        verified_files: &mut BTreeSet<[u8; 32]>,
+        reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
+        owned: &mut CodecQuota<'_, '_>,
+    ) -> Result<()> {
+        let capability = owned.file_digest(file)?;
+        if verified_files.contains(&capability) {
+            return Ok(());
+        }
+        owned.slots::<[u8; 32]>(1)?;
+        verified_files.insert(capability);
+        let verifier = self.provider(file.volume().provider(), owned)?;
+        reserve_reference_bytes(reference_bytes, verifier.as_ref(), file, owned)?;
+        let future = verifier.verify_file(seed, file, owned.work())?;
+        let frame = frame_bytes(&future);
+        let result = future.await;
+        release_frame(result, frame, owned.work())
     }
 
     pub(in crate::fork) fn verify_manifest_grants(

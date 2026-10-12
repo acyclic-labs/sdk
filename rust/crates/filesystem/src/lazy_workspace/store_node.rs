@@ -77,7 +77,10 @@ pub(super) fn copy_bytes(
         return Err(error.into());
     }
     out.value.extend_from_slice(bytes);
-    accounting.record_completed(work)?;
+    if let Err(error) = accounting.record_completed(work) {
+        out.retire(accounting)?;
+        return Err(error.into());
+    }
     Ok(out)
 }
 

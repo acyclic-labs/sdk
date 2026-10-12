@@ -1,32 +1,5 @@
 use super::*;
 
-
-#[derive(Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-#[tsify(large_number_types_as_bigints)]
-pub(super) struct WasmLimitsInput {
-    file_bytes: u64,
-    path_bytes: u64,
-    attachments: u64,
-    render_bytes: u64,
-    model_steps: u64,
-    model_events_per_step: u64,
-    tool_calls_per_step: u64,
-    context_messages: u64,
-}
-
-#[derive(Deserialize, Tsify)]
-#[tsify(large_number_types_as_bigints)]
-#[serde(deny_unknown_fields)]
-pub(super) struct WasmTaskRunLimitsInput {
-    #[tsify(type = "bigint | null")]
-    concurrency: Option<u64>,
-    #[tsify(type = "bigint | null")]
-    max_steps: Option<u64>,
-    #[tsify(type = "bigint | null")]
-    deadline_epoch_ms: Option<u64>,
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WasmTaskChildrenPageInput {
@@ -138,8 +111,10 @@ pub(super) struct WasmTaskAdmissionInput {
     resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
-    limits: WasmLimitsInput,
-    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmLimitsInput")]
+    limits: Limits,
+    #[tsify(type = "WasmTaskRunLimitsInput")]
+    run_limits: TaskRunLimits,
     #[tsify(type = "WasmMachineIdentityWire | null")]
     policy: Option<crate::registry::ComponentIdentity>,
     #[tsify(type = "WasmExtensionAdmissionWire | null")]
@@ -177,8 +152,10 @@ pub(super) struct WasmBatchAdmissionInput {
     resource_proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
-    limits: WasmLimitsInput,
-    run_limits: WasmTaskRunLimitsInput,
+    #[tsify(type = "WasmLimitsInput")]
+    limits: Limits,
+    #[tsify(type = "WasmTaskRunLimitsInput")]
+    run_limits: TaskRunLimits,
     #[tsify(type = "WasmExtensionAdmissionWire | null")]
     extensions: Option<ExtensionAdmission>,
     #[tsify(type = "WasmMachineIdentityWire | null")]
@@ -216,43 +193,6 @@ pub(super) struct WasmBatchAdmissionRequest {
 #[derive(Serialize)]
 pub(super) struct WasmGroupPolicy {
     kind: BatchGroupPolicy,
-}
-
-pub(super) fn wasm_limits(input: WasmLimitsInput) -> Result<Limits, crate::Error> {
-    Ok(Limits {
-        file_bytes: input.file_bytes,
-        path_bytes: usize::try_from(input.path_bytes)
-            .map_err(|_| crate::Error::Invalid("path_bytes is not representable".into()))?,
-        attachments: usize::try_from(input.attachments)
-            .map_err(|_| crate::Error::Invalid("attachments is not representable".into()))?,
-        render_bytes: input.render_bytes,
-        model_steps: usize::try_from(input.model_steps)
-            .map_err(|_| crate::Error::Invalid("model_steps is not representable".into()))?,
-        model_events_per_step: usize::try_from(input.model_events_per_step).map_err(|_| {
-            crate::Error::Invalid("model_events_per_step is not representable".into())
-        })?,
-        tool_calls_per_step: usize::try_from(input.tool_calls_per_step).map_err(|_| {
-            crate::Error::Invalid("tool_calls_per_step is not representable".into())
-        })?,
-        context_messages: usize::try_from(input.context_messages)
-            .map_err(|_| crate::Error::Invalid("context_messages is not representable".into()))?,
-    })
-}
-
-pub(super) fn wasm_run_limits(input: WasmTaskRunLimitsInput) -> Result<TaskRunLimits, crate::Error> {
-    Ok(TaskRunLimits {
-        concurrency: input
-            .concurrency
-            .map(usize::try_from)
-            .transpose()
-            .map_err(|_| crate::Error::Invalid("concurrency is not representable".into()))?,
-        max_steps: input
-            .max_steps
-            .map(usize::try_from)
-            .transpose()
-            .map_err(|_| crate::Error::Invalid("max_steps is not representable".into()))?,
-        deadline_epoch_ms: input.deadline_epoch_ms,
-    })
 }
 
 /// Derives the same immutable per-slot operation as Rust durable admission.
@@ -393,8 +333,8 @@ pub fn admit_task_wasm(
         &input.machine_digest,
         input.parent,
         Capabilities::new(input.grants),
-        wasm_limits(input.limits).map_err(js_error)?,
-        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.limits,
+        input.run_limits,
         input.policy,
         input.extensions,
         input.execution,
@@ -420,8 +360,8 @@ pub(super) fn durable_batch_request_from_input(
         &input.machine_digest,
         input.parent,
         Capabilities::new(input.grants),
-        wasm_limits(input.limits).map_err(js_error)?,
-        wasm_run_limits(input.run_limits).map_err(js_error)?,
+        input.limits,
+        input.run_limits,
         input.extensions,
         input.policy,
         input.execution,
@@ -452,7 +392,9 @@ pub fn admit_batch_request_wasm(
 ) -> Result<JsValue, JsValue> {
     let input: WasmBatchAdmissionInput = from_js(value)?;
     let request = durable_batch_request_from_input(input)?;
-    let implementation_digest = blake3::Hash::from_bytes(request.machine.digest).to_hex().to_string();
+    let implementation_digest = blake3::Hash::from_bytes(request.machine.digest)
+        .to_hex()
+        .to_string();
     let canonical = request.canonical_value();
     let members = (0..request.inputs.len())
         .map(|index| {
@@ -462,7 +404,7 @@ pub fn admit_batch_request_wasm(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(js_error)?;
-    let input_digest = crate::contract::canonical_json_digest(&canonical)
+    let input_digest = crate::contract::canonical_json_digest(&canonical, u64::MAX, &mut None)
         .map_err(js_error)?
         .to_vec();
     let projection = WasmBatchAdmissionRequest {

@@ -72,4 +72,3 @@ const fn metadata_value<T: Copy>(field: MetadataField<T>) -> Option<T> {
         MetadataField::Value(value) => Some(value),
     }
 }
-

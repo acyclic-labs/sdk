@@ -154,7 +154,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     let tombstone = root
         .insert_overlay(
             prior.overlay,
-            &"/file.txt".to_owned(),
+            "/file.txt",
             LazyOverlayChange::Tombstone { removed: None },
             accounting!(),
         )
@@ -291,7 +291,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
     let tombstone = root
         .insert_overlay(
             prior.overlay,
-            &"/file.txt".to_owned(),
+            "/file.txt",
             LazyOverlayChange::Tombstone { removed: None },
             accounting!(),
         )

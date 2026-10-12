@@ -97,7 +97,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Ok(0);
         }
         let failure = crate::kernel::PreparedBlobDemandFailure::new(work)?;
-        let mut copying = work.reserve_work(WorkCounters {
+        let copying = work.reserve_work(WorkCounters {
             bytes_copied: wanted,
             ..WorkCounters::UNCHARGED
         })?;

@@ -147,7 +147,7 @@ pub(super) fn codec_charge(
     match event {
         Charge::Release { bytes } => custody.release(bytes).map_err(native_error),
         Charge::Retain { bytes } => custody
-            .resize_retained(
+            .resize(
                 custody
                     .bytes()
                     .checked_add(bytes)
@@ -157,9 +157,7 @@ pub(super) fn codec_charge(
         Charge::Admission {
             maximum_owned_bytes,
             ..
-        } => quota
-            .resize_retained(maximum_owned_bytes)
-            .map_err(native_error),
+        } => quota.resize(maximum_owned_bytes).map_err(native_error),
         Charge::CopyAdmission { bytes } => work
             .admit(acyclic_fs::WorkCounters {
                 bytes_copied: bytes,
@@ -231,7 +229,14 @@ pub(super) fn encode_line<T: Serialize>(
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
                 diagnostic
-                    .substitute(message.capacity() as u64)
+                    .release(
+                        diagnostic
+                            .bytes()
+                            .checked_sub(message.capacity() as u64)
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
+                    )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,
@@ -280,7 +285,7 @@ pub(super) fn frame_admission(
             .and_then(|n| n.checked_add(crate::contract::sdk_json_diagnostic_bytes()))
             .ok_or_else(|| rejection(Some(work), "MCP frame quota overflows"))?;
         if let Some(guard) = custody.as_mut() {
-            guard.resize_retained(quota).map_err(native_error)?;
+            guard.resize(quota).map_err(native_error)?;
         }
         // Per-byte original cancellation and item admission before any serde.
         let mut diagnostic = work
@@ -310,7 +315,14 @@ pub(super) fn frame_admission(
         match scanned {
             Err(Error::Invalid(message)) => {
                 diagnostic
-                    .substitute(message.capacity() as u64)
+                    .release(
+                        diagnostic
+                            .bytes()
+                            .checked_sub(message.capacity() as u64)
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
+                    )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,
@@ -333,7 +345,7 @@ pub(super) fn serde_error(
     let _ = (&work, &custody);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeDecode {
+        return Error::NativeJson {
             code: crate::wire::ErrorCode::Invalid,
             source,
             custody: custody.take(),

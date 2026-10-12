@@ -338,7 +338,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
     }
 
-    pub(crate) fn retire_lookup(
+    /// Releases an inspected lookup and its accounted ownership.
+    pub fn retire_lookup(
         &self,
         lookup: (LazyLookup, KernelOwnedAllocation),
         ctx: &mut KernelAccounting<'_>,

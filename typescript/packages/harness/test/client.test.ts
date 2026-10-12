@@ -33,6 +33,17 @@ const content: FileRef = {
   display_name: "committed.txt",
 };
 
+function replayConnection(controller: AbortController, deliveries: readonly Delivery<string>[]): Connection<string> {
+  return {
+    async send() {},
+    close() {},
+    async *[Symbol.asyncIterator]() {
+      try { yield* deliveries; }
+      finally { controller.abort(); }
+    },
+  };
+}
+
 test("client admits finite caller work before retaining it and snapshots queued commands", async () => {
   let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -325,41 +336,12 @@ test("IndexedDB outbox enforces configured command and byte bounds", async () =>
 });
 
 test("IndexedDB rejects non-canonical structured-clone payloads", async () => {
-  const store = new IndexedDbClientStore({
-    indexedDB: new IDBFactory(),
-    databaseName: "canonical-client",
-    maximumBytes: 128,
-  });
-  for (const payload of [new Map([["large", "x".repeat(1_024)]]), new Set(["x".repeat(1_024)])]) {
-    await expect(store.put({
-      operationId,
-      authority,
-      kind: "message.append",
-      payload: payload as unknown as OfflinePayload,
-      offlineSafe: true,
-    })).rejects.toThrow();
+  const store = new IndexedDbClientStore({ indexedDB: new IDBFactory(), databaseName: "canonical-client", maximumBytes: 128 });
+  for (const payload of [new Map([["large", "x".repeat(1_024)]]), new Set(["x".repeat(1_024)]),
+    Number.POSITIVE_INFINITY, { toJSON: () => ({}) }, new ArrayBuffer(1_024)]) {
+    await expect(store.put({ operationId, authority, kind: "message.append", payload: payload as unknown as OfflinePayload,
+      offlineSafe: true })).rejects.toThrow();
   }
-  await expect(store.put({
-    operationId,
-    authority,
-    kind: "message.append",
-    payload: Number.POSITIVE_INFINITY as unknown as OfflinePayload,
-    offlineSafe: true,
-  })).rejects.toThrow();
-  await expect(store.put({
-    operationId,
-    authority,
-    kind: "message.append",
-    payload: { toJSON: () => ({}) } as unknown as OfflinePayload,
-    offlineSafe: true,
-  })).rejects.toThrow();
-  await expect(store.put({
-    operationId,
-    authority,
-    kind: "message.append",
-    payload: new ArrayBuffer(1_024) as unknown as OfflinePayload,
-    offlineSafe: true,
-  })).rejects.toThrow();
 });
 
 test("offline outboxes never retain bearer scopes, inline bodies, or mutable caller objects", async () => {
@@ -708,15 +690,7 @@ test("reconnect delivery is contiguous and clears authoritative outbox entries",
     live: true,
     events: [{ authority, revision: 1n, operationId, event: "committed" }],
   };
-  const connection: Connection<string> = {
-    async send() {},
-    close() {},
-    async *[Symbol.asyncIterator]() {
-      yield delivery;
-      controller.abort();
-    },
-  };
-  const transport: Transport<string> = { connect: async () => connection };
+  const connection = replayConnection(controller, [delivery]);  const transport: Transport<string> = { connect: async () => connection };
   const outbox = new MemoryOutbox();
   await outbox.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
   const client = new HarnessClient(transport, outbox);
@@ -730,25 +704,10 @@ test("reconnect delivery is contiguous and clears authoritative outbox entries",
 
 test("malformed delivery has no visible or outbox side effects", async () => {
   const controller = new AbortController();
-  const connection: Connection<string> = {
-    async send() {},
-    close() {},
-    async *[Symbol.asyncIterator]() {
-      try {
-        yield {
-          authority,
-          generation: "one",
-          fromRevision: 0n,
-          throughRevision: 2n,
-          live: false,
-          events: [{ authority, revision: 1n, operationId, event: "invalid" }],
-        };
-      } finally {
-        controller.abort();
-      }
-    },
-  };
-  const outbox = new MemoryOutbox();
+  const connection = replayConnection(controller, [{
+    authority, generation: "one", fromRevision: 0n, throughRevision: 2n, live: false,
+    events: [{ authority, revision: 1n, operationId, event: "invalid" }],
+  }]);  const outbox = new MemoryOutbox();
   await outbox.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
   const client = new HarnessClient<string>({ connect: async () => connection }, outbox);
   const received: string[] = [];
@@ -778,18 +737,7 @@ test("a replay generation cannot change without an explicit rebase", async () =>
       events: [{ authority, revision: 2n, operationId, event: "stale" }],
     },
   ];
-  const connection: Connection<string> = {
-    async send() {},
-    close() {},
-    async *[Symbol.asyncIterator]() {
-      try {
-        for (const delivery of deliveries) yield delivery;
-      } finally {
-        controller.abort();
-      }
-    },
-  };
-  const client = new HarnessClient<string>({ connect: async () => connection });
+  const connection = replayConnection(controller, deliveries);  const client = new HarnessClient<string>({ connect: async () => connection });
   const received: string[] = [];
   client.subscribe(event => received.push(event.event));
   await client.run(controller.signal);
@@ -798,25 +746,10 @@ test("a replay generation cannot change without an explicit rebase", async () =>
 
 test("listener failure does not advance the cursor or acknowledge the outbox", async () => {
   const controller = new AbortController();
-  const connection: Connection<string> = {
-    async send() {},
-    close() {},
-    async *[Symbol.asyncIterator]() {
-      try {
-        yield {
-          authority,
-          generation: "one",
-          fromRevision: 0n,
-          throughRevision: 1n,
-          live: true,
-          events: [{ authority, revision: 1n, operationId, event: "committed" }],
-        };
-      } finally {
-        controller.abort();
-      }
-    },
-  };
-  const outbox = new MemoryOutbox();
+  const connection = replayConnection(controller, [{
+    authority, generation: "one", fromRevision: 0n, throughRevision: 1n, live: true,
+    events: [{ authority, revision: 1n, operationId, event: "committed" }],
+  }]);  const outbox = new MemoryOutbox();
   await outbox.put({ operationId, authority, kind: "message.append", payload: {}, offlineSafe: true });
   const client = new HarnessClient<string>({ connect: async () => connection }, outbox);
   client.subscribe(() => { throw new Error("projection failed"); });
@@ -922,12 +855,7 @@ test("page window coalesces same-direction loads and deduplicates items", async 
 });
 
 test("page reset fences an older in-flight response", async () => {
-  let release: ((page: {
-    generation: string;
-    items: readonly { id: string }[];
-    hasMoreBefore: boolean;
-    hasMoreAfter: boolean;
-  }) => void) | undefined;
+  let release: ((page: Page<{ id: string }, unknown>) => void) | undefined;
   const window = new PageWindow(
     (item: { id: string }) => item.id,
     () => new Promise<Page<{ id: string }, unknown>>(resolve => { release = resolve; }),

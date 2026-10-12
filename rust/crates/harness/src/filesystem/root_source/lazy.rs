@@ -63,14 +63,14 @@ pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
         &'a self,
         snapshot: LazySnapshotRef,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     fn read<'a>(
         &'a self,
         snapshot: LazySnapshotRef,
         path: &'a str,
         maximum: u64,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
     fn list<'a>(
         &'a self,
         snapshot: LazySnapshotRef,
@@ -96,7 +96,7 @@ pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
         io: &'a crate::filesystem::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>,
     ) -> Result<
-        crate::store::history::HistoryContentFuture<
+        crate::conversation::BoundedContentFuture<
             'a,
             (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>),
         >,
@@ -129,22 +129,15 @@ where
         &'a self,
         snapshot: LazySnapshotRef,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy
-                    .validate_snapshot(snapshot, &mut work.accounting(work.cancellation()))
-                    .map_err(Error::from)
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let budget = io.remaining()?;
-            let mut accounting = budget.accounting(io.cancellation());
-            let result = self.lazy.validate_snapshot(snapshot, &mut accounting).map_err(root_source_error);
-            io.receive_content(budget.finish(result, &accounting))
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        let validate = || async move {
+            let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
+            recorded?;
+            result.map_err(root_source_error)
+        };
+        crate::conversation::BoundedContentFuture::new(Some(io), validate)
     }
     fn read<'a>(
         &'a self,
@@ -152,25 +145,19 @@ where
         path: &'a str,
         maximum: u64,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy
-                    .read_at_snapshot(snapshot, path, None, maximum, &mut work.accounting(work.cancellation()))
-                    .await
-                    .map(|(chunk, _)| chunk.bytes)
-                    .map_err(Error::from)
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let budget = io.remaining()?;
-            let mut accounting = budget.accounting(io.cancellation());
-            let result = self.lazy.read_at_snapshot(snapshot, path, None, maximum, &mut accounting)
-                .await.map(|(chunk, _)| chunk.bytes).map_err(root_source_error);
-            io.receive_content(budget.finish(result, &accounting))
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        let read = || async move {
+            let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
+            let result = self.lazy.read_at_snapshot(snapshot, path, None, maximum, &mut accounting).await;
+            let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
+            recorded?;
+            let (chunk, _) = result.map_err(root_source_error)?;
+            if !chunk.is_intrinsic() {
+                io.retain_owned(chunk.logical_owned_bytes())?;
+            }
+            Ok(chunk.bytes)
+        };
+        crate::conversation::BoundedContentFuture::new(Some(io), read)
     }
     fn list<'a>(
         &'a self,
@@ -213,7 +200,7 @@ where
         io: &'a crate::filesystem::fork_preparer::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>,
     ) -> Result<
-        crate::store::history::HistoryContentFuture<
+        crate::conversation::BoundedContentFuture<
             'a,
             (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>),
         >,
@@ -244,7 +231,7 @@ where
             acyclic_fs::TransactionCommit::Conflict { .. }
             | acyclic_fs::TransactionCommit::Fenced
             | acyclic_fs::TransactionCommit::IdempotencyConflict => {
-                Err(crate::filesystem::fork_preparer_io::failure(
+                Err(crate::executor::stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Conflict,
                     "Root upload publication was rejected",
@@ -252,24 +239,17 @@ where
             }
         };
         let guard = RootPublicationGuard { lease: Arc::clone(lease) };
-        if let Some(original) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(original, || async move {
-                let mut accounting = original.accounting(io.cancellation());
-                let (commit, snapshot) = self.lazy.write_at_snapshot(
-                    snapshot, root_lazy_mutations(mutations), key, permit, &mut accounting, &mut guard.clone(),
-                ).await?;
-                Ok((generation(commit)?, snapshot))
-            }).map(crate::store::history::HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let budget = io.remaining()?;
-            let mut accounting = budget.accounting(io.cancellation());
+        let publish = || async move {
+            let mut accounting = (&io).accounting(io.cancellation());
             let result = self.lazy.write_at_snapshot(
                 snapshot, root_lazy_mutations(mutations), key, permit, &mut accounting, &mut guard.clone(),
             ).await;
-            let (commit, snapshot) = io.receive_content(budget.finish(result, &accounting))?;
+            let (result, recorded) = (&io).finish(result, &accounting);
+            recorded?;
+            let (commit, snapshot) = result?;
             Ok((generation(commit)?, snapshot))
-        })
+        };
+        crate::conversation::BoundedContentFuture::new(Some(io), publish)
     }
 }
 

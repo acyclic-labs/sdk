@@ -3,15 +3,15 @@
 use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-use notifications::ViewObservers;
+use notifications::Observers;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
-use storage::ChangeMap;
+use storage::ChangePositions;
+pub(super) use storage::{copy_work, same_work, scan_work};
 use unicode_normalization::UnicodeNormalization as _;
-mod node_change;
 mod notifications;
 mod storage;
 pub(super) use notifications::PreparedEverythingNotification;
@@ -47,7 +47,7 @@ impl ViewStamp {
         Self(slot.load(Ordering::Acquire))
     }
 
-    /// Records one change in a slot, at a position after every stamp
+    /// Records a change after every previously sampled stamp.
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn record(slot: &AtomicU64) -> Self {
         let position = Self::next();
@@ -83,7 +83,7 @@ impl ViewOrigin {
         Self(NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Attributes every change this thread records to `self` until the
+    /// Attributes changes to this origin for the returned scope.
     pub(super) fn enter(self) -> ViewOriginScope {
         ViewOriginScope(CURRENT_ORIGIN.replace(self))
     }
@@ -113,7 +113,7 @@ pub trait ViewObserver: Send + Sync {
         None
     }
 
-    /// Changes to the source may not all have been reported by `position`,
+    /// The fence could not confirm the source view at `position`.
     fn view_unconfirmed(&self, position: ViewStamp) {
         self.view_changed(position, ViewOrigin::current());
     }
@@ -134,24 +134,24 @@ pub(super) enum ViewChange<'a> {
         moved: FileId,
         replaced: Option<FileId>,
     },
-    /// An effect enumerated in full: a prepared candidate replaced the
+    /// The enumerated effects of installing a prepared candidate.
     Effect(&'a ViewEffect),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
-    /// Changes to the source may not all have been reported yet, though
+    /// The fence could not confirm every source change.
     Unconfirmed,
 }
 
-/// One enumerated effect on the view: installing a candidate prepared from
+/// Enumerated changes from installing a prepared candidate.
 #[derive(Default)]
 pub(super) struct ViewEffect {
     /// Nodes whose record changed.
     pub(super) nodes: Vec<FileId>,
     /// Names bound, unbound, or rebound within a directory at a known path.
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
-    /// Names rebound together with everything reached through them, as
+    /// Rebound names and the subtrees reached through them.
     pub(super) subtrees: Vec<NamespacePath>,
-    /// Directories whose listing changed while every name in them still
+    /// Changed listings with unchanged name bindings.
     pub(super) listings: Vec<NamespacePath>,
     /// Whether the effect could not be enumerated at all.
     pub(super) everything: bool,
@@ -173,10 +173,10 @@ pub(crate) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
     unconfirmed: AtomicU64,
-    bindings: ChangeMap,
-    directories: ChangeMap,
-    nodes: ChangeMap,
-    observers: ViewObservers,
+    bindings: RwLock<ChangePositions>,
+    directories: RwLock<ChangePositions>,
+    nodes: RwLock<ChangePositions>,
+    observers: Mutex<Observers>,
     _custody: Option<crate::demand::NativeMountAllocationCustody>,
 }
 
@@ -203,22 +203,22 @@ impl ViewLedger {
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        let observers = self.observers.live(carrier)?;
-        storage::charge(
-            carrier,
-            crate::WorkCounters {
-                items_examined: observers.0.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            },
-        )?;
+        let observers = self
+            .observers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .live(carrier)?;
+        storage::charge(carrier, scan_work(observers.0.len() as u64))?;
         let position = ViewStamp::next();
         let recorded = (|| {
             match change {
-                ViewChange::Node(id) => self.nodes.record(key_of(id), position, carrier)?,
+                ViewChange::Node(id) => {
+                    storage::record(&self.nodes, key_of(id), position, carrier)?
+                }
                 ViewChange::Bound(path) => self.rebound(path, position, carrier)?,
                 ViewChange::Entry(path, id) => {
                     self.rebound(path, position, carrier)?;
-                    self.nodes.record(key_of(id), position, carrier)?;
+                    storage::record(&self.nodes, key_of(id), position, carrier)?;
                 }
                 ViewChange::Moved {
                     from,
@@ -228,30 +228,35 @@ impl ViewLedger {
                 } => {
                     self.rebound(from, position, carrier)?;
                     self.rebound(to, position, carrier)?;
-                    self.nodes.record(key_of(moved), position, carrier)?;
+                    storage::record(&self.nodes, key_of(moved), position, carrier)?;
                     if let Some(id) = replaced {
-                        self.nodes.record(key_of(id), position, carrier)?;
+                        storage::record(&self.nodes, key_of(id), position, carrier)?;
                     }
                 }
                 ViewChange::Effect(effect) => {
                     for id in &effect.nodes {
-                        self.nodes.record(key_of(id), position, carrier)?;
+                        storage::record(&self.nodes, key_of(id), position, carrier)?;
                     }
                     for (directory, name) in &effect.names {
                         let directory = path_key(directory, carrier)?;
-                        self.bindings.record(
+                        storage::record(
+                            &self.bindings,
                             child_key(directory, name, carrier)?,
                             position,
                             carrier,
                         )?;
-                        self.directories.record(directory, position, carrier)?;
+                        storage::record(&self.directories, directory, position, carrier)?;
                     }
                     for path in &effect.subtrees {
                         self.rebound(path, position, carrier)?;
                     }
                     for path in &effect.listings {
-                        self.directories
-                            .record(path_key(path, carrier)?, position, carrier)?;
+                        storage::record(
+                            &self.directories,
+                            path_key(path, carrier)?,
+                            position,
+                            carrier,
+                        )?;
                     }
                     if effect.everything {
                         position.record_in(&self.everything);
@@ -263,12 +268,11 @@ impl ViewLedger {
             Ok::<_, MountSourceError>(())
         })();
         position.record_in(&self.latest);
-        let origin = ViewOrigin::current();
         for observer in &observers.0 {
             if matches!(change, ViewChange::Unconfirmed) {
                 observer.view_unconfirmed(position);
             } else {
-                observer.view_changed(position, origin);
+                observer.view_changed(position, ViewOrigin::current());
             }
         }
         recorded
@@ -285,9 +289,9 @@ impl ViewLedger {
             parent = Some(terminal);
             terminal = child_key(terminal, name, carrier)?;
         }
-        self.bindings.record(terminal, position, carrier)?;
+        storage::record(&self.bindings, terminal, position, carrier)?;
         if let Some(parent) = parent {
-            self.directories.record(parent, position, carrier)?;
+            storage::record(&self.directories, parent, position, carrier)?;
         }
         Ok(())
     }
@@ -313,21 +317,16 @@ impl ViewLedger {
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
-            let mut terminal = None;
+            let mut terminal = key_of(&());
             stamp.precedes_none_of(&self.everything)
-                && self.bindings.unchanged_since(stamp, |unchanged| {
-                    PathKeys::new(path).all(|key| {
-                        terminal = Some(key);
-                        unchanged(key)
-                    })
-                })
-                && terminal.is_none_or(|key| {
-                    self.directories
-                        .unchanged_since(stamp, |unchanged| unchanged(key))
-                })
+                && storage::unchanged_since(
+                    &self.bindings,
+                    stamp,
+                    PathKeys::new(path).inspect(|key| terminal = *key),
+                )
+                && storage::unchanged_since(&self.directories, stamp, [terminal])
                 && file_id.is_none_or(|file_id| {
-                    self.nodes
-                        .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
+                    storage::unchanged_since(&self.nodes, stamp, [key_of(&file_id)])
                 })
         })
     }
@@ -342,9 +341,7 @@ impl ViewLedger {
         admitted_names(path.components(), work, || {
             stamp.precedes_none_of(&self.unconfirmed)
                 && stamp.precedes_none_of(&self.everything)
-                && self
-                    .bindings
-                    .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
+                && storage::unchanged_since(&self.bindings, stamp, PathKeys::new(path))
         })
     }
 
@@ -356,14 +353,10 @@ impl ViewLedger {
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
         admitted_names(path.components(), work, || {
-            let Some(directory) = PathKeys::new(path).last() else {
-                return false;
-            };
+            let directory = PathKeys::new(path).last().expect("path includes its root");
             stamp.precedes_none_of(&self.unconfirmed)
                 && stamp.precedes_none_of(&self.everything)
-                && self
-                    .directories
-                    .unchanged_since(stamp, |unchanged| unchanged(directory))
+                && storage::unchanged_since(&self.directories, stamp, [directory])
         })
     }
 
@@ -374,16 +367,11 @@ impl ViewLedger {
         stamp: ViewStamp,
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
-        work.charge(crate::WorkCounters {
-            items_examined: 3,
-            ..crate::WorkCounters::UNCHARGED
-        })
-        .map_err(super::lazy::mount_demand_error)?;
+        work.charge(scan_work(3))
+            .map_err(super::lazy::mount_demand_error)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
-            && self
-                .nodes
-                .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id))))
+            && storage::unchanged_since(&self.nodes, stamp, [key_of(&file_id)]))
     }
 }
 
@@ -421,12 +409,12 @@ fn path_key(
 ) -> Result<u64, MountSourceError> {
     carrier.with_work(|work| {
         admitted_names(path.components(), work, || {
-            PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
+            PathKeys::new(path).last().expect("path includes its root")
         })
     })
 }
 
-/// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
+/// Keys a child by its normalized and folded spelling.
 fn hash_child(parent: u64, name: &LogicalName) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write_u64(parent);
@@ -435,40 +423,43 @@ fn hash_child(parent: u64, name: &LogicalName) -> u64 {
 }
 
 fn hash_spelling_fold(name: &LogicalName, hasher: &mut DefaultHasher) {
-    /// Separates folded text from raw bytes that happen to equal it.
-    const TEXT: u8 = 1;
-    const RAW: u8 = 2;
     let bytes = name.as_bytes();
-    let text = match name.encoding() {
+    match name.encoding() {
         NameEncoding::Utf8 | NameEncoding::PosixBytes => {
             if bytes.is_ascii() {
-                hasher.write_u8(TEXT);
+                hasher.write_u8(1);
                 hash_ascii_fold(bytes.iter().copied(), hasher);
                 return;
             }
-            std::str::from_utf8(bytes)
-                .ok()
-                .map(std::borrow::Cow::Borrowed)
-        }
-        NameEncoding::WindowsUtf16Le => match crate::kernel::types::utf16le_units(bytes) {
-            Some(units) if units.clone().all(|unit| unit < 0x80) => {
-                hasher.write_u8(TEXT);
-                hash_ascii_fold(units.map(|unit| unit.to_le_bytes()[0]), hasher);
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                hash_unicode_fold(text.chars(), hasher);
                 return;
             }
-            Some(units) => char::decode_utf16(units)
-                .collect::<Result<String, _>>()
-                .ok()
-                .map(std::borrow::Cow::Owned),
-            None => None,
-        },
-    };
-    let Some(text) = text else {
-        hasher.write_u8(RAW);
-        hasher.write(bytes);
-        return;
-    };
-    hasher.write_u8(TEXT);
+        }
+        NameEncoding::WindowsUtf16Le => {
+            if let Some(units) = crate::kernel::types::utf16le_units(bytes) {
+                if units.clone().all(|unit| unit < 0x80) {
+                    hasher.write_u8(1);
+                    hash_ascii_fold(units.map(|unit| unit as u8), hasher);
+                    return;
+                }
+                if char::decode_utf16(units.clone()).all(|value| value.is_ok()) {
+                    hash_unicode_fold(
+                        char::decode_utf16(units).map(|value| value.expect("validated UTF-16")),
+                        hasher,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    // Keep malformed names separate from text with the same bytes.
+    hasher.write_u8(2);
+    hasher.write(bytes);
+}
+
+fn hash_unicode_fold(text: impl Iterator<Item = char>, hasher: &mut DefaultHasher) {
+    hasher.write_u8(1);
     let mut encoded = [0_u8; 4];
     for folded in text
         .nfc()
@@ -548,11 +539,8 @@ fn admitted_names<T>(
             );
         }
     }
-    work.charge(crate::WorkCounters {
-        items_examined: items,
-        ..crate::WorkCounters::UNCHARGED
-    })
-    .map_err(super::lazy::mount_demand_error)?;
+    work.charge(scan_work(items))
+        .map_err(super::lazy::mount_demand_error)?;
     if scratch != 0 {
         work.allocate(scratch)
             .map_err(super::lazy::mount_demand_error)?;

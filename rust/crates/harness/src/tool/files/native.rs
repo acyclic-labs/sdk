@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 pub(in crate::tool) fn invalid(reason: &'static str) -> Error {
     Error::NativeBoundary {
         code: crate::wire::ErrorCode::Invalid,
@@ -42,7 +40,9 @@ pub(in crate::tool) fn public_path(
 ) -> Result<()> {
     crate::conversation::validate_content_path(
         path,
-        &mut Some(&mut crate::store::history::native_work_io(work)?),
+        &mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )),
     )?;
     if crate::conversation::is_internal_path(path) {
         return Err(Error::NativeBoundary {
@@ -97,7 +97,7 @@ pub(in crate::tool) fn bound<T: Serialize>(
         drop(encoded);
         return Err(error);
     }
-    encoded.map_err(|source| Error::NativeEncode {
+    encoded.map_err(|source| Error::NativeJson {
         code: crate::wire::ErrorCode::Invalid,
         source,
         custody: Some(custody),

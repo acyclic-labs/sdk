@@ -661,7 +661,7 @@ mod native_decode_controls {
             certificate.err().expect("invalid certificate"),
         ] {
             match error {
-                Error::NativeDecode {
+                Error::NativeJson {
                     source,
                     custody: Some(custody),
                     ..

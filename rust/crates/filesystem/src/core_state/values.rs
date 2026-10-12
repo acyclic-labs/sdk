@@ -397,9 +397,13 @@ impl RecordValue {
         work: Option<&crate::NativeMaterializationWork>,
     ) -> Result<(), LocalCoreStateStoreError> {
         match (self, work) {
-            (Self::FlatContext(context), Some(work)) => measured_order(&mut context.roots.0, work)?,
+            (Self::FlatContext(context), Some(work)) => {
+                canonical_records(&mut context.roots.0, work, |left, right| {
+                    left.0.cmp(&right.0)
+                })?
+            }
             (Self::FlatChildren(children), Some(work)) => {
-                native_records::canonical_ids(children, work)?
+                canonical_records(children, work, Ord::cmp)?
             }
             (Self::FlatContext(context), None) => {
                 context.roots.0.sort_by(|left, right| left.0.cmp(&right.0));
@@ -465,17 +469,15 @@ impl Change {
         let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let needed = self.0.len() + 1;
         reserve_slots(&mut self.0, needed, work, &mut self.1)?;
-        let value = if let Some(value) = value {
-            let (value, mut allocation) = value;
-            if !value.matches(key) {
+        let value = if let Some(mut owned) = value {
+            if !owned.0.matches(key) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
-            if !allocation.work().shares_allocation_context(work) {
-                drop(value);
+            if !owned.1.work().shares_allocation_context(work) {
                 return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
             }
-            empty.absorb(&mut allocation)?;
-            Some(value)
+            empty.absorb(&mut owned.1)?;
+            Some(owned.0)
         } else {
             None
         };

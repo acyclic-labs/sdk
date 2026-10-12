@@ -3,51 +3,29 @@ use super::*;
 #[tokio::test]
 async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_frontier()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "lineage-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("lineage-main", B, &cancel).await?.value;
+    let base = main.head(B, &cancel).await?.value;
     let left = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-left",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let right = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-right",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -55,46 +33,40 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     assert_eq!(
         main.join_into(&left)
             .bounds(1, 32, 32)
-            .plan()
-            .await?
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .common_ancestor(),
         base.id()
     );
     assert_eq!(
         left.join_into(&main)
             .bounds(1, 32, 32)
-            .plan()
-            .await?
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .common_ancestor(),
         base.id()
     );
     assert!(matches!(
-        left.join_into(&right).bounds(1, 32, 32).plan().await,
+        left.join_into(&right).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::LineageLimit)
     ));
     assert!(matches!(
-        right.join_into(&left).bounds(1, 32, 32).plan().await,
+        right.join_into(&left).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::LineageLimit)
     ));
 
     let unrelated = fs
-        .create_workspace(
-            "lineage-unrelated",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("lineage-unrelated", B, &cancel)
         .await?
         .value;
     assert!(matches!(
-        main.join_into(&unrelated).bounds(1, 32, 32).plan().await,
+        main.join_into(&unrelated).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        unrelated.join_into(&main).bounds(1, 32, 32).plan().await,
+        unrelated.join_into(&main).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        main.join_into(&left).bounds(0, 32, 32).plan().await,
+        main.join_into(&left).bounds(0, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::JoinLimit)
     ));
     Ok(())
@@ -103,37 +75,18 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
 #[tokio::test]
 async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "main-rebase",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("main-rebase", B, &cancel).await?.value;
     main.write_text("/base", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-rebase",
-            ForkOptions::from_generation(
-                main.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -145,27 +98,11 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         return Err("first live rebase did not publish".into());
     };
     assert_eq!(
-        first
-            .read(
-                "/agent",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        first.read("/agent", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"local")
     );
     assert_eq!(
-        first
-            .read(
-                "/upstream",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        first.read("/upstream", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"first")
     );
     assert!(matches!(
@@ -181,27 +118,11 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
         WorkspaceRebase::Rebased(_)
     ));
     assert_eq!(
-        agent
-            .read(
-                "/later",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        agent.read("/later", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"second")
     );
     assert_eq!(
-        agent
-            .read(
-                "/agent",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        agent.read("/agent", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"local")
     );
     Ok(())
@@ -209,49 +130,26 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
 
 #[tokio::test]
 async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let main = fs
-        .create_workspace(
-            "main-conflict",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("main-conflict", B, &cancel)
         .await?
         .value;
     main.write_text("/shared", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-conflict",
-            ForkOptions::from_generation(
-                main.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/shared", "local").await?;
-    let before = agent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .id();
+    let before = agent.head(B, &cancel).await?.value.id();
     main.write_text("/shared", "upstream").await?;
     assert!(matches!(
         agent
@@ -262,27 +160,9 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
             ..
         }
     ));
+    assert_eq!(agent.head(B, &cancel).await?.value.id(), before);
     assert_eq!(
-        agent
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        before
-    );
-    assert_eq!(
-        agent
-            .read(
-                "/shared",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        agent.read("/shared", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"local")
     );
     assert!(matches!(
@@ -295,112 +175,59 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
 #[tokio::test]
 async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "main-ranges",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("main-ranges", B, &cancel).await?.value;
     main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-ranges",
-            ForkOptions::from_generation(
-                main.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let mut local = agent
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     local
-        .write_range(
-            "/shared",
-            1,
-            bytes::Bytes::from_static(b"XY"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .write_range("/shared", 1, OwnedBytes::from_static(b"XY"), B, &cancel)
         .await?
         .value;
     assert!(matches!(
         local
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>
             )
             .await?
             .value,
         TransactionCommit::Committed(_)
     ));
     let mut upstream = main
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     upstream
-        .write_range(
-            "/shared",
-            64,
-            bytes::Bytes::from_static(b"UV"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .write_range("/shared", 64, OwnedBytes::from_static(b"UV"), B, &cancel)
         .await?
         .value;
     assert!(matches!(
         upstream
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>
             )
             .await?
             .value,
@@ -412,15 +239,7 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
             .await?,
         WorkspaceRebase::Rebased(_)
     ));
-    let merged = agent
-        .read(
-            "/shared",
-            128,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let merged = agent.read("/shared", 128, B, &cancel).await?.value;
     assert_eq!(&merged[1..3], b"XY");
     assert_eq!(&merged[64..66], b"UV");
     assert!(

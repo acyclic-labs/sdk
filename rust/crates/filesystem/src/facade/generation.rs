@@ -27,27 +27,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<Option<DurableCommit>> {
-        let receipt = ({
-            let mut authority = crate::AuthorityWork::new((budget), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .find_operation(
-                    (volume_authority_id(volume_id)),
-                    (operation_id),
-                    &mut authority,
-                )
-                .await
-                .map(|(value, _allocation)| value);
-            authority.receipt(result)
-        })
-        .map_err(|failure| {
-            OperationFailure::new(FsError::Authority(failure.error), *failure.work)
-        })?;
-        Ok(OperationReceipt {
-            value: receipt.value,
-            work: receipt.work,
-        })
+        let mut work = crate::AuthorityWork::new(budget, cancellation);
+        let result = self
+            .inner
+            .authority
+            .find_operation(volume_authority_id(volume_id), operation_id, &mut work)
+            .await
+            .map_err(FsError::Authority);
+        work.receipt(result)
     }
 
     pub(crate) async fn generation_parents<W: FsWork>(
@@ -101,111 +88,78 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         self.config
     }
 
-    pub(super) async fn resolve_checkout_generation<W: FsWork>(
+    pub(super) async fn resolve_checkout_generation(
         &self,
         selector: GenerationSelector,
         mode: CheckoutMode,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<(ObjectId, Option<Head>, WorkCounters), FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let needs_head =
-                mode.access == AccessMode::ReadWrite || selector == GenerationSelector::Head;
-            if mode.access == AccessMode::ReadWrite
-                && selector != GenerationSelector::Head
-                && (mode.consistency != ConsistencyMode::TrackingSafe
-                    || mode.mutations != MutationMode::PrivateOverlay)
-            {
-                return Err(FsError::WritableCheckoutRequiresHead);
-            }
-            let head = if needs_head {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    let (root, head, _) =
-                        self.resolve_head_generation(original, cancellation).await?;
-                    return Ok((
-                        match selector {
-                            GenerationSelector::Head => root,
-                            GenerationSelector::Exact(id) => ObjectId {
-                                kind: ObjectKind::GenerationRoot,
-                                digest: id.digest(),
-                            },
-                        },
-                        Some(head),
-                        accounting.spent(),
-                    ));
-                }
-                let receipt = self
-                    .resolve_head_generation(accounting.remaining()?, cancellation)
-                    .await;
-                let spent = match &receipt {
-                    Ok(receipt) => receipt.work,
-                    Err(failure) => *failure.work,
-                };
-                merge_creation_backend_work(&mut accounting, spent)?;
-                Some(receipt.map_err(|failure| failure.error)?.value)
-            } else {
-                None
-            };
-            let root = match selector {
-                GenerationSelector::Exact(id) => ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: id.digest(),
-                },
-                GenerationSelector::Head => {
-                    head.as_ref().expect("head selector resolved authority").0
-                }
-            };
-            Ok((root, head.map(|(_, head, _)| head), accounting.spent()))
+    ) -> Result<(ObjectId, Option<Head>), FsError> {
+        if mode.access == AccessMode::ReadWrite
+            && selector != GenerationSelector::Head
+            && (mode.consistency != ConsistencyMode::TrackingSafe
+                || mode.mutations != MutationMode::PrivateOverlay)
+        {
+            return Err(FsError::WritableCheckoutRequiresHead);
         }
-        .await;
-        budget.finish(result, &accounting)
+        let head = if mode.access == AccessMode::ReadWrite || selector == GenerationSelector::Head {
+            Some(
+                self.resolve_head_generation(accounting, cancellation)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let root = match selector {
+            GenerationSelector::Exact(id) => ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: id.digest(),
+            },
+            GenerationSelector::Head => head.as_ref().expect("head selector resolved authority").0,
+        };
+        Ok((root, head.map(|(_, head)| head)))
     }
 
-    pub(super) async fn resolve_head_generation<W: FsWork>(
+    pub(super) async fn resolve_head_generation(
         &self,
-        budget: W,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> W::Output<(ObjectId, Head, WorkCounters), FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            let authority_id = volume_authority_id(self.id);
-            let mut authority = authority_work(&accounting, cancellation)?;
-            let result = self
-                .fs
-                .inner
-                .authority
-                .head(authority_id, &mut authority)
-                .await;
-            record_authority_work(&mut accounting, &authority)?;
-            let head = result?;
-            if head.sequence == Sequence::GENESIS {
-                return Err(FsError::EmptyAuthority);
-            }
-            let mut authority = authority_work(&accounting, cancellation)?;
-            let result = self
-                .fs
-                .inner
-                .authority
-                .replay(
-                    authority_id,
-                    Sequence::new(head.sequence.get().saturating_sub(1)),
-                    ReplayLimit {
-                        records: 1,
-                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                    },
-                    &mut authority,
-                )
-                .await;
-            record_authority_work(&mut accounting, &authority)?;
-            let (records, _allocation) = result?;
-            let latest = records.first().ok_or(FsError::InvalidAuthorityHistory)?;
-            let root = generation_from_head_record_value(latest, self.id, &mut accounting)?;
-            Ok((root, head, accounting.spent()))
+    ) -> Result<(ObjectId, Head), FsError> {
+        let authority_id = volume_authority_id(self.id);
+        let mut authority = authority_work(accounting, cancellation)?;
+        let result = self
+            .fs
+            .inner
+            .authority
+            .head(authority_id, &mut authority)
+            .await;
+        record_authority_work(accounting, &authority)?;
+        let head = result?;
+        if head.sequence == Sequence::GENESIS {
+            return Err(FsError::EmptyAuthority);
         }
-        .await;
-        budget.finish(result, &accounting)
+        let mut authority = authority_work(accounting, cancellation)?;
+        let result = self
+            .fs
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                Sequence::new(head.sequence.get().saturating_sub(1)),
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                },
+                &mut authority,
+            )
+            .await;
+        record_authority_work(accounting, &authority)?;
+        let (records, _allocation) = result?;
+        let latest = records.first().ok_or(FsError::InvalidAuthorityHistory)?;
+        Ok((
+            generation_from_head_record_value(latest, self.id, accounting)?,
+            head,
+        ))
     }
 }
 

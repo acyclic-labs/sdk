@@ -5066,10 +5066,7 @@ pub mod native {
     use super::*;
     use crate::native_host::{HostRoot, HostStat, HostStatReader, NativeHostWork as _};
     use crate::model::{FilesystemProfile, VolumeLimits};
-    #[cfg(unix)]
     use crate::native_host::HostListedEntry;
-    #[cfg(windows)]
-    use crate::native_host::HostListedWideEntry as HostListedEntry;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
@@ -6958,7 +6955,6 @@ pub mod native {
                         .inner
                         .root
                         .open_dir_held_wide(directory, work)
-                        .map(|(directory, _)| directory)
                         .and_then(|parent| {
                             crate::native_host::stat_windows_leaf(&parent, &entry.name, work)
                         });
@@ -6994,7 +6990,7 @@ pub mod native {
             #[cfg(unix)]
             let result = reader.0.next(work)?;
             #[cfg(windows)]
-            let result = reader.0.next_wide(work)?;
+            let result = reader.0.next(work)?;
             let Some((entry, allocation)) = result else {
                 return Ok(None);
             };

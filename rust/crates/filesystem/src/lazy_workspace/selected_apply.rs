@@ -130,15 +130,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     .await?
                     .is_some()
                 {
-                    accounted!(ctx, |work, cancel| transaction.mutate(
-                        path,
-                        |path| Ok::<_, WorkspaceError>(AuthoredMutation::Remove {
-                            path,
-                            expected_file_id: None
-                        }),
-                        work,
-                        cancel
-                    ))?;
+                    accounted!(ctx, |work, cancel| transaction.remove(path, work, cancel))?;
                 }
                 let namespace = self.namespace_path(path, ctx)?;
                 crate::Transaction::<A, O>::push_mutation(&mut changes, namespace, ctx)?;

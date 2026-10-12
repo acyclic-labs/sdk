@@ -1,18 +1,15 @@
 import type { ClientCommand, Connection, ReplayCursor, Transport } from "./client.js";
-import { RequestScheduler, requestAborted } from "./client-requests.js";
-
-/** Reserve retained commands, cursors and buffers before work; the transport bounds inbound frames. */
-export interface TransportReservations {
-  connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
-  send(command: ClientCommand): number;
-}
+import { RequestScheduler } from "./client-requests.js";
 
 /** Share finite request admission with hydration; preserve transport correlation and replay. */
 export class ScheduledTransport<Event> implements Transport<Event> {
-  constructor(readonly transport: Transport<Event>, readonly scheduler: RequestScheduler,
-    readonly reservations: TransportReservations,
+  constructor(private readonly transport: Transport<Event>, private readonly scheduler: RequestScheduler,
+    private readonly reservations: {
+      connect(cursors: ReadonlyMap<string, ReplayCursor>): number;
+      send(command: ClientCommand): number;
+    },
     /** Report late cancelled connection cleanup failures to the host. */
-    readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
+    private readonly onCleanupError: (error: unknown) => void = error => { queueMicrotask(() => { throw error; }); }) {}
 
   async connect(cursors: ReadonlyMap<string, ReplayCursor>, signal?: AbortSignal): Promise<Connection<Event>> {
     const controller = new AbortController();
@@ -39,12 +36,12 @@ export class ScheduledTransport<Event> implements Transport<Event> {
           owned = connected;
           if (controller.signal.aborted) {
             await closeOwned();
-            throw requestAborted();
+            throw new DOMException("Request cancelled", "AbortError");
           }
           return connected;
         } finally { abort.removeEventListener("abort", cancel); }
       }, signal);
-      if (controller.signal.aborted) { await closeOwned(); throw requestAborted(); }
+      if (controller.signal.aborted) { await closeOwned(); throw new DOMException("Request cancelled", "AbortError"); }
     } catch (error) {
       signal?.removeEventListener("abort", cancel);
       detached = owned === undefined;

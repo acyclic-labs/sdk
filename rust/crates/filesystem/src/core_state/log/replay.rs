@@ -102,7 +102,7 @@ impl CoreLog {
                     })?;
                 }
                 let count =
-                    crate::native_host::read_builtin_file(&file, &mut bytes[position..end], work)?;
+                    crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Read, end - position, work, || std::io::Read::read(&mut &file, &mut bytes[position..end]))?;
                 if count == 0 {
                     return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
                 }

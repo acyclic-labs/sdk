@@ -345,7 +345,7 @@ where
             let mut output = String::new();
             let mut admission = ModelEventAdmission::default();
             for record in &records {
-                crate::filesystem::fork_preparer_io::item(io, 0)?;
+                crate::model::charge_items(io, 1)?;
                 match &record.event {
                     ExecutionEvent::ContextPrepared { projection, .. } => {
                         prepared = Some(
@@ -418,21 +418,7 @@ where
                     .as_mut()
                     .map(|history| history as &mut dyn crate::store::history::HistoryIo),
             )?;
-            let bytes = match io {
-                #[cfg(not(target_arch = "wasm32"))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io
-                        .original_native_work()
-                        .expect("matched original native work");
-                    let bytes = self.load_with_native_work(&summary.output, work)?.await?;
-                    bytes
-                }
-                Some(io) => io.receive_content(
-                    self.load_measured(&summary.output, io.remaining()?, io.cancellation())
-                        .await,
-                )?,
-                None => self.load(&summary.output).await?,
-            };
+            let bytes = self.load(&summary.output, io)?.await?;
             if let Some(io) = io {
                 io.check_cancellation()?;
             }
@@ -560,7 +546,7 @@ where
 {
     let mut selected_ids = selection.message_ids.iter();
     for message in &loaded {
-        crate::filesystem::fork_preparer_io::item(io, 0)?;
+        crate::model::charge_items(io, 1)?;
         if matches!(
             message.kind,
             crate::conversation::MessageKind::System
@@ -587,14 +573,14 @@ where
     }
     if io.is_some() {
         for message in &loaded {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             journal
                 .verify_input_file_with_io(&message.content, io)
                 .await?;
             match &message.attachments {
                 crate::conversation::ReferencedAttachments::Inline { items } => {
                     for item in items {
-                        crate::filesystem::fork_preparer_io::item(io, 0)?;
+                        crate::model::charge_items(io, 1)?;
                         journal.verify_input_file_with_io(&item.file, io).await?;
                     }
                 }

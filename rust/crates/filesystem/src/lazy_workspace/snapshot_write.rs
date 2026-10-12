@@ -135,9 +135,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 }
                 result?;
             } else {
-                transaction
-                    .create_dirs(path, ctx, cancellation(ctx))
-                    .await?;
+                accounted!(ctx, |work, cancel| transaction
+                    .create_dir_all(path, work, cancel))?;
             }
         }
         let context = NativeSnapshotContext::Selected {

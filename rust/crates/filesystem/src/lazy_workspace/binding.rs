@@ -327,8 +327,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .await?;
         Ok(original.0.as_ref().map(|(id, _)| *id))
     }
-
-    pub(crate) async fn checkout(
+    /// Opens an accounted readonly checkout of the selected generation.
+    pub async fn checkout(
         &self,
         selector: crate::model::GenerationSelector,
         ctx: &mut KernelAccounting<'_>,

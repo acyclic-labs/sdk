@@ -493,7 +493,7 @@ fn original_native_frame_quota_precedes_trusted_parse_and_preserves_owned_cause(
         .err()
         .unwrap();
     match error {
-        Error::NativeDecode {
+        Error::NativeJson {
             source,
             custody: Some(custody),
             ..

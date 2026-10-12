@@ -178,10 +178,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::WorkspaceRestore::IdempotencyConflict
             });
         }
-        let (current, authority_head, _) = workspace
-            .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+        let (current, authority_head) = workspace
+            .resolve_head_generation(
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+                &cancellation,
+            )
             .await
-            .map(|receipt| receipt.value)
             .map_err(WorkspaceError::engine)?;
         let current = GenerationId::new(current.digest);
         if current != expected {
@@ -232,10 +234,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::WorkspaceRestore::AlreadyRestored(publication.proof.generation_id)
             }
             AppendOutcome::Conflict { .. } => {
-                let (actual, _, _) = workspace
-                    .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+                let (actual, _) = workspace
+                    .resolve_head_generation(
+                        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+                        &cancellation,
+                    )
                     .await
-                    .map(|receipt| receipt.value)
                     .map_err(WorkspaceError::engine)?;
                 crate::WorkspaceRestore::Stale(GenerationId::new(actual.digest))
             }
@@ -394,34 +398,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-    /// Streams one bounded source into immutable authenticated chunks.
-    pub async fn stage<R: AsyncBlobSource, W: FsWork>(
-        &self,
-        source: &mut R,
-        maximum_source_bytes: u64,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<StagedContent, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let standalone = matches!(
-            accounting,
-            KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }
-        );
-        let read = stage_content_for_volume_with_accounting(
-            &self.volume,
-            source,
-            maximum_source_bytes,
-            &mut accounting,
-            cancellation,
-        );
-        let result = if standalone {
-            in_heap(move || async move { read.await }).await
-        } else {
-            read.await
-        };
-        budget.finish(result, &accounting)
-    }
-
     pub(super) async fn stage_authored_blob_with_accounting(
         &self,
         content: acyclic_stream::OwnedBytes,

@@ -247,10 +247,12 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
     };
     let read = crate::heap_future::in_heap_measured(
         move |budget| async move {
-            AsyncObjectStore::read_with_custody(
-                store, page, maximum_bytes, budget, cancellation,
-                data_custody,
-            ).await
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(ObjectStoreError::Cancelled))
+                .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))?;
+            let mut context = crate::AuthorityWork::new(budget, cancellation);
+            context.read_observation = data_custody.map(|owner| (owner, owner.operation_cache_bytes()));
+            let result = store.read(page, maximum_bytes, &mut context).await;
+            context.read_receipt(result)
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },
         remaining, cancellation, Error::Storage(ObjectStoreError::Cancelled),

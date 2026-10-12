@@ -108,7 +108,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let Some(node) = self.store.load_lazy_shadow(root, ctx).await? else {
                 return Ok(None);
             };
-            let result = (|| match &node.0 {
+            let result: Result<_, LazyWorkspaceError> = (|| match &node.0 {
                 LazyShadow::Empty => Ok(Some(None)),
                 LazyShadow::Node {
                     file_id,

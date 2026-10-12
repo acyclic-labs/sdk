@@ -40,40 +40,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             cancel
         ))?;
         let options = ForkOptions::from_generation(generation, key);
-        let cancel = cancellation(ctx);
-        let child = 'sdk: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = ctx.native_work() {
-                break 'sdk self
-                    .workspace
-                    .fork_with_native_work(
-                        destination,
-                        options,
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        cancel,
-                        &mut |_| async { Ok::<(), LazyWorkspaceError>(()) },
-                    )
-                    .await?;
-            }
-            let result = self
-                .workspace
-                .fork(
-                    destination,
-                    options,
-                    crate::PublicationPermit::Unrestricted,
-                    ctx.remaining()?,
-                    cancel,
-                    |_| async {
-                        Ok::<_, crate::OperationFailure<crate::FsError>>(OperationReceipt {
-                            value: (),
-                            work: WorkCounters::UNCHARGED,
-                        })
-                    },
-                )
-                .await;
-            accept_receipt(result, ctx)?
-        };
+        let child = accounted!(ctx, |work, cancel| self
+            .workspace
+            .fork::<_, _, WorkspaceError>(
+                destination,
+                options,
+                crate::PublicationPermit::Unrestricted,
+                work,
+                cancel,
+                (),
+            ))?;
         let original = accounted!(ctx, |work, cancel| self
             .workspace
             .volume

@@ -53,9 +53,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         if let Some(parent) = parent_path(path) {
-            transaction
-                .create_dirs(parent, ctx, cancellation(ctx))
-                .await?;
+            accounted!(ctx, |work, cancel| transaction
+                .create_dir_all(parent, work, cancel))?;
         }
         if let Some(lookup) = lookup
             && matches!(
@@ -70,12 +69,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .write(path, bytes, work, cancel))?;
         if let Some(LazyLookup::Source { node, .. }) = lookup {
             let file_id = self.source_file_id(&node.file_identity, ctx)?;
-            accounted!(ctx, |work, cancel| transaction.mutate(
-                path,
-                |path| Ok::<_, WorkspaceError>(AuthoredMutation::Reidentify { path, file_id }),
-                work,
-                cancel
-            ))?;
+            accounted!(ctx, |work, cancel| transaction
+                .preserve_file_identity(path, file_id, work, cancel))?;
         }
         Ok(())
     }

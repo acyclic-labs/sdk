@@ -200,22 +200,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 used |= source;
                 let moved = (|| {
                     for path in selected.value.drain(..) {
-                        let bytes = path.capacity() as u64;
-                        let guard =
-                            crate::kernel::split_allocation(&mut selected.allocation, bytes)?;
-                        selected.bytes -= bytes;
-                        let path = Owned::new(path, guard, bytes);
                         let mut duplicate = false;
                         for present in &paths.value {
                             ctx.charge(WorkCounters {
                                 items_examined: 1,
                                 ..WorkCounters::UNCHARGED
                             })?;
-                            if present == &path.value {
+                            if present == &path {
                                 duplicate = true;
                                 break;
                             }
                         }
+                        let bytes = path.capacity() as u64;
+                        let guard =
+                            crate::kernel::split_allocation(&mut selected.allocation, bytes)?;
+                        selected.bytes -= bytes;
+                        let path = Owned::new(path, guard, bytes);
                         if duplicate {
                             path.retire(ctx)?;
                             continue;

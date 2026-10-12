@@ -1,19 +1,19 @@
 //! Optional observation at the original finite worker's provider boundaries.
 
 use super::*;
-use crate::filesystem::{PreparationIo, fork_preparer_io::clone_text};
+use crate::filesystem::PreparationIo;
 
 pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
-        reservation_id: clone_text(&lease.reservation.id, io)?,
-        placement: clone_text(&lease.reservation.placement, io)?,
+        reservation_id: stock_string_copy(&lease.reservation.id, io)?,
+        placement: stock_string_copy(&lease.reservation.placement, io)?,
     })
 }
 
 pub(super) fn clone_command(command: &WorkflowCommand, io: Option<&PreparationIo>) -> Result<WorkflowCommand> {
     Ok(WorkflowCommand {
         operation_id: command.operation_id,
-        kind: clone_text(&command.kind, io)?,
+        kind: stock_string_copy(&command.kind, io)?,
         payload: crate::executor::with_history_io(io, |work| command.payload.copy(work))?,
     })
 }
@@ -104,3 +104,5 @@ where
     }
 
 }
+
+use crate::executor::{stock_string_copy};

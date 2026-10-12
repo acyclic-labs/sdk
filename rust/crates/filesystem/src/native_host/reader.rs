@@ -120,10 +120,10 @@ pub(super) fn decode_host_directory_record(
 
 #[cfg(windows)]
 impl HostStatReader {
-    pub(crate) fn next_wide<W: NativeHostWork>(
+    pub(crate) fn next<W: NativeHostWork>(
         &mut self,
         work: &mut W,
-    ) -> Result<Option<(HostListedWideEntry, W::Allocation)>, W::Error> {
+    ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
         loop {
             work.check()?;
             let Some(offset) = self.next else {
@@ -145,20 +145,14 @@ impl HostStatReader {
                 continue;
             }
             let bytes = name.len() as u64 * 2;
-            let delta = WorkCounters {
-                bytes_copied: bytes,
-                ..WorkCounters::UNCHARGED
-            };
+            let delta = copy_work(bytes);
             work.admit(delta)?;
             let (mut copied, allocation) = buffer(name.len(), work)?;
             copied.extend_from_slice(name);
             let name = copied;
             let stat = match (|| {
                 work.record(delta)?;
-                match windows_wide_name(&name, work, || {
-                    io::Error::new(io::ErrorKind::InvalidInput, "native name exceeds NT length")
-                        .into()
-                })? {
+                match relative_kernel_name(&name, work)? {
                     Some(string) => {
                         stat_windows_name(&self.directory, &string, self.volume_serial_number, work)
                     }
@@ -178,7 +172,7 @@ impl HostStatReader {
                 }
             };
             self.next = next;
-            return Ok(Some((HostListedWideEntry { name, stat }, allocation)));
+            return Ok(Some((HostListedEntry { name, stat }, allocation)));
         }
     }
 }
@@ -248,7 +242,6 @@ pub(super) fn read_dir_held_with_volume<W: NativeHostWork>(
         FILE_GENERIC_READ,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-        W::invalid_request,
     )?
     .ok_or_else(W::invalid_request)?;
     let directory = Dir::from_std_file(file.into_std());
@@ -359,10 +352,7 @@ impl HostStatReader {
             if name.is_empty() || name.contains(&b'/') {
                 return Err(malformed().into());
             }
-            let delta = WorkCounters {
-                bytes_copied: name.len() as u64,
-                ..WorkCounters::UNCHARGED
-            };
+            let delta = copy_work(name.len() as u64);
             work.admit(delta)?;
             let (mut copied, allocation) = buffer(name.len(), work)?;
             copied.extend_from_slice(name);
