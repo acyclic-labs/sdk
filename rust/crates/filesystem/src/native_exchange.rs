@@ -1696,9 +1696,9 @@ mod tests {
         drop(journal);
         let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
             &crate::CancellationToken::new()).expect_err("overflowing buffer length rejected");
-        assert!(matches!(failure.error, NativeExchangeError::Work(crate::WorkError::Overflow)));
-        assert_eq!(failure.work.backend_write_operations, 0);
-        assert!(failure.work.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
+        assert!(matches!(failure.0, NativeExchangeError::Work(crate::WorkError::Overflow)));
+        assert_eq!(failure.1.backend_write_operations, 0);
+        assert!(failure.1.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
         assert!(witness.exists());
@@ -1720,8 +1720,8 @@ mod tests {
         drop(journal);
         let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
             &crate::CancellationToken::new()).expect_err("noncanonical witness retained");
-        assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(matches!(failure.0, NativeExchangeError::IncompatibleJournal));
+        assert_eq!(failure.1.backend_write_operations, 0);
         assert!(std::fs::read(&witness).expect("journal retained").ends_with(b"user trailing bytes"));
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");

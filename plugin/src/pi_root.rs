@@ -22,22 +22,14 @@ pub(crate) enum PiRootIntent {
 }
 
 pub(crate) fn root_identity_key_matches(key: &str, identity: &[u8; 16]) -> bool {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let bytes = key.as_bytes();
-    bytes.len() == 32 && identity.iter().enumerate().all(|(index, byte)| {
-        bytes[2 * index] == HEX[usize::from(byte >> 4)]
-            && bytes[2 * index + 1] == HEX[usize::from(byte & 15)]
-    })
+    let mut canonical = [0; 32];
+    hex::encode_to_slice(identity, &mut canonical).expect("fixed root identity extent");
+    key.as_bytes() == canonical
 }
 
 fn root_selected_identity(paths: &BTreeMap<String, String>, identity: &[u8; 16]) -> bool {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut key = [0u8; 32];
-    for (index, byte) in identity.iter().enumerate() {
-        key[2 * index] = HEX[usize::from(byte >> 4)];
-        key[2 * index + 1] = HEX[usize::from(byte & 15)];
-    }
-    // Every assigned byte comes from the ASCII alphabet above.
+    hex::encode_to_slice(identity, &mut key).expect("fixed root identity extent");
     std::str::from_utf8(&key).is_ok_and(|key| paths.contains_key(key))
 }
 
@@ -47,34 +39,14 @@ fn root_validation_error(reason: &'static str) -> acyclic_harness::Error {
     }
 }
 
-fn root_validation_step(work: Option<&acyclic_fs::NativeMaterializationWork>, items: u64)
-    -> acyclic_harness::Result<()> {
-    if let Some(work) = work {
-        work.admit(acyclic_fs::WorkCounters { items_examined: items,
-            ..acyclic_fs::WorkCounters::UNCHARGED })
-            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-    }
-    Ok(())
-}
-
 impl PiRootIntent {
-    pub(crate) fn validate(&self, binding: &PiTaskBinding) -> Result<(), String> {
-        self.validate_inner(binding, None).map_err(|error| match error {
-            acyclic_harness::Error::NativeBoundary { reason, .. } => reason.to_owned(),
-            error => super::display(error),
-        })
-    }
-
-    pub(crate) fn validate_with_native_work(
+    pub(crate) fn validate(
         &self, binding: &PiTaskBinding, work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<()> {
-        self.validate_inner(binding, Some(work))
-    }
-
-    fn validate_inner(&self, binding: &PiTaskBinding,
-        work: Option<&acyclic_fs::NativeMaterializationWork>,
-    ) -> acyclic_harness::Result<()> {
-        root_validation_step(work, 1)?;
+        let inspect = |items| work.admit(acyclic_fs::WorkCounters { items_examined: items,
+            ..acyclic_fs::WorkCounters::UNCHARGED })
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None });
+        inspect(1)?;
         match self {
             Self::ScratchOnly {} if binding.project_volumes.is_empty() => Ok(()),
             Self::Project {
@@ -89,7 +61,7 @@ impl PiRootIntent {
                 && root_selected_identity(paths, root_id) =>
             {
                 for (key, path) in paths {
-                    root_validation_step(work, key.len() as u64 + path.len() as u64 + 1)?;
+                    inspect(key.len() as u64 + path.len() as u64 + 1)?;
                     let mut identity = [0; 16];
                     if key.len() != 32
                         || hex::decode_to_slice(key, &mut identity).is_err()

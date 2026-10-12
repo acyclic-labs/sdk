@@ -163,7 +163,7 @@ impl LiveHandles {
             let stopped = session.stop_with_meter(&volume_work)
                 .map_err(|cause| pi_native::native_view_error(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
-            if !stopped || !session.cleanup_state().cleanup_complete {
+            if !stopped || !session.cleanup_state().cleanup_complete() {
                 return Err(Error::Indeterminate(command));
             }
             self.project_startup_owner = None;
@@ -349,7 +349,7 @@ impl PiNativeCommandHost {
     /// Uses the current original child owner; it never reclaims the parent, creates resources, re-admits the child, or captures a new source head.
     pub(crate) async fn hydrate_child(&self, shared: &Arc<NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence,
-        budget: WorkBudget, cancellation: &CancellationToken, work: &NativeMaterializationWork,
+        cancellation: &CancellationToken, work: &NativeMaterializationWork,
     ) -> Result<()> {
         if self.prepared(owner.task_id()).is_some() { return Ok(()); }
         let entry = self.registered_entry(owner.task_id())?;
@@ -360,7 +360,7 @@ impl PiNativeCommandHost {
             self.stream.clone(), &self.resources, Arc::clone(&self.protected), work)?;
         let original = pi_fork::original_operation(self.protected.policy().root_task,
             locator.parent, &locator.sdk_operation, work)?;
-        let plan = coordinator.load_plan(shared.context(), original, budget, cancellation).await?
+        let plan = coordinator.load_plan(shared.context(), original).await?
             .ok_or_else(|| unauthorized("Pi cold child has no original immutable preparation plan"))?;
         if plan.commit.caller != locator.parent || plan.commit.sdk_operation != locator.sdk_operation
             || plan.request.child.task_id() != owner.task_id()
@@ -370,7 +370,7 @@ impl PiNativeCommandHost {
             return Err(unauthorized("Pi cold selected source differs from the original sealed preparation"));
         }
         let prepared = coordinator.restore_admitted(shared, owner, fence, &plan,
-            locator.selected_source.clone(), budget, cancellation.clone()).await?;
+            locator.selected_source.clone(), cancellation.clone()).await?;
         self.register_prepared(prepared).await
     }
 
@@ -1212,7 +1212,7 @@ impl PiNativeCommandHost {
         let intent = &mut retained_intent.0;
         let context = shared.context();
         self.hydrate_child(&shared, &owner, &context.owned_task_fence()?,
-            crate::pi_root_provider::allocation_budget(), work.cancellation(), work).await?;
+            work.cancellation(), work).await?;
         let prepared = self.prepared(owner.task_id()).ok_or_else(||
             unauthorized("Pi native first dispatch requires actual reopened sealed preparation capabilities"))?;
         validate_child_binding(&prepared.binding, &input.binding)?;

@@ -288,7 +288,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     if maximum_request_bytes == 0 || maximum_request_bytes == u64::MAX {
         return Err(Error::Invalid("recursive request bound must be finite and positive".into()));
     }
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(crate::tool::files::read_file()?)?;
     tools.register(crate::tool::files::write_file()?)?;
     tools.register(crate::tool::files::edit_file()?)?;

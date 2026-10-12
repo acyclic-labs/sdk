@@ -6780,7 +6780,7 @@ impl TaskContext {
         let tools = self
             .harness
             .tools
-            .definitions()?
+            .definitions(None)?
             .into_iter()
             .filter(|tool| {
                 self.scope
@@ -7940,7 +7940,7 @@ impl TaskContext {
         operation_id: OperationId,
         interaction: Interaction,
     ) -> Result<InteractionOutcome> {
-        interaction.validate()?;
+        interaction.validate(&mut None)?;
         if !self.scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::Unauthorized("scope lacks interaction:route".into()));
         }
@@ -9507,7 +9507,7 @@ mod tests {
             .requires("interactions")?;
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
-        let tools = ToolRegistry::new();
+        let tools = ToolRegistry::default();
         let all_grants = ["model:generate", "context:build", "interaction:route"];
         let complete_scope = RuntimeScope::new(
             Capabilities::new(all_grants.iter().copied()),
@@ -9829,7 +9829,7 @@ mod tests {
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let harness = AgentHarness::new(
             TaskRegistry::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
             scope.clone(),
             2,
             None,
@@ -10223,7 +10223,7 @@ mod tests {
         )?;
         let harness = AgentHarness::with_policy(
             TaskRegistry::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
             scope.clone(),
             1,
             None,
@@ -10803,7 +10803,7 @@ mod tests {
         assert!(TaskAdmissionRecord::from_canonical_value(unknown).is_err());
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope,
             concurrency: 1,
@@ -10916,7 +10916,7 @@ mod tests {
         let polls = Arc::new(AtomicUsize::new(0));
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope,
             concurrency: 1,
@@ -11161,7 +11161,7 @@ mod tests {
         ));
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
             concurrency: 2,
@@ -11212,7 +11212,7 @@ mod tests {
         tasks.register(definition)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(
                 Capabilities::new(["task:spawn:test.recursive@1"]),
@@ -11291,7 +11291,7 @@ mod tests {
         )?)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(
                 Capabilities::new(["task:spawn:test.map.leaf@1"]),
@@ -11352,7 +11352,7 @@ mod tests {
         tasks.register(definition)?;
         let harness = Bindings {
             tasks,
-            tools: ToolRegistry::new(),
+            tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::new(Capabilities::new([] as [String; 0]), Limits::default())?,
             concurrency: 2,
@@ -11406,7 +11406,7 @@ mod tests {
                 .is_err()
         );
         let harness =
-            AgentHarness::new(TaskRegistry::default(), ToolRegistry::new(), root, 1, None)?;
+            AgentHarness::new(TaskRegistry::default(), ToolRegistry::default(), root, 1, None)?;
         let view = harness.scoped(Capabilities::new([] as [String; 0]), narrowed)?;
         assert!(harness.scope.grants().contains("tool:call:test.echo"));
         assert!(!view.scope.grants().contains("tool:call:test.echo"));
@@ -11485,7 +11485,7 @@ mod tests {
         let context = TaskContext {
             harness: AgentHarness::new(
                 TaskRegistry::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
                 scope.clone(),
                 1,
                 None,

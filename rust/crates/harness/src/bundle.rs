@@ -332,7 +332,7 @@ impl HarnessBuilder {
                     "stock model loop requires model:generate".into(),
                 ));
             }
-            bindings.tools.definitions()?;
+            bindings.tools.definitions(None)?;
             let executor = Arc::new(
                 StockExecutor::new(model.clone(), Arc::clone(provider), self.context.clone(), bindings.tools.clone())
                     .with_compaction_policy(self.compaction)
@@ -1034,7 +1034,7 @@ mod tests {
         let issuer =
             crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
         let mut schemas = crate::core::SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             "example.builder",
             1,
             json!({"type":"object"}),
@@ -1200,9 +1200,9 @@ mod tests {
 
     #[tokio::test]
     async fn individually_assembled_tool_preserves_canonical_result_and_projection() -> Result<()> {
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         registry.register(example_tool())?;
-        assert_eq!(registry.definitions()?.len(), 1);
+        assert_eq!(registry.definitions(None)?.len(), 1);
         let tool = registry
             .get("example.echo", None)?
             .ok_or_else(|| Error::NotFound("example.echo".into()))?;

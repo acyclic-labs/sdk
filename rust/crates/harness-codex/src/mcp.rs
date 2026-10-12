@@ -84,7 +84,7 @@ impl McpEndpoint {
     ) -> Result<Self> {
         let mut granted = BTreeMap::new();
         let mut names = BTreeMap::new();
-        for definition in tools.definitions()? {
+        for definition in tools.definitions(None)? {
             if !scope
                 .grants()
                 .contains(&format!("tool:call:{}", definition.name))
