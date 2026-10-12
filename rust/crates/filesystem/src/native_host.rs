@@ -2454,7 +2454,7 @@ impl HostRoot {
         &self, name: &Path, destination: &Self, destination_name: &Path,
         work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
-        crate::native_exchange::exchange_native_entries_held_measured(
+        crate::native_exchange::exchange_native_entries_held(
             &self.directory, name, &destination.directory, destination_name, work,
         )
     }
@@ -2462,7 +2462,7 @@ impl HostRoot {
     pub(crate) fn recover_entry_exchange_measured(
         &self, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork,
     ) -> Result<(), DemandError> {
-        crate::native_exchange::recover_native_entry_exchange_held_measured(
+        crate::native_exchange::recover_native_entry_exchange_held(
             &self.directory, name, work,
         )
     }
