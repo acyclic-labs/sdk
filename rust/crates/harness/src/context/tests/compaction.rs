@@ -43,7 +43,7 @@ fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> R
         current_input_index: Some(3),
         ..Context::default()
     };
-    let prefix = compaction::clone_context_prefix(&source, 2, &mut None)?.0;
+    let prefix = compaction::clone_context(&source, Some(2), &mut None)?.0;
     let output = message(ModelRole::Assistant, "summary")?
         .content
         .file_refs()

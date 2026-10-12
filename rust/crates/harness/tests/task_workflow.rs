@@ -909,7 +909,7 @@ async fn worker_restart_with_options(
         reconciled: AtomicUsize::new(0),
     });
     let mut tools = ToolRegistry::default();
-    tools.register(Tool {
+    tools.register((Tool {
         definition: ToolDefinition {
             name: "test.restore".into(),
             revision: "1".into(),
@@ -922,7 +922,7 @@ async fn worker_restart_with_options(
         },
         executor: tool.clone(),
         projection: tool.clone(),
-    })?;
+    }, None), &mut None, None)?;
     for reopened in [false, true] {
         let (filesystem, stream, payloads, reader, runtime) = boxed_restart_phase(|| async {
             let filesystem = FilesystemHost::new(

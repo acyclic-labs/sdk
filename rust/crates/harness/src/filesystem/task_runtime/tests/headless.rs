@@ -216,10 +216,11 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         Err(Error::Unauthorized(_))
     ));
     let wrong_generation = crate::resources::GenerationRef::new(
-        ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
-        old_generation.as_resource().key().to_vec(),
+        &ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
+        old_generation.as_resource().key(),
         None,
-    )?;
+        None,
+    )?.0;
     assert!(
         owner
             .list(&project, "src", "src", &wrong_generation, None, 1)

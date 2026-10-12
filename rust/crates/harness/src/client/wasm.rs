@@ -71,7 +71,7 @@ struct JavaScriptDomain {
     restore: Option<Function>,
 }
 
-fn hypothesis_object(branch: &super::Branch<JavaScriptDomain>) -> Result<JsValue, Error> {
+fn hypothesis_object(branch: &super::ClientHypothesis<JavaScriptDomain>) -> Result<JsValue, Error> {
     let object: JsValue = Object::new().into();
     set(&object, "branch", &JsValue::from_str(&id_text(branch.id)))?;
     set(
@@ -136,7 +136,7 @@ impl Domain for JavaScriptDomain {
     fn restore(
         &self,
         fact: &Fact<String, String, JsValue>,
-        branch: &super::Branch<Self>,
+        branch: &super::ClientHypothesis<Self>,
         work: usize,
     ) -> Result<(usize, usize), Error> {
         let callback = self.restore.as_ref().ok_or(Error::Unsupported)?;

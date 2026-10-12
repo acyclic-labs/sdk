@@ -38,9 +38,10 @@ async fn admitted_limits_reach_sources_and_stages_and_bound_message_joins() -> R
         content: ModelContent::Text("source".into()),
     }];
     for placement in [ContextPlacement::Prepend, ContextPlacement::Append] {
-        let joined = selection::place_messages_with_io(
+        let joined = selection::apply_context_projection(
             base.clone(),
             contribution.clone(),
+            selection::ContextRenderMode::Prompt,
             placement,
             limits,
             None,
@@ -51,9 +52,10 @@ async fn admitted_limits_reach_sources_and_stages_and_bound_message_joins() -> R
         );
         let exact = crate::contract::canonical_json_bytes(&joined)?.len() as u64;
         assert_eq!(
-            selection::place_messages_with_io(
+            selection::apply_context_projection(
                 base.clone(),
                 contribution.clone(),
+                selection::ContextRenderMode::Prompt,
                 placement,
                 Limits {
                     render_bytes: exact,
@@ -74,9 +76,10 @@ async fn admitted_limits_reach_sources_and_stages_and_bound_message_joins() -> R
             },
         ] {
             assert!(matches!(
-                selection::place_messages_with_io(
+                selection::apply_context_projection(
                     base.clone(),
                     contribution.clone(),
+                    selection::ContextRenderMode::Prompt,
                     placement,
                     rejected,
                     None,

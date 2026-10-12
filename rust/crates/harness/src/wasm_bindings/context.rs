@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct WasmPublicModelContextSelection {
@@ -31,8 +30,12 @@ pub(super) struct WasmPrefixReader {
 }
 
 impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
-    fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
-        -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
             self.files.bytes(file).map(acyclic_stream::OwnedBytes::from)
@@ -104,7 +107,12 @@ pub async fn select_model_context_wasm(
         selection.conversation_revision,
         selection.clone(),
         &resolver,
-        crate::conversation::Limits { context_messages: maximum_messages as usize, attachments: maximum_attachments as usize, render_bytes: maximum_render_bytes, ..Default::default() },
+        crate::conversation::Limits {
+            context_messages: maximum_messages as usize,
+            attachments: maximum_attachments as usize,
+            render_bytes: maximum_render_bytes,
+            ..Default::default()
+        },
         maximum_projected_attachments as usize,
         None,
     )
@@ -167,7 +175,12 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection(&conversation, &selection, selection.conversation_revision, &mut None)
+    validate_model_context_selection(
+        &conversation,
+        &selection,
+        selection.conversation_revision,
+        &mut None,
+    )
     .map_err(js_error)
 }
 
@@ -200,6 +213,7 @@ pub fn project_discovered_context(
         crate::context::ContextRenderMode::Prompt,
         placement,
         limits,
+        None,
     )
     .map_err(js_error)?;
     context_to_js(&context)
@@ -337,7 +351,9 @@ pub fn validate_context_selection(
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
 ) -> Result<(), JsValue> {
     let selection: crate::context::ContextSelection = from_js(selection)?;
-    selection.validate(from_js(limits)?, &mut None).map_err(js_error)
+    selection
+        .validate(from_js(limits)?, &mut None)
+        .map_err(js_error)
 }
 
 /// Applies a host renderer's output using the same native placement and bounds.
@@ -356,19 +372,30 @@ pub fn apply_context_projection(
         from_js(mode)?,
         from_js(placement)?,
         from_js(limits)?,
+        None,
     )
     .map_err(js_error)?;
     context_to_js(&context)
 }
 
 impl ContentResidencyVerifier for WasmProjectionResolver {
-    fn verify<'a>(&'a self, _file: &'a FileRef, _maximum_bytes: u64, _io: Option<&'a ContentIo>)
-        -> crate::Result<BoundedContentFuture<'a, ()>> {
+    fn verify<'a>(
+        &'a self,
+        _file: &'a FileRef,
+        _maximum_bytes: u64,
+        _io: Option<&'a ContentIo>,
+    ) -> crate::Result<BoundedContentFuture<'a, ()>> {
         Err(crate::Error::Unsupported("projection-only reader".into()))
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
-        -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        BoundedContentFuture::new(io, || async move { self.bytes(file).map(acyclic_stream::OwnedBytes::from) })
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        BoundedContentFuture::new(io, || async move {
+            self.bytes(file).map(acyclic_stream::OwnedBytes::from)
+        })
     }
 }
