@@ -612,16 +612,17 @@ impl acyclic_harness::context::ContextStage for InputDependentStage {
     fn name(&self) -> &str {
         "input-dependent"
     }
-    fn contract(&self) -> serde_json::Value {
-        serde_json::json!({ "name": self.name(), "revision": self.revision })
+    fn contract(&self, _: Option<&acyclic_harness::conversation::ContentIo>) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({ "name": self.name(), "revision": self.revision }))
     }
     fn apply<'a>(
         &'a self,
         input: &'a acyclic_harness::context::ContextInput,
         mut context: Context,
         _: Limits,
-    ) -> BoxProviderFuture<'a, Result<Context>> {
-        Box::pin(async move {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Context>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             context.messages.push(ModelMessage {
                 role: ModelRole::System,
