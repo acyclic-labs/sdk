@@ -157,23 +157,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(GenerationId, Head), WorkspaceError> {
         accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let (root, head, _) = workspace
-                .resolve_head_generation(original, cancellation)
-                .await?;
-            return Ok((GenerationId::new(root.digest), head));
-        }
-        let result = workspace
-            .resolve_head_generation(accounting.remaining()?, cancellation)
-            .await
-            .map(|receipt| receipt.value);
-        let backend = match &result {
-            Ok((_, _, work)) => *work,
-            Err(failure) => *failure.work,
-        };
-        accounting.record_completed(backend)?;
-        let (root, head, _) = result.map_err(|failure| failure.error)?;
+        let (root, head) = workspace
+            .resolve_head_generation(accounting, cancellation)
+            .await?;
         Ok((GenerationId::new(root.digest), head))
     }
 
@@ -193,17 +179,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .find_operation(volume_authority_id(workspace.id), operation_id, &mut work)
             .await;
         record_authority_work(accounting, &work)?;
-        let (record, allocation) = result.map_err(FsError::from)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let allocation = allocation.map_or(
-            KernelOwnedAllocation::Standalone,
-            KernelOwnedAllocation::NativeOriginal,
-        );
-        #[cfg(target_arch = "wasm32")]
-        let allocation = {
-            drop(allocation);
-            KernelOwnedAllocation::Standalone
-        };
+        let record = result.map_err(FsError::from)?;
+        let allocation = KernelOwnedAllocation::Standalone;
         let generation = record
             .as_ref()
             .map(|record| {
@@ -257,14 +234,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             &mut authority,
                         )
                         .await
-                        .map(|(value, allocation)| {
-                            (value, allocation.expect("native authority allocation"))
-                        })
+                        .map(|value| (value, KernelOwnedAllocation::Standalone))
                 })
                 .map_err(FsError::from)?;
                 native = Some((
                     observed.0,
-                    KernelOwnedAllocation::NativeOriginal(observed.1),
+                    observed.1,
                 ));
             }
             let observed = match native {

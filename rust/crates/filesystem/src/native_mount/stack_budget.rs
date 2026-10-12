@@ -61,21 +61,24 @@ fn deepest_stack<T: Send>(callback: impl FnOnce() -> T + Send) -> (T, usize) {
 }
 
 fn measure<T: Send>(
-    measured: &mut Vec<(&'static str, usize, usize)>,
-    kind: &'static str,
+    kind: &str,
     callback: impl FnOnce() -> Result<T, MountSourceError> + Send,
 ) -> Result<T, MountSourceError> {
-    let (_, unoptimized, optimized) = BUDGETS
+    let (_, debug, release) = BUDGETS
         .iter()
         .find(|(name, _, _)| *name == kind)
-        .expect("every measured kind has a budget");
+        .expect("callback has a budget");
     let budget = if cfg!(debug_assertions) {
-        *unoptimized
+        *debug
     } else {
-        *optimized
+        *release
     };
     let (result, used) = tokio::task::block_in_place(|| deepest_stack(callback));
-    measured.push((kind, used.div_ceil(1024), budget));
+    assert!(
+        used.div_ceil(1024) <= budget,
+        "{kind}: {} KiB exceeds {budget} KiB",
+        used.div_ceil(1024)
+    );
     result
 }
 
@@ -132,7 +135,7 @@ async fn lazy_workspace(
         FilesystemProfile::Posix
     };
     let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
+        std::borrow::Cow::Owned(source_root),
         profile,
         VolumeLimits::default(),
         None,
@@ -150,7 +153,7 @@ async fn lazy_workspace(
             "stack-budget",
             Arc::new(demand),
             LocalCoreStateStore::open_owned(root.join("core"))?,
-        crate::VolumeConfig::portable(if (&engine).capabilities().durable {
+            crate::VolumeConfig::portable(if (&engine).capabilities().durable {
                 crate::Lifecycle::Durable
             } else {
                 crate::Lifecycle::Ephemeral
@@ -161,8 +164,10 @@ async fn lazy_workspace(
                 work: crate::WorkCounters::UNCHARGED,
                 budget: crate::WorkBudget::UNBOUNDED,
                 cancellation: &crate::CancellationToken::new(),
-            }, )
-        .await .map(|(lazy, _)| lazy) ?,
+            },
+        )
+        .await
+        .map(|(lazy, _)| lazy)?,
     );
     let checkout = lazy
         .workspace()
@@ -186,45 +191,40 @@ async fn lazy_workspace(
     Ok((lazy, authored))
 }
 
-fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
+fn measure_common(view: &dyn MountFilesystem) -> TestResult {
     let work = crate::NativeMaterializationWork::new(
         crate::performance::BOUNDARY_BUDGET,
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
-    let mut measured = Vec::new();
     let read = path("read.txt");
-    measure(&mut measured, "readdir-root", || {
+    measure("readdir-root", || {
         view.read_directory(&MountPath::root(), None, 256)
     })?;
-    measure(&mut measured, "readdir", || {
-        view.read_directory(&path("dir"), None, 256)
-    })?;
-    measure(&mut measured, "lookup", || view.lookup(&read))?;
-    let pinned = measure(&mut measured, "lookup-pinned", || view.lookup_pinned(&read))?;
-    let opened = measure(&mut measured, "open", || view.open_file(&read))?;
-    measure(&mut measured, "getattr", || opened.lookup())?;
-    measure(&mut measured, "read", || opened.read_range(0, CONTENT))?;
+    measure("readdir", || view.read_directory(&path("dir"), None, 256))?;
+    measure("lookup", || view.lookup(&read))?;
+    let pinned = measure("lookup-pinned", || view.lookup_pinned(&read))?;
+    let opened = measure("open", || view.open_file(&read))?;
+    measure("getattr", || opened.lookup())?;
+    measure("read", || opened.read_range(0, CONTENT))?;
     if let Some((_, Some(pin))) = pinned {
-        measure(&mut measured, "read-pinned", || {
+        measure("read-pinned", || {
             view.read_pinned(&read, pin, 0, CONTENT.into(), 16 * 1024, &mut |_, _| Ok(()))
         })?;
     } else {
-        measure(&mut measured, "read-pinned", || {
-            view.read_range(&read, 0, CONTENT)
-        })?;
+        measure("read-pinned", || view.read_range(&read, 0, CONTENT))?;
     }
-    measure(&mut measured, "create", || {
+    measure("create", || {
         view.create_file(&path("created.txt"), FileMetadata::default(), None, &work)
     })?;
     let created = view.open_file(&path("created.txt"))?;
-    measure(&mut measured, "write", || {
+    measure("write", || {
         created.write_range(0, Bytes::from_static(b"written"))
     })?;
-    measure(&mut measured, "mkdir", || {
+    measure("mkdir", || {
         view.create_directory(&path("made"), FileMetadata::default(), &work)
     })?;
-    measure(&mut measured, "rename", || {
+    measure("rename", || {
         view.rename(
             &path("created.txt"),
             &path("made/created.txt"),
@@ -232,7 +232,7 @@ fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
             &work,
         )
     })?;
-    measure(&mut measured, "write-existing", || {
+    measure("write-existing", || {
         view.open_file(&path("write.txt"))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
@@ -241,47 +241,21 @@ fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
         .lookup(&attributes)?
         .ok_or(MountSourceError::NotFound)?
         .metadata;
-    measure(&mut measured, "setattr-existing", || {
+    measure("setattr-existing", || {
         view.set_attributes(&attributes, metadata, Some(1), &work)
     })?;
-    measure(&mut measured, "rename-existing", || {
+    measure("rename-existing", || {
         view.rename(&path("rename.txt"), &path("renamed.txt"), false, &work)
     })?;
-    measure(&mut measured, "remove-existing", || {
+    measure("remove-existing", || {
         view.remove(&path("remove.txt"), None, &work)
     })?;
-    measure(&mut measured, "lookup-deep", || {
-        view.lookup(&path(&deep("read.txt")))
-    })?;
-    measure(&mut measured, "write-deep", || {
+    measure("lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
+    measure("write-deep", || {
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measure(&mut measured, "flush", || view.flush(&work))?;
-    let profile = if cfg!(debug_assertions) {
-        "unoptimized"
-    } else {
-        "optimized"
-    };
-    for (kind, used, budget) in &measured {
-        println!(
-            "stack {} {profile} {source} {kind}: {used} KiB of {budget} KiB",
-            std::env::consts::OS
-        );
-    }
-    assert_eq!(
-        measured.len(),
-        BUDGETS.len(),
-        "every budgeted kind is measured"
-    );
-    let over = measured
-        .iter()
-        .filter(|(_, used, budget)| used > budget)
-        .collect::<Vec<_>>();
-    assert!(
-        over.is_empty(),
-        "{source} callbacks exceed their stack budget (kind, KiB used, KiB budget): {over:?}"
-    );
+    measure("flush", || view.flush(&work))?;
     Ok(())
 }
 
@@ -337,7 +311,7 @@ async fn lazy_view_callbacks_fit_their_stack_budgets() -> TestResult {
             None,
         )
     }?;
-    measure_common("lazy", &view)?;
+    measure_common(&view)?;
     Ok(())
 }
 
@@ -364,6 +338,6 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
             .open_file(&file)?
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;
     }
-    measure_common("checkout", authored.as_ref())?;
+    measure_common(authored.as_ref())?;
     Ok(())
 }

@@ -30,8 +30,7 @@ pub(crate) fn validate_json_schema_value(
         Ok(()) => Ok(()),
         Err(source) => Err(schema_error(
             source.to_owned(),
-            label,
-            "failed validation",
+            format_args!("{label} failed validation"),
             &mut scope,
         )),
     }
@@ -45,7 +44,7 @@ fn compile_validator(
     schema_step(scope.work())?;
     jsonschema::validator_for(schema)
         .map(Arc::new)
-        .map_err(|source| schema_error(source, label, "invalid schema", scope))
+        .map_err(|source| schema_error(source, format_args!("invalid {label} schema"), scope))
 }
 
 fn schema_step(work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
@@ -119,8 +118,7 @@ fn admit_schema_value(value: &serde_json::Value, scope: &mut CodecQuota<'_, '_>)
 
 fn schema_error(
     source: jsonschema::ValidationError<'static>,
-    label: &str,
-    operation: &str,
+    context: std::fmt::Arguments<'_>,
     scope: &mut CodecQuota<'_, '_>,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -144,23 +142,6 @@ fn schema_error(
             custody: Some(custody),
         };
     }
-    let render = |message: std::fmt::Arguments<'_>, work: &mut Option<&mut dyn HistoryIo>| {
-        let Some(work) = work.as_deref_mut() else {
-            return Error::Invalid(message.to_string());
-        };
-        match preparation_format(message, &mut Some(work)) {
-            Ok(message) => Error::Invalid(message),
-            Err(error) => error,
-        }
-    };
-    match operation {
-        "invalid schema" => render(
-            format_args!("invalid {label} schema: {source}"),
-            scope.work(),
-        ),
-        _ => render(
-            format_args!("{label} failed validation: {source}"),
-            scope.work(),
-        ),
-    }
+    preparation_format(format_args!("{context}: {source}"), scope.work())
+        .map_or_else(|error| error, Error::Invalid)
 }

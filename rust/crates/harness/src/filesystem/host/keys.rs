@@ -21,7 +21,7 @@ pub(in crate::filesystem) fn project_join_key(operation: crate::OperationId, io:
     if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
     let mut buffer = [0_u8; 64];
     let mut output = buffer.as_mut_slice();
-    write!(&mut output, "project-join:{operation}").map_err(|_| fork_preparer_io::failure(io,
+    write!(&mut output, "project-join:{operation}").map_err(|_| stock_boundary(io,
         crate::wire::ErrorCode::Invalid, "project join retry key exceeds its fixed encoding"))?;
     let length = 64 - output.len();
     if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { bytes_hashed: length as u64, ..Default::default() })?; }
@@ -92,3 +92,5 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         WorkspaceError::Engine(value) => Error::Storage(value),
     }
 }
+
+use crate::executor::{stock_boundary};

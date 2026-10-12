@@ -1,4 +1,3 @@
-//! effects semantics.
 use super::*;
 /// Strength advertised by an external effect provider.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -119,7 +118,7 @@ pub(in crate::core) fn effect_request_digest_with_work(
     request: &FileRef,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest_with_work(
+    crate::contract::canonical_json_digest(
         &(provider, guarantee, effect_kind, request),
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,

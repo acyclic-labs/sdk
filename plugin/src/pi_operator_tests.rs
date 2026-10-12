@@ -81,7 +81,7 @@ fn prepared_descriptor_denies_exhausted_allocation() {
     let mut held = native
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .unwrap();
-    held.resize_retained(native.remaining().unwrap().peak_allocation_bytes)
+    held.resize(native.remaining().unwrap().peak_allocation_bytes)
         .unwrap();
     assert!(matches!(
         decode_prepared_approval(b"{}", &native),

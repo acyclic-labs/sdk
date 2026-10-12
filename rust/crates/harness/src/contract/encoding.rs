@@ -108,13 +108,13 @@ pub(crate) fn json_byte_length<T: Serialize + ?Sized>(
         &mut |charge| observer.codec_charge(charge),
     );
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Err(Error::NativeEncode {
+    if let Err(Error::NativeJson {
         code,
         source,
         custody: None,
     }) = result
     {
-        return Err(Error::NativeEncode {
+        return Err(Error::NativeJson {
             code,
             source,
             custody: custody.take(),
@@ -182,17 +182,15 @@ pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
     Ok(value)
 }
 
-/// Digest of the exact canonical JSON bytes used at durable identity boundaries.
-pub(crate) fn canonical_json_digest<T: Serialize>(value: &T) -> Result<[u8; 32]> {
-    Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes())
-}
-
-/// The same canonical digest, charging its actual original encoder/hash work.
-pub(crate) fn canonical_json_digest_with_work<T: Serialize + ?Sized>(
+/// Canonical digest with optional original encoding and hashing charges.
+pub(crate) fn canonical_json_digest<T: Serialize + ?Sized>(
     value: &T,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
+    if work.is_none() {
+        return Ok(*blake3::hash(&canonical_json_bytes(value)?).as_bytes());
+    }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let bytes =
         crate::store::history::canonical_bytes_with_work(value, maximum_bytes, custody.work())?;

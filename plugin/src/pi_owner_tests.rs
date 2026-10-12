@@ -232,7 +232,7 @@ fn owner_reopen_preserves_expired_policy_and_original_authority() {
     let replacement = PiOwnerConfig::new(&policy, None, &work()).unwrap();
     assert!(
         replacement
-            .authority()
+            .authority(&crate::pi_fork::tests::work())
             .unwrap()
             .verifier
             .verify(&original.signed, &mut None)
@@ -270,7 +270,7 @@ fn concurrent_initialization_publishes_one_owner() {
 #[test]
 fn missing_or_corrupt_credentials_are_never_regenerated() {
     let directory = tempfile::tempdir().unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     assert!(!directory.path().join(OWNER_FILE).exists());
     let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
     publish_owner(&owner, directory.path(), &work()).unwrap();
@@ -386,11 +386,11 @@ fn unix_owner_rejects_public_permissions_links_and_nonregular_files() {
     let (directory, _) = credential_fixture(&policy());
     let path = directory.path().join(OWNER_FILE);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let link = directory.path().join("hardlink");
     fs::hard_link(&path, &link).unwrap();
-    assert!(PiOwnerConfig::load(directory.path()).is_err());
+    assert!(crate::pi_owner::tests::load_owner(directory.path()).is_err());
     fs::remove_file(link).unwrap();
     let target = directory.path().join("original");
     fs::rename(&path, &target).unwrap();

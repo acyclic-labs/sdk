@@ -195,34 +195,37 @@ impl ExecutionJournal for TerminalCasLoser {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(operation, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(operation, after, maximum, io)
     }
 
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
 
     fn append_if_tail<'a>(
         &'a self,
         operation: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let terminal = matches!(
                 &event,
                 ExecutionEvent::ToolCompleted { .. } | ExecutionEvent::ToolFailed { .. }
             );
             let committed = self
                 .inner
-                .append_if_tail(operation, tail, key, event)
+                .append_if_tail(operation, tail, key, event, io)?
                 .await?;
             if terminal && committed && self.losses.fetch_add(1, Ordering::SeqCst) < 2 {
                 return Ok(false);
@@ -234,15 +237,18 @@ impl ExecutionJournal for TerminalCasLoser {
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media_type)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media_type, io)
     }
 
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
 
     fn open_interaction<'a>(
@@ -285,9 +291,10 @@ impl ExecutionJournal for CompletedDescriptorSpy {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        Box::pin(async move {
-            let mut records = self.inner.replay(operation, after, maximum).await?;
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
+            let mut records = self.inner.replay(operation, after, maximum, io)?.await?;
             for record in &mut records {
                 let reference = match (&mut record.event, self.target) {
                     (
@@ -322,24 +329,27 @@ impl ExecutionJournal for CompletedDescriptorSpy {
     fn append<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(operation, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(operation, key, event, io)
     }
     fn stage<'a>(
         &'a self,
         operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.inner.stage(operation, key, bytes, media)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        self.inner.stage(operation, key, bytes, media, io)
     }
     fn load<'a>(
         &'a self,
         reference: &'a FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if self.completed.iter().any(|original| {
             original.volume() == reference.volume()
                 && original.path() == reference.path()
@@ -353,7 +363,7 @@ impl ExecutionJournal for CompletedDescriptorSpy {
         {
             self.invocation_reads.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.load(reference)
+        self.inner.load(reference, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -463,21 +473,12 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     let journal_b = journal(stream, host, &private, &issuer, &scope)?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
-        .append(
-            operation,
-            "tool:started".into(),
-            ExecutionEvent::Started {
+        .append(operation, &"tool:started", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     let invocation = journal_a
-        .stage(
-            operation,
-            "tool:invocation".into(),
-            b"{}".to_vec(),
-            "application/json",
-        )
+        .stage(operation, "tool:invocation", b"{}", "application/json", None)?
         .await?;
     let event = ExecutionEvent::ToolStarted {
         step: 0,
@@ -485,60 +486,41 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         invocation,
     };
     let (first, second) = tokio::join!(
-        journal_a.append_if_tail(operation, 1, "claim-a".into(), event.clone()),
-        journal_b.append_if_tail(operation, 1, "claim-b".into(), event),
+        journal_a.append_if_tail(operation, 1, &"claim-a", &event, None),
+        journal_b.append_if_tail(operation, 1, &"claim-b", &event, None),
     );
     assert_ne!(first?, second?);
-    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 2);
+    assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 2);
     let (first_terminal, second_terminal) = tokio::join!(
-        journal_a.append_if_tail(
-            operation,
-            2,
-            "terminal-a".into(),
-            ExecutionEvent::ToolFailed {
+        journal_a.append_if_tail(operation, 2, &"terminal-a", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::ExecutorRejected
-            }
-        ),
-        journal_b.append_if_tail(
-            operation,
-            2,
-            "terminal-b".into(),
-            ExecutionEvent::ToolFailed {
+            }, None),
+        journal_b.append_if_tail(operation, 2, &"terminal-b", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: operation.to_string(),
                 reason: ToolFailureKind::InvalidOutput
-            }
-        ),
+            }, None),
     );
     assert_ne!(first_terminal?, second_terminal?);
-    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
+    assert_eq!(journal_a.replay(operation, 0, 64, None)?.await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
     let invalid_request = journal_a
-        .stage(
-            paged,
-            "invalid-request".into(),
-            b"null".to_vec(),
-            "application/json",
-        )
+        .stage(paged, "invalid-request", b"null", "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "invalid-model-start".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"invalid-model-start", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest: *blake3::hash(b"null").as_bytes(),
                     request: invalid_request,
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
-    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: Model::new("fixture".into(), "paged".into(), "1".into(), Value::Null)?,
@@ -554,92 +536,66 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     )?;
     let request_digest = prepared.request_digest();
     let paged_request = journal_a
-        .stage(
-            paged,
-            "paged-request".into(),
-            prepared.bytes().to_vec(),
-            "application/json",
-        )
+        .stage(paged, "paged-request", &prepared.bytes(), "application/json", None)?
         .await?;
     assert!(
         journal_a
-            .append(
-                paged,
-                "model-without-execution".into(),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &"model-without-execution", &ExecutionEvent::ModelStarted {
                     step: 0,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                }
-            )
+                }, None)?
             .await
             .is_err()
     );
-    assert!(journal_a.replay(paged, 0, 64).await?.is_empty());
+    assert!(journal_a.replay(paged, 0, 64, None)?.await?.is_empty());
     journal_a
-        .append(
-            paged,
-            "paged-execution-start".into(),
-            ExecutionEvent::Started {
+        .append(paged, &"paged-execution-start", &ExecutionEvent::Started {
                 request_digest: [57; 32],
-            },
-        )
+            }, None)?
         .await?;
     for step in 0..70 {
         journal_a
-            .append(
-                paged,
-                format!("paged-{step}"),
-                ExecutionEvent::ModelStarted {
+            .append(paged, &format!("paged-{step}"), &ExecutionEvent::ModelStarted {
                     step,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?;
     }
-    let first_page = journal_b.replay(paged, 0, 64).await?;
-    let second_page = journal_b.replay(paged, 64, 64).await?;
+    let first_page = journal_b.replay(paged, 0, 64, None)?.await?;
+    let second_page = journal_b.replay(paged, 64, 64, None)?.await?;
     assert_eq!(first_page.len(), 64);
     assert_eq!(second_page.len(), 7);
     assert_eq!(first_page[63].sequence, 64);
     assert_eq!(second_page[0].sequence, 65);
-    assert_eq!(journal_b.replay(paged, 0, 65).await?.len(), 64);
-    assert!(journal_b.replay(paged, 0, 0).await.is_err());
+    assert_eq!(journal_b.replay(paged, 0, 65, None)?.await?.len(), 64);
+    assert!(journal_b.replay(paged, 0, 0, None)?.await.is_err());
     journal_b
-        .append(
-            paged,
-            "paged-0".into(),
-            ExecutionEvent::ModelStarted {
+        .append(paged, &"paged-0", &ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: acyclic_harness::executor::ModelPurpose::Response,
                 request_digest,
                 request: paged_request.clone(),
-            },
-        )
+            }, None)?
         .await?;
-    assert!(journal_b.replay(paged, 71, 64).await?.is_empty());
+    assert!(journal_b.replay(paged, 71, 64, None)?.await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
     while cursor.next_page(&journal_b, None).await?.is_some() {}
     assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a
-            .append_if_tail(
-                paged,
-                cursor.tail(),
-                "paged-cas-70".into(),
-                ExecutionEvent::ModelStarted {
+            .append_if_tail(paged, cursor.tail(), &"paged-cas-70", &ExecutionEvent::ModelStarted {
                     step: 70,
                     purpose: acyclic_harness::executor::ModelPurpose::Response,
                     request_digest,
                     request: paged_request.clone(),
-                },
-            )
+                }, None)?
             .await?
     );
-    assert_eq!(journal_b.replay(paged, 71, 64).await?.len(), 1);
+    assert_eq!(journal_b.replay(paged, 71, 64, None)?.await?.len(), 1);
     Ok(())
 }
 
@@ -754,18 +710,24 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     for _ in 0..2 {
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition.clone(),
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?
-                )
-                .await?,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(Value::Null)
         ));
     }
-    let records = journal.replay(operation, 0, 64).await?;
+    let records = journal.replay(operation, 0, 64, None)?.await?;
     let invocation = records
         .iter()
         .find_map(|record| {
@@ -810,14 +772,20 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         let guarded = DurableToolRunner::new(&registry, spy.clone(), None)?.with_limits(limits)?;
         assert!(matches!(
             guarded
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition.clone(),
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-                )
-                .await,
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await.map(|result| result.0),
             Err(Error::Conflict(_))
         ));
         assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
@@ -842,51 +810,65 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         })?;
     assert!(matches!(
         bounded
-            .run_with_context(
+            .run(
                 first_task,
-                fresh_operation,
-                definition.clone(),
-                json!({"data":"x".repeat(1_024)}),
-                ToolContext::new(
-                    first_context.clone(),
-                    fresh_operation,
-                    fresh_operation.to_string()
-                )?,
-            )
-            .await,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: fresh_operation,
+                    call_id: fresh_operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({"data":"x".repeat(1_024)}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), fresh_operation, &(fresh_operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0),
         Err(Error::Invalid(_))
     ));
-    assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
+    assert!(journal.replay(fresh_operation, 0, 64, None)?.await?.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
-    assert!(registry.get("example.noop").is_none());
+    assert!(registry.get("example.noop", None, None)?.is_none());
     let rebuilt =
         DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
         rebuilt
-            .run_with_context(
+            .run(
                 first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-            )
-            .await?,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0,
         Outcome::Succeeded(Value::Null)
     ));
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(
         runner
-            .run_with_context(
+            .run(
                 other_task,
-                operation,
-                definition,
-                json!({}),
-                ToolContext::new(other_context, operation, operation.to_string())?
-            )
-            .await
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(other_context), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await.map(|result| result.0)
             .is_err()
     );
     for (index, (definition, operation, reason)) in [
@@ -905,32 +887,44 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     .enumerate()
     {
         let failure = runner
-            .run_with_context(
+            .run(
                 first_task,
-                operation,
-                definition.clone(),
-                json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-            )
-            .await?;
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: operation,
+                    call_id: operation.to_string(),
+                    name: definition.name.clone(),
+                    arguments: json!({}),
+                },
+                &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?.0;
         assert!(matches!(&failure, Outcome::Failed { .. }));
         assert_eq!(
             failure,
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    operation,
-                    definition,
-                    json!({}),
-                    ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-                )
-                .await?
+                    &definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: operation,
+                        call_id: operation.to_string(),
+                        name: definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0
         );
         assert_eq!(racing_journal.losses.load(Ordering::SeqCst), 2);
         assert_eq!(executions.load(Ordering::SeqCst), index + 2);
         assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
         assert!(
-            matches!(journal.replay(operation, 0, 64).await?.last().map(|record| &record.event),
+            matches!(journal.replay(operation, 0, 64, None)?.await?.last().map(|record| &record.event),
             Some(ExecutionEvent::ToolFailed { reason: actual, .. }) if actual == &reason)
         );
     }
@@ -938,22 +932,24 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     for _ in 0..2 {
         assert!(matches!(
             runner
-                .run_with_context(
+                .run(
                     first_task,
-                    large_operation,
-                    large_definition.clone(),
-                    json!({}),
-                    ToolContext::new(
-                        projection_context.clone(),
-                        large_operation,
-                        large_operation.to_string()
-                    )?
-                )
-                .await?,
+                    &large_definition,
+                    &acyclic_harness::tool::ToolInvocation {
+                        operation_id: large_operation,
+                        call_id: large_operation.to_string(),
+                        name: large_definition.name.clone(),
+                        arguments: json!({}),
+                    },
+                    &ToolContext::new(std::sync::Arc::new(projection_context.clone()), large_operation, &(large_operation.to_string()), None)?,
+                    None,
+                    false,
+                )?
+                .await?.0,
             Outcome::Succeeded(Value::Null)
         ));
     }
-    let records = journal.replay(large_operation, 0, 64).await?;
+    let records = journal.replay(large_operation, 0, 64, None)?.await?;
     let Some(ExecutionEvent::ToolCompleted {
         result, projection, ..
     }) = records.last().map(|record| &record.event)
@@ -964,7 +960,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert!(projection.descriptor().byte_length() > limits.file_bytes);
     assert!(projection.descriptor().byte_length() <= limits.render_bytes);
     assert_eq!(
-        serde_json::from_slice::<Value>(&journal.load(projection).await?)
+        serde_json::from_slice::<Value>(&journal.load(projection, None)?.await?)
             .map_err(|error| Error::Invalid(error.to_string()))?,
         large_projection
     );
@@ -998,44 +994,24 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let first = executor.execute(input.clone(), &journal).await?;
     let staged_operation = OperationId::from_bytes([8; 16]);
     let staged = journal
-        .stage(
-            staged_operation,
-            "original".into(),
-            b"original payload".to_vec(),
-            "application/json",
-        )
+        .stage(staged_operation, "original", b"original payload", "application/json", None)?
         .await?;
     for index in 0..32 {
         let replacement = journal
-            .stage(
-                OperationId::new(),
-                format!("replacement-{index}"),
-                format!("replacement payload {index}").into_bytes(),
-                "application/json",
-            )
+            .stage(OperationId::new(), &format!("replacement-{index}"), &format!("replacement payload {index}").into_bytes(), "application/json", None)?
             .await?;
         assert_eq!(replacement.path(), staged.path());
-        assert_eq!(journal.load(&staged).await?.as_ref(), b"original payload");
+        assert_eq!(journal.load(&staged, None)?.await?.as_ref(), b"original payload");
     }
     assert_eq!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"original payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"original payload", "application/json", None)?
             .await?,
         staged
     );
     assert!(matches!(
         journal
-            .stage(
-                staged_operation,
-                "original".into(),
-                b"changed payload".to_vec(),
-                "application/json",
-            )
+            .stage(staged_operation, "original", b"changed payload", "application/json", None)?
             .await,
         Err(Error::Conflict(_))
     ));
@@ -1043,7 +1019,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first, again);
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
-    let records = journal.replay(operation_id, 0, 64).await?;
+    let records = journal.replay(operation_id, 0, 64, None)?.await?;
     assert_eq!(records.len(), 5);
     let stream = acyclic_stream::Stream::new(
         std::sync::Arc::clone(&stream),
@@ -1335,7 +1311,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             &journal,
         )
         .await?;
-    assert!(registry.get("example.echo").is_some());
+    assert!(registry.get("example.echo", None, None)?.is_some());
     Ok(())
 }
 
@@ -1507,7 +1483,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64, None)?.await?.is_empty());
     assert!(
         executor
             .execute(
@@ -1525,7 +1501,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64, None)?.await?.is_empty());
     executor
         .execute(
             TurnInput {

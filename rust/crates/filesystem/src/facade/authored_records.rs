@@ -34,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 cancellation,
             )
             .await?;
-        let file_id = self.authored_file_id_with_accounting(kind, &path, accounting)?;
+        let file_id = self.authored_file_id(kind, &path, accounting)?;
         push_authored_operation(
             operations,
             allocation,
@@ -104,8 +104,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     file_id,
                 ))
             } else {
-                let file_id =
-                    self.authored_file_id_with_accounting(record.kind, &path, accounting)?;
+                let file_id = self.authored_file_id(record.kind, &path, accounting)?;
                 record.file_id = file_id;
                 record.link_count = 1;
                 Ok((Mutation::Create { path, record }, file_id))
@@ -234,32 +233,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
     }
 
-    pub(super) fn authored_file_id_with_accounting(
+    pub(super) fn authored_file_id(
         &self,
         kind: FileKind,
         path: &NamespacePath,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<FileId, FsError> {
-        if let Some(operation) = self.authored_operation_id {
-            let mut bytes = (b"acyclic-fs-authored-file-id-v1\0".len()
-                + operation.into_bytes().len()
-                + 1) as u64;
-            for component in path.components() {
-                accounting.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                bytes = bytes
-                    .checked_add(1 + size_of::<u64>() as u64)
-                    .and_then(|value| value.checked_add(component.as_bytes().len() as u64))
-                    .ok_or(WorkError::Overflow)?;
-            }
+        let Some(operation) = self.authored_operation_id else {
+            return Ok(FileId::new());
+        };
+        let domain = b"acyclic-fs-authored-file-id-v1\0";
+        let mut hashed = (domain.len() + operation.into_bytes().len() + 1) as u64;
+        for component in path.components() {
             accounting.charge(WorkCounters {
-                bytes_hashed: bytes,
+                items_examined: 1,
                 ..WorkCounters::UNCHARGED
             })?;
+            hashed = hashed
+                .checked_add(1 + size_of::<u64>() as u64)
+                .and_then(|value| value.checked_add(component.as_bytes().len() as u64))
+                .ok_or(WorkError::Overflow)?;
         }
-        Ok(self.authored_file_id(kind, path))
+        accounting.charge(WorkCounters {
+            bytes_hashed: hashed,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(domain);
+        hasher.update(&operation.into_bytes());
+        hasher.update(&[kind.tag()]);
+        for component in path.components() {
+            hasher.update(&[component.encoding().tag()]);
+            hasher.update(&usize_to_u64(component.as_bytes().len()).to_le_bytes());
+            hasher.update(component.as_bytes());
+        }
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+        Ok(FileId::from_bytes(bytes))
     }
 
     /// Creates one file through the atomic authored compiler.

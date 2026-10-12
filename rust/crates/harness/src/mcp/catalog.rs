@@ -11,71 +11,67 @@ use std::{
     sync::Arc,
 };
 
-/// Model schema exposure for the complete catalog.
+/// Model schema selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpSchemaExposure {
-    /// Publish all tool schemas.
+    /// Publish all schemas.
     Eager,
-    /// Publish the named tool schemas.
+    /// Publish named schemas.
     Selected {
-        /// Distinct server-local tool names.
+        /// Distinct server-local names.
         names: Vec<String>,
     },
 }
-
-/// Host-selected local discovery policy.
+/// Local discovery policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum McpDiscoveryPolicy {
     /// Reject discovery.
     Disabled,
-    /// Permit bounded catalog search.
+    /// Permit bounded search.
     Search,
 }
-
 /// Complete immutable remote catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(deny_unknown_fields)]
 pub struct McpCatalog {
-    /// Host-selected namespace.
+    /// Host namespace.
     pub server: String,
     /// Pinned configuration revision.
     pub revision: String,
     /// Model schema selection.
     pub schema_exposure: McpSchemaExposure,
-    /// Local discovery selection.
+    /// Local discovery policy.
     pub discovery: McpDiscoveryPolicy,
-    /// Host-selected result projection schema.
+    /// Host result projection schema.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmToolJsonSchema"))]
     pub projection_schema: Value,
-    /// Complete remote tool contracts.
+    /// Complete tool contracts.
     pub tools: Vec<McpToolDefinition>,
 }
-
-/// Signed authority and exact durable approval for catalog installation.
+/// Signed authority and durable catalog approval.
 pub struct McpCatalogInstallation<'a> {
-    /// Approved installation operation.
+    /// Installation operation.
     pub operation: OperationId,
-    /// Retained approval interaction.
+    /// Approval interaction.
     pub interaction: InteractionId,
     /// Signed installation scope.
     pub scope: &'a Scope,
     /// Scope verifier.
     pub verifier: &'a AuthorityVerifier,
-    /// Durable approval verifier.
+    /// Approval verifier.
     pub approval: &'a dyn ToolApprovalVerifier,
-    /// Complete catalog tool allowance.
+    /// Tool allowance.
     pub maximum_tools: u32,
-    /// Complete catalog byte allowance.
+    /// Byte allowance.
     pub maximum_bytes: u32,
 }
-
 impl McpCatalog {
-    /// Pins the replacement, predecessor and finite allowances in the approval.
+    /// Digests the replacement, predecessor and allowances.
     pub fn installation_digest(
         &self,
         previous: Option<&Self>,
@@ -88,18 +84,21 @@ impl McpCatalog {
                 "MCP replacement changes server namespace".into(),
             ));
         }
-        crate::contract::canonical_json_digest(&(
-            "harness/mcp-catalog-install/v1",
-            self,
-            previous
-                .map(crate::contract::canonical_json_digest)
-                .transpose()?,
-            maximum_tools,
-            maximum_bytes,
-        ))
+        crate::contract::canonical_json_digest(
+            &(
+                "harness/mcp-catalog-install/v1",
+                self,
+                previous
+                    .map(|old| crate::contract::canonical_json_digest(old, u64::MAX, &mut None))
+                    .transpose()?,
+                maximum_tools,
+                maximum_bytes,
+            ),
+            u64::MAX,
+            &mut None,
+        )
     }
-
-    /// Installs after verifying signed scope and exact approval.
+    /// Verifies signed scope and approval before installation.
     pub async fn install_scoped(
         &self,
         registry: &mut ToolRegistry,
@@ -139,8 +138,7 @@ impl McpCatalog {
             installation.maximum_bytes,
         )
     }
-
-    /// Validates the complete catalog before registry mutation.
+    /// Validates the complete catalog before mutation.
     pub fn validate(&self, maximum_tools: u32, maximum_bytes: u32) -> Result<()> {
         crate::registry::validate_component_label(&self.server, "MCP server")?;
         crate::registry::validate_component_label(&self.revision, "MCP revision")?;
@@ -191,36 +189,17 @@ impl McpCatalog {
         }
         Ok(())
     }
-
     fn selected(&self, name: &str) -> bool {
         match &self.schema_exposure {
             McpSchemaExposure::Eager => true,
             McpSchemaExposure::Selected { names } => names.iter().any(|value| value == name),
         }
     }
-
-    /// Returns the selected model schemas in name order.
-    pub fn model_definitions(
-        &self,
-        maximum_tools: u32,
-        maximum_bytes: u32,
-    ) -> Result<Vec<ToolDefinition>> {
-        self.validate(maximum_tools, maximum_bytes)?;
-        let mut definitions = self
-            .tools
-            .iter()
-            .filter(|tool| self.selected(&tool.name))
-            .map(|tool| self.definition(tool))
-            .collect::<Result<Vec<_>>>()?;
-        definitions.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(definitions)
-    }
-
     fn definition(&self, remote: &McpToolDefinition) -> Result<ToolDefinition> {
         crate::registry::validate_component_label(&remote.name, "MCP tool")?;
         let mut output = json!({"type":"object", "required":["content","isError"],
             "properties":{"content":{"type":"array","items":{"type":"object"}},
-                "structuredContent":{}, "isError":{"type":"boolean"}, "_meta":{"type":"object"}},
+                "structuredContent":{},"isError":{"type":"boolean"},"_meta":{"type":"object"}},
             "additionalProperties":false});
         if let Some(schema) = &remote.output_schema {
             output["if"] = json!({"properties":{"isError":{"const":false}}});
@@ -236,7 +215,6 @@ impl McpCatalog {
             projection_schema: self.projection_schema.clone(),
         })
     }
-
     fn validate_transport_binding(&self, transport: &dyn McpToolTransport) -> Result<()> {
         if let Some(policy) = transport.callback_policy() {
             policy.validate()?;
@@ -248,8 +226,23 @@ impl McpCatalog {
         }
         Ok(())
     }
-
-    /// Atomically replaces future selection while retaining admitted revisions.
+    /// Returns selected model schemas in name order.
+    pub fn model_definitions(
+        &self,
+        maximum_tools: u32,
+        maximum_bytes: u32,
+    ) -> Result<Vec<ToolDefinition>> {
+        self.validate(maximum_tools, maximum_bytes)?;
+        let mut definitions = self
+            .tools
+            .iter()
+            .filter(|tool| self.selected(&tool.name))
+            .map(|tool| self.definition(tool))
+            .collect::<Result<Vec<_>>>()?;
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(definitions)
+    }
+    /// Replaces future selection atomically, retaining admitted revisions.
     pub fn install(
         &self,
         registry: &mut ToolRegistry,
@@ -292,9 +285,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(crate::contract::canonical_json_digest)
+                .map(|old| crate::contract::canonical_json_digest(old, u64::MAX, &mut None))
                 .transpose()?,
-            crate::contract::canonical_json_digest(self)?,
+            crate::contract::canonical_json_digest(self, u64::MAX, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {
@@ -330,8 +323,7 @@ impl McpCatalog {
         *registry = next;
         Ok(())
     }
-
-    /// Searches the pinned complete catalog without granting call authority.
+    /// Searches the pinned catalog without granting authority.
     pub fn search(
         &self,
         query: &str,

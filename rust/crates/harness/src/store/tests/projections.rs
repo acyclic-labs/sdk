@@ -323,7 +323,7 @@ fn forge_projection_payload(location: &mut Value, payload: &mut Vec<u8>, mode: u
             &forged["revision"],
             &forged["events"],
             &forged["projection"],
-        ))?;
+        ), u64::MAX, &mut None)?;
         forged["state_digest"] = json!(digest);
         *payload = crate::contract::canonical_json_bytes(&forged)?;
         location["digest"] = json!(*blake3::hash(payload).as_bytes());

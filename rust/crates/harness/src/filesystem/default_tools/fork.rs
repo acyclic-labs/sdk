@@ -22,7 +22,7 @@ where
         let intent = RecursiveForkSourceIntent {
             arguments: ForkToolArguments {
                 id: fork.arguments.id,
-                msg: crate::filesystem::fork_preparer_io::clone_text(&fork.arguments.msg, io)?,
+                msg: stock_string_copy(&fork.arguments.msg, io)?,
                 source: fork.arguments.source,
             },
             caller: fork.caller,
@@ -65,7 +65,7 @@ where
         })?;
         let command = WorkflowCommand {
             operation_id: command.operation_id,
-            kind: crate::filesystem::fork_preparer_io::clone_text(&command.kind, io)?,
+            kind: stock_string_copy(&command.kind, io)?,
             payload: crate::executor::with_history_io(io, |work| command.payload.copy(work))?,
         };
         let restored = fork_preparation_request(
@@ -116,7 +116,7 @@ where
                 fork.request.maximum_work,
                 fork.request.maximum_bytes,
             );
-            let mut publication_work = crate::store::HistoryWork::new(budget, cancellation);
+            let mut publication_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(budget, cancellation)?);
             let published = async {
                 publication_work.preflight()?;
                 binding
@@ -173,10 +173,7 @@ where
                     .await?;
                 break 'child;
             }
-            let mut child_work = crate::store::HistoryWork::new(
-                remaining.expect("measured publication preserves its remaining allowance"),
-                cancellation,
-            );
+            let mut child_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(remaining.expect("measured publication preserves its remaining allowance"), cancellation)?);
             let bound = async {
                 child_work.preflight()?;
                 binding
@@ -196,3 +193,5 @@ where
         encode(seed, output_io)
     }
 }
+
+use crate::executor::{stock_string_copy};

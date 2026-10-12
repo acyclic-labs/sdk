@@ -185,7 +185,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 bytes_copied: written as u64,
                 ..acyclic_fs::WorkCounters::default()
             });
-            serialized.map_err(|source| Error::NativeEncode {
+            serialized.map_err(|source| Error::NativeJson {
                 code: wire::ErrorCode::Storage,
                 source,
                 custody: None,
@@ -216,16 +216,19 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 let mut optional = Some(&mut observer as &mut dyn HistoryIo);
                 let mut custody = CodecQuota::from_retained(&mut optional, 0);
                 let committed = receive_native_commit(&original, committed, None, 0, &mut custody)?;
-                resolve_commit(
+                let outcome = resolve_commit(
                     committed,
                     &client,
                     key,
                     Some(operation),
                     None,
                     Some(sdk_recovery),
-                    custody.work(),
+                    &mut custody,
                 )
-                .await?
+                .await?;
+                let retained = custody.retained();
+                custody.transfer();
+                (outcome, retained)
             };
             let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
             drop(outcome);
@@ -273,7 +276,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
 fn completion_error(mut error: Error, incoming: acyclic_fs::NativeAllocation) -> Error {
     let custody = match &mut error {
         Error::NativeWork { custody, .. }
-        | Error::NativeEncode { custody, .. }
+        | Error::NativeJson { custody, .. }
         | Error::NativeStream { custody, .. } => custody,
         _ => return error,
     };

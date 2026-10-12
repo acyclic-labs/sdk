@@ -20,7 +20,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
         if volume.class() != VolumeClass::AgentPrivate
             || volume.provider() != &host.provider || maximum_bytes == 0
         {
-            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "scheduler payload store requires a private volume and positive limit"));
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -34,7 +34,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "scheduler payload custody underflows"))?)?)
+                    .ok_or_else(|| stock_boundary(Some(io), crate::wire::ErrorCode::Invalid, "scheduler payload custody underflows"))?)?)
             }
             None => None,
         };
@@ -108,3 +108,5 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         })
     }
 }
+
+use crate::executor::{stock_boundary};

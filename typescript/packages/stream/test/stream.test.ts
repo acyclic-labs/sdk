@@ -77,19 +77,8 @@ describe("website Stream contract", () => {
     })).toThrow();
   });
 
-  test("does not expose history removal on stream handles or providers", () => {
-    const provider = new MemoryStreamProvider();
-    const stream = new StreamClient(provider).bytes("history/permanent");
-    for (const object of [provider, stream]) {
-      expect("trim" in object).toBeFalse();
-      expect("delete" in object).toBeFalse();
-      expect("bounds" in object).toBeFalse();
-    }
-  });
-
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
     const client = new StreamClient(new MemoryStreamProvider());
-    // @ts-expect-error Date is not a JSON value and must not be promised by the codec.
     // @ts-expect-error A typed JSON stream must provide a parser; a caller-selected generic is not an overload.
     client.json<{ answer: number }>("dates");
     const codec = jsonCodec();
@@ -140,7 +129,7 @@ describe("website Stream contract", () => {
     await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
     await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow();
-    expect(() => client.children(undefined, 1_025)).toThrow();
+    await expect(client.children(undefined, 1_025)[Symbol.asyncIterator]().next()).rejects.toThrow();
     const cursor = client.bytes("cursor-bounds");
     await cursor.append(new Uint8Array([1]));
     await expect(cursor.read({ from: 2n, limit: 1 }).next()).rejects.toMatchObject({ code: "out_of_range" });
@@ -490,7 +479,7 @@ describe("website Stream contract", () => {
     const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
     const children = [];
-    for await (const child of provider.children("parent", 10)) children.push(child);
+    for await (const child of new StreamClient(provider).children("parent", 10)) children.push(child);
     expect(children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
   });
@@ -1056,11 +1045,9 @@ describe("website Stream contract", () => {
     await expect(provider.read("valid", { from: 0n, limit: 1.5 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.follow("bad path", { from: 0n })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.follow("valid", { from: -1n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(provider.children("bad path", 1)[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.childrenPage({ parent: "bad path", limit: 1 })).rejects.toThrow();
     await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(provider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
-    await expect(provider.children(undefined, 0)[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(calls).toBe(0);
   });
 

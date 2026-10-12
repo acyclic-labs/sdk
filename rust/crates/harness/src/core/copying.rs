@@ -85,11 +85,11 @@ pub(crate) fn copy_iter<'s, T: 's, U>(
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     mut copy: impl FnMut(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<U>,
 ) -> Result<Vec<U>> {
-    let mut output = reserve_copy_vector::<U>(count, quota)?;
+    let mut values = reserve_copy_vector(count, quota)?;
     for value in source {
-        output.push(copy(value, quota)?);
+        values.push(copy(value, quota)?);
     }
-    Ok(output)
+    Ok(values)
 }
 pub(crate) fn reserve_copy_vector<T>(
     count: usize,
@@ -98,45 +98,27 @@ pub(crate) fn reserve_copy_vector<T>(
     if quota.work().is_none() {
         return Ok(Vec::with_capacity(count));
     }
-    let bytes = count
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| Error::Invalid("component vector ownership overflows".into()))?
-        as u64;
+    let bytes = owned_buffer::<T>(count)?;
     if bytes != 0 {
-        admit_buffer_allocation(quota.work())?;
-        let io = quota
-            .work()
-            .as_deref_mut()
-            .expect("component vector observer");
-        io.admit_owned(bytes)?;
-        io.retain_owned(bytes)?;
-        quota.adopt(bytes)?;
+        let io = quota.work().as_deref_mut().expect("vector observer");
+        if is_native(io) {
+            io.admit_allocation(bytes)?;
+        }
+        quota.replace(owned_sum([quota.retained(), bytes])?)?;
     }
-    let mut output = Vec::new();
+    let mut values = Vec::new();
     if bytes != 0 {
-        begin_buffer_allocation(quota.work())?;
-        output.try_reserve_exact(count).map_err(|cause| {
+        values.try_reserve_exact(count).map_err(|cause| {
             quota
                 .work()
                 .as_deref()
-                .expect("component vector observer")
+                .expect("vector observer")
                 .allocation_failure(cause)
         })?;
-        let actual = output
-            .capacity()
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| Error::Invalid("component vector capacity overflows".into()))?
-            as u64;
-        if actual > bytes {
-            quota
-                .work()
-                .as_deref_mut()
-                .expect("component vector observer")
-                .retain_owned(actual - bytes)?;
-            quota.adopt(actual - bytes)?;
-        }
+        let actual = owned_buffer::<T>(values.capacity())?;
+        quota.replace(owned_sum([quota.retained(), actual - bytes])?)?;
     }
-    Ok(output)
+    Ok(values)
 }
 pub(crate) fn copy_copy_vector<T: Copy>(
     source: &[T],
@@ -145,24 +127,20 @@ pub(crate) fn copy_copy_vector<T: Copy>(
     if quota.work().is_none() {
         return Ok(source.to_vec());
     }
-    let bytes = source
-        .len()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| Error::Invalid("component copy bytes overflow".into()))?
-        as u64;
+    let bytes = owned_buffer::<T>(source.len())?;
     quota
         .work()
         .as_deref()
-        .expect("component copy observer")
+        .expect("copy observer")
         .admit_copy(bytes)?;
-    let mut output = reserve_copy_vector::<T>(source.len(), quota)?;
+    let mut values = reserve_copy_vector(source.len(), quota)?;
     quota
         .work()
         .as_deref_mut()
-        .expect("component copy observer")
+        .expect("copy observer")
         .copy_bytes(bytes)?;
-    output.extend_from_slice(source);
-    Ok(output)
+    values.extend_from_slice(source);
+    Ok(values)
 }
 pub(crate) fn copy_owned<T: Clone + Serialize>(
     source: &T,
@@ -174,15 +152,16 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
     }
     inspect_metadata(source, quota.work())?;
     let bytes = owned(source, quota.work())?;
-    let io = quota.work().as_deref_mut().expect("observed copy");
-    io.admit_copy(bytes)?;
-    io.admit_owned(bytes)?;
-    io.retain_owned(bytes)?;
-    quota.adopt(bytes)?;
+    quota
+        .work()
+        .as_deref()
+        .expect("copy observer")
+        .admit_copy(bytes)?;
+    quota.replace(owned_sum([quota.retained(), bytes])?)?;
     quota
         .work()
         .as_deref_mut()
-        .expect("observed copy")
+        .expect("copy observer")
         .copy_bytes(bytes)?;
     Ok(source.clone())
 }
@@ -191,7 +170,9 @@ impl crate::resource_preparation::ResourceCreationProofRef {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
             copy_owned(self, quota, |proof, work| {
-                proof.validate(work)?;
+                proof.provider.validate(work)?;
+                proof.resource.validate(work)?;
+                proof.evidence.validate(work)?;
                 owned_sum([
                     proof.provider.logical_owned_bytes()?,
                     proof.resource.logical_owned_bytes()?,
@@ -227,23 +208,9 @@ copy_fields!(
     ExtensionConfiguration,
     |value: &ExtensionConfiguration, work| {
         value.content.validate(work)?;
-        owned_configuration(value)
+        owned_bytes(value)
     }
 );
-copy_fields!(
-    copy_extension_record,
-    ExtensionRecord,
-    |value: &ExtensionRecord, work| {
-        value.content.validate(work)?;
-        owned_record(value)
-    }
-);
-copy_fields!(copy_status, EffectStatus, |value: &EffectStatus, work| {
-    if let EffectStatus::Succeeded { result } = value {
-        result.validate(work)?;
-    }
-    owned_status(value)
-});
 copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
     value.request.validate(work)?;
     value.result_schema.validate(work)?;
@@ -260,23 +227,17 @@ copy_fields!(
     InteractionTicket,
     |value: &InteractionTicket, work| {
         value.request.validate(work)?;
-        owned_ticket(value)
+        owned_bytes(value)
     }
 );
 copy_fields!(
     copy_interaction_outcome,
     InteractionOutcome,
     |value: &InteractionOutcome, work| {
-        match value {
-            InteractionOutcome::Answered { answer } => {
-                answer.validate(work)?;
-                owned_sum([
-                    std::mem::size_of::<FileRef>() as u64,
-                    answer.logical_owned_bytes()?,
-                ])
-            }
-            _ => Ok(0),
+        if let InteractionOutcome::Answered { answer } = value {
+            answer.validate(work)?;
         }
+        owned_bytes(value)
     }
 );
 copy_fields!(
@@ -289,7 +250,7 @@ copy_fields!(
         if let Some(file) = &value.detail {
             file.validate(work)?;
         }
-        owned_resolution(value)
+        owned_bytes(value)
     }
 );
 copy_fields!(
@@ -304,10 +265,7 @@ copy_fields!(
         if let EffectStatus::Succeeded { result } = &value.status {
             result.validate(work)?;
         }
-        owned_sum([
-            value.provider.capacity() as u64,
-            owned_status(&value.status)?,
-        ])
+        owned_bytes(value)
     }
 );
 copy_fields!(
@@ -317,15 +275,7 @@ copy_fields!(
         if let Some(file) = &value.checkpoint {
             file.validate(work)?;
         }
-        owned_sum([
-            owned_buffer::<uuid::Uuid>(value.message_ids.capacity())?,
-            value
-                .checkpoint
-                .as_ref()
-                .map(FileRef::logical_owned_bytes)
-                .transpose()?
-                .unwrap_or(0),
-        ])
+        owned_bytes(value)
     }
 );
 
@@ -354,9 +304,7 @@ pub(in crate::core) fn copy_receipt(
     source: &ProjectMergeReceipt,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ProjectMergeReceipt> {
-    let (receipt, bytes) = source.clone_with_work_and_custody(quota.work())?;
-    quota.adopt(bytes)?;
-    Ok(receipt)
+    source.copy(quota)
 }
 pub(in crate::core) fn copy_message(
     source: &ConversationMessage,
@@ -430,13 +378,13 @@ pub(crate) fn copy_event(
 pub(in crate::core) fn retain_entry<T>(
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<()> {
-    let bytes = std::mem::size_of::<T>() as u64;
-    let Some(io) = quota.work().as_deref_mut() else {
-        return Ok(());
-    };
-    io.admit_owned(bytes)?;
-    io.retain_owned(bytes)?;
-    quota.adopt(bytes)
+    if quota.work().is_some() {
+        quota.replace(owned_sum([
+            quota.retained(),
+            std::mem::size_of::<T>() as u64,
+        ])?)?;
+    }
+    Ok(())
 }
 
 pub(in crate::core) fn is_native(io: &dyn HistoryIo) -> bool {
@@ -449,44 +397,4 @@ pub(in crate::core) fn is_native(io: &dyn HistoryIo) -> bool {
         let _ = io;
         false
     }
-}
-
-pub(in crate::core) fn admit_buffer_allocation(
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| is_native(&**io)) {
-        io.original_native_work()
-            .expect("original allocation issuer")
-            .admit(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-    }
-    let _ = work;
-    Ok(())
-}
-
-pub(in crate::core) fn begin_buffer_allocation(
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_deref_mut().filter(|io| is_native(&**io)) {
-        io.original_native_work()
-            .expect("original allocation issuer")
-            .charge(acyclic_fs::WorkCounters {
-                allocation_operations: 1,
-                ..acyclic_fs::WorkCounters::default()
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-    }
-    let _ = work;
-    Ok(())
 }

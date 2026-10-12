@@ -9,18 +9,16 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
         .await
         .expect("directory")
         .value;
-    transaction
-        .write_text("/src/a.txt", "one\nneedle\n")
-        .await
-        .expect("first file");
-    transaction
-        .write_text("/src/b.txt", "needle two\n")
-        .await
-        .expect("second file");
-    transaction
-        .write_text("/src/large.txt", "needle is too large")
-        .await
-        .expect("large file");
+    for (path, text) in [
+        ("/src/a.txt", "one\nneedle\n"),
+        ("/src/b.txt", "needle two\n"),
+        ("/src/large.txt", "needle is too large"),
+    ] {
+        transaction
+            .write_text(path, text)
+            .await
+            .expect("fixture text");
+    }
     transaction
         .write(
             "/src/binary.bin",
@@ -63,14 +61,12 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
 async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
     let workspace = memory_workspace("git-patch").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x33; 16])).await;
-    transaction
-        .write_text("/a.txt", "one\nold\n")
-        .await
-        .expect("fixture");
-    transaction
-        .write_text("/gone.txt", "gone")
-        .await
-        .expect("no-newline fixture");
+    for (path, text) in [("/a.txt", "one\nold\n"), ("/gone.txt", "gone")] {
+        transaction
+            .write_text(path, text)
+            .await
+            .expect("fixture text");
+    }
     publish_fixture(transaction).await;
     let patch = b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-old\n+new\n";
     let operation = IdempotencyKey::from_bytes([0x34; 16]);
@@ -103,7 +99,7 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
             &workspace,
             patch,
             operation,
-            crate::PublicationPermit::Unrestricted
+            crate::PublicationPermit::Unrestricted,
         )
         .await
         .expect("retry"),
@@ -116,7 +112,7 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
             &workspace,
             conflicting,
             IdempotencyKey::from_bytes([0x35; 16]),
-            crate::PublicationPermit::Unrestricted
+            crate::PublicationPermit::Unrestricted,
         )
         .await,
         Err(GitPatchError::Conflict { .. })
@@ -155,12 +151,16 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .is_err()
     );
     assert!(matches!(
-        parse_unified_patch(b"--- C:/outside\n+++ C:/outside\n@@ -0,0 +1 @@\n+x\n"),
+        apply_git_patch(
+            &workspace,
+            b"--- C:/outside\n+++ C:/outside\n@@ -0,0 +1 @@\n+x\n",
+            IdempotencyKey::from_bytes([0x37; 16]),
+            crate::PublicationPermit::Unrestricted
+        )
+        .await,
         Err(GitPatchError::Invalid(_))
     ));
 }

@@ -121,7 +121,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_with_native_work<'a>(
         &'a self,
-        _context: &'a Arc<crate::runtime::NativeTaskContext>,
+        _context: &'a Arc<crate::runtime::TaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork,
@@ -135,7 +135,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
         &'a self,
-        _context: &'a Arc<crate::runtime::NativeTaskContext>,
+        _context: &'a Arc<crate::runtime::TaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork,

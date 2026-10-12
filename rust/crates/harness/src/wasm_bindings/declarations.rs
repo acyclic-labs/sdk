@@ -1,8 +1,14 @@
 use super::*;
 
-
 #[wasm_bindgen(typescript_custom_section)]
 pub(super) const ADMISSION_WIRE_TYPES: &'static str = r#"
+export type WasmLimitsInput = WasmNativeLimitsWire;
+export type WasmTaskRunLimitsInput = WasmTaskRunLimitsWire;
+export interface WasmWorkflowAdmissionWire {
+    readonly operation_id: string;
+    readonly request_digest: readonly number[];
+    readonly initial: Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>;
+}
 export interface WasmMachineIdentityWire {
     readonly name: string;
     readonly version: string;
