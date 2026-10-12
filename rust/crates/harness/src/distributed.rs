@@ -2102,9 +2102,9 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         Err(error) if *sdk_source(&error) == StreamError::Unavailable => {
             let mut received = CodecQuota::from_retained(custody.work(), 0);
             match inspect_idempotency(client, key, received.work(), None, None).await? {
-                Ok(Some((observation, retained))) => {
+                Ok(Some((outcome, retained))) => {
                     received.adopt(retained)?;
-                    match observation.outcome {
+                    match outcome {
                         IdempotencyOutcome::Append(outcome) => {
                             if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
                             Ok(outcome)
@@ -2144,153 +2144,142 @@ pub(crate) enum CommitPhase {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type PreparedNativeDispatch = (acyclic_stream::PreparedNativeCommit, acyclic_stream::OwnedBytes);
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type PreparedNativeDispatch = std::convert::Infallible;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 type PreparedNativeRecovery = acyclic_stream::NativeProviderFuture<'static, Option<acyclic_stream::IdempotencyObservation>>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type PreparedNativeRecovery = std::convert::Infallible;
 
-/// One Store-issued completion accepted before its physical action.
+/// Accepts and funds a completion before its physical action.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) struct PreparedMaterializationCommit {
-    template: crate::filesystem::NativePreparationCompletionTemplate,
-    sdk: acyclic_stream::PreparedNativeCommit,
-    sdk_recovery: PreparedNativeRecovery,
-    sdk_custody: acyclic_fs::NativeAllocation,
-    observer: crate::store::history::AcceptedCompletionIo,
-}
-
-#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-impl PreparedMaterializationCommit {
-    pub(crate) async fn prepare<P: StreamProvider>(
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        mut template: crate::filesystem::NativePreparationCompletionTemplate,
-        original: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
-        use std::mem::size_of;
-        let mut io = crate::store::history::native_work_io(original)?;
-        let mut work = Some(&mut io as &mut dyn HistoryIo);
-        if !template.matches_work(original) {
-            return Err(Error::NativeBoundary {
-                code: wire::ErrorCode::Unauthorized,
-                reason: "native completion differs from its original observer and custody",
-            });
-        }
-        let (_, output, maximum_bytes) = template.codec_parts();
-        if maximum_bytes == 0 || maximum_bytes > acyclic_stream::MAX_RECORD_BYTES as u64
-            || (output.len() as u64) < maximum_bytes
-        {
-            return Err(Error::NativeBoundary {
-                code: wire::ErrorCode::Storage,
-                reason: "native completion lacks its fixed prepaid output",
-            });
-        }
-        let reservation = original.reserve_work(acyclic_fs::WorkCounters {
-            backend_read_operations: 1,
-            backend_write_operations: 1,
-            authority_records_read: 1,
-            authority_records_appended: 1,
-            authority_bytes_read: maximum_bytes,
-            authority_bytes_written: maximum_bytes,
-            bytes_encoded: maximum_bytes,
-            bytes_copied: maximum_bytes,
-            items_examined: maximum_bytes + 24,
-            ..acyclic_fs::WorkCounters::default()
-        })?;
-        template.verify_owner(owner, original)?;
-        let client = owner.stream();
-        let owner_condition = owner.condition(JournalWrite::Fresh, &mut work).await?;
-        let bounds = operations::bounds_with_work(&client, template.path(), &mut work).await?
-            .map_err(|error| sdk_error(error, &work))?;
-        if bounds.tail != template.expected_revision() {
-            return Err(coordinator_boundary(&work, wire::ErrorCode::Conflict,
-                "native completion Preparing record changed before acceptance"));
-        }
-        let target = CommitCondition::Tail {
-            path: template.path().clone(), expected: template.expected_revision(),
-        };
-        let owner_path_bytes = match &owner_condition {
-            CommitCondition::Tail { path, .. } => path.as_str().len() as u64,
-            CommitCondition::Absent { .. } => return Err(Error::NativeBoundary {
-                code: wire::ErrorCode::Unauthorized,
-                reason: "native completion requires its original owner tail",
-            }),
-        };
-        let path_bytes = template.path().as_str().len() as u64;
-        let key_bytes = template.key().as_bytes().len() as u64;
-        // SDK paths, retry keys and the completion record are bounded before this arithmetic.
-        let append_metadata = (4 * size_of::<CommittedMutation>() + 4 * size_of::<Record>()) as u64;
-        let conflict_metadata = (4 * size_of::<CommitConflict>()) as u64;
-        let append_source = append_metadata + path_bytes + maximum_bytes;
-        let conflict_source = conflict_metadata + owner_path_bytes + path_bytes;
-        let pool_bytes = (append_source.max(conflict_source) + key_bytes
-            + size_of::<acyclic_stream::IdempotencyObservation>() as u64
-            + size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes()
-            + size_of::<Self>() as u64)
-            .max(size_of::<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
-        let mut prepared = commit_request(template.key().clone(), 0, &mut work);
-        reserve_prepared_vector(
-            &mut prepared.0.conditions, 2, &mut prepared.1,
-        )?;
-        prepared.0.conditions.push(owner_condition);
-        prepared.0.conditions.push(target);
-        add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
-        if let Some(io) = prepared.1.work().as_deref_mut() {
-            io.admit_owned(pool_bytes)?;
-            io.retain_owned(pool_bytes)?;
-        }
-        prepared.1.adopt(pool_bytes)?;
-        let retained = prepared.1.retained();
-        let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
-            .take_native_custody(retained)?;
-        prepared.1.transfer();
-        let (request, quota) = prepared;
-        drop(quota);
-        let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
-            Ok(observer) => observer,
-            Err(error) => {
-                drop((request, template));
-                return Err(error);
-            }
-        };
-        let prepared = async {
-            let prepared = native_call_result(original,
-                client.native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter_owner()).await)?
-                .map_err(|error| sdk_error(error, &None))?;
-            let (mut prepared, incoming) = prepared.into_parts();
-            let sdk_custody = match acyclic_fs::NativeAllocation::from_runtime_allocation(original, incoming) {
-                Ok(incoming) => incoming,
-                Err((cause, incoming)) => {
-                    drop(prepared);
-                    drop(incoming);
-                    return Err(Error::NativeWork { cause, custody: None });
-                }
-            };
-            let Some(recovery) = prepared.take_recovery_future() else {
-                drop(prepared);
-                return Err(Error::NativeBoundary { code: wire::ErrorCode::Invalid,
-                    reason: "native completion lacks its pre-action same-key recovery" });
-            };
-            Ok((prepared, recovery, sdk_custody))
-        }.await;
-        match prepared {
-            Ok((sdk, sdk_recovery, sdk_custody)) =>
-                Ok(Self { template, sdk, sdk_recovery, sdk_custody, observer }),
-            Err(error) => {
-                drop(template);
-                Err(completion_error(error, observer.into_custody()))
-            }
-        }
+pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
+    owner: &crate::durable_host::TaskJournalOwner<P>,
+    mut template: crate::filesystem::NativePreparationCompletionTemplate,
+    original: &acyclic_fs::NativeMaterializationWork,
+) -> Result<crate::NativeFutureBundle<'static, acyclic_fs::MaterializationJournal>> {
+    use acyclic_stream::{CommitCondition, CommitConflict, CommittedMutation, Record};
+    use std::mem::size_of;
+    let mut io = crate::store::history::native_work_io(original)?;
+    let mut work = Some(&mut io as &mut dyn HistoryIo);
+    if !template.matches_work(original) {
+        return Err(Error::NativeBoundary {
+            code: wire::ErrorCode::Unauthorized,
+            reason: "native completion differs from its original observer and custody",
+        });
     }
-
-    pub(crate) async fn finish<P: StreamProvider>(
-        self, client: &std::sync::Arc<P>,
-    ) -> Result<(acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
-        let counters = self.observer.completion_work()?;
-        let Self { mut template, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
+    let (_, output, maximum_bytes) = template.codec_parts();
+    if maximum_bytes == 0 || maximum_bytes > acyclic_stream::MAX_RECORD_BYTES as u64
+        || (output.len() as u64) < maximum_bytes
+    {
+        return Err(Error::NativeBoundary {
+            code: wire::ErrorCode::Storage,
+            reason: "native completion lacks its fixed prepaid output",
+        });
+    }
+    let reservation = original.reserve_work(acyclic_fs::WorkCounters {
+        backend_read_operations: 1,
+        backend_write_operations: 1,
+        authority_records_read: 1,
+        authority_records_appended: 1,
+        authority_bytes_read: maximum_bytes,
+        authority_bytes_written: maximum_bytes,
+        bytes_encoded: maximum_bytes,
+        bytes_copied: maximum_bytes,
+        items_examined: maximum_bytes + 24,
+        ..acyclic_fs::WorkCounters::default()
+    })?;
+    template.verify_owner(owner, original)?;
+    let client = owner.stream();
+    let owner_condition = owner.condition(JournalWrite::Fresh, &mut work).await?;
+    let bounds = operations::bounds_with_work(&client, template.path(), &mut work).await?
+        .map_err(|error| sdk_error(error, &work))?;
+    if bounds.tail != template.expected_revision() {
+        return Err(coordinator_boundary(&work, wire::ErrorCode::Conflict,
+            "native completion Preparing record changed before acceptance"));
+    }
+    let target = CommitCondition::Tail {
+        path: template.path().clone(), expected: template.expected_revision(),
+    };
+    let owner_path_bytes = match &owner_condition {
+        CommitCondition::Tail { path, .. } => path.as_str().len() as u64,
+        CommitCondition::Absent { .. } => return Err(Error::NativeBoundary {
+            code: wire::ErrorCode::Unauthorized,
+            reason: "native completion requires its original owner tail",
+        }),
+    };
+    let path_bytes = template.path().as_str().len() as u64;
+    let key_bytes = template.key().as_bytes().len() as u64;
+    // SDK paths, retry keys and the completion record are bounded before this arithmetic.
+    let append_metadata = (4 * size_of::<CommittedMutation>() + 4 * size_of::<Record>()) as u64;
+    let conflict_metadata = (4 * size_of::<CommitConflict>()) as u64;
+    let append_source = append_metadata + path_bytes + maximum_bytes;
+    let conflict_source = conflict_metadata + owner_path_bytes + path_bytes;
+    let pool_bytes = (append_source.max(conflict_source) + key_bytes
+        + size_of::<acyclic_stream::IdempotencyObservation>() as u64
+        + size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes()
+        + size_of::<(
+            crate::filesystem::NativePreparationCompletionTemplate, acyclic_stream::PreparedNativeCommit,
+            PreparedNativeRecovery, acyclic_fs::NativeAllocation, crate::store::history::AcceptedCompletionIo,
+        )>() as u64)
+        .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
+    let mut prepared = commit_request(template.key().clone(), 0, &mut work);
+    reserve_prepared_vector(
+        &mut prepared.0.conditions, 2, &mut prepared.1,
+    )?;
+    prepared.0.conditions.push(owner_condition);
+    prepared.0.conditions.push(target);
+    add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
+    if let Some(io) = prepared.1.work().as_deref_mut() {
+        io.admit_owned(pool_bytes)?;
+        io.retain_owned(pool_bytes)?;
+    }
+    prepared.1.adopt(pool_bytes)?;
+    let retained = prepared.1.retained();
+    let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
+        .take_native_custody(retained)?;
+    prepared.1.transfer();
+    let (request, quota) = prepared;
+    drop(quota);
+    let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
+        Ok(observer) => observer,
+        Err(error) => {
+            drop((request, template));
+            return Err(error);
+        }
+    };
+    let prepared = async {
+        let prepared = native_call_result(original,
+            client.native_prepare_commit(request, maximum_bytes as usize, original.runtime_meter_owner()).await)?
+            .map_err(|error| sdk_error(error, &None))?;
+        let (mut prepared, incoming) = prepared.into_parts();
+        let sdk_custody = match acyclic_fs::NativeAllocation::from_runtime_allocation(original, incoming) {
+            Ok(incoming) => incoming,
+            Err((cause, incoming)) => {
+                drop(prepared);
+                drop(incoming);
+                return Err(Error::NativeWork { cause, custody: None });
+            }
+        };
+        let Some(recovery) = prepared.take_recovery_future() else {
+            drop(prepared);
+            return Err(Error::NativeBoundary { code: wire::ErrorCode::Invalid,
+                reason: "native completion lacks its pre-action same-key recovery" });
+        };
+        Ok((prepared, recovery, sdk_custody))
+    }.await;
+    let (sdk, sdk_recovery, sdk_custody) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            drop(template);
+            return Err(completion_error(error, observer.into_custody()));
+        }
+    };
+    drop(work);
+    drop(io);
+    // Unpolled payloads drop before their funding.
+    let pending = (template, sdk, sdk_recovery, sdk_custody, observer);
+    crate::NativeFutureBundle::new(original, || async move {
+        let state = pending;
+        let counters = state.4.completion_work()?;
+        let (mut template, sdk, sdk_recovery, mut sdk_custody, mut observer) = state;
         let operation = OperationId::from_bytes(template.task_binding().0.into_bytes());
         let finished = async {
             let key = template.key().clone();
@@ -2310,11 +2299,15 @@ impl PreparedMaterializationCommit {
                 Error::NativeBoundary { code: wire::ErrorCode::Storage,
                     reason: "native completion exceeds its original initialized output" }
             })?;
+            observer.admit_acknowledgment(output.len() as u64, 1)?;
+            let original = observer.original_native_work().expect("accepted completion ledger").clone();
+            let committed = sdk.finish(output).await;
             let (outcome, received) = {
                 let mut optional = Some(&mut observer as &mut dyn HistoryIo);
-                let prepared = commit_request(key, 0, &mut optional);
-                commit(prepared, client, Some(operation), None,
-                    Some((sdk, output)), Some(sdk_recovery)).await?
+                let mut custody = CodecQuota::from_retained(&mut optional, 0);
+                let committed = receive_native_commit(&original, committed, None, 0, &mut custody)?;
+                resolve_commit(committed, &client, key, Some(operation), None,
+                    Some(sdk_recovery), custody.work()).await?
             };
             let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
             drop(outcome);
@@ -2327,19 +2320,26 @@ impl PreparedMaterializationCommit {
         }.await;
         drop(sdk_custody);
         let mut custody = observer.into_custody();
-        let journal = match finished {
+        let mut journal = match finished {
             Ok(journal) => journal,
             Err(error) => return Err(completion_error(error, custody)),
         };
-        let output_bytes = std::mem::size_of::<(
-            acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation,
-        )>() as u64;
+        let output_bytes = size_of::<acyclic_fs::MaterializationJournal>() as u64;
         if let Err(cause) = custody.substitute(output_bytes) {
             drop(journal);
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }
-        Ok((journal, custody))
-    }
+        match journal.custody.as_mut() {
+            Some(guard) => {
+                if let Err(cause) = guard.absorb(&mut custody) {
+                    drop(journal);
+                    return Err(Error::NativeWork { cause, custody: Some(custody) });
+                }
+            }
+            None => journal.custody = Some(custody),
+        }
+        Ok(journal)
+    })
 }
 
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -2456,7 +2456,7 @@ async fn inspect_idempotency<P: StreamProvider>(
     client: &std::sync::Arc<P>, key: StreamIdempotencyKey,
     work: &mut Option<&mut dyn HistoryIo>, phase: Option<&mut CommitPhase>,
     recovery: Option<PreparedNativeRecovery>,
-) -> Result<std::result::Result<Option<(acyclic_stream::IdempotencyObservation, u64)>, SdkCallError>> {
+) -> Result<std::result::Result<Option<(IdempotencyOutcome, u64)>, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if recovery.is_none() && work.as_deref().is_some_and(|observer| observer.requires_prepared_native_dispatch()) {
         return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
@@ -2465,47 +2465,55 @@ async fn inspect_idempotency<P: StreamProvider>(
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = recovery;
     let mut custody = CodecQuota::from_retained(work, 0);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(original) = custody.work().as_deref()
-        .and_then(|observer| observer.original_native_work()).cloned()
-    {
-        let inspected = native_call_result(&original, match recovery {
-            Some(recovery) => {
-                drop(key);
-                recovery.await
+    let inspected = async {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = custody.work().as_deref()
+            .and_then(|observer| observer.original_native_work()).cloned()
+        {
+            let inspected = native_call_result(&original, match recovery {
+                Some(recovery) => {
+                    drop(key);
+                    recovery.await
+                }
+                None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
+            })?;
+            let output = match inspected {
+                Ok(output) => output,
+                Err(error) => return Ok(Err(error)),
+            };
+            if let Some(observation) = output.value() {
+                observe_recovery(observation, phase, &mut custody)?;
             }
-            None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
-        })?;
-        let output = match inspected {
-            Ok(output) => output,
-            Err(error) => return Ok(Err(error)),
-        };
-        if let Some(observation) = output.value() {
-            observe_recovery(observation, phase, &mut custody)?;
+            let (observation, retained) = crate::store::history::adopt_native_sdk_output(
+                &original, output, custody.work(),
+            )?;
+            custody.adopt(retained)?;
+            return Ok(Ok(observation));
         }
-        let (observation, retained) = crate::store::history::adopt_native_sdk_output(
-            &original, output, custody.work(),
-        )?;
-        custody.adopt(retained)?;
-        let Some(observation) = observation else { return Ok(Ok(None)); };
-        custody.work().as_deref_mut().expect("original native observer").check_cancellation()?;
-        let retained = custody.retained();
-        custody.transfer();
-        return Ok(Ok(Some((observation, retained))));
-    }
-    if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-    let inspected = client.inspect_idempotency(key).await;
-    match inspected {
-        Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
-        Ok(None) => Ok(Ok(None)),
-        Ok(Some(observation)) => {
-            observe_recovery(&observation, phase, &mut custody)?;
-            if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
-            let retained = custody.retained();
-            custody.transfer();
-            Ok(Ok(Some((observation, retained))))
+        if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
+        match client.inspect_idempotency(key).await {
+            Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
+            Ok(observation) => {
+                if let Some(observation) = &observation { observe_recovery(observation, phase, &mut custody)?; }
+                Ok(Ok(observation))
+            }
         }
-    }
+    }.await?;
+    let observation = match inspected {
+        Ok(Some(observation)) => observation,
+        Ok(None) => return Ok(Ok(None)),
+        Err(error) => return Ok(Err(error)),
+    };
+    if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
+    let metadata = if custody.work().is_some()
+        && !custody.work().as_deref().is_some_and(operations::original_native_decode_mode)
+    { observation.idempotency_key.as_bytes().len() as u64 } else { 0 };
+    let acyclic_stream::IdempotencyObservation { idempotency_key, outcome, .. } = observation;
+    drop(idempotency_key);
+    custody.relinquish(metadata)?;
+    let retained = custody.retained();
+    custody.transfer();
+    Ok(Ok(Some((outcome, retained))))
 }
 
 fn reserve_prepared_vector<T>(
@@ -2566,29 +2574,54 @@ pub(crate) fn add_record(
     Ok(())
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn receive_native_commit(
+    original: &acyclic_fs::NativeMaterializationWork,
+    committed: acyclic_stream::NativeStreamResult<acyclic_stream::CommitOutcome>,
+    phase: Option<&mut CommitPhase>, vectors: u64, custody: &mut CodecQuota<'_, '_>,
+) -> Result<std::result::Result<(acyclic_stream::CommitOutcome, u64), SdkCallError>> {
+    if let Some(phase) = phase { *phase = match &committed {
+        Ok(Ok(output)) => match output.value() {
+            acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
+            acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Uncommitted,
+        },
+        Ok(Err(error)) if *error == StreamError::Unavailable => CommitPhase::Unknown,
+        Ok(Err(_)) => CommitPhase::Uncommitted,
+        Err(_) => CommitPhase::Unknown,
+    }; }
+    let released = custody.relinquish(vectors);
+    let output = match native_call_result(original, committed)? {
+        Ok(output) => output,
+        Err(error) => return Ok(Err(error)),
+    };
+    let observed = observe_commit(output.value(), true, custody);
+    released.and(observed)?;
+    let mut received = CodecQuota::from_retained(custody.work(), 0);
+    let (outcome, retained) = crate::store::history::adopt_native_sdk_output(
+        original, output, received.work(),
+    )?;
+    received.adopt(retained)?;
+    received.work().as_deref_mut().expect("original native observer").check_cancellation()?;
+    let retained = received.retained();
+    received.transfer();
+    Ok(Ok((outcome, retained)))
+}
+
 pub(crate) async fn commit<P: StreamProvider>(
     (request, mut custody): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     client: &std::sync::Arc<P>, operation: Option<OperationId>,
-    mut phase: Option<&mut CommitPhase>, dispatch: Option<PreparedNativeDispatch>,
-    recovery: Option<PreparedNativeRecovery>,
+    mut phase: Option<&mut CommitPhase>,
 ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
     if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::Uncommitted; }
     let key = request.idempotency_key.clone();
     let committed = async {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if dispatch.is_none() && custody.work().as_deref().is_some_and(|io| io.requires_prepared_native_dispatch()) {
+        if custody.work().as_deref().is_some_and(|io| io.requires_prepared_native_dispatch()) {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
                 "accepted completion requires its pre-action SDK dispatch"));
         }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = dispatch;
         if custody.work().is_some() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let late_record = dispatch.as_ref().map(|(_, record)| record.len() as u64);
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let late_record: Option<u64> = None;
-            let (bytes, count) = if let Some(bytes) = late_record { (bytes, 1) } else {
-                request.mutations.iter().flat_map(|mutation| match mutation {
+            let (bytes, count) = request.mutations.iter().flat_map(|mutation| match mutation {
                     acyclic_stream::CommitMutation::Append { records, .. }
                     | acyclic_stream::CommitMutation::Fork { records, .. } => records,
                 }).try_fold((0u64, 0u64), |(bytes, count), record| {
@@ -2599,8 +2632,7 @@ pub(crate) async fn commit<P: StreamProvider>(
                         .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
                             "commit record count overflows"))?;
                     Ok::<_, Error>((bytes, count))
-                })?
-            };
+                })?;
             if let Some(work) = custody.work().as_deref_mut() {
                 work.admit_acknowledgment(bytes, count)?;
                 if !operations::original_native_decode_mode(work) { work.begin_write()?; }
@@ -2618,38 +2650,8 @@ pub(crate) async fn commit<P: StreamProvider>(
         if let Some(original) = custody.work().as_deref()
             .and_then(|observer| observer.original_native_work()).cloned()
         {
-            let committed = match dispatch {
-                Some((prepared, record)) => {
-                    drop(request);
-                    prepared.finish(record).await
-                }
-                None => client.native_commit(request, original.runtime_meter_owner()).await,
-            };
-            if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
-                Ok(Ok(output)) => match output.value() {
-                    acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
-                    acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Uncommitted,
-                },
-                Ok(Err(error)) if *error == StreamError::Unavailable => CommitPhase::Unknown,
-                Ok(Err(_)) => CommitPhase::Uncommitted,
-                Err(_) => CommitPhase::Unknown,
-            }; }
-            let released = custody.relinquish(vectors);
-            let output = match native_call_result(&original, committed)? {
-                Ok(output) => output,
-                Err(error) => return Ok(Err(error)),
-            };
-            let observed = observe_commit(output.value(), true, &mut custody);
-            released.and(observed)?;
-            let mut received = CodecQuota::from_retained(custody.work(), 0);
-            let (outcome, retained) = crate::store::history::adopt_native_sdk_output(
-                &original, output, received.work(),
-            )?;
-            received.adopt(retained)?;
-            received.work().as_deref_mut().expect("original native observer").check_cancellation()?;
-            let retained = received.retained();
-            received.transfer();
-            return Ok(Ok((outcome, retained)));
+            let committed = client.native_commit(request, original.runtime_meter_owner()).await;
+            return receive_native_commit(&original, committed, phase.as_deref_mut(), vectors, &mut custody);
         }
         let committed = client.commit(request).await;
         if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
@@ -2671,7 +2673,16 @@ pub(crate) async fn commit<P: StreamProvider>(
             }
         }
     }.await?;
-    let mut received = CodecQuota::from_retained(custody.work(), 0);
+    resolve_commit(committed, client, key, operation, phase, None, custody.work()).await
+}
+
+async fn resolve_commit<P: StreamProvider>(
+    committed: std::result::Result<(acyclic_stream::CommitOutcome, u64), SdkCallError>,
+    client: &std::sync::Arc<P>, key: StreamIdempotencyKey, operation: Option<OperationId>,
+    mut phase: Option<&mut CommitPhase>, recovery: Option<PreparedNativeRecovery>,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(acyclic_stream::CommitOutcome, u64)> {
+    let mut received = CodecQuota::from_retained(work, 0);
     let outcome = match committed {
         Ok((outcome, retained)) => {
             received.adopt(retained)?;
@@ -2681,14 +2692,8 @@ pub(crate) async fn commit<P: StreamProvider>(
             match inspect_idempotency(
                 client, key, received.work(), phase.as_deref_mut(), recovery,
             ).await? {
-                Ok(Some((observation, retained))) => {
+                Ok(Some((outcome, retained))) => {
                     received.adopt(retained)?;
-                    let metadata = if received.work().is_some()
-                        && !received.work().as_deref().is_some_and(operations::original_native_decode_mode)
-                    { observation.idempotency_key.as_bytes().len() as u64 } else { 0 };
-                    let acyclic_stream::IdempotencyObservation { idempotency_key, outcome, .. } = observation;
-                    drop(idempotency_key);
-                    received.relinquish(metadata)?;
                     match outcome {
                         IdempotencyOutcome::Commit(outcome) => outcome,
                         _ => return Err(coordinator_boundary(received.work(), wire::ErrorCode::Conflict,
@@ -2774,7 +2779,7 @@ async fn append_if_execution_idle<P: StreamProvider>(
     add_condition(&mut request, guard)?;
     if let Some(condition) = workflow_condition { add_condition(&mut request, condition)?; }
     add_record(&mut request, stream.path().clone(), record.clone())?;
-    let (outcome, outcome_bytes) = commit(request, client, Some(operation), None, None, None).await?;
+    let (outcome, outcome_bytes) = commit(request, client, Some(operation), None).await?;
     custody.adopt(outcome_bytes)?;
     let receipt = (|| {
         let CommitOutcome::Committed(envelope) = &outcome else {
@@ -2962,7 +2967,7 @@ mod tests {
             provider.native_only.store(true, Ordering::SeqCst);
             provider.lose_ack.store(lost_ack, Ordering::SeqCst);
             let mut phase = CommitPhase::Uncommitted;
-            let result = commit(prepared, &client, Some(OperationId::from_bytes([21; 16])), Some(&mut phase), None, None).await;
+            let result = commit(prepared, &client, Some(OperationId::from_bytes([21; 16])), Some(&mut phase)).await;
             assert_eq!(phase, expected_phase);
             if denied == "none" {
                 let (outcome, bytes) = result.expect("original immutable observation proves commit");
