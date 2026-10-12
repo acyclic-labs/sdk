@@ -89,32 +89,26 @@ pub(in crate::bindings) fn encode_file_record(record: FileRecord) -> BrowserFile
         }
         FilePayload::Regular {
             logical_bytes,
-            extents,
+            extents: object,
+        }
+        | FilePayload::SymbolicLink {
+            target_bytes: logical_bytes,
+            target: object,
+        }
+        | FilePayload::ReparsePoint {
+            payload_bytes: logical_bytes,
+            payload: object,
         } => {
             result.logical_bytes = Some(logical_bytes);
-            result.payload_object = Some(encode_object_id(extents).into());
+            result.payload_object = Some(encode_object_id(object).into());
         }
         FilePayload::Directory { entries } => {
             result.payload_object = Some(encode_object_id(entries).into());
-        }
-        FilePayload::SymbolicLink {
-            target_bytes,
-            target,
-        } => {
-            result.logical_bytes = Some(target_bytes);
-            result.payload_object = Some(encode_object_id(target).into());
         }
         FilePayload::Empty => {}
         FilePayload::Device { major, minor } => {
             result.device_major = Some(major);
             result.device_minor = Some(minor);
-        }
-        FilePayload::ReparsePoint {
-            payload_bytes,
-            payload,
-        } => {
-            result.logical_bytes = Some(payload_bytes);
-            result.payload_object = Some(encode_object_id(payload).into());
         }
     }
     result

@@ -47,11 +47,7 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_metadata(&path,))?;
         ts(BrowserMetadataResult {
             canonical_bytes: encode_file_metadata(
@@ -90,11 +86,7 @@ impl BrowserCheckout {
         path: String,
         canonical_bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let metadata = decode_file_metadata(
             &canonical_bytes,
             browser_decode_limits(self.engine.volume_config().limits),
@@ -137,11 +129,7 @@ impl BrowserCheckout {
         canonical_bytes: Vec<u8>,
         logical_bytes: Option<u64>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let metadata = decode_file_metadata(
             &canonical_bytes,
             browser_decode_limits(self.engine.volume_config().limits),
@@ -182,11 +170,7 @@ impl BrowserCheckout {
         attribute_class: String,
         name: Vec<u8>,
     ) -> Result<Ts<BrowserNamedAttributeResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
         let receipt = browser_call!(self, read_named_attribute(&path, &name,))?;
@@ -208,11 +192,7 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserNamedAttributePageResult>, JsValue> {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let after = match (after_class, after_name) {
             (None, None) => None,
             (Some(class), Some(name)) => Some(browser_attribute_name(
@@ -251,11 +231,7 @@ impl BrowserCheckout {
         bytes: Vec<u8>,
         mode: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
         let mode = browser_attribute_write_mode(&mode)?;
@@ -274,11 +250,7 @@ impl BrowserCheckout {
         attribute_class: String,
         name: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let name =
             browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
         let receipt = browser_call!(self, change_named_attribute(path, &name, None,))?;

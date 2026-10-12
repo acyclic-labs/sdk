@@ -55,25 +55,23 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     assert_eq!(
         main.join_into(&left)
             .bounds(1, 32, 32)
-            .plan()
-            .await?
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .common_ancestor(),
         base.id()
     );
     assert_eq!(
         left.join_into(&main)
             .bounds(1, 32, 32)
-            .plan()
-            .await?
+            .plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .common_ancestor(),
         base.id()
     );
     assert!(matches!(
-        left.join_into(&right).bounds(1, 32, 32).plan().await,
+        left.join_into(&right).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::LineageLimit)
     ));
     assert!(matches!(
-        right.join_into(&left).bounds(1, 32, 32).plan().await,
+        right.join_into(&left).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::LineageLimit)
     ));
 
@@ -86,15 +84,15 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
         .await?
         .value;
     assert!(matches!(
-        main.join_into(&unrelated).bounds(1, 32, 32).plan().await,
+        main.join_into(&unrelated).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        unrelated.join_into(&main).bounds(1, 32, 32).plan().await,
+        unrelated.join_into(&main).bounds(1, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::NoCommonAncestor)
     ));
     assert!(matches!(
-        main.join_into(&left).bounds(0, 32, 32).plan().await,
+        main.join_into(&left).bounds(0, 32, 32).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::JoinLimit)
     ));
     Ok(())

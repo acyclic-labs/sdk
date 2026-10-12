@@ -369,7 +369,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        disjoint.rebase(16).await?,
+        disjoint.rebase(16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -478,7 +478,7 @@ async fn retained_transaction_rebases_disjoint_work_and_rejects_overlap()
     let TransactionRebase::Conflicted {
         conflicts,
         truncated,
-    } = overlap.rebase(16).await?
+    } = overlap.rebase(16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
     else {
         return Err("overlapping mutation rebased unsafely".into());
     };
@@ -551,7 +551,7 @@ async fn exact_generation_transaction_is_stateless_and_rebases_safely() -> Resul
         TransactionCommit::Conflict { .. }
     ));
     assert!(matches!(
-        transaction.rebase(16).await?,
+        transaction.rebase(16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
         TransactionRebase::Rebased(_)
     ));
     assert!(matches!(
@@ -713,8 +713,7 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
             },
             false,
             false,
-        )
-        .await?;
+         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .preallocate(
             "/tree/source",
@@ -723,11 +722,9 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
                 length: 6,
             },
             true,
-        )
-        .await?;
+         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
-        .clone_range("/tree/source", 0, "/tree/destination", 1, 5)
-        .await?;
+        .clone_range("/tree/source", 0, "/tree/destination", 1, 5, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .set_metadata(
             "/tree/source",
@@ -737,7 +734,7 @@ async fn transaction_preserves_links_sparse_ranges_metadata_and_cow_clones()
         )
         .await?
         .value;
-    transaction.resize("/tree/destination", 8).await?;
+    transaction.resize("/tree/destination", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         transaction
             .commit(
@@ -871,9 +868,8 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
             },
             false,
             false,
-        )
-        .await?;
-    transaction.resize("/tree/a", 8).await?;
+         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    transaction.resize("/tree/a", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .zero_range(
             "/tree/sparse",
@@ -883,9 +879,8 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
             },
             true,
             false,
-        )
-        .await?;
-    transaction.resize("/tree/sparse", 400).await?;
+         crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    transaction.resize("/tree/sparse", 400, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let TransactionCommit::Committed(exact) = transaction
         .commit(
             None,
