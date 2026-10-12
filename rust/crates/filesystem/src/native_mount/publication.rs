@@ -192,7 +192,7 @@ pub(super) fn seal_checkout_with_permit_guarded_with_native_work<'a, A, O, T, F,
     operation_context: Option<crate::Digest>,
     operation_evidence: Option<acyclic_stream::OwnedBytes>,
     original_fingerprint_permit: Option<PublicationPermit>,
-) -> crate::async_storage::BoxStorageFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<super::adapter::NativeSourcePublicationAck>, T>>
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,

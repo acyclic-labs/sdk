@@ -271,7 +271,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     #[cfg(feature = "filesystem")]
     pub(crate) async fn send_owned_with_io(self: &Arc<Self>, sender: TaskId,
         fence: &crate::scheduler::LeaseFence, recipient: TaskId, message: OperationId,
-        payload: FileRef, io: Option<&PreparationIo>) -> Result<MailSendAck> {
+        payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owner = match io {
@@ -286,7 +286,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
 
     #[cfg(feature = "filesystem")]
     pub(crate) async fn send_from_owner(&self, owner: &TaskJournalOwner<P>,
-        recipient: TaskId, message: OperationId, payload: FileRef, io: Option<&PreparationIo>) -> Result<MailSendAck> {
+        recipient: TaskId, message: OperationId, payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
         if !std::ptr::eq(self, owner.host.as_ref()) {
             return Err(boundary(io, crate::wire::ErrorCode::Unauthorized, "mail sender belongs to another original host"));
@@ -300,7 +300,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         self.verify_mail_owner(owner.task_id, Some(&owner.fence), Some(owner), false, &mut work).await?;
         let (bytes, payload) = self.prepare_mail(owner.task_id, recipient, message, payload, io).await?;
         self.publish_mail(owner.task_id, recipient, message, bytes, Some(&owner.fence), Some(owner), io).await?;
-        Ok(MailSendAck { sender: owner.task_id, recipient, operation_id: message, payload })
+        Ok(payload)
     }
 
     #[cfg(feature = "filesystem")]
@@ -391,8 +391,16 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let owner_condition: Option<CommitCondition> = if fence.is_some() {
                 return Err(boundary(io, crate::wire::ErrorCode::Unsupported, "owned mail publication is not bound"));
             } else { None };
-            let conditions = ConditionView([Some(&target), Some(&absent), owner_condition.as_ref()]);
-            let physical = encode(&(&location, fence, conditions), acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
+            let mut conditions = [("", None); 3];
+            let mut count = 0;
+            for condition in [Some(&target), Some(&absent), owner_condition.as_ref()].into_iter().flatten() {
+                conditions[count] = match condition {
+                    CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
+                    CommitCondition::Absent { path } => (path.as_str(), None),
+                };
+                count += 1;
+            }
+            let physical = encode(&(&location, fence, &conditions[..count]), acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
             if let Some(observer) = work.as_deref_mut() {
                 observer.hashed_bytes(physical.len() as u64 + b"acyclic.harness.mail-publication.v2\0".len() as u64)?;
             }
@@ -401,7 +409,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             hash.update(&physical);
             let digest = *hash.finalize().as_bytes();
             drop(physical);
-            let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(digest, &mut work)?;
+            let (key, held) = crate::distributed::digest_key(&digest, &mut work)?;
+            let mut request = crate::distributed::PreparedCommitRequest::new(key, held, &mut work);
             request.push_condition(target)?;
             request.push_condition(absent)?;
             if let Some(condition) = owner_condition { request.push_condition(condition)?; }
@@ -434,7 +443,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
+        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 
@@ -488,22 +497,6 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             return Err(boundary(io, crate::wire::ErrorCode::Conflict, "mail identity reused"));
         }
         Ok(true)
-    }
-}
-
-struct ConditionView<'a>([Option<&'a CommitCondition>; 3]);
-impl Serialize for ConditionView<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq as _;
-        let mut sequence = serializer.serialize_seq(Some(self.0.iter().flatten().count()))?;
-        for condition in self.0.iter().flatten() {
-            let value = match condition {
-                CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
-                CommitCondition::Absent { path } => (path.as_str(), None),
-            };
-            sequence.serialize_element(&value)?;
-        }
-        sequence.end()
     }
 }
 

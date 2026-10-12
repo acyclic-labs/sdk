@@ -8,27 +8,11 @@ import { invokePi, nodeExecutable, pinnedPiCli, piEnvironment } from "./pi-fixtu
 
 const execute = promisify(execFile);
 
-export interface InstalledNativeFixture {
-  project: string;
-  environment: NodeJS.ProcessEnv;
-  extension: string;
-  provider: string;
-  session: string;
-  manager: SessionManager;
-  command(args: string[], input?: string): Promise<{stdout: string; stderr: string}>;
-  start(): Promise<void>;
-  kill(): Promise<void>;
-  close(): Promise<void>;
-  servicePid(): number | undefined;
-  run(prompt: string, model?: string): Promise<{stdout: string; stderr: string}>;
-  runJson(prompt: string, onJsonLine: (line: string) => void, model?: string): Promise<{stdout: string; stderr: string}>;
-}
-
 /** Install Pi and own its service process. */
 export async function installedNativeFixture(
   directory: string, providerSource: string, nativeConfiguration: Readonly<Record<string, string>>,
   commandTimeout = 60_000,
-): Promise<InstalledNativeFixture> {
+) {
   assert.equal(VERSION, "1.1.0");
   const requested = process.env.ACYCLIC_BINARY;
   assert.ok(requested && isAbsolute(requested), "ACYCLIC_BINARY must select the final source-bound CLI");

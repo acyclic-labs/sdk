@@ -647,7 +647,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(SourceError::InvalidOptions);
         }
-        let workspace = self.create_workspace(name).await.map_err(engine)?;
+        let workspace = self.create_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(engine)?;
         let watcher = NativeWatch::open_with_profile(
             path.as_ref(),
             workspace.volume.config().profile,
@@ -679,7 +679,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .map_err(engine)?;
-        let generation = workspace.head().await.map_err(engine)?;
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(engine)?;
         let authority_head = attach_source_authority(
             &workspace,
             watcher.root_identity(),
@@ -1859,7 +1859,7 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced);
         Ok(())
     }
 
@@ -1936,7 +1936,7 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced);
         Ok(())
     }
 
@@ -1974,13 +1974,11 @@ mod tests {
             acknowledged
         };
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([80; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([80; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2056,13 +2054,11 @@ mod tests {
         let operation = tokio::spawn(async move { source.reconcile_with_key(source_key).await });
         gate.wait_for_arrivals(1).await;
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([67; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([67; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2081,7 +2077,7 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced.id());
         Ok(())
     }
 
@@ -2122,13 +2118,11 @@ mod tests {
         let operation = tokio::spawn(async move { source.reconcile_with_key(source_key).await });
         gate.wait_for_arrivals(1).await;
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([65; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([65; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2148,7 +2142,7 @@ mod tests {
             acknowledged
         );
         assert_eq!(source.state().await, SourceState::Clean);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced.id());
         Ok(())
     }
 
@@ -2265,7 +2259,7 @@ mod tests {
         ))
         .await?;
         let second = second_workspace.source().ok_or("second source missing")?;
-        let advanced = second_workspace.head().await?;
+        let advanced = second_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_ne!(advanced.id(), published_generation);
         assert_eq!(second.state().await, SourceState::Clean);
 
@@ -2498,7 +2492,7 @@ mod tests {
             );
             std::fs::write(root.path().join("value.txt"), b"three")?;
             let current = clean_generation(Box::pin(source.rescan()).await?)?;
-            let current_head = workspace.head().await?;
+            let current_head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(current_head.id(), current.id());
             assert_eq!(
                 current.read("/value.txt", 8).await?,
@@ -2508,7 +2502,7 @@ mod tests {
                 clean_generation(Box::pin(source.rescan_with_key(key)).await?)?.id(),
                 recovered.id()
             );
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Clean);
             let session = source.inner.lock().await;
             let durable_head = authority
@@ -2570,7 +2564,7 @@ mod tests {
             let workspace =
                 Box::pin(fs.attach_directory(name, root.path(), SourceOptions::default())).await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2586,7 +2580,7 @@ mod tests {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             let session = source.inner.lock().await;
             let durable_head = authority
                 .inner
@@ -2623,11 +2617,11 @@ mod tests {
         let forged_key = IdempotencyKey::from_bytes(
             source_volume_operation_id(key, SourceOperation::Rescan).into_bytes(),
         );
-        let mut unrelated = workspace.begin_transaction(forged_key).await?;
+        let mut unrelated = workspace.begin_transaction(forged_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"generic"))
             .await?;
-        let unrelated = match unrelated.commit().await? {
+        let unrelated = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2641,7 +2635,7 @@ mod tests {
             Box::pin(source.rescan_with_key(key)).await,
             Err(SourceError::IdempotencyConflict)
         ));
-        assert_eq!(workspace.head().await?.id(), unrelated.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), unrelated.id());
         assert_eq!(source.state().await, SourceState::PendingCapture);
         Ok(())
     }
@@ -2703,7 +2697,7 @@ mod tests {
             ))
             .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2719,7 +2713,7 @@ mod tests {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
         }
         Ok(())
     }
@@ -2750,7 +2744,7 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2759,7 +2753,7 @@ mod tests {
                 Box::pin(source.rescan_with_key(key)).await?,
                 ReconcileOutcome::Conflict
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 
@@ -2781,12 +2775,12 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert!(matches!(
                 Box::pin(source.seal_with_key(seal_key)).await,
                 Err(SourceError::Conflict)
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 

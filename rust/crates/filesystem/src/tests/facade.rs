@@ -20,10 +20,10 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-identity-candidate").await?;
+    let workspace = fs.create_workspace("original-identity-candidate", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "actual source bytes").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let path = path("source")?;
@@ -92,14 +92,14 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
 async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("candidate-adoption-seal").await?;
+    let workspace = fs.create_workspace("candidate-adoption-seal", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
-    let mut live = workspace.checkout_measured(
+    let mut live = workspace.checkout(
         GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let base = live.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
     let mut candidate = base.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?;
     assert_eq!(prepared.work.allocation_operations, 0, "identical proof is only shared");
@@ -108,17 +108,17 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     assert!(!live.adopt_prepared_candidate(
         &base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared.value.ok_or("shared proof rejected")?,
     ));
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("reader observations rejected")?;
     candidate.lookup_no_follow(&path("later-candidate")?, WorkBudget::UNBOUNDED, &cancellation).await?;
     assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
-    let prepared = live.prepare_candidate_adoption_measured(
+    let prepared = live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("compatible candidate rejected")?;
     live.live_operation_id = Some(OperationId::from_bytes([209; 16]));
     assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
-    assert!(live.prepare_candidate_adoption_measured(
+    assert!(live.prepare_candidate_adoption(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.is_none());
     assert!(!live.admits_candidate(&base, &candidate));
@@ -128,21 +128,148 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod heterogeneous_mount {
     use super::*;
-    enum Objects {
-        Memory(TestMemoryObjectStore),
+    use crate::foundation::{AuthorityId, Epoch, Head, OperationId, ProposedCommit, Sequence};
+    use crate::model::VolumeLimits;
+    use crate::storage::{
+        AppendOutcome, AuthorityResult, CreateAuthorityOutcome, FenceOutcome, ObjectId, ObjectRead,
+        ObjectReadRequest, ObjectResult, ObjectWrite, ReplayLimit,
+    };
+    use crate::{
+        AsyncAuthorityStore, AsyncObjectStore, EmbeddedCapabilities, LocalFs, LocalOptions,
+        MemoryFs,
+    };
+    use acyclic_stream::OwnedBytes;
+    use std::sync::Arc;
+
+    #[derive(Clone)]
+    enum Stores {
+        Memory(MemoryFs),
         Local(LocalFs),
     }
 
     macro_rules! delegate {
-        ($self:ident, $method:ident($($argument:expr),*)) => {
+        ($self:ident, $trait:ident, $field:ident, $method:ident($($argument:expr),*)) => {
             match $self {
-                Objects::Memory(store) => AsyncObjectStore::$method(store, $($argument),*).await,
-                Objects::Local(fs) => AsyncObjectStore::$method(&fs.inner.objects, $($argument),*).await,
+                Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
             }
         };
     }
+    impl AsyncAuthorityStore for Stores {
+        async fn create_authority(
+            &self,
+            authority: AuthorityId,
+            epoch: Epoch,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<CreateAuthorityOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                create_authority(authority, epoch, budget, cancellation)
+            )
+        }
+        async fn head(
+            &self,
+            authority: AuthorityId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Head> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                head(authority, budget, cancellation)
+            )
+        }
+        async fn compare_and_append(
+            &self,
+            authority: AuthorityId,
+            epoch: Epoch,
+            expected: Head,
+            commit: ProposedCommit,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<AppendOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                compare_and_append(authority, epoch, expected, commit, budget, cancellation)
+            )
+        }
+        async fn replay(
+            &self,
+            authority: AuthorityId,
+            after: Sequence,
+            limit: ReplayLimit,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Vec<crate::foundation::DurableCommit>> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                replay(authority, after, limit, budget, cancellation)
+            )
+        }
+        async fn fence(
+            &self,
+            authority: AuthorityId,
+            expected: Head,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<FenceOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                fence(authority, expected, budget, cancellation)
+            )
+        }
+        async fn find_operation(
+            &self,
+            authority: AuthorityId,
+            operation: OperationId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Option<crate::foundation::DurableCommit>> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                find_operation(authority, operation, budget, cancellation)
+            )
+        }
+        async fn fork_generation_authority(
+            &self,
+            source: crate::async_storage::GenerationForkSource,
+            destination: AuthorityId,
+            operation: OperationId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<CreateAuthorityOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                fork_generation_authority(source, destination, operation, budget, cancellation)
+            )
+        }
+        fn supports_generation_lineage_prefix(&self) -> bool {
+            match self {
+                Self::Memory(fs) => {
+                    AsyncAuthorityStore::supports_generation_lineage_prefix(&fs.inner.authority)
+                }
+                Self::Local(fs) => {
+                    AsyncAuthorityStore::supports_generation_lineage_prefix(&fs.inner.authority)
+                }
+            }
+        }
+    }
 
-    impl AsyncObjectStore for Objects {
+    impl AsyncObjectStore for Stores {
         async fn put(
             &self,
             id: ObjectId,
@@ -150,7 +277,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<()> {
-            delegate!(self, put(id, bytes, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                put(id, bytes, budget, cancellation)
+            )
         }
         async fn put_many(
             &self,
@@ -158,7 +290,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<()> {
-            delegate!(self, put_many(writes, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                put_many(writes, budget, cancellation)
+            )
         }
         async fn read(
             &self,
@@ -167,7 +304,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<ObjectRead> {
-            delegate!(self, read(id, maximum, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                read(id, maximum, budget, cancellation)
+            )
         }
         async fn read_many(
             &self,
@@ -175,7 +317,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<Vec<ObjectRead>> {
-            delegate!(self, read_many(requests, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                read_many(requests, budget, cancellation)
+            )
         }
         async fn contains(
             &self,
@@ -183,7 +330,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<bool> {
-            delegate!(self, contains(id, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                contains(id, budget, cancellation)
+            )
         }
         async fn flush_before_publish(
             &self,
@@ -191,7 +343,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<crate::PublicationHold> {
-            delegate!(self, flush_before_publish(scope, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                flush_before_publish(scope, budget, cancellation)
+            )
         }
         fn collection(&self) -> Option<&Arc<crate::Collection>> {
             match self {
@@ -206,31 +363,68 @@ mod heterogeneous_mount {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let local = Fs::local(LocalOptions::new(directory.path())).await?;
+        let memory_store = Stores::Memory(Fs::memory());
+        let local_store = Stores::Local(local);
         let memory = Fs::new(
-            crate::MemoryAuthorityStore::default(),
-            Objects::Memory(TestMemoryObjectStore::default()),
+            memory_store.clone(),
+            memory_store,
             EmbeddedCapabilities::MEMORY,
         );
         let disk = Fs::new(
-            crate::MemoryAuthorityStore::default(),
-            Objects::Local(local),
+            local_store.clone(),
+            local_store,
             EmbeddedCapabilities::MEMORY,
         );
-        let root = memory.create_workspace("root").await?;
-        let scratch = disk.create_workspace("scratch").await?;
+        let root = memory.create_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let scratch = disk.create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         root.write_text("/file", "memory").await?;
         scratch.write_text("/file", "disk").await?;
+        let root_head = root.head().await?;
+        let scratch_head = scratch.head().await?;
+        assert!(matches!(
+            scratch
+                .fork(
+                    "foreign",
+                    crate::ForkOptions::from_generation(
+                        root_head.clone(),
+                        crate::IdempotencyKey::from_bytes([60; 16]),
+                    )
+                )
+                .await, Err(crate::WorkspaceError::ForeignGeneration)
+        ));
+        assert!(matches!(
+            root.fork(
+                "foreign",
+                crate::ForkOptions::from_generation(
+                    scratch_head.clone(),
+                    crate::IdempotencyKey::from_bytes([61; 16]),
+                )
+            )
+            .await, Err(crate::WorkspaceError::ForeignGeneration)
+        ));
+        for (workspace, head) in [(&root, &root_head), (&scratch, &scratch_head)] {
+            let fork = workspace
+                .fork(
+                    "child",
+                    crate::ForkOptions::from_generation(
+                        head.clone(),
+                        crate::IdempotencyKey::from_bytes([62; 16]),
+                    ),
+                )
+                .await?;
+            fork.write_text("/file", "child only").await?;
+            assert_eq!(workspace.head().await?.id(), head.id());
+            assert_ne!(fork.head().await?.id(), head.id());
+        }
         let mut view = crate::MountedView::builder()
             .mount(
                 "/",
-                root.engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
-                    .await?,
+                root.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             )?
             .mount(
                 "/.scratch",
                 scratch
-                    .engine_checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned())
-                    .await?,
+                    .checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             )?
             .build()?;
         let cancellation = CancellationToken::new();
@@ -251,11 +445,25 @@ mod heterogeneous_mount {
         }
         assert_eq!(view.snapshot().bindings.len(), 2);
         assert_eq!(
+            view.resolve(&root_path)
+                .ok_or("memory route")?
+                .checkout()
+                .generation_id(),
+            root_head.id()
+        );
+        assert_eq!(
+            view.resolve(&scratch_path)
+                .ok_or("local route")?
+                .checkout()
+                .generation_id(),
+            scratch_head.id()
+        );
+        assert_eq!(
             view.validate_rename(&root_path, &scratch_path),
             Err(crate::MountError::CrossVolume)
         );
-        assert_eq!(root.read("/file", 32).await?.as_ref(), b"memory");
-        assert_eq!(scratch.read("/file", 32).await?.as_ref(), b"disk");
+        assert_eq!(root.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"memory");
+        assert_eq!(scratch.read("/file", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"disk");
         Ok(())
     }
 }
@@ -352,7 +560,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("retention-proof").await?;
+    let workspace = fs.create_workspace("retention-proof", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let crate::TransactionCommit::Committed(generation) = workspace
         .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
         .await?
@@ -360,7 +568,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         return Err("retention fixture did not commit".into());
     };
     let cloned = generation.clone();
-    let cold = workspace.head().await?;
+    let cold = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: generation.id().digest(),
@@ -1080,46 +1288,6 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
     }
 }
 
-#[test]
-fn high_level_file_and_directory_operations_share_the_sparse_kernel()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
-        .value;
-    let mut checkout = poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?
-    .value;
-    let original = bytes::Bytes::from(vec![b'a'; 100]);
-    poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: path("file")?, bytes: (original).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    poll_immediate(checkout.create(crate::AuthoredMutation::CreateDirectory { path: path("directory")?, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    poll_immediate(checkout.change_content(path("file")?, crate::ContentChange::Write { offset: 40, bytes: (bytes::Bytes::from_static(b"changed")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))?;
-    let read = poll_immediate(checkout.read_file_range(
-        &path("file")?,
-        ByteRange {
-            offset: 38,
-            length: 12,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(&read.value.bytes[..], b"aachangedaaa");
-    let page = poll_immediate(checkout.list_directory(
-        &root_path()?,
-        None,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(page.value.entries.len(), 2);
-    assert!(!page.value.has_more);
-    assert!(checkout.has_pending_mutations());
-    Ok(())
-}
 
 #[test]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
@@ -4267,10 +4435,10 @@ fn original_authored_creates(
 async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-authored-transaction").await?;
+    let workspace = fs.create_workspace("original-authored-transaction", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "transaction source").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let metadata = checkout.lookup_no_follow_with_metadata(
@@ -5896,15 +6064,12 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
         ))
         .is_err()
     );
-    assert!(
+    assert!(matches!(
         poll_immediate(first.checkout(
-            GenerationSelector::Exact(second_head),
-            pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .is_err()
-    );
+            GenerationSelector::Exact(second_head), pinned(), WorkBudget::UNBOUNDED, &cancellation,
+        )),
+        Err(OperationFailure { error: FsError::VolumeMismatch, .. })
+    ));
     assert!(
         poll_immediate(first.diff_generations(
             first_head,
@@ -6478,40 +6643,6 @@ fn conflicting_creation_config_is_rejected_without_changing_opened_config()
     Ok(())
 }
 
-#[test]
-fn exact_generation_cannot_cross_volume_identity() -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let first = poll_immediate(fs.create_volume_with_id(
-        VolumeId::from_bytes([45; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let second = poll_immediate(fs.create_volume_with_id(
-        VolumeId::from_bytes([46; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let second_head = poll_immediate(second.value.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let crossing = poll_immediate(first.value.checkout(
-        GenerationSelector::Exact(second_head.value.generation_id()),
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let Err(failure) = crossing else {
-        return Err("cross-volume exact checkout succeeded".into());
-    };
-    assert!(matches!(failure.error, FsError::VolumeMismatch));
-    Ok(())
-}
 
 #[test]
 fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std::error::Error>> {
@@ -9012,6 +9143,8 @@ fn nfc_config() -> VolumeConfig {
     }
 }
 
+
+
 #[test]
 fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -9882,11 +10015,11 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::WorkspaceError;
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-invalid-paths").await?;
+    let workspace = fs.create_workspace("selected-fork-invalid-paths", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "body").await?;
-    let source = workspace.head().await?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
+    let checkout = workspace.checkout(
         GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
@@ -9920,27 +10053,27 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::{ForkOptions, WorkspaceError};
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-closure-controls").await?;
-    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
+    let workspace = fs.create_workspace("selected-fork-closure-controls", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/tree/nested").await?;
     transaction.write_text("/tree/nested/file", "linked body").await?;
     transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
     transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
     transaction.write_text("/omitted", "not inherited").await?;
-    transaction.commit().await?;
-    let source = workspace.head().await?;
+    transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let paths = vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()];
     let child = workspace.fork(
         "selected-fork-closure-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(paths.clone()),
     ).await?;
-    let initial = child.head().await?;
-    assert_eq!((child.read("/tree/nested/alias", 32).await?).as_ref(), b"linked body");
-    assert!(child.read("/outside-alias", 32).await.is_err());
-    assert!(child.read("/omitted", 32).await.is_err());
-    let file = initial.stat("/tree/nested/file").await?;
-    let alias = initial.stat("/tree/nested/alias").await?;
+    let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    assert_eq!((child.read("/tree/nested/alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?).as_ref(), b"linked body");
+    assert!(child.read("/outside-alias", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    assert!(child.read("/omitted", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+    let file = initial.stat("/tree/nested/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = initial.stat("/tree/nested/alias", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     assert!(initial.matches_fork_selection(&source, Some(paths.clone())).await?);
@@ -9985,7 +10118,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
     ).await?;
-    let all = all.head().await?;
+    let all = all.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(all.matches_fork_selection(&source, None).await?);
     assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
     assert!(!initial.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
@@ -10008,15 +10141,15 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates"))?;
+    let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates", WorkBudget::UNBOUNDED, &CancellationToken::new())).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     poll_immediate(workspace.write_text("/file", "body"))?;
-    let source = poll_immediate(workspace.head())?;
+    let source = poll_immediate(async { workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     let child = poll_immediate(workspace.fork(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
     ))?;
-    let initial = poll_immediate(child.head())?;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
@@ -10051,11 +10184,11 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
 async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-content-stream").await?;
+    let workspace = fs.create_workspace("original-content-stream", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "authenticated source bytes").await?;
     workspace.write_text("/destination", "old destination").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(
@@ -10072,7 +10205,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     let reader = checkout.pinned_reader()?;
-    let bytes = reader.read_record_range_with_native_work(
+    let bytes = reader.read_record_range(
         source, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?.bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
@@ -10083,7 +10216,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(actual.file_id, destination.file_id);
-    let content = reader.read_record_range_with_native_work(
+    let content = reader.read_record_range(
         actual, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?;
     assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
@@ -10128,11 +10261,11 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
 async fn original_detached_content_stream_keeps_atomic_metadata_transition()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-detached-content").await?;
+    let workspace = fs.create_workspace("original-detached-content", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/source", "real detached stream").await?;
     workspace.write_text("/destination", "before").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(
@@ -10144,7 +10277,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     let reader = checkout.pinned_reader()?;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let source = reader.read_record_range_with_native_work(
+    let source = reader.read_record_range(
         source, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
     ).await?;
     let metadata = FileMetadata {
@@ -10157,7 +10290,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
         &original, &cancellation,
     ).await?;
     assert_eq!(detached.record.file_id, destination.file_id);
-    assert_eq!(reader.read_record_range_with_native_work(
+    assert_eq!(reader.read_record_range(
         detached.record, ByteRange { offset: 0, length: 20 }, &original, &cancellation,
     ).await?.bytes.as_ref(), b"real detached stream");
     let before = detached.record;

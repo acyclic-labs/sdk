@@ -1,28 +1,28 @@
 import { projectModelFile, type FileProjectionOptions, type ModelAttempt, type ModelContentPart,
   type ModelEvent, type ModelProvider, type ModelRequest } from "@acyclic-labs/harness";
 
-export type PiEvent<Metadata = unknown> =
+export type PiEvent =
   | { readonly type: "text_delta"; readonly text: string }
   | { readonly type: "thinking_delta"; readonly text: string }
   | { readonly type: "tool_call"; readonly id: string; readonly name: string; readonly arguments: unknown }
-  | { readonly type: "complete"; readonly metadata: Metadata }
+  | { readonly type: "complete"; readonly metadata: unknown }
   | { readonly type: "error"; readonly error: unknown };
 
 /** Pi owns model-wire projection; Harness only supplies typed, provenance-bearing model input. */
-export interface PiBridge<Request, Event, Metadata = unknown> {
+export interface PiBridge<Request, Event> {
   /** Exact selected-model capacity; required when accounting is requested. */
   readonly contextCapacity?: ModelProvider["contextCapacity"];
   /** Request-bound additive token bounds, without projection or dispatch. */
   readonly countTokens?: ModelProvider["countTokens"];
   readonly project: (request: ModelRequest) => Request | Promise<Request>;
   readonly run: (request: Request, options: { readonly signal?: AbortSignal }) => AsyncIterable<Event>;
-  readonly event?: (event: Event) => PiEvent<Metadata>;
+  readonly event?: (event: Event) => PiEvent;
   readonly reconcile: (attempt: ModelAttempt) => Promise<readonly Event[] | undefined>;
 }
 
-export function piProvider<Request, Metadata = unknown>(bridge: PiBridge<Request, PiEvent<Metadata>, Metadata>): ModelProvider;
-export function piProvider<Request, Event, Metadata = unknown>(bridge: PiBridge<Request, Event, Metadata> & { readonly event: (event: Event) => PiEvent<Metadata> }): ModelProvider;
-export function piProvider<Request, Event, Metadata>(bridge: PiBridge<Request, Event, Metadata>): ModelProvider {
+export function piProvider<Request>(bridge: PiBridge<Request, PiEvent>): ModelProvider;
+export function piProvider<Request, Event>(bridge: PiBridge<Request, Event> & { readonly event: (event: Event) => PiEvent }): ModelProvider;
+export function piProvider<Request, Event>(bridge: PiBridge<Request, Event>): ModelProvider {
   const projectEvent = bridge.event ?? ((event: unknown) => event);
   return {
     contextCapacity(model) {
@@ -99,11 +99,9 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
           if (typeof part.text !== "string") throw new TypeError("invalid Pi text part");
           content.push({ type: "text", text: part.text });
           break;
-        case "file": {
-          const projected = await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, options);
-          content.push({ type: "text", text: projected.text });
+        case "file":
+          content.push({ type: "text", text: await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, options) });
           break;
-        }
         case "tool_call":
           if (message.role !== "assistant" || typeof part.callId !== "string" || !part.callId
             || typeof part.name !== "string" || !part.name) throw new TypeError("invalid Pi tool call");
@@ -119,8 +117,7 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
             for (const item of part.content.parts) {
               if (item.kind === "text") data.push({ type: "text", text: item.text });
               else if (item.kind === "file") {
-                const projected = await projectModelFile(item, options);
-                data.push({ type: "text", text: projected.text });
+                data.push({ type: "text", text: await projectModelFile(item, options) });
               } else throw new TypeError("unsupported Pi tool result data");
             }
             content.push({ type: "tool_result", callId: part.callId, name: part.name, value: data });
@@ -154,10 +151,8 @@ function projectedMessage(role: ModelRequest["messages"][number]["role"], conten
   }
 }
 
-export type PiDefaultBridge<Metadata = unknown> = Omit<PiBridge<PiProjectedRequest, PiEvent<Metadata>, Metadata>, "project"> & FileProjectionOptions;
-
 /** Pi adapter with the shared bounded text/reference defaults. */
-export function piDefaultProvider<Metadata = unknown>(bridge: PiDefaultBridge<Metadata>): ModelProvider {
+export function piDefaultProvider(bridge: Omit<PiBridge<PiProjectedRequest, PiEvent>, "project"> & FileProjectionOptions): ModelProvider {
   return piProvider({
     project: request => projectPiRequest(request, bridge),
     run: bridge.run,
@@ -168,8 +163,6 @@ export function piDefaultProvider<Metadata = unknown>(bridge: PiDefaultBridge<Me
   });
 }
 
-export function projectPiEvent<Metadata>(event: PiEvent<Metadata>): ModelEvent;
-export function projectPiEvent(event: unknown): ModelEvent;
 export function projectPiEvent(event: unknown): ModelEvent {
   if (typeof event !== "object" || event === null || !("type" in event) || typeof event.type !== "string") {
     throw new TypeError("Pi bridge returned an invalid event");
@@ -192,11 +185,7 @@ export function projectPiEvent(event: unknown): ModelEvent {
       return { kind: "completed", metadata: event.metadata };
     case "error":
       if (!("error" in event)) throw new TypeError("Pi error detail is missing");
-      throw new PiProviderError(event.error);
+      throw new Error(event.error instanceof Error ? event.error.message : String(event.error), { cause: event.error });
     default: throw new TypeError("unsupported Pi bridge event");
   }
-}
-
-export class PiProviderError extends Error {
-  constructor(override readonly cause: unknown) { super(cause instanceof Error ? cause.message : String(cause)); }
 }

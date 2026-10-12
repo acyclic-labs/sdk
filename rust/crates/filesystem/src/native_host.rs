@@ -3571,7 +3571,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
                 crate::native_name::original_name_error(original.runtime_error(error))
             }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+            => DemandError::InvalidRequest,
         })
 }
 
@@ -9279,7 +9279,7 @@ mod bounded_record_tests {
     fn materialization_live_bytes(
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<u64, crate::materializer::NativeTreeMaterializationError> {
-        let (bytes, _empty_allocation) = work.with_owned_allocations(|ledger, _, _, _| {
+        let (bytes, _empty_allocation) = work.allocations(|ledger, _, _, _| {
             Ok::<_, crate::materializer::NativeTreeMaterializationError>(ledger.live_bytes())
         })?;
         Ok(bytes)

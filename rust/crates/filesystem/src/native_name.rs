@@ -59,7 +59,7 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest)),
             Self::Source(work) => work.allocate(bytes),
             Self::Original { work, allocation, .. } => {
-                *allocation = Some(work.claim_allocation(bytes, u64::from(bytes != 0)).map_err(original_name_error)?);
+                *allocation = Some(work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED).map_err(original_name_error)?);
                 Ok(())
             }
         }

@@ -874,7 +874,7 @@ impl CheckoutDependencies {
                 let delta = WorkCounters { bytes_copied: copied, items_examined: items,
                     ..WorkCounters::UNCHARGED };
                 if operations != 0 || copied != 0 {
-                    let allocation = original.claim_allocation_with_work(bytes, operations, delta)?;
+                    let allocation = original.claim_allocation(bytes, operations, delta)?;
                     let previous = copied_allocation.replace(Some(allocation));
                     debug_assert!(previous.as_ref().is_none_or(|guard| guard.bytes() == 0));
                     drop(previous);

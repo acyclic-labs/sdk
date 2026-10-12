@@ -22,8 +22,7 @@ pub(crate) enum PluginTaskBinding {
 }
 
 impl PluginTaskBinding {
-    /// The host-managed reopen path has no retained task owner and therefore
-    /// cannot authorize Pi workspace access, allocation or publication.
+    /// The host-managed reopen path has no retained task owner and therefore cannot authorize Pi workspace access, allocation or publication.
     pub(crate) fn require_host_managed_recovery(&self) -> Result<(), String> {
         match self {
             Self::HostManaged => Ok(()),
@@ -44,8 +43,7 @@ pub(crate) struct PiTaskBinding {
     /// Same root keys as the existing physical context; no second agent index.
     pub(crate) project_volumes: BTreeMap<String, VolumeRef>,
     pub(crate) scratch: PiScratchBinding,
-    /// Explicit unmounted result storage. Root Pi itself is host-native; its
-    /// subprocess children acquire this separate volume through creator proofs.
+    /// Explicit unmounted result storage.
     pub(crate) results: Option<PiScratchBinding>,
 }
 
@@ -140,9 +138,6 @@ fn validate_pi_bindings_inner<'s>(
         }
         return Ok(());
     }
-    // Borrowed keys preserve the original indexed duplicate checks without
-    // cloning sessions. Known key payloads are resident before insertion;
-    // opaque standard-library tree nodes are not physical-allocation evidence.
     let count = state.routes.len().checked_add(state.pending.len())
         .and_then(|count| count.checked_add(1))
         .ok_or_else(|| invalid_binding("Pi binding validation size overflow"))?;
