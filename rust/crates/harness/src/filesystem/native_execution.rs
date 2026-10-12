@@ -2330,25 +2330,19 @@ async fn checkpoint_preparation<P: StreamProvider>(
 }
 
 fn native_paths_overlap(left: &Path, right: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        let mut left = left.components();
-        let mut right = right.components();
-        loop {
-            match (left.next(), right.next()) {
-                (Some(left), Some(right)) => {
-                    let Some(left) = left.as_os_str().to_str() else { return false; };
-                    let Some(right) = right.as_os_str().to_str() else { return false; };
-                    if !left.chars().flat_map(char::to_uppercase)
-                        .eq(right.chars().flat_map(char::to_uppercase)) { return false; }
-                }
-                _ => return true,
-            }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        left.starts_with(right) || right.starts_with(left)
+    let mut left = left.components();
+    let mut right = right.components();
+    loop {
+        let (Some(left), Some(right)) = (left.next(), right.next()) else { return true; };
+        #[cfg(windows)]
+        let equal = match (left.as_os_str().to_str(), right.as_os_str().to_str()) {
+            (Some(left), Some(right)) => left.chars().flat_map(char::to_uppercase)
+                .eq(right.chars().flat_map(char::to_uppercase)),
+            _ => false,
+        };
+        #[cfg(not(windows))]
+        let equal = left == right;
+        if !equal { return false; }
     }
 }
 
