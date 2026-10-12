@@ -2822,26 +2822,9 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
                 reason: "native action acceptance requires the original running owner",
             }),
         };
-        let mut template = self.completion_template(journal).await?;
-        let maximum = template.codec_parts().2;
-        let items = maximum.checked_add(24).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "native completion inspection allowance overflows",
-        })?;
-        let reservation = self.work.reserve_work(acyclic_fs::WorkCounters {
-            backend_read_operations: 1,
-            backend_write_operations: 1,
-            authority_records_read: 1,
-            authority_records_appended: 1,
-            authority_bytes_read: maximum,
-            authority_bytes_written: maximum,
-            bytes_encoded: maximum,
-            bytes_copied: maximum,
-            items_examined: items,
-            ..Default::default()
-        })?;
+        let template = self.completion_template(journal).await?;
         let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner, template, reservation, &self.work,
+            owner, template, &self.work,
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let (mut journal, mut output_custody) = prepared.finish(&owner.stream()).await?;
