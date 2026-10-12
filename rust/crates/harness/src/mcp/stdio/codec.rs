@@ -200,7 +200,7 @@ fn diagnostic(error: Error, mut custody: acyclic_fs::NativeAllocation) -> Error 
     }
 }
 
-pub(super) fn encode_line<T: Serialize>(
+pub(super) fn encode_line<T: Serialize + ?Sized>(
     value: &T,
     maximum: usize,
     work: NativeWork<'_>,
