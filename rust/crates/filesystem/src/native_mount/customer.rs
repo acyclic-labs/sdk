@@ -107,7 +107,7 @@ pub struct NativeWorkingSet<A, O> {
     source_identity: NativeRootIdentity,
     selected_root: PathBuf,
     expected_generation: GenerationId,
-    baseline: Arc<NativeViewBaseline>,
+    baseline: NativeViewBaseline,
     capture_budget: crate::WorkBudget,
     writable: bool,
     // Owned host-path containers retire after all working-set payload fields.
@@ -248,7 +248,7 @@ where
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         self.source.capture_host(
             &self.source_root, paths, self.source_identity, scope,
-            Some(Arc::clone(&self.baseline)), work,
+            Some(self.baseline), work,
         ).await?;
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         Ok(())
@@ -1800,9 +1800,7 @@ where
                 let source_identity = prepare_root_identity_with_work(
                     &source_root.0, &selected_root.0, meter, expected_root_identity,
                 )?;
-                let baseline = NativeViewBaseline::new(
-                    source_identity, !mount.writable, original,
-                )?;
+                let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
                 let shared = SharedCheckout::with_publication_meter(
                     checkout, MountPublication::Manual, meter,
                 )?;
@@ -1818,7 +1816,7 @@ where
                     let capture_meter = capture.clone();
                     source.capture_host(
                         &source_root.0, &[MountPath::root()], source_identity,
-                        HostCaptureScope::Subtree, Some(Arc::clone(&baseline)), &capture_meter,
+                        HostCaptureScope::Subtree, Some(baseline), &capture_meter,
                     ).await?;
                     let pending = source.shared_checkout().lock_with_carrier(
                         &mut super::adapter::NativeDemandCarrier::Native(&capture_meter),
@@ -1862,7 +1860,7 @@ mod tests {
         for profile in [FilesystemProfile::Portable, FilesystemProfile::Windows] {
             let cancellation = crate::CancellationToken::new();
             let path = NamespacePath::parse_in_profile_measured(
-                "/selected-é/leaf", profile, VolumeLimits::default(),
+                "/selected-Ã©/leaf", profile, VolumeLimits::default(),
                 crate::WorkBudget::UNBOUNDED, &cancellation, 0,
             )?.value;
             let mut allocations = crate::kernel::allocation::AllocationLedger::default();
@@ -1882,7 +1880,7 @@ mod tests {
             let host = preparation_selected_root_measured(
                 &path, &mut allocations, &mut work, crate::WorkBudget::UNBOUNDED, &cancellation,
             )?;
-            assert_eq!(host, Path::new("selected-é").join("leaf"));
+            assert_eq!(host, Path::new("selected-Ã©").join("leaf"));
             assert_eq!(work.bytes_copied, host.as_os_str().len() as u64);
             assert_eq!(work.allocation_operations, 1);
             assert_eq!(allocations.live_bytes(), host.capacity() as u64);
@@ -2373,12 +2371,12 @@ mod tests {
         let fs = Fs::memory();
         let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_directory("/selected-é", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        transaction.create_directory("/selected-Ã©", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let directory = tempfile::tempdir()?;
         let options = crate::MaterializeOptions::native(directory.path());
-        let mount = MountOptions::read_only().subdirectory("/selected-é");
+        let mount = MountOptions::read_only().subdirectory("/selected-Ã©");
         let cancellation = crate::CancellationToken::new();
         let prepared = generation.prepare_native_working_set_with_budgets(
             &mount, &options, crate::WorkBudget::UNBOUNDED,
@@ -2399,7 +2397,7 @@ mod tests {
         assert!(preparation.allocation_operations >= 7);
         assert!(preparation.peak_allocation_bytes >=
             (std::mem::size_of_val(prepared.value.source.as_ref())
-                + std::mem::size_of_val(prepared.value.baseline.as_ref())) as u64);
+) as u64);
         let mut finite_preparation = crate::WorkBudget::UNBOUNDED;
         finite_preparation.allocation_operations = preparation.allocation_operations
             .checked_sub(1).ok_or("attachment omitted carrier allocations")?;
@@ -2444,8 +2442,8 @@ mod tests {
         assert_eq!(attached.value.source_identity, identity);
         assert!(attached.work.allocation_operations > preparation.allocation_operations);
         assert_eq!(attached.value.source_root, options.destination);
-        assert_eq!(attached.value.selected_root, Path::new("selected-é"));
-        assert_eq!(std::fs::read_dir(directory.path().join("selected-é"))?.count(), 0);
+        assert_eq!(attached.value.selected_root, Path::new("selected-Ã©"));
+        assert_eq!(std::fs::read_dir(directory.path().join("selected-Ã©"))?.count(), 0);
         Ok(())
     }
 

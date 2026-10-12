@@ -16,21 +16,20 @@ use std::{
 };
 
 pub(super) struct State {
-    completed: Mutex<Option<u64>>,
+    result: Mutex<Option<Result<u64, Error>>>,
     closed: AtomicBool,
-    failure: Mutex<Option<Error>>,
     waker: AtomicWaker,
     _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl State {
     pub(super) fn finish(&self) -> Result<u64, Error> {
-        (*self.completed.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
-            .ok_or_else(|| wire::ErrorCode::Unavailable.into())
+        self.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(|| Err(wire::ErrorCode::Unavailable.into()))
     }
     fn fail(&self, error: Error) {
-        let mut failure = self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if failure.is_none() { *failure = Some(error); }
-        drop(failure);
+        let mut result = self.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if result.is_none() { *result = Some(Err(error)); }
+        drop(result);
         self.waker.wake();
     }
 }
@@ -57,9 +56,8 @@ pub(super) fn chunks(
         None => None,
     };
     let state = Arc::new(State {
-        completed: Mutex::new(None),
+        result: Mutex::new(None),
         closed: AtomicBool::new(false),
-        failure: Mutex::new(None),
         waker: AtomicWaker::new(),
         _allocation: allocation,
     });
@@ -102,7 +100,7 @@ pub(super) fn chunks(
                         return Err(failure);
                     }
                     None => {
-                        *state.0.completed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(length);
+                        *state.0.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(length));
                         return Ok(None);
                     }
                 }
@@ -156,8 +154,11 @@ pub(super) async fn run<T: Send>(
 ) -> Result<T, Error> {
     let failure = futures::future::poll_fn(|cx| {
         state.waker.register(cx.waker());
-        let mut failure = state.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(error) = failure.take() { return std::task::Poll::Ready(Some(error)); }
+        let mut result = state.result.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(Err(error)) = *result {
+            *result = None;
+            return std::task::Poll::Ready(Some(error));
+        }
         if state.closed.load(Ordering::Acquire) { return std::task::Poll::Ready(None); }
         std::task::Poll::Pending
     });
