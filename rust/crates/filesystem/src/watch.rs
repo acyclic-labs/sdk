@@ -83,42 +83,6 @@ pub const fn native_watch_capabilities() -> NativeWatchCapabilities {
     }
 }
 
-/// Process-local watcher epoch.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct WatchEpoch(u64);
-
-impl WatchEpoch {
-    /// Constructs a contiguous sequence from an adapter cursor.
-    #[must_use]
-    pub const fn from_u64(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the contiguous process-local value.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
-/// Contiguous sequence within one [`WatchEpoch`].
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct WatchSequence(u64);
-
-impl WatchSequence {
-    /// Constructs a contiguous sequence from an adapter cursor.
-    #[must_use]
-    pub const fn from_u64(value: u64) -> Self {
-        Self(value)
-    }
-
-    /// Returns the contiguous process-local value.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
-
 /// One bounded host-side change hint.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WatchChange {
@@ -173,11 +137,11 @@ pub enum WatchBatch {
     /// A contiguous process-local interval of change hints.
     Changes {
         /// Invalidated watcher epoch.
-        epoch: WatchEpoch,
+        epoch: u64,
         /// Sequence assigned to the first returned change.
-        first_sequence: WatchSequence,
+        first_sequence: u64,
         /// Sequence to request after applying every returned change.
-        next_sequence: WatchSequence,
+        next_sequence: u64,
         /// Bounded hints moved from the native queue without path copies.
         changes: Vec<WatchChange>,
         /// Original queued-payload custody; keep it until the moved hints die.
@@ -186,7 +150,7 @@ pub enum WatchBatch {
     /// All hints from this epoch must be discarded and a baseline rescanned.
     RescanRequired {
         /// Invalidated watcher epoch.
-        epoch: WatchEpoch,
+        epoch: u64,
         /// Exact invalidation class.
         reason: WatchInvalidationReason,
     },
@@ -1024,8 +988,8 @@ pub struct NativeWatch {
     shared: Arc<Mutex<SharedState>>,
     fenced: Arc<Condvar>,
     fences: u64,
-    epoch: WatchEpoch,
-    next_sequence: WatchSequence,
+    epoch: u64,
+    next_sequence: u64,
     rescan_in_progress: bool,
     root_identity: NativeRootIdentity,
     complete: bool,
@@ -1456,7 +1420,7 @@ impl NativeWatch {
             #[cfg(windows)]
             windows_delivery,
             queued, shared, fenced, fences: 0,
-            epoch: WatchEpoch(0), next_sequence: WatchSequence(0),
+            epoch: 0, next_sequence: 0,
             rescan_in_progress: false, root_identity, complete,
             original_work: original.map(crate::NativeMaterializationWork::allocation_work),
             root_allocation, owner_allocation: None,
@@ -1984,27 +1948,11 @@ impl NativeWatch {
 
     /// Verifies that a separately held capture root is the directory admitted by this watcher.
     pub fn verify_root_identity(
-        &self,
-        observed: NativeRootIdentity,
+        &self, observed: NativeRootIdentity, native: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeWatchError> {
-        let cancellation = CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.verify_root_identity_with_work(observed, &mut work)
-    }
-
-    /// Validates the held and currently named root on original native work.
-    pub fn verify_root_identity_with_native_work(
-        &self, observed: NativeRootIdentity, work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.verify_root_identity_with_work(observed, &mut source)
-    }
-
-    fn verify_root_identity_with_work<W: crate::demand::SourceDemandReadWork>(
-        &self, observed: NativeRootIdentity, work: &mut W,
-    ) -> Result<(), NativeWatchError> {
-        work.check().map_err(demand_watch_error)?;
-        if observed == self.root_identity && self.root_unchanged_with_work(work).map_err(demand_watch_error)? {
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(native);
+        crate::native_host::NativeHostWork::check(&work).map_err(demand_watch_error)?;
+        if observed == self.root_identity && self.root_unchanged_with_work(&mut work).map_err(demand_watch_error)? {
             return Ok(());
         }
         self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?
@@ -2013,14 +1961,14 @@ impl NativeWatch {
     }
 
     /// Starts a baseline scan and atomically discards only pre-scan hints.
-    pub fn begin_rescan(&mut self) -> Result<WatchEpoch, NativeWatchError> {
+    pub fn begin_rescan(&mut self) -> Result<u64, NativeWatchError> {
         let cancellation = CancellationToken::new();
         self.begin_rescan_with_work(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation))
     }
 
     fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
-    ) -> Result<WatchEpoch, NativeWatchError> {
+    ) -> Result<u64, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
         if self.rescan_in_progress {
             return Err(NativeWatchError::RescanAlreadyInProgress);
@@ -2042,8 +1990,8 @@ impl NativeWatch {
         {
             shared.pending_rename = None;
         }
-        self.epoch = WatchEpoch(self.epoch.0.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?);
-        self.next_sequence = WatchSequence(0);
+        self.epoch = self.epoch.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?;
+        self.next_sequence = 0;
         drop(shared);
         self.rescan_in_progress = true;
         #[cfg(windows)]
@@ -2075,7 +2023,7 @@ impl NativeWatch {
         if self.rescan_in_progress { return Err(NativeWatchError::RescanAlreadyInProgress); }
         let mut shared = self.shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         if shared.invalidation != Some(WatchInvalidationReason::InitialSnapshotRequired)
-            || self.epoch.0 != 0 {
+            || self.epoch != 0 {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
         let verified = match crate::validate_windows_usn_checkpoint(&self.root, checkpoint) {
@@ -2086,8 +2034,8 @@ impl NativeWatch {
             Err(error) => return Ok(Err(error)),
         };
         // The journal verifies prior hints; this lock fences later callbacks.
-        self.epoch.0 = self.epoch.0.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?;
-        self.next_sequence = WatchSequence(0);
+        self.epoch = self.epoch.checked_add(1).ok_or(NativeWatchError::SequenceExhausted)?;
+        self.next_sequence = 0;
         shared.invalidation = None;
         Ok(Ok(verified))
     }
@@ -2484,7 +2432,7 @@ impl NativeWatch {
                 let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
                 let capacity = usize::try_from(queued)
                     .map_err(|_| NativeWatchError::InvalidOptions)?;
-                let next = self.next_sequence.0.checked_add(u64::from(queued))
+                let next = self.next_sequence.checked_add(u64::from(queued))
                     .ok_or(NativeWatchError::SequenceExhausted)?;
                 let bytes = capacity.checked_mul(size_of::<WatchChange>())
                     .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
@@ -2550,7 +2498,7 @@ impl NativeWatch {
                 self.forget_removed_directories_with_work(&owned.0, work, original)?;
                 WatchBatch::Changes {
                     epoch: self.epoch, first_sequence: self.next_sequence,
-                    next_sequence: WatchSequence(next),
+                    next_sequence: next,
                     changes: std::mem::take(&mut owned.0),
                     original: std::mem::take(&mut owned.1),
                 }
@@ -3152,18 +3100,10 @@ pub enum NativeWatchError {
     #[cfg(feature = "native-mount")]
     #[error(transparent)]
     Mount(crate::native_mount::MountSourceError),
-    /// Original Linux metadata cause.
-    #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
+    /// Native metadata could not be represented.
+    #[cfg(all(any(target_os = "linux", target_os = "macos", windows), any(feature = "native-mount", test)))]
     #[error(transparent)]
-    LinuxMetadata(crate::native_host::NativeMetadataError),
-    /// Original macOS metadata cause.
-    #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-    #[error(transparent)]
-    MacMetadata(crate::native_host::NativeMetadataError),
-    /// Original Windows metadata cause.
-    #[cfg(all(windows, any(feature = "native-mount", test)))]
-    #[error(transparent)]
-    WindowsMetadata(crate::native_host::NativeMetadataError),
+    Metadata(crate::native_host::NativeMetadataError),
     /// Watcher state synchronization was poisoned.
     #[error("native watcher state is poisoned")]
     StatePoisoned,
@@ -3222,11 +3162,11 @@ fn demand_watch_error(error: crate::demand::DemandError) -> NativeWatchError {
         #[cfg(feature = "native-mount")]
         crate::demand::DemandError::Mount(error) => NativeWatchError::Mount(error),
         #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
-        crate::demand::DemandError::LinuxMetadata(error) => NativeWatchError::LinuxMetadata(error),
+        crate::demand::DemandError::LinuxMetadata(error) => NativeWatchError::Metadata(error),
         #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
-        crate::demand::DemandError::MacMetadata(error) => NativeWatchError::MacMetadata(error),
+        crate::demand::DemandError::MacMetadata(error) => NativeWatchError::Metadata(error),
         #[cfg(all(windows, any(feature = "native-mount", test)))]
-        crate::demand::DemandError::WindowsMetadata(error) => NativeWatchError::WindowsMetadata(error),
+        crate::demand::DemandError::WindowsMetadata(error) => NativeWatchError::Metadata(error),
     }
 }
 

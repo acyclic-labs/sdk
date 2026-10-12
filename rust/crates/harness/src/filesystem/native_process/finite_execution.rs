@@ -18,8 +18,8 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             grants(owner, &request.view, original)?;
             {
                 view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                authority.results.supports_native_stage(original)?;
-                if !authority.result_content.supports_native_read(authority.results.volume(), original)? {
+                authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
+                if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                         reason: "native result reader has no original finite SDK engine" });
                 }
@@ -46,7 +46,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             let bytes = {
                 let io = crate::filesystem::PreparationIo::from_native_work(original)?;
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
-                let decoded = io.decode_preparation::<serde_json::Value>(
+                let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>,
                     &bytes, crate::wire::ErrorCode::Invalid)?;
                 crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
@@ -56,20 +56,24 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             drop(captured);
             drop(capture_custody);
             let result = {
-                let (result, guard) = authority.results.stage_once_with_native_work(
+                let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+                let (result, guard) = authority.results.stage_once(
                     OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
-                    &bytes, "application/json", "Native process result", original)?.await?;
-                let mut guard = guard;
+                    &bytes, "application/json", "Native process result", Some(&io))?.await?;
+                let guard = guard.ok_or(receipt_error("native result publisher omitted admitted custody"))?;
+                let retained = guard.bytes();
+                guard.into_retained();
+                let mut guard = io.take_native_custody(retained)?;
                 custody.as_mut().expect("original custody").absorb(&mut guard)?;
                 original.charge(WorkCounters { items_examined: 1,
                     ..WorkCounters::default() })?;
-                result.descriptor().verify_with_native_work(&bytes, original)?;
+                result.descriptor().verify(&bytes, &mut Some(&mut io.history_io()))?;
                 if result.descriptor().media_type() != "application/json" {
                     return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                         reason: "native effect result must be JSON content" });
                 }
-                authority.result_content.verify_with_native_work(
-                    &result, u64::from(request.maximum_result_bytes), original,
+                authority.result_content.verify(
+                    &result, u64::from(request.maximum_result_bytes), Some(&io),
                 )?.await?;
                 result
 

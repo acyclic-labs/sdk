@@ -382,7 +382,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<TaskId> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh_with_work(quota.work()).await?;
+        coordinator.refresh(quota.work()).await?;
         let mut operation = OperationId::from_bytes(task.into_bytes());
         let mut visited = Vec::new();
         loop {

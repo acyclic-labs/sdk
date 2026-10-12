@@ -3062,7 +3062,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     ))
     .await?;
     let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
-    let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
+    let graph = crate::WorkspaceGraph::new(store.clone());
     let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base.txt", "base").await?;
     let mut children = Vec::new();
@@ -3074,8 +3074,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        distributed
-            .lineage()
+        graph
             .register_existing_child(&main, &child, base.id())
             .await?;
         children.push(child);
@@ -3090,8 +3089,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
             ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
         crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    distributed
-        .lineage()
+    graph
         .register_existing_child(&kept, &grandchild, grandchild_base.id())
         .await?;
     kept.delete(IdempotencyKey::new()).await?;
@@ -3099,8 +3097,8 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     let records = store.workspace_records().await?;
     assert!(records.contains_key(&deleted.id()) && records.contains_key(&kept.id()));
 
-    distributed
-        .collect_garbage(&CancellationToken::new())
+    fs
+        .collect_local_garbage(Some(&store), &CancellationToken::new())
         .await?;
     let records = store.workspace_records().await?;
     assert!(!records.contains_key(&deleted.id()));

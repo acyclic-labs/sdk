@@ -138,8 +138,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     let mut original = StreamAggregate::open(
-        &fixture.stream, created.seed.parent.clone(), created.parent_verifier.clone(), SchemaRegistry::new(),
-    ).await?.with_fork_verifier(verifier.clone());
+        &fixture.stream, created.seed.parent.clone(), created.parent_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_fork_verifier(verifier.clone());
     original.publish_fork_report(created.report.clone(), created.parent_scope.clone(), None, &mut None).await?;
     let parent_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], created.seed.child.clone());
     let parent_scope = parent_issuer.issue("measured-fork-parent", &Capabilities::new([
@@ -148,8 +147,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         created.project.capability(VolumeOperation::Read)?,
     ]), Some(created.seed.child_agent), None, &mut None).expect("scope proof");
     let mut parent = StreamAggregate::open(
-        &fixture.stream, created.seed.child.clone(), parent_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-    ).await?.with_fork_verifier(verifier);
+        &fixture.stream, created.seed.child.clone(), parent_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_fork_verifier(verifier);
     parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
@@ -247,7 +245,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut reopened = StreamAggregate::open(&setup.fixture.stream, seed.parent.clone(),
-        setup.parent_verifier.clone(), SchemaRegistry::new()).await?
+        setup.parent_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_fork_verifier(setup.parent.fork_verifier.clone().ok_or_else(|| Error::Invalid("original verifier missing".into()))?);
     let replay = reopened.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
@@ -259,7 +257,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path(&mut None)?.as_str())?).await?.tail, before + 1);
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
-        setup.child_verifier.clone(), SchemaRegistry::new()).await?;
+        setup.child_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     let partial = child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
         &setup.owner, WorkBudget { authority_bytes_read: 0, ..budget }, &cancellation).await
         .expect_err("actual parent record must be charged before decoding");
@@ -276,7 +274,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut reopened_child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
-        setup.child_verifier.clone(), SchemaRegistry::new()).await?;
+        setup.child_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     reopened_child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     assert_eq!(reopened_child.reducer().revision(), 1);
@@ -299,7 +297,7 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
     setup.parent.publish_fork_report_measured(setup.report, setup.parent_scope,
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
-        setup.child_verifier, SchemaRegistry::new()).await?;
+        setup.child_verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     child.execute(Command {
         operation_id: OperationId::from_bytes([97; 16]),
         idempotency_key: IdempotencyKey::new("hostile-original-child-binding")?,
@@ -335,8 +333,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         action: Action::BindConversation { agent },
     };
     let mut aggregate = StreamAggregate::open(
-        &fixture.stream, audience.clone(), original_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-    ).await?;
+        &fixture.stream, audience.clone(), original_issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("original ROOT ledger");
@@ -631,7 +628,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let client = provider.clone();
         let mut aggregate = with_content(StreamAggregate::open(
-            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?);
+            &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?);
         for identity in 1..64 {
             let mut next = command(identity)?;
             next.expected_revision = aggregate.reducer().revision();
@@ -714,7 +711,7 @@ async fn cold_projection_original_cut_and_anchor_survive_later_checkpoint() -> R
     use acyclic_fs::NativeMaterializationWork;
     let client = Arc::new(MemoryStream::default());
     let mut aggregate = with_content(StreamAggregate::open(
-        &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas()).await?);
+        &client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?);
     for identity in 1..=128 {
         let mut next = command(identity)?;
         next.expected_revision = aggregate.reducer().revision();

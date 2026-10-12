@@ -52,7 +52,7 @@ const FRAME_DOMAIN: &[u8] = b"acyclic-stream-local-frame-v1\0";
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-stream-local-snapshot-v1\0";
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
-use crate::memory::{MemoryFailure, MemoryObserver, MemoryResult, native_result};
+use crate::memory::{MemoryFailure, MemoryResult, native_result};
 
 fn ordinary_failure(error: MemoryFailure) -> StreamError {
     match error { MemoryFailure::Provider(error) => error, MemoryFailure::Observer(_) => StreamError::Unavailable }
@@ -631,8 +631,7 @@ impl LocalStream {
     ) -> MemoryResult<(MemoryOutput<Vec<u8>>, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
-            let observer = MemoryObserver { meter: Some(Arc::clone(meter)) };
-            if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(&observer))? > MAX_COMMAND_BYTES {
+            if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(meter))? > MAX_COMMAND_BYTES {
                 return Err(StreamError::Capacity.into());
             }
         }
@@ -1061,8 +1060,7 @@ impl LocalStream {
                             }
                         }
                     };
-                    let observer = MemoryObserver { meter: Some(Arc::clone(&execute_meter)) };
-                    let completion = provider.apply_commit(&mut request, deadline, &observer,
+                    let completion = provider.apply_commit(&mut request, deadline, Some(&execute_meter),
                         if guarded { Some(&mut acquire) } else { None },
                     ).await;
                     drop(acquire);
@@ -1238,10 +1236,9 @@ impl StreamProvider for LocalStream {
         key: IdempotencyKey,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.inspect_inner(key, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.inspect_inner(key, Some(&meter)), Some(&meter)).await;
             crate::memory::native(result, &meter)
         })
     }
@@ -1268,7 +1265,7 @@ impl StreamProvider for LocalStream {
                     let Command::Append(request) = value else { unreachable!() };
                     let retain_conflict = request.idempotency_key.is_some();
                     let (outcome, error) = provider.apply_append(
-                        &request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
+                        &request, Some(&execute_meter),
                     ).await?;
                     let value = crate::memory::native(Ok(outcome), &execute_meter)?
                         .expect("successful append completion");
@@ -1289,10 +1286,9 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.bounds_inner(path, Some(&meter)), Some(&meter)).await;
             let result = result.map(|output| crate::memory::MemoryOutput { value: output.value.tail, allocation: output.allocation });
             crate::memory::native(result, &meter)
         })
@@ -1303,10 +1299,9 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, StreamBounds> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.bounds_inner(path, Some(&meter)), Some(&meter)).await;
             crate::memory::native(result, &meter)
         })
     }
@@ -2917,7 +2912,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -2998,7 +2993,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         use tracing::instrument::WithSubscriber as _;
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let dispatch =
             tracing::Dispatch::new(tracing_subscriber::Registry::default().with(captured.clone()));
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -3711,7 +3706,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let subscriber = tracing_subscriber::Registry::default()
             .with(captured.clone())
             .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -3788,7 +3783,7 @@ mod tests {
                     idempotency_key: None,
                 })
                 .await?;
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let mut records = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
@@ -3803,7 +3798,7 @@ mod tests {
                     .contains_key("outcome")
             );
             assert_eq!(captured.closed("acyclic.stream.follow"), 0);
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -3846,7 +3841,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let visibility = provider.inner.visibility.write().await;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -3864,7 +3859,7 @@ mod tests {
         );
         let mut future = Box::pin(future);
         assert!(futures::poll!(future.as_mut()).is_pending());
-        let other = obs::tests::Capture::default();
+        let other = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
