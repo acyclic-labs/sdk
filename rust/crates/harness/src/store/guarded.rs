@@ -371,8 +371,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path_with_work(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = operations::one_record_with_work(&self.client, &path,
-            reference.revision.saturating_sub(1), work).await;
+        let read = match operations::stream_text_with_work(&self.client, &path, work) {
+            Ok(stream) => operations::one_record_with_work(&self.client, stream.stream.path(),
+                reference.revision.saturating_sub(1), work).await,
+            Err(error) => Err(error),
+        };
         drop(path);
         let released_path = match work.as_deref_mut() {
             Some(observer) => observer.release_owned(path_bytes), None => Ok(()),
