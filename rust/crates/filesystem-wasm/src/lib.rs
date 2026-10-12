@@ -39,7 +39,7 @@ mod bindings {
         ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
         RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
-        TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
+        TransactionRebase, Volume, VolumeId, Workspace,
         WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, DirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
@@ -834,7 +834,7 @@ mod bindings {
                     |_| {
                         std::future::ready(Ok(acyclic_fs::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         }))
                     },
                 ))
@@ -875,7 +875,7 @@ mod bindings {
                     |_| {
                         std::future::ready(Ok(acyclic_fs::OperationReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         }))
                     },
                 ))
@@ -1221,10 +1221,15 @@ mod bindings {
         /// Retains this exact generation under one opaque identity.
         #[wasm_bindgen]
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
-            let engine = Box::pin(self.engine.pin(identity))
+            let engine = Box::pin(self.engine.pin(
+                identity,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ))
                 .await
-                .map_err(js_error)?
-                .1;
+                .map(|receipt| receipt.value.1)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(BrowserGeneration { engine })
         }
     }
@@ -5258,7 +5263,7 @@ mod bindings {
                     |_| async {
                         acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt {
                             value: (),
-                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                            work: acyclic_fs::WorkCounters::default(),
                         })
                     },
                 )
@@ -6049,13 +6054,20 @@ mod bindings {
         match id {
             Some(id) => {
                 workspace
-                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                        id, label,
-                    )?)))
+                    .generation(
+                        acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(id, label)?)),
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
                     .await
             }
-            None => workspace.head().await,
+            None => workspace.head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ).await,
         }
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .map_err(js_error)
     }
 

@@ -35,6 +35,7 @@ import {
   type PolicyIdentity,
   type TaskId,
   type TaskMessage,
+  type ToolContext,
   type ModelMessage,
   type ModelToolDefinition,
   type UserContentPart,
@@ -49,6 +50,11 @@ const contracts = await NativeContracts.create();
 const imagePolicy = { native: { intent: { kind: "image", detail: "auto" },
   maximum_bytes: 64, maximum_work: 8, configuration: null } } as const;
 const jsonProjection = await jsonToolProjection({});
+
+function numberTool(name: string, description: string, handler: (context: ToolContext, input: number) => number | Promise<number>) {
+  return defineTool<number, number>({ name, revision: "1", description, inputSchema: { type: "number" }, outputSchema: { type: "number" },
+    parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, handler);
+}
 
 test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
   const parent = "12345678-1234-4234-8234-123456789abc" as TaskId;
@@ -848,9 +854,7 @@ describe("typed agent runtime", () => {
     let retained: TaskAdmissionWire | undefined;
     let corruptAdmission = false;
     const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
-    const tool = await defineTool<number, number>({ name: "split-tool", revision: "1", description: "split",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      projection: jsonProjection, parseOutput: parseNumber }, () => { throw new Error("local tool must not run"); });
+    const tool = await numberTool("split-tool", "split", () => { throw new Error("local tool must not run"); });
     const ownerTask = new Task(id, async () => 7);
     const untrustedTask = new Task(id, async () => 99);
     const state: HarnessRuntimeState = {
@@ -1385,9 +1389,7 @@ describe("typed agent runtime", () => {
   });
 
   test("approvals bind one exact tool action and only approved grants dispatch", async () => {
-    const tool = await defineTool<number, number>({ name: "approved-action", revision: "1", description: "pinned action",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => value);
+    const tool = await numberTool("approved-action", "pinned action", (_context, value) => value);
     const seen: number[][] = [];
     const route = async (interaction: import("../src/index.js").Interaction) => {
       if (interaction.kind !== "approval") throw new TypeError("expected an exact approval request");
@@ -1428,9 +1430,7 @@ describe("typed agent runtime", () => {
     const prompts: string[] = [];
     const digests: number[][] = [];
     let declineSecond = true;
-    const tool = await defineTool<number, number>({ name: "two-approvals", revision: "1", description: "two approvals",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => { executed++; return value; });
+    const tool = await numberTool("two-approvals", "two approvals", (_context, value) => { executed++; return value; });
     const root = await Harness.builder(contracts).tool(tool).grant("tool:call:two-approvals")
       .policy({ identity: () => approvalPolicyIdentity,
         evaluate: async () => ({ kind: "require-approval", prompt: "parent approval" }) })
@@ -1457,9 +1457,7 @@ describe("typed agent runtime", () => {
     const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
     const task = "task:durable-tool" as TaskId;
     let localExecutions = 0;
-    const tool = await defineTool<number, number>({ name: "durable-count", revision: "1", description: "count",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      projection: jsonProjection, parseOutput: parseNumber }, () => { localExecutions++; return 99; });
+    const tool = await numberTool("durable-count", "count", () => { localExecutions++; return 99; });
     const observed: unknown[] = [];
     const outcomes: Outcome<unknown, OperationId>[] = [
       { kind: "indeterminate", operationId: operation },
@@ -1490,9 +1488,7 @@ describe("typed agent runtime", () => {
 
   test("durable approval is routed only through the owner host and preserves its outcome", async () => {
     let dispatched = 0;
-    const tool = await defineTool<number, number>({ name: "guarded-durable", revision: "1", description: "guarded",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
-      projection: jsonProjection, parseOutput: parseNumber }, () => 1);
+    const tool = await numberTool("guarded-durable", "guarded", () => 1);
     const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
       policyIdentity: () => approvalPolicyIdentity,
       async attach() { throw new Error("not used"); },
@@ -1569,15 +1565,7 @@ describe("typed agent runtime", () => {
       queueMicrotask(() => { identity.name = mutation; });
       return identity;
     };
-    const tool = await defineTool<number, number>({
-      name: "admission-snapshot",
-      revision: "1",
-      description: "admission snapshot",
-      inputSchema: { type: "number" },
-      outputSchema: { type: "number" },
-      parseInput: parseNumber,
-      projection: jsonProjection, parseOutput: parseNumber,
-    }, (_context, value) => value);
+    const tool = await numberTool("admission-snapshot", "admission snapshot", (_context, value) => value);
     const policy = {
       identity: () => identityWithMutation("runtime-policy", "mutated-policy"),
       evaluate: async () => ({ kind: "allow" as const }),
@@ -1634,15 +1622,7 @@ describe("typed agent runtime", () => {
       },
       evaluate: async () => ({ kind: "allow" as const }),
     };
-    const tool = await defineTool<number, number>({
-      name: "nested-admission-snapshot",
-      revision: "1",
-      description: "nested admission snapshot",
-      inputSchema: { type: "number" },
-      outputSchema: { type: "number" },
-      parseInput: parseNumber,
-      projection: jsonProjection, parseOutput: parseNumber,
-    }, (_context, value) => value);
+    const tool = await numberTool("nested-admission-snapshot", "nested admission snapshot", (_context, value) => value);
     const runtime = await Harness.builder(contracts).policy({
       identity: () => approvalPolicyIdentity,
       evaluate: async () => ({ kind: "allow" as const }),
@@ -1654,9 +1634,7 @@ describe("typed agent runtime", () => {
   test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
     let current = approvalPolicyIdentity;
     let executed = false;
-    const tool = await defineTool<number, number>({ name: "pinned-evaluation", revision: "1", description: "pinned",
-      inputSchema: { type: "number" }, outputSchema: { type: "number" },
-      parseInput: parseNumber, projection: jsonProjection, parseOutput: parseNumber }, (_context, value) => {
+    const tool = await numberTool("pinned-evaluation", "pinned", (_context, value) => {
       executed = true;
       return value;
     });
