@@ -1613,10 +1613,11 @@ impl ProjectionState {
         })
     }
 
-    fn list_directory<L: DirectoryListing>(
+    fn list_directory(
         &mut self, source: &dyn MountFilesystem, inode: u64, stream: &mut DirectoryStream,
-        listing: &mut Option<L>, _span: &tracing::Span, work: &super::NativeMountMeterWork,
+        listing: &mut Option<DirectoryReply>, work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
+        let counts_lookups = listing.as_ref().expect("unsent listing").counts_lookups();
         let mut listed = false;
         let mut unlisted_reference = None;
         let result = (|| -> Result<(), FuseRequestError> {
@@ -1663,10 +1664,10 @@ impl ProjectionState {
                         .and_then(|known| self.by_inode.get(known)).map_or(page_lookup, |known| known.lookup)
                 };
                 let child_inode = self.intern(source, fuse_clone_path(child.key(), work)?, &lookup,
-                    current, L::COUNTS_LOOKUPS, &stream.confirmed, work)?;
-                if L::COUNTS_LOOKUPS { unlisted_reference = Some(child_inode); }
+                    current, counts_lookups, &stream.confirmed, work)?;
+                if counts_lookups { unlisted_reference = Some(child_inode); }
                 let attr = self.attr(child_inode, &lookup)?;
-                let ttl = if L::COUNTS_LOOKUPS {
+                let ttl = if counts_lookups {
                     self.admit_entry(source, child_inode, &child, current, work)?
                 } else { Duration::ZERO };
                 fuse_copy_admit(entry.name.len() as u64, work)?;
@@ -1957,44 +1958,27 @@ fn intern_projected(
     Ok(inode)
 }
 
-trait DirectoryListing {
-    const COUNTS_LOOKUPS: bool;
-
-    fn push(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, ttl: &Duration) -> bool;
-
-    fn ok(self);
-    fn error(self, error: Errno);
+enum DirectoryReply {
+    Basic(ReplyDirectory),
+    Plus(ReplyDirectoryPlus),
 }
 
-impl DirectoryListing for ReplyDirectory {
-    const COUNTS_LOOKUPS: bool = false;
-
-    fn push(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, _ttl: &Duration) -> bool {
-        self.add(attr.ino, offset, attr.kind, name)
-    }
-
-    fn ok(self) {
-        Self::ok(self);
-    }
-
-    fn error(self, error: Errno) {
-        Self::error(self, error);
-    }
-}
-
-impl DirectoryListing for ReplyDirectoryPlus {
-    const COUNTS_LOOKUPS: bool = true;
+impl DirectoryReply {
+    fn counts_lookups(&self) -> bool { matches!(self, Self::Plus(_)) }
 
     fn push(&mut self, offset: u64, name: &OsStr, attr: &FileAttr, ttl: &Duration) -> bool {
-        self.add(attr.ino, offset, name, ttl, attr, Generation(0))
+        match self {
+            Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
+            Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
+        }
     }
 
     fn ok(self) {
-        Self::ok(self);
+        match self { Self::Basic(reply) => reply.ok(), Self::Plus(reply) => reply.ok() }
     }
 
     fn error(self, error: Errno) {
-        Self::error(self, error);
+        match self { Self::Basic(reply) => reply.error(error), Self::Plus(reply) => reply.error(error) }
     }
 }
 
@@ -3408,7 +3392,7 @@ impl FuseSession {
         });
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<ProjectionCore>, Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&core), Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3424,7 +3408,7 @@ impl FuseSession {
         let mut loan = FuseDriverLoan::take(&control)?;
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseSdkInput>, Arc<FuseDriverControl>, Arc<ProjectionCore>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&input), Arc::clone(&control), Arc::clone(&core), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -4055,7 +4039,7 @@ impl FuseProjection {
         let inode = self.core.state()?.unopened_referenced_inode(lookup);
         // The caller holds the names lock exclusively.
         inode.map_or(Ok(()), |inode| {
-            self.reopen_implicit_named(inode, None, Access::Read, work)
+            self.reopen_implicit(inode, None, Access::Read, work)
                 .map(|_| ())
         })
     }
@@ -4206,22 +4190,8 @@ impl FuseProjection {
         Ok(target)
     }
 
-    fn open_node(&self, inode: u64, flags: i32, work: &super::NativeMountMeterWork) -> Result<(u64, FopenFlags), FuseRequestError> {
-        self.open_node_storing(inode, flags, true, work)
-    }
-
-    fn open_node_storing(
-        &self,
-        inode: u64,
-        flags: i32,
-        storing: bool,
-        work: &super::NativeMountMeterWork,
-    ) -> Result<(u64, FopenFlags), FuseRequestError> {
-        let _names = self.core.names()?;
-        self.open_node_named(inode, flags, storing, work)
-    }
-
-    fn open_node_named(
+    // Caller holds the names lock.
+    fn open_node(
         &self,
         inode: u64,
         flags: i32,
@@ -4527,9 +4497,18 @@ impl FuseProjection {
         match (held, access) {
             (Some(implicit), Access::Read) => operation(implicit.handle),
             (Some(implicit), Access::Write) if implicit.writes => operation(implicit.handle),
-            (_, Access::Write) => operation(self.reopen_implicit(inode, held, access, work)?),
+            (_, Access::Write) => {
+                let reopened = {
+                    let _names = self.core.names()?;
+                    self.reopen_implicit(inode, held, access, work)?
+                };
+                operation(reopened)
+            }
             (None, Access::Read) => {
-                let (transient, _) = self.open_node_storing(inode, libc::O_RDONLY, false, work)?;
+                let (transient, _) = {
+                    let _names = self.core.names()?;
+                    self.open_node(inode, libc::O_RDONLY, false, work)?
+                };
                 let result = operation(transient);
                 let _ = self.core.state()?.discard_file_handle(inode, transient);
                 result
@@ -4544,20 +4523,9 @@ impl FuseProjection {
         access: Access,
         work: &super::NativeMountMeterWork,
     ) -> Result<u64, FuseRequestError> {
-        let _names = self.core.names()?;
-        self.reopen_implicit_named(inode, stale, access, work)
-    }
-
-    fn reopen_implicit_named(
-        &self,
-        inode: u64,
-        stale: Option<Implicit>,
-        access: Access,
-        work: &super::NativeMountMeterWork,
-    ) -> Result<u64, FuseRequestError> {
         let writes = access == Access::Write || stale.is_some_and(|stale| stale.writes);
         let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
-        let (opened, _) = self.open_node_named(inode, flags, false, work)?;
+        let (opened, _) = self.open_node(inode, flags, false, work)?;
         let mut state = self.core.state()?;
         let current = state.implicit.get(&inode).map(|implicit| implicit.handle);
         if current.is_some() && current != stale.map(|stale| stale.handle) {
@@ -4586,7 +4554,10 @@ impl FuseProjection {
                 let Some(stale) = self.core.state()?.implicit.get(&inode).map(|held| **held) else {
                     return Err(libc::ESTALE.into());
                 };
-                let reopened = self.reopen_implicit(inode, Some(stale), Access::Read, work)?;
+                let reopened = {
+                    let _names = self.core.names()?;
+                    self.reopen_implicit(inode, Some(stale), Access::Read, work)?
+                };
                 self.read_handle(inode, reopened, offset, size, work)
             }
             read => read,
@@ -4702,12 +4673,11 @@ impl FuseProjection {
         }
     }
 
-    fn list_directory<L: DirectoryListing>(
+    fn list_directory(
         &self,
         inode: u64,
         offset: u64,
-        listing: &mut Option<L>,
-        span: &tracing::Span,
+        listing: &mut Option<DirectoryReply>,
         work: &super::NativeMountMeterWork,
     ) -> Result<(), FuseRequestError> {
         let source = self.core.source.as_ref();
@@ -4722,7 +4692,7 @@ impl FuseProjection {
         }
         let mut state = self.core.state()?;
         state.streams.prepare_park(&mut stream, work)?;
-        state.list_directory(source, inode, &mut stream, listing, span, work)?;
+        state.list_directory(source, inode, &mut stream, listing, work)?;
         state.streams.park(inode, stream);
         Ok(())
     }
@@ -5307,9 +5277,9 @@ impl Filesystem for FuseProjection {
                     S_IFSOCK => (MountNodeKind::Socket, None),
                     S_IFCHR => (
                         MountNodeKind::CharacterDevice,
-                        Some(native_device_parts(rdev)),
+                        Some(super::device::split_device(u64::from(rdev))),
                     ),
-                    S_IFBLK => (MountNodeKind::BlockDevice, Some(native_device_parts(rdev))),
+                    S_IFBLK => (MountNodeKind::BlockDevice, Some(super::device::split_device(u64::from(rdev)))),
                     _ => return Err(libc::EOPNOTSUPP.into()),
                 };
                 self.create_node(parent.0, name, |path, work| self
@@ -5423,7 +5393,8 @@ impl Filesystem for FuseProjection {
             {
                 // `ENOSYS` tells the kernel to open every file without asking.
                 if self.skips_open { return Err(libc::ENOSYS.into()); }
-                self.open_node(inode.0, flags.0, work)
+                let _names = self.core.names()?;
+                self.open_node(inode.0, flags.0, true, work)
             },
             |(handle, flags)| {
                 reply.opened(FuseFileHandle(handle), flags);
@@ -5606,9 +5577,9 @@ impl Filesystem for FuseProjection {
             self.core.request("readdir"),
             callback_span!(TRACE, readdir, ino = inode.0, fh = fh.0, offset = offset),
         );
-        let mut reply = Some(reply);
+        let mut reply = Some(DirectoryReply::Basic(reply));
         let result = _request.0.run(|work| {
-            self.list_directory(inode.0, offset, &mut reply, &_request.1, work)
+            self.list_directory(inode.0, offset, &mut reply, work)
         });
         if let Err(error) = _request.0.finish(result) {
             // The real late-error prefix may already have sent a partial listing.
@@ -5635,9 +5606,9 @@ impl Filesystem for FuseProjection {
                 offset = offset
             ),
         );
-        let mut reply = Some(reply);
+        let mut reply = Some(DirectoryReply::Plus(reply));
         let result = _request.0.run(|work| {
-            self.list_directory(inode.0, offset, &mut reply, &_request.1, work)
+            self.list_directory(inode.0, offset, &mut reply, work)
         });
         if let Err(error) = _request.0.finish(result) {
             // The real late-error prefix may already have sent a partial listing.
@@ -5935,19 +5906,9 @@ fn time_or_now_ns(value: TimeOrNow) -> Result<i64, i32> {
     })
 }
 
-fn native_device_parts(device: u32) -> (u32, u32) {
-    super::device::split_device(u64::from(device))
-}
-
-#[cfg(target_os = "linux")]
 fn native_device_number(major: u32, minor: u32) -> Result<u32, i32> {
     super::device::join_device(major, minor)
         .and_then(|device| u32::try_from(device).map_err(|_| libc::EOVERFLOW))
-}
-
-#[cfg(target_os = "macos")]
-fn native_device_number(major: u32, minor: u32) -> Result<u32, i32> {
-    super::device::join_device(major, minor).map(|device| u32::from_ne_bytes(device.to_ne_bytes()))
 }
 
 fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
@@ -5958,7 +5919,7 @@ fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
 
     #[test]
