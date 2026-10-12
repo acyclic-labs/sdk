@@ -1,6 +1,7 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
 pub(crate) mod allocation;
+pub use allocation::KernelAccounting;
 mod attribute;
 mod attribute_access;
 mod attribute_list;
