@@ -1,5 +1,5 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
-use crate::async_storage::poll_ready;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{
     BlobBuildOptions, FileKind, FileRangeRequest, FileRecord, build_blob, decode_extent_page, read_file_range_async,
@@ -9,7 +9,7 @@ use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeLimits,
 };
 use crate::storage::object_digest;
-use crate::storage::{ByteRange, ObjectStore};
+use crate::storage::{ByteRange, };
 use std::io::Cursor;
 
 fn config() -> VolumeConfig {
@@ -26,7 +26,7 @@ fn config() -> VolumeConfig {
     }
 }
 
-fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut source = Cursor::new(bytes);
     Ok(build_blob(
         store,
@@ -38,31 +38,27 @@ fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std
             maximum_blob_bytes: u64::try_from(bytes.len())?,
         },
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .root)
 }
 
-fn apply(
+async fn apply(
     store: &MemoryObjectStore,
     payload: FilePayload,
     mutation: RegularMutation,
 ) -> Result<RegularMutationReceipt, RegularMutationFailure> {
-    poll_ready(apply_regular_mutation_async(
+    (apply_regular_mutation_async(
         store,
         payload,
         mutation,
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .unwrap_or_else(|| {
-        Err(OperationFailure::before_work(
-            RegularMutationError::Storage(ObjectStoreError::Cancelled),
-        ))
-    })
+    )).await
 }
 
-fn clone_range(
+async fn clone_range(
     store: &MemoryObjectStore,
     source: FilePayload,
     source_offset: u64,
@@ -70,7 +66,7 @@ fn clone_range(
     destination_offset: u64,
     length: u64,
 ) -> Result<RegularCloneReceipt, RegularMutationFailure> {
-    poll_ready(apply_regular_clone_async(
+    (apply_regular_clone_async(
         store,
         source,
         source_offset,
@@ -80,12 +76,7 @@ fn clone_range(
         config(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .unwrap_or_else(|| {
-        Err(OperationFailure::before_work(
-            RegularMutationError::Storage(ObjectStoreError::Cancelled),
-        ))
-    })
+    )).await
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,18 +110,18 @@ impl ModeledByte {
     }
 }
 
-fn flatten_extents(
+async fn flatten_extents(
     store: &MemoryObjectStore,
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
-    let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
+    let encoded = AsyncObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
     Ok(
         match decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             ExtentPage::Leaf(extents) => extents,
             ExtentPage::Internal(children) => {
                 let mut extents = Vec::new();
                 for child in children {
-                    extents.extend(flatten_extents(store, child.page)?);
+                    extents.extend(Box::pin(flatten_extents(store, child.page)).await?);
                 }
                 extents
             }
@@ -146,7 +137,7 @@ fn payload_size(payload: FilePayload) -> Result<u64, Box<dyn std::error::Error>>
     }
 }
 
-fn payload_kinds(
+async fn payload_kinds(
     store: &MemoryObjectStore,
     payload: FilePayload,
 ) -> Result<Vec<PhysicalByteKind>, Box<dyn std::error::Error>> {
@@ -159,7 +150,7 @@ fn payload_kinds(
             extents,
         } => {
             let mut kinds = Vec::new();
-            for extent in flatten_extents(store, extents)? {
+            for extent in flatten_extents(store, extents).await? {
                 assert_eq!(extent.offset, u64::try_from(kinds.len())?);
                 let kind = match extent.kind {
                     ExtentKind::Hole => PhysicalByteKind::Hole,
@@ -175,12 +166,12 @@ fn payload_kinds(
     }
 }
 
-fn payload_bytes(
+async fn payload_bytes(
     store: &MemoryObjectStore,
     payload: FilePayload,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let logical_bytes = payload_size(payload)?;
-    let read = poll_ready(read_file_range_async(
+    let read = (read_file_range_async(
         store,
         FileRangeRequest {
             record: FileRecord {
@@ -202,25 +193,24 @@ fn payload_bytes(
             budget: WorkBudget::UNBOUNDED,
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("modeled read blocked")??;
+    )).await?;
     Ok(read.bytes.to_vec())
 }
 
-fn assert_payload_matches_model(
+async fn assert_payload_matches_model(
     store: &MemoryObjectStore,
     payload: FilePayload,
     model: &[ModeledByte],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let expected_kinds: Vec<_> = model.iter().map(|byte| byte.kind).collect();
-    let actual_kinds = payload_kinds(store, payload)?;
+    let actual_kinds = payload_kinds(store, payload).await?;
     if actual_kinds != expected_kinds {
         return Err(format!(
             "physical byte kinds diverged: actual={actual_kinds:?}, expected={expected_kinds:?}"
         )
         .into());
     }
-    let actual_bytes = payload_bytes(store, payload)?;
+    let actual_bytes = payload_bytes(store, payload).await?;
     let expected_bytes = model.iter().map(|byte| byte.value).collect::<Vec<_>>();
     if actual_bytes != expected_bytes {
         return Err(format!(
@@ -294,11 +284,11 @@ fn next_generated(seed: &mut u64) -> u64 {
     *seed
 }
 
-#[test]
-fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
+#[tokio::test]
+async fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"xy")?;
+    let content = blob(&store, b"xy").await?;
     for (initial, offset, expected_last) in [(63_usize, 62_u64, b'x'), (63, 63, b'y')] {
         let receipt = apply(
             &store,
@@ -309,7 +299,7 @@ fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
                 content,
                 content_offset: u64::from(expected_last == b'y'),
             },
-        )?;
+        ).await?;
         let FilePayload::InlineRegular(data) = receipt.payload else {
             return Err("small write unexpectedly promoted inline data".into());
         };
@@ -322,11 +312,11 @@ fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
     Ok(())
 }
 
-#[test]
-fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
+#[tokio::test]
+async fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"z")?;
+    let content = blob(&store, b"z").await?;
     let receipt = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
@@ -336,7 +326,7 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
             content,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -345,12 +335,11 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
         return Err("sixty-fifth byte did not promote inline data".into());
     };
     assert_eq!(logical_bytes, 65);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -367,7 +356,7 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
         &store,
         receipt.payload,
         RegularMutation::Resize { logical_bytes: 64 },
-    )?;
+    ).await?;
     let FilePayload::InlineRegular(data) = demoted.payload else {
         return Err("dense sixty-four-byte shrink did not demote inline".into());
     };
@@ -382,29 +371,28 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
             content,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     let still_sparse = apply(
         &store,
         sparse_gap.payload,
         RegularMutation::Resize { logical_bytes: 64 },
-    )?;
+    ).await?;
     assert!(matches!(still_sparse.payload, FilePayload::Regular { .. }));
 
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let promoted = poll_ready(promote_inline(
+    let promoted = (promote_inline(
         &store,
         InlineFileData::new(&[b'q'; 64])?,
         config(),
         &mut accounting,
         &cancellation,
-    ))
-    .ok_or("memory-backed inline promotion unexpectedly blocked")??;
+    )).await?;
     let promoted_payload = FilePayload::Regular {
         logical_bytes: promoted.logical_bytes,
         extents: promoted.extents,
     };
-    let clone_demoted = clone_range(&store, promoted_payload, 0, promoted_payload, 4, 4)?;
+    let clone_demoted = clone_range(&store, promoted_payload, 0, promoted_payload, 4, 4).await?;
     let FilePayload::InlineRegular(clone_data) = clone_demoted.destination else {
         return Err("dense small sparse clone did not demote inline".into());
     };
@@ -412,15 +400,15 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
     Ok(())
 }
 
-#[test]
-fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
+#[tokio::test]
+async fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let receipt = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -430,12 +418,11 @@ fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
     };
     assert_eq!(logical_bytes, 128);
     assert_eq!(receipt.work.source_bytes_read, 0);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -448,15 +435,15 @@ fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
     Ok(())
 }
 
-#[test]
-fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let receipt = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(b"a")?),
         RegularMutation::Resize { logical_bytes: 64 },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -465,12 +452,11 @@ fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dy
         return Err("inline growth with a trailing hole demoted incorrectly".into());
     };
     assert_eq!(logical_bytes, 64);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -484,15 +470,15 @@ fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn inline_shrink_and_allocated_zero_are_allocation_free() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn inline_shrink_and_allocated_zero_are_allocation_free() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let shrunk = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[7; 64])?),
         RegularMutation::Resize { logical_bytes: 63 },
-    )?;
+    ).await?;
     assert_eq!(shrunk.work, WorkCounters::default());
     let zeroed = apply(
         &store,
@@ -503,7 +489,7 @@ fn inline_shrink_and_allocated_zero_are_allocation_free() -> Result<(), Box<dyn 
             allocated: true,
             extend: false,
         },
-    )?;
+    ).await?;
     assert_eq!(zeroed.work.allocation_operations, 0);
     assert_eq!(zeroed.work.bytes_copied, 4);
     let FilePayload::InlineRegular(data) = zeroed.payload else {
@@ -517,7 +503,7 @@ fn inline_shrink_and_allocated_zero_are_allocation_free() -> Result<(), Box<dyn 
         FilePayload::InlineRegular(InlineFileData::new(b"000000")?),
         1,
         4,
-    )?;
+    ).await?;
     assert_eq!(cloned.work.bytes_copied, 4);
     assert_eq!(cloned.work.allocation_operations, 0);
     let FilePayload::InlineRegular(cloned_data) = cloned.destination else {
@@ -527,8 +513,8 @@ fn inline_shrink_and_allocated_zero_are_allocation_free() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
+#[tokio::test]
+async fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
 
@@ -539,7 +525,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         FilePayload::InlineRegular(InlineFileData::new(b"z")?),
         1,
         4,
-    )?;
+    ).await?;
     let FilePayload::InlineRegular(extended_inline) = extended_inline.destination else {
         return Err("small extending clone unexpectedly promoted".into());
     };
@@ -549,7 +535,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b's'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let promoted_destination = clone_range(
         &store,
         sparse_source.payload,
@@ -557,7 +543,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         FilePayload::InlineRegular(InlineFileData::new(b"zzzz")?),
         4,
         4,
-    )?;
+    ).await?;
     let FilePayload::InlineRegular(promoted_destination) = promoted_destination.destination else {
         return Err("dense small clone did not demote after sparse execution".into());
     };
@@ -567,7 +553,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'd'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let promoted_source = clone_range(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(b"abcd")?),
@@ -575,7 +561,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         sparse_destination.payload,
         80,
         4,
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -584,12 +570,11 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         return Err("clone into sparse destination unexpectedly demoted".into());
     };
     assert_eq!(logical_bytes, 128);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(extents) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -603,7 +588,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     }));
 
     let same = FilePayload::InlineRegular(InlineFileData::new(b"same")?);
-    let overlapping_identity = clone_range(&store, same, 0, same, 8, 4)?;
+    let overlapping_identity = clone_range(&store, same, 0, same, 8, 4).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -612,12 +597,11 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
         return Err("hole-bearing identity clone unexpectedly remained inline".into());
     };
     assert_eq!(logical_bytes, 12);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(extents) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -630,8 +614,8 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     Ok(())
 }
 
-#[test]
-fn clone_budget_and_precancellation_fail_before_visible_work()
+#[tokio::test]
+async fn clone_budget_and_precancellation_fail_before_visible_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let source = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
@@ -640,7 +624,7 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
         bytes_copied: 3,
         ..WorkBudget::UNBOUNDED
     };
-    let failure = poll_ready(apply_regular_clone_async(
+    let failure = (apply_regular_clone_async(
         &store,
         source,
         0,
@@ -650,8 +634,7 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
         config(),
         budget,
         &CancellationToken::new(),
-    ))
-    .ok_or("budgeted clone blocked")?
+    )).await
     .err()
     .ok_or("over-budget clone unexpectedly succeeded")?;
     assert!(matches!(
@@ -666,7 +649,7 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
 
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = poll_ready(apply_regular_clone_async(
+    let failure = (apply_regular_clone_async(
         &store,
         source,
         0,
@@ -676,8 +659,7 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
         config(),
         WorkBudget::UNBOUNDED,
         &cancelled,
-    ))
-    .ok_or("cancelled clone blocked")?
+    )).await
     .err()
     .ok_or("cancelled clone unexpectedly succeeded")?;
     assert!(matches!(
@@ -688,11 +670,11 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
     Ok(())
 }
 
-#[test]
-fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_total()
+#[tokio::test]
+async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_total()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"xy")?;
+    let content = blob(&store, b"xy").await?;
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -716,15 +698,14 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             keep_size: true,
         },
     ] {
-        let failure = poll_ready(apply_regular_mutation_async(
+        let failure = (apply_regular_mutation_async(
             &store,
             inline,
             mutation,
             config(),
             WorkBudget::UNBOUNDED,
             &cancelled,
-        ))
-        .ok_or("pre-cancelled regular mutation blocked")?
+        )).await
         .err()
         .ok_or("pre-cancelled regular mutation succeeded")?;
         assert!(matches!(
@@ -757,14 +738,14 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             &store,
             payload,
             RegularMutation::Resize { logical_bytes: 0 },
-        )
+        ).await
         .err()
         .ok_or("non-regular payload mutation succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::NotRegular));
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let source_failure = clone_range(&store, FilePayload::Empty, 0, inline, 0, 1)
+    let source_failure = clone_range(&store, FilePayload::Empty, 0, inline, 0, 1).await
         .err()
         .ok_or("non-regular clone source succeeded")?;
     assert!(matches!(
@@ -772,7 +753,7 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
         RegularMutationError::NotRegular
     ));
     assert_eq!(*source_failure.work, WorkCounters::default());
-    let destination_failure = clone_range(&store, inline, 0, FilePayload::Empty, 0, 1)
+    let destination_failure = clone_range(&store, inline, 0, FilePayload::Empty, 0, 1).await
         .err()
         .ok_or("non-regular clone destination succeeded")?;
     assert!(matches!(
@@ -790,7 +771,7 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             content,
             content_offset: 1,
         },
-    )
+    ).await
     .err()
     .ok_or("out-of-range blob write succeeded")?;
     assert!(matches!(
@@ -808,7 +789,7 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             content,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     for (counter, maximum) in [
         ("bytes_copied", baseline.work.bytes_copied - 1),
         ("object_bytes_read", baseline.work.object_bytes_read - 1),
@@ -819,7 +800,7 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             "object_bytes_read" => budget.object_bytes_read = maximum,
             _ => return Err("unknown budget counter".into()),
         }
-        let failure = poll_ready(apply_regular_mutation_async(
+        let failure = (apply_regular_mutation_async(
             &store,
             inline,
             RegularMutation::Write {
@@ -831,8 +812,7 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
             config(),
             budget,
             &CancellationToken::new(),
-        ))
-        .ok_or("budgeted inline write blocked")?
+        )).await
         .err()
         .ok_or("under-budget inline write succeeded")?;
         match counter {
@@ -866,8 +846,8 @@ fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_to
     Ok(())
 }
 
-#[test]
-fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"a")?);
@@ -880,7 +860,7 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
             allocated: true,
             extend: true,
         },
-    )?;
+    ).await?;
     let FilePayload::InlineRegular(data) = allocated.payload else {
         return Err("contiguous allocated-zero extension did not remain inline".into());
     };
@@ -897,7 +877,7 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
                 allocated,
                 extend: true,
             },
-        )?;
+        ).await?;
         let FilePayload::Regular {
             logical_bytes,
             extents,
@@ -906,12 +886,11 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
             return Err("hole-bearing zero extension remained inline".into());
         };
         assert_eq!(logical_bytes, offset + 2);
-        let encoded = ObjectStore::read(
+        let encoded = AsyncObjectStore::read(
             &store,
             extents,
             config().limits.maximum_object_bytes,
-            WorkBudget::UNBOUNDED,
-        )?
+            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
         let ExtentPage::Leaf(values) =
             decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -941,20 +920,20 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
             allocated: true,
             extend: true,
         },
-    )?;
+    ).await?;
     assert!(matches!(oversized.payload, FilePayload::Regular { .. }));
     Ok(())
 }
 
-#[test]
-fn sparse_nonextending_zero_clips_at_eof_and_is_inert_beyond_eof()
+#[tokio::test]
+async fn sparse_nonextending_zero_clips_at_eof_and_is_inert_beyond_eof()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let clipped = apply(
         &store,
         sparse.payload,
@@ -964,10 +943,10 @@ fn sparse_nonextending_zero_clips_at_eof_and_is_inert_beyond_eof()
             allocated: true,
             extend: false,
         },
-    )?;
+    ).await?;
     assert_eq!(payload_size(clipped.payload)?, 128);
     assert_eq!(
-        &payload_kinds(&store, clipped.payload)?[120..],
+        &payload_kinds(&store, clipped.payload).await?[120..],
         &[PhysicalByteKind::AllocatedZero; 8]
     );
 
@@ -980,21 +959,21 @@ fn sparse_nonextending_zero_clips_at_eof_and_is_inert_beyond_eof()
             allocated: true,
             extend: false,
         },
-    )?;
+    ).await?;
     assert_eq!(outside.payload, clipped.payload);
     assert_eq!(outside.work, WorkCounters::default());
     Ok(())
 }
 
-#[test]
-fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicitly()
+#[tokio::test]
+async fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicitly()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let allocated = apply(
         &store,
         sparse.payload,
@@ -1003,7 +982,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
             length: 64,
             keep_size: true,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1012,12 +991,11 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
         return Err("preallocation unexpectedly produced inline data".into());
     };
     assert_eq!(logical_bytes, 128);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1040,7 +1018,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
             length: 40,
             keep_size: false,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1049,12 +1027,11 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
         return Err("extending preallocation unexpectedly produced inline data".into());
     };
     assert_eq!(logical_bytes, 160);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1075,7 +1052,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
             length: 40,
             keep_size: true,
         },
-    )
+    ).await
     .err()
     .ok_or("unrepresentable keep-size allocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -1085,18 +1062,18 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
     Ok(())
 }
 
-#[test]
-fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
+#[tokio::test]
+async fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let mut constrained = config();
     constrained.limits.maximum_mutations_per_batch = 1;
-    let allocated = poll_ready(apply_regular_mutation_async(
+    let allocated = (apply_regular_mutation_async(
         &store,
         sparse.payload,
         RegularMutation::Preallocate {
@@ -1107,8 +1084,7 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
         constrained,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("bounded preallocation blocked")??;
+    )).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1117,12 +1093,11 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
         return Err("extending preallocation unexpectedly produced inline data".into());
     };
     assert_eq!(logical_bytes, 192);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1135,18 +1110,18 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
     Ok(())
 }
 
-#[test]
-fn preallocation_budget_rejections_report_only_completed_work()
+#[tokio::test]
+async fn preallocation_budget_rejections_report_only_completed_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let mut allocation_budget = WorkBudget::UNBOUNDED;
     allocation_budget.allocation_operations = 0;
-    let failure = poll_ready(apply_regular_mutation_async(
+    let failure = (apply_regular_mutation_async(
         &store,
         sparse.payload,
         RegularMutation::Preallocate {
@@ -1157,8 +1132,7 @@ fn preallocation_budget_rejections_report_only_completed_work()
         config(),
         allocation_budget,
         &CancellationToken::new(),
-    ))
-    .ok_or("allocation-limited preallocation blocked")?
+    )).await
     .err()
     .ok_or("allocation-limited preallocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -1175,10 +1149,10 @@ fn preallocation_budget_rejections_report_only_completed_work()
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'b'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let mut scan_budget = WorkBudget::UNBOUNDED;
     scan_budget.items_examined = 5;
-    let failure = poll_ready(apply_regular_mutation_async(
+    let failure = (apply_regular_mutation_async(
         &store,
         sparse.payload,
         RegularMutation::Preallocate {
@@ -1189,8 +1163,7 @@ fn preallocation_budget_rejections_report_only_completed_work()
         config(),
         scan_budget,
         &CancellationToken::new(),
-    ))
-    .ok_or("scan-limited preallocation blocked")?
+    )).await
     .err()
     .ok_or("scan-limited preallocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -1206,15 +1179,15 @@ fn preallocation_budget_rejections_report_only_completed_work()
     Ok(())
 }
 
-#[test]
-fn hole_bearing_sparse_shrink_attempts_inline_demotion_once()
+#[tokio::test]
+async fn hole_bearing_sparse_shrink_attempts_inline_demotion_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let with_hole = apply(
         &store,
         sparse.payload,
@@ -1224,12 +1197,12 @@ fn hole_bearing_sparse_shrink_attempts_inline_demotion_once()
             allocated: false,
             extend: false,
         },
-    )?;
+    ).await?;
     let shrunk = apply(
         &store,
         with_hole.payload,
         RegularMutation::Resize { logical_bytes: 64 },
-    )?;
+    ).await?;
     let FilePayload::Regular { logical_bytes, .. } = shrunk.payload else {
         return Err("hole-bearing sparse file unexpectedly demoted".into());
     };
@@ -1239,8 +1212,8 @@ fn hole_bearing_sparse_shrink_attempts_inline_demotion_once()
     Ok(())
 }
 
-#[test]
-fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let failure = apply(
         &store,
@@ -1254,7 +1227,7 @@ fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
             },
             content_offset: 0,
         },
-    )
+    ).await
     .err()
     .ok_or("wrong content kind unexpectedly succeeded")?;
     assert!(matches!(
@@ -1269,7 +1242,7 @@ fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
         FilePayload::InlineRegular(InlineFileData::new(b"b")?),
         0,
         2,
-    )
+    ).await
     .err()
     .ok_or("out-of-range clone unexpectedly succeeded")?;
     assert!(matches!(
@@ -1280,16 +1253,16 @@ fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"XY")?;
+    let content = blob(&store, b"XY").await?;
     let mut dense = config();
     dense.sparse_files = false;
     let cancellation = CancellationToken::new();
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
 
-    let replaced = poll_ready(apply_regular_mutation_async(
+    let replaced = (apply_regular_mutation_async(
         &store,
         inline,
         RegularMutation::Write {
@@ -1301,8 +1274,7 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
         dense,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("dense replacement blocked")??;
+    )).await?;
     let FilePayload::InlineRegular(replaced) = replaced.payload else {
         return Err("in-range dense write did not remain inline".into());
     };
@@ -1328,15 +1300,14 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
             keep_size: true,
         },
     ] {
-        let failure = poll_ready(apply_regular_mutation_async(
+        let failure = (apply_regular_mutation_async(
             &store,
             inline,
             mutation,
             dense,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("dense rejection blocked")?
+        )).await
         .err()
         .ok_or("sparse semantics unexpectedly succeeded in a dense volume")?;
         assert!(matches!(
@@ -1346,7 +1317,7 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let clone_failure = poll_ready(apply_regular_clone_async(
+    let clone_failure = (apply_regular_clone_async(
         &store,
         inline,
         0,
@@ -1356,8 +1327,7 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
         dense,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("dense clone rejection blocked")?
+    )).await
     .err()
     .ok_or("clone unexpectedly succeeded in a dense volume")?;
     assert!(matches!(
@@ -1368,16 +1338,16 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
+#[tokio::test]
+async fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
-    let replacement = blob(&store, b"WXYZWXYZ")?;
+    ).await?;
+    let replacement = blob(&store, b"WXYZWXYZ").await?;
     let written = apply(
         &store,
         sparse.payload,
@@ -1387,7 +1357,7 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
             content: replacement,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1397,12 +1367,11 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
     };
     assert_eq!(logical_bytes, 128);
     assert!(written.work.backend_write_operations > 0);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1422,21 +1391,21 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
     Ok(())
 }
 
-#[test]
-fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copies()
+#[tokio::test]
+async fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copies()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let source = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b's'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let destination = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'd'; 64])?),
         RegularMutation::Resize { logical_bytes: 160 },
-    )?;
-    let cloned = clone_range(&store, source.payload, 0, destination.payload, 16, 128)?;
+    ).await?;
+    let cloned = clone_range(&store, source.payload, 0, destination.payload, 16, 128).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1447,12 +1416,11 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     assert_eq!(logical_bytes, 160);
     assert_eq!(cloned.work.bytes_copied, 256);
     assert!(cloned.work.backend_write_operations > 0);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1469,12 +1437,12 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     Ok(())
 }
 
-#[test]
-fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
+#[tokio::test]
+async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
-    let content = blob(&store, b"x")?;
+    let content = blob(&store, b"x").await?;
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
     for mutation in [
         RegularMutation::Write {
@@ -1518,36 +1486,34 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             keep_size: false,
         },
     ] {
-        let failure = poll_ready(apply_regular_mutation_async(
+        let failure = (apply_regular_mutation_async(
             &store,
             inline,
             mutation,
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("malformed range blocked")?
+        )).await
         .err()
         .ok_or("malformed range unexpectedly succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::RangeOverflow));
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let nonregular = poll_ready(apply_regular_mutation_async(
+    let nonregular = (apply_regular_mutation_async(
         &store,
         FilePayload::Empty,
         RegularMutation::Resize { logical_bytes: 0 },
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("nonregular mutation blocked")?
+    )).await
     .err()
     .ok_or("nonregular mutation unexpectedly succeeded")?;
     assert!(matches!(nonregular.error, RegularMutationError::NotRegular));
     assert_eq!(*nonregular.work, WorkCounters::default());
     for (source, destination) in [(FilePayload::Empty, inline), (inline, FilePayload::Empty)] {
-        let failure = poll_ready(apply_regular_clone_async(
+        let failure = (apply_regular_clone_async(
             &store,
             source,
             0,
@@ -1557,8 +1523,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("nonregular clone blocked")?
+        )).await
         .err()
         .ok_or("nonregular clone unexpectedly succeeded")?;
         assert!(matches!(failure.error, RegularMutationError::NotRegular));
@@ -1567,7 +1532,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
     for (source_offset, destination_offset, length) in
         [(u64::MAX, 0, 1), (0, u64::MAX, 1), (0, 0, 0)]
     {
-        let failure = poll_ready(apply_regular_clone_async(
+        let failure = (apply_regular_clone_async(
             &store,
             inline,
             source_offset,
@@ -1577,8 +1542,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("invalid clone blocked")?
+        )).await
         .err()
         .ok_or("invalid clone unexpectedly succeeded")?;
         assert!(matches!(
@@ -1597,7 +1561,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             allocated: true,
             extend: false,
         },
-    )?;
+    ).await?;
     assert_eq!(zero_noop.payload, inline);
     assert_eq!(zero_noop.work, WorkCounters::default());
     let preallocate_noop = apply(
@@ -1608,7 +1572,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             length: 2,
             keep_size: true,
         },
-    )?;
+    ).await?;
     assert_eq!(preallocate_noop.payload, inline);
     assert_eq!(preallocate_noop.work, WorkCounters::default());
 
@@ -1616,7 +1580,7 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'p'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
-    )?;
+    ).await?;
     let contained = apply(
         &store,
         promoted.payload,
@@ -1625,14 +1589,14 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
             length: 32,
             keep_size: true,
         },
-    )?;
+    ).await?;
     assert_eq!(contained.payload, promoted.payload);
     assert_eq!(contained.work.backend_write_operations, 0);
     let empty = apply(
         &store,
         promoted.payload,
         RegularMutation::Resize { logical_bytes: 0 },
-    )?;
+    ).await?;
     let FilePayload::InlineRegular(data) = empty.payload else {
         return Err("zero-length sparse resize did not demote".into());
     };
@@ -1640,8 +1604,8 @@ fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
     Ok(())
 }
 
-#[test]
-fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
     let failure = apply(
@@ -1652,7 +1616,7 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
             length: 1,
             keep_size: true,
         },
-    )
+    ).await
     .err()
     .ok_or("keep-size preallocation beyond EOF unexpectedly succeeded")?;
     assert!(matches!(
@@ -1669,7 +1633,7 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
             length: 2,
             keep_size: false,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1678,12 +1642,11 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
         return Err("inline extending preallocation did not promote".into());
     };
     assert_eq!(logical_bytes, 6);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1701,16 +1664,16 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
+#[tokio::test]
+async fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 256 },
-    )?;
-    let content = blob(&store, b"x")?;
+    ).await?;
+    let content = blob(&store, b"x").await?;
     let fragmented = apply(
         &store,
         sparse.payload,
@@ -1720,10 +1683,10 @@ fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
             content,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     let mut constrained = config();
     constrained.limits.maximum_mutations_per_batch = 1;
-    let failure = poll_ready(apply_regular_mutation_async(
+    let failure = (apply_regular_mutation_async(
         &store,
         fragmented.payload,
         RegularMutation::Preallocate {
@@ -1734,8 +1697,7 @@ fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
         constrained,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("bounded preallocation blocked")?
+    )).await
     .err()
     .ok_or("over-limit preallocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -1746,16 +1708,16 @@ fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
     Ok(())
 }
 
-#[test]
-fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically()
+#[tokio::test]
+async fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 129 },
-    )?;
-    let tail = blob(&store, b"z")?;
+    ).await?;
+    let tail = blob(&store, b"z").await?;
     let fragmented = apply(
         &store,
         sparse.payload,
@@ -1765,7 +1727,7 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
             content: tail,
             content_offset: 0,
         },
-    )?;
+    ).await?;
     let allocated = apply(
         &store,
         fragmented.payload,
@@ -1774,7 +1736,7 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
             length: 128,
             keep_size: false,
         },
-    )?;
+    ).await?;
     let FilePayload::Regular {
         logical_bytes,
         extents,
@@ -1783,12 +1745,11 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
         return Err("multi-region preallocation unexpectedly demoted".into());
     };
     assert_eq!(logical_bytes, 192);
-    let encoded = ObjectStore::read(
+    let encoded = AsyncObjectStore::read(
         &store,
         extents,
         config().limits.maximum_object_bytes,
-        WorkBudget::UNBOUNDED,
-    )?
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
     .value;
     let ExtentPage::Leaf(values) =
         decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
@@ -1811,8 +1772,8 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
     Ok(())
 }
 
-#[test]
-fn generated_regular_file_histories_match_independent_logical_and_physical_model()
+#[tokio::test]
+async fn generated_regular_file_histories_match_independent_logical_and_physical_model()
 -> Result<(), Box<dyn std::error::Error>> {
     for history in 0..192_u64 {
         let store = MemoryObjectStore::default();
@@ -1827,7 +1788,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
             .map(ModeledByte::content)
             .collect::<Vec<_>>();
         let mut payload = FilePayload::InlineRegular(InlineFileData::new(&initial)?);
-        assert_payload_matches_model(&store, payload, &model)?;
+        assert_payload_matches_model(&store, payload, &model).await?;
 
         for step in 0..32_u64 {
             match next_generated(&mut seed) % 7 {
@@ -1839,7 +1800,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                         RegularMutation::Resize {
                             logical_bytes: u64::try_from(logical_bytes)?,
                         },
-                    )
+                    ).await
                     .map_err(|error| format!("history {history}, step {step}, resize: {error:?}"))?
                     .payload;
                     model.resize(logical_bytes, ModeledByte::HOLE);
@@ -1850,7 +1811,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                     let bytes = (0..length)
                         .map(|_| u8::try_from(next_generated(&mut seed) & 0xff).unwrap_or(0))
                         .collect::<Vec<_>>();
-                    let content = blob(&store, &bytes)?;
+                    let content = blob(&store, &bytes).await?;
                     payload = apply(
                         &store,
                         payload,
@@ -1860,7 +1821,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                             content,
                             content_offset: 0,
                         },
-                    )
+                    ).await
                     .map_err(|error| format!("history {history}, step {step}, write: {error:?}"))?
                     .payload;
                     model_replace(&mut model, offset, &bytes);
@@ -1885,7 +1846,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                             allocated,
                             extend,
                         },
-                    )
+                    ).await
                     .map_err(|error| format!("history {history}, step {step}, zero: {error:?}"))?
                     .payload;
                     model_zero(
@@ -1910,7 +1871,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                             length: u64::try_from(length)?,
                             keep_size,
                         },
-                    );
+                    ).await;
                     if model_preallocate(&mut model, offset, length, keep_size) {
                         payload = outcome?.payload;
                     } else {
@@ -1941,7 +1902,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                         payload,
                         u64::try_from(destination_offset)?,
                         u64::try_from(length)?,
-                    )
+                    ).await
                     .map_err(|error| format!("history {history}, step {step}, clone: {error:?}"))?
                     .destination;
                     model.resize(
@@ -1952,15 +1913,15 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                 }
                 _ => {}
             }
-            assert_payload_matches_model(&store, payload, &model)
+            assert_payload_matches_model(&store, payload, &model).await
                 .map_err(|error| format!("history {history}, step {step}: {error}"))?;
         }
     }
     Ok(())
 }
 
-#[test]
-fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
+#[tokio::test]
+async fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
@@ -2036,7 +1997,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
     }
 
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let overflow = poll_ready(try_inline(
+    let overflow = (try_inline(
         &store,
         data,
         RegularMutation::ZeroRange {
@@ -2048,8 +2009,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
         config(),
         &mut accounting,
         &cancellation,
-    ))
-    .ok_or("inline overflow guard unexpectedly suspended")?
+    )).await
     .err()
     .ok_or("inline overflowing range unexpectedly succeeded")?;
     assert!(matches!(
@@ -2057,7 +2017,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
         RegularMutationError::RangeOverflow
     ));
 
-    let keep_size = poll_ready(try_inline(
+    let keep_size = (try_inline(
         &store,
         data,
         RegularMutation::Preallocate {
@@ -2068,8 +2028,7 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
         config(),
         &mut accounting,
         &cancellation,
-    ))
-    .ok_or("inline keep-size guard unexpectedly suspended")?
+    )).await
     .err()
     .ok_or("inline keep-size growth unexpectedly succeeded")?;
     assert!(matches!(
@@ -2111,15 +2070,14 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
             content_offset: 0,
         },
     ] {
-        let result = poll_ready(try_inline(
+        let result = (try_inline(
             &store,
             data,
             mutation,
             config(),
             &mut accounting,
             &cancellation,
-        ))
-        .ok_or("inline decision unexpectedly suspended")??;
+        )).await?;
         if result.is_some() {
             assert_eq!(accounting.spent(), WorkCounters::default());
         }
@@ -2128,11 +2086,11 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_regular_copy_denial_and_written_prefix_use_original_custody()
+#[tokio::test]
+async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"native source")?;
+    let content = blob(&store, b"native source").await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
@@ -2140,11 +2098,11 @@ fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     let before = original.receipt();
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let denied = poll_ready(apply_regular_mutation_with_accounting(
+    let denied = (apply_regular_mutation_with_accounting(
         &store, FilePayload::InlineRegular(InlineFileData::new(b"old")?),
         RegularMutation::Write { offset: 0, length: 3, content, content_offset: 0 },
         config(), &mut accounting, &cancellation,
-    )).ok_or("native inline write blocked")?.err().ok_or("zero-copy write accepted")?;
+    )).await.err().ok_or("zero-copy write accepted")?;
     assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.live_allocation_bytes(), baseline);
@@ -2152,11 +2110,11 @@ fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let written = poll_ready(apply_regular_mutation_with_accounting(
+    let written = (apply_regular_mutation_with_accounting(
         &store, FilePayload::InlineRegular(InlineFileData::new(b"old")?),
         RegularMutation::Write { offset: 0, length: 3, content, content_offset: 0 },
         config(), &mut accounting, &cancellation,
-    )).ok_or("admitted native inline write blocked")??;
+    )).await?;
     let FilePayload::InlineRegular(data) = written.payload else { return Err("native inline payload promoted unexpectedly".into()); };
     assert_eq!(data.as_bytes(), b"nat");
     assert!(original.receipt().backend_read_operations > 0);
@@ -2167,16 +2125,16 @@ fn native_regular_copy_denial_and_written_prefix_use_original_custody()
         WorkBudget { page_writes: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(error, _)| error)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let denied = poll_ready(apply_regular_mutation_with_accounting(
+    let denied = (apply_regular_mutation_with_accounting(
         &store, FilePayload::InlineRegular(InlineFileData::new(b"prefix!")?),
         RegularMutation::Resize { logical_bytes: usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) + 1 },
         config(), &mut accounting, &cancellation,
-    )).ok_or("native promotion prefix blocked")?.err().ok_or("second page-write admitted")?;
+    )).await.err().ok_or("second page-write admitted")?;
     assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_)) | FsError::Work(_)));
     assert_eq!(original.receipt().page_writes, 1);
     assert_eq!(original.receipt().backend_write_operations, 2);
     let chunk = ObjectId { kind: ObjectKind::BlobChunk, digest: object_digest(ObjectKind::BlobChunk, b"prefix!") };
-    assert_eq!(crate::storage::ObjectStore::read(&store, chunk, 7, WorkBudget::UNBOUNDED)?.value.as_ref(), b"prefix!");
+    assert_eq!(crate::async_storage::AsyncObjectStore::read(&store, chunk, 7, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value.as_ref(), b"prefix!");
     let prefix = original.receipt();
     assert!(matches!(original.claim(u64::MAX),
         Err(crate::NativeTreeMaterializationError::Work(WorkError::Overflow))));

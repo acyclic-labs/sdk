@@ -2,7 +2,7 @@
 use crate::body::{LocalBodyLocation, LocalBodyReference};
 use crate::v1::{Error, wire::ErrorCode::Unavailable};
 use crate::{LocalDurability, LocalObjectsGarbageCollection};
-use crate::v1::{NativeObjectsError, Publication};
+use crate::v1::{NativeObjectsCause, NativeObjectsError, Publication};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -229,9 +229,9 @@ pub(crate) fn write_segment<B: AsRef<[u8]>>(
 
 fn native_write_error(error: PhysicalError) -> NativeObjectsError {
     match error {
-        PhysicalError::Io(error) => NativeObjectsError::Admission(error),
+        PhysicalError::Io(error) => NativeObjectsError::from(NativeObjectsCause::Admission(error)),
         PhysicalError::Invalid(_) | PhysicalError::Corrupt =>
-            NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+            NativeObjectsError::from(NativeObjectsCause::Service(crate::v1::wire::ErrorCode::Unavailable.into())),
     }
 }
 
@@ -357,7 +357,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
             validate_segment_publication(&destination, &id, position, publication)?;
             return Ok((id, offsets));
         }
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::NotFound) => {}
         Err(error) => return Err(error),
     }
     let mut opened = None;
@@ -384,8 +384,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
         });
         match result {
             Ok(file) => { opened = Some((temporary, file)); break; }
-            Err(NativeObjectsError::Admission(error))
-                if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) => {}
             Err(error) => return Err(error),
         }
     }
@@ -419,10 +418,10 @@ fn write_segment_inner<B: AsRef<[u8]>>(
             &temporary, &destination, Some(meter),
         ),
         None => acyclic_native_runtime::publish_new(&temporary, &destination, None),
-    }.map_err(NativeObjectsError::Admission);
+    }.map_err(NativeObjectsError::from);
     match published {
         Ok(()) => {}
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::AlreadyExists =>
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
             validate_segment_publication(&destination, &id, position, publication)?,
         Err(error) => {
             let _ = publication_namespace(publication, || fs::remove_file(&temporary));
@@ -431,7 +430,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
     }
     match publication_namespace(publication, || fs::remove_file(&temporary)) {
         Ok(()) => {}
-        Err(NativeObjectsError::Admission(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::NotFound) => {}
         Err(error) => return Err(error),
     }
     Ok((id, offsets))
@@ -701,30 +700,32 @@ fn hex_nibble(byte: u8) -> Result<u8, PhysicalError> {
     }
 }
 
-pub(crate) async fn read_body_at_async(
+pub(crate) async fn read_body_at(
     root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
     expected_length: usize,
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<acyclic_stream::OwnedBytes, Error> {
+    mode: crate::body::BodyReadMode,
+) -> Result<acyclic_stream::OwnedBytes, NativeObjectsError> {
     let backend = match location {
         LocalBodyLocation::Segment { .. } => "segment",
         LocalBodyLocation::Journal { .. } => "journal",
     };
     let span = crate::obs::span!(
-        TRACE,
-        "acyclic.objects.physical.read",
-        backend,
-        bytes = end.saturating_sub(start),
-        body_bytes = expected_length,
+        TRACE, "acyclic.objects.physical.read",
+        backend, bytes = end.saturating_sub(start), body_bytes = expected_length,
     );
-    crate::obs::traced(
-        span,
-        read_body_at_inner_async(root, expected_digest, expected_length, location, start, end),
-    )
-    .await
+    crate::obs::traced(span, async {
+        match mode {
+            crate::body::BodyReadMode::Ordinary =>
+                read_body_at_inner_async(root, expected_digest, expected_length, location, start, end)
+                    .await.map_err(Into::into),
+            crate::body::BodyReadMode::Native(meter) =>
+                read_body_at_native_inner(root, expected_digest, expected_length, location, start, end, meter).await,
+        }
+    }).await
 }
 
 async fn read_body_at_inner_async(
@@ -801,54 +802,27 @@ async fn read_body_at_inner_async(
     Ok(selected.into())
 }
 
-pub(crate) struct LocalPath {
-    pub(crate) path: PathBuf,
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-}
 pub(crate) fn local_path(
     root: &Path,
     suffix: &str,
     meter: Option<&Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
-) -> Result<LocalPath, NativeObjectsError> {
+) -> Result<crate::v1::Guarded<PathBuf>, NativeObjectsError> {
     let maximum = root.as_os_str().len().checked_add(suffix.len()).and_then(|length| length.checked_add(1))
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
     let mut allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, maximum)).transpose()?;
     let mut path = PathBuf::new();
     path.try_reserve_exact(maximum).map_err(|error| match meter {
-        Some(meter) => NativeObjectsError::Admission(meter.allocation_failed(error)),
-        None => NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+        Some(meter) => NativeObjectsError::from(NativeObjectsCause::Admission(meter.allocation_failed(error))),
+        None => NativeObjectsError::from(NativeObjectsCause::Service(crate::v1::wire::ErrorCode::Unavailable.into())),
     })?;
     if let Some(allocation) = &mut allocation { allocation.reconcile_capacity(path.capacity())?; }
     if let Some(meter) = meter { meter.admit_codec(0, maximum as u64, 0)?; }
     path.push(root);
     path.push(suffix);
     if let Some(meter) = meter { meter.record_codec(0, path.as_os_str().len() as u64, 0)?; }
-    Ok(LocalPath { path, _allocation: allocation })
+    Ok(crate::v1::Guarded { value: path, _allocation: allocation })
 }
 
-pub(crate) async fn read_body_at_native(
-    root: &Arc<LocalRoot>,
-    expected_digest: &[u8; 32],
-    expected_length: usize,
-    location: &LocalBodyLocation,
-    start: usize,
-    end: usize,
-    meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
-    let backend = match location {
-        LocalBodyLocation::Segment { .. } => "segment",
-        LocalBodyLocation::Journal { .. } => "journal",
-    };
-    let span = crate::obs::span!(
-        TRACE, "acyclic.objects.physical.read",
-        backend, bytes = end.saturating_sub(start), body_bytes = expected_length,
-    );
-    crate::obs::traced(span, read_body_at_native_inner(
-        root, expected_digest, expected_length, location, start, end, meter,
-    )).await
-}
-
-/// The same journal authentication and segment-table selection as ordinary reads, with original-meter buffers and shared controls prepared before physical IO.
 async fn read_body_at_native_inner(
     root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
@@ -886,7 +860,7 @@ async fn read_body_at_native_inner(
                 if journal.is_none() {
                     let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
                     open_meter.admit_read(0)?;
-                    *journal = Some(File::open(&path.path)?);
+                    *journal = Some(File::open(&path.value)?);
 
                     drop(path);
                 }
@@ -906,9 +880,9 @@ async fn read_body_at_native_inner(
                 let name = std::str::from_utf8(&name)
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
                 let path = local_path(&root.path, "segments", Some(&open_meter))?;
-                let file_path = local_path(&path.path, name, Some(&open_meter))?;
+                let file_path = local_path(&path.value, name, Some(&open_meter))?;
                 open_meter.admit_read(0)?;
-                let file = File::open(&file_path.path)?;
+                let file = File::open(&file_path.value)?;
                 drop(path);
                 file
             }
@@ -1076,7 +1050,6 @@ fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
     acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
 
-
 pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
         LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
@@ -1194,13 +1167,14 @@ pub(crate) mod tests {
             };
             let root = Arc::new(LocalRoot::new(directory.path().to_path_buf()));
             let read = |location: &LocalBodyLocation, start, end| {
-                futures::executor::block_on(read_body_at_async(
+                futures::executor::block_on(read_body_at(
                     &root,
                     &digest,
                     body.len(),
                     location,
                     start,
                     end,
+                    crate::body::BodyReadMode::Ordinary,
                 ))
             };
             let selected = read(&location, 1, 5).unwrap_or_else(|_| unreachable!());

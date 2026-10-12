@@ -447,7 +447,7 @@ fn compaction_step(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<
 fn compaction_error(work: &Option<&mut dyn crate::store::history::HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
-        return crate::executor::native_boundary(crate::wire::ErrorCode::Invalid, reason);
+        return crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
     }
     let _ = work;
     Error::Invalid(reason.into())
@@ -576,7 +576,7 @@ mod tests {
         use crate::conversation::{FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef};
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
         let file = FileRef::new(VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?, "context", VolumeClass::AgentPrivate,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?,
             "context/summary.txt", "pinned", FileDescriptor::from_bytes(b"summary", "text/plain")?, "summary.txt")?;
         let context = Context {

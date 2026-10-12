@@ -24,7 +24,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Result<Fixture> {
-    let provider = ProviderRef::new("recursive-default-test", "filesystem", "2")?;
+    let provider = ProviderRef::new("recursive-default-test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([1; 16]);
     let authority = Authority { kind: AggregateKind::Conversation, id: "recursive-default-parent".into() };
@@ -339,7 +339,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         &IdempotencyKey::new("source-arguments")?).await?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     let private = workspace_ref(fixture.private.provider().clone(), &fixture.private.storage_name()?)?;
-    let stream_provider = ProviderRef::new("recursive-default-test", "stream", "1")?;
+    let stream_provider = ProviderRef::new("recursive-default-test".into(), "stream".into(), "1".into(), &mut None)?;
     let request = ForkRequest {
         operation_id: effect, parent: fixture.parent.reducer().authority().clone(),
         parent_revision: fixture.parent.reducer().revision(),

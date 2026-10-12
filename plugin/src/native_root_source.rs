@@ -4,6 +4,7 @@ use super::*;
 use acyclic_fs::{MeasuredResult, NativeAllocation, NativeMaterializationWork,
     NativeRootIdentity, OperationFailure, OperationReceipt, WorkCounters};
 use acyclic_harness::{Error as RootError, Result as RootResult};
+use acyclic_harness::wire::ErrorCode;
 
 fn rejected(error: impl std::fmt::Display, work: WorkCounters) -> OperationFailure<String> {
     OperationFailure::new(error.to_string(), work)
@@ -32,14 +33,12 @@ fn admit(work: &mut WorkCounters, delta: WorkCounters, budget: WorkBudget) -> Me
     Ok(())
 }
 
-enum AcquisitionRejection {
-    MissingReference,
-    PoisonedReference,
-    PoisonedWatcher,
-    SourceIdentity,
-    RootIdentity,
-    PendingCleanup,
-}
+const MISSING_REFERENCE: (ErrorCode, &str) = (ErrorCode::Invalid, "shared root registration lost its original source reference");
+const POISONED_REFERENCE: (ErrorCode, &str) = (ErrorCode::Storage, "shared root source reference state is poisoned");
+const POISONED_WATCHER: (ErrorCode, &str) = (ErrorCode::Storage, "shared root watcher state is poisoned");
+const SOURCE_IDENTITY: (ErrorCode, &str) = (ErrorCode::Conflict, "physical root is already registered with another original source identity");
+const ROOT_IDENTITY: (ErrorCode, &str) = (ErrorCode::Conflict, "physical root differs from its authenticated original allocation");
+const PENDING_CLEANUP: (ErrorCode, &str) = (ErrorCode::Conflict, "original physical root startup cleanup has not completed");
 
 trait RootInstrumentation: Send {
     type Error: Send;
@@ -67,7 +66,7 @@ trait RootInstrumentation: Send {
         watcher: Arc<Mutex<NativeWatch>>)
         -> impl Future<Output = Result<Arc<LocalLazySource>, Self::Error>> + Send;
     fn invalidate(&mut self, source: &LocalLazySource) -> Result<(), Self::Error>;
-    fn rejection(&self, rejection: AcquisitionRejection, root: &Path) -> Self::Error;
+    fn rejection(&self, rejection: (ErrorCode, &'static str), root: &Path) -> Self::Error;
 }
 
 async fn authenticate<I: RootInstrumentation>(
@@ -75,7 +74,7 @@ async fn authenticate<I: RootInstrumentation>(
     original: Option<NativeRootIdentity>,
 ) -> Result<(), I::Error> {
     if instrumentation.authenticate(root, admission).await? != original {
-        return Err(instrumentation.rejection(AcquisitionRejection::RootIdentity, root));
+        return Err(instrumentation.rejection(ROOT_IDENTITY, root));
     }
     instrumentation.check()
 }
@@ -110,14 +109,14 @@ async fn acquire_engine<I: RootInstrumentation>(
     if let Some(reference) = &registration.reference
         && original.is_some() {
         let retained = *reference.lock().map_err(|_| instrumentation.rejection(
-            AcquisitionRejection::PoisonedReference, &canonical.0))?;
+            POISONED_REFERENCE, &canonical.0))?;
         if admission.reference().is_some_and(|expected| expected.identity != retained.identity) {
-            return Err(instrumentation.rejection(AcquisitionRejection::SourceIdentity, &canonical.0));
+            return Err(instrumentation.rejection(SOURCE_IDENTITY, &canonical.0));
         }
     }
     if original.is_some_and(|expected| registration.native_identity
         .is_some_and(|identity| identity != expected.to_bytes())) {
-        return Err(instrumentation.rejection(AcquisitionRejection::RootIdentity, &canonical.0));
+        return Err(instrumentation.rejection(ROOT_IDENTITY, &canonical.0));
     }
     instrumentation.settle_pending(&mut registration, &canonical.0)?;
     if let Some(native_identity) = registration.native_identity {
@@ -126,23 +125,23 @@ async fn acquire_engine<I: RootInstrumentation>(
         let live = registration.live.upgrade();
         if observed.to_bytes() == native_identity {
             let retained = *registration.reference.as_ref()
-                .ok_or_else(|| instrumentation.rejection(AcquisitionRejection::MissingReference, &canonical.0))?
-                .lock().map_err(|_| instrumentation.rejection(AcquisitionRejection::PoisonedReference, &canonical.0))?;
+                .ok_or_else(|| instrumentation.rejection(MISSING_REFERENCE, &canonical.0))?
+                .lock().map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))?;
             if admission.reference().is_some_and(|expected| expected.identity != retained.identity) {
-                return Err(instrumentation.rejection(AcquisitionRejection::SourceIdentity, &canonical.0));
+                return Err(instrumentation.rejection(SOURCE_IDENTITY, &canonical.0));
             }
             if let Some(shared) = live {
                 let observed = instrumentation.validate_live(&shared, &canonical.0).await?;
                 authenticate(instrumentation, root, admission, original).await?;
                 if original.is_some() && shared.source.reference().identity != retained.identity {
-                    return Err(instrumentation.rejection(AcquisitionRejection::SourceIdentity, &canonical.0));
+                    return Err(instrumentation.rejection(SOURCE_IDENTITY, &canonical.0));
                 }
                 drop(observed);
                 return Ok(shared);
             }
         } else {
             if live.is_some() || matches!(admission, SharedRootAdmission::Resume(_)) {
-                return Err(instrumentation.rejection(AcquisitionRejection::RootIdentity, &canonical.0));
+                return Err(instrumentation.rejection(ROOT_IDENTITY, &canonical.0));
             }
             *registration = SharedRootRegistration::default();
         }
@@ -169,10 +168,10 @@ async fn acquire_engine<I: RootInstrumentation>(
     if original.is_some() { registration.pending_watcher = Some(Arc::clone(&watcher)); }
     let watched_identity = {
         let mut watch = watcher.lock().map_err(|_| instrumentation.rejection(
-            AcquisitionRejection::PoisonedWatcher, &canonical.0))?;
+            POISONED_WATCHER, &canonical.0))?;
         let identity = watch.root_identity();
         if original.is_some_and(|expected| expected != identity) {
-            return Err(instrumentation.rejection(AcquisitionRejection::RootIdentity, &canonical.0));
+            return Err(instrumentation.rejection(ROOT_IDENTITY, &canonical.0));
         }
         instrumentation.prepare_watcher(&mut watch)?;
         identity
@@ -182,19 +181,19 @@ async fn acquire_engine<I: RootInstrumentation>(
     authenticate(instrumentation, root, admission, original).await?;
     if source.inner().root_identity() != watched_identity
         || source.reference().identity != reference.identity {
-        return Err(instrumentation.rejection(AcquisitionRejection::RootIdentity, &canonical.0));
+        return Err(instrumentation.rejection(ROOT_IDENTITY, &canonical.0));
     }
     if matches!(admission, SharedRootAdmission::Resume(_)) {
         instrumentation.invalidate(&source)?;
     }
     let reference = if original.is_some() {
         Arc::clone(registration.reference.as_ref().ok_or_else(|| instrumentation.rejection(
-            AcquisitionRejection::MissingReference, &canonical.0))?)
+            MISSING_REFERENCE, &canonical.0))?)
     } else {
         Arc::new(SharedSourceReference { value: Mutex::new(source.reference()), _native_custody: None })
     };
     *reference.lock().map_err(|_| instrumentation.rejection(
-        AcquisitionRejection::PoisonedReference, &canonical.0))? = source.reference();
+        POISONED_REFERENCE, &canonical.0))? = source.reference();
     let native_identity = source.inner().root_identity().to_bytes();
     let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>())?;
     let shared = Arc::new(SharedPhysicalRoot {
@@ -256,7 +255,7 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
         -> Result<(), Self::Error> {
         if registration.pending_raw_watcher.is_some()
             || registration.pending_watcher.is_some() || registration.pending_source.is_some() {
-            return Err(self.rejection(AcquisitionRejection::PendingCleanup, root));
+            return Err(self.rejection(PENDING_CLEANUP, root));
         }
         Ok(())
     }
@@ -286,8 +285,8 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> Result<Arc<LocalLazySource>, Self::Error> {
         let remaining = self.work.remaining(self.budget).map_err(|error| rejected(error, self.work))?;
-        let source = combine(&mut self.work, NativeDemandSource::open_with_reference_measured(
-            root.to_path_buf(), native_filesystem_profile(), VolumeLimits::default(), reference,
+        let source = combine(&mut self.work, NativeDemandSource::open(
+            std::borrow::Cow::Owned(root.to_path_buf()), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
             Some(watcher as Arc<dyn DemandDirectoryObserver>), remaining, self.cancellation,
         ).await)?;
         Ok(Arc::new(FilteredDemandSource::new(source,
@@ -297,15 +296,8 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
         source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(|error| rejected(error, self.work))?;
         Ok(())
     }
-    fn rejection(&self, rejection: AcquisitionRejection, root: &Path) -> Self::Error {
-        rejected(match rejection {
-            AcquisitionRejection::MissingReference => "shared root registration lost its source reference".to_owned(),
-            AcquisitionRejection::PoisonedReference => "shared root source reference is poisoned".to_owned(),
-            AcquisitionRejection::PoisonedWatcher => "physical root watcher state is poisoned".to_owned(),
-            AcquisitionRejection::SourceIdentity => format!("physical root {} is already registered with another source identity", root.display()),
-            AcquisitionRejection::RootIdentity => format!("physical root {} changed identity while it was in use", root.display()),
-            AcquisitionRejection::PendingCleanup => "physical root startup cleanup is incomplete".to_owned(),
-        }, self.work)
+    fn rejection(&self, rejection: (ErrorCode, &'static str), root: &Path) -> Self::Error {
+        rejected(format!("{}: {}", rejection.1, root.display()), self.work)
     }
 }
 
@@ -416,7 +408,7 @@ where G: FnMut() -> F + Send,
         let expected = (self.guard)().await?;
         self.check()?;
         if self.expected.is_some_and(|original| original != expected) {
-            return Err(self.rejection(AcquisitionRejection::RootIdentity, Path::new("")));
+            return Err(self.rejection(ROOT_IDENTITY, Path::new("")));
         }
         self.expected = Some(expected);
         Ok(Some(expected))
@@ -431,7 +423,7 @@ where G: FnMut() -> F + Send,
             });
         }
         let expected = self.expected.ok_or_else(|| self.rejection(
-            AcquisitionRejection::RootIdentity, root))?;
+            ROOT_IDENTITY, root))?;
         let actual = self.work.root_identity(root).map_err(native_work_error)?;
         if actual != expected {
             return Err(native_work_error(acyclic_fs::NativeTreeMaterializationError::AllocationChanged {
@@ -451,17 +443,17 @@ where G: FnMut() -> F + Send,
     }
     async fn validate_live(&mut self, shared: &SharedPhysicalRoot, root: &Path)
         -> RootResult<Option<(SharedRootObservation, NativeAllocation)>> {
-        let expected = self.expected.ok_or_else(|| self.rejection(AcquisitionRejection::RootIdentity, root))?;
+        let expected = self.expected.ok_or_else(|| self.rejection(ROOT_IDENTITY, root))?;
         // Ordinary-created SDK source backing cannot be silently promoted.
         shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
-        shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
-            .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
+        shared.watcher.lock().map_err(|_| self.rejection(POISONED_WATCHER, root))?
+            .verify_root_identity(expected, self.work).map_err(native_watch_error)?;
         shared.observe_native_transaction(self.work).map(Some)
     }
     fn settle_pending(&mut self, registration: &mut SharedRootRegistration, root: &Path) -> RootResult<()> {
         if !shutdown_pending(registration, self.work)? {
-            return Err(self.rejection(AcquisitionRejection::PendingCleanup, root));
+            return Err(self.rejection(PENDING_CLEANUP, root));
         }
         Ok(())
     }
@@ -511,9 +503,9 @@ where G: FnMut() -> F + Send,
     }
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> RootResult<Arc<LocalLazySource>> {
-        let source = NativeDemandSource::open_with_reference_and_native_work(
-            root, native_filesystem_profile(), VolumeLimits::default(), reference,
-            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work,
+        let source = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(root), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
+            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work, self.work.cancellation(),
         ).await.map_err(native_source_error)?;
         let excluded = native_reserved_paths(self.work)?;
         let mut source = FilteredDemandSource::new_with_native_work(
@@ -528,21 +520,7 @@ where G: FnMut() -> F + Send,
         source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work)).map_err(native_source_error)?;
         Ok(())
     }
-    fn rejection(&self, rejection: AcquisitionRejection, _: &Path) -> RootError {
-        let (code, reason) = match rejection {
-            AcquisitionRejection::MissingReference => (acyclic_harness::wire::ErrorCode::Invalid,
-                "shared root registration lost its original source reference"),
-            AcquisitionRejection::PoisonedReference => (acyclic_harness::wire::ErrorCode::Storage,
-                "shared root source reference state is poisoned"),
-            AcquisitionRejection::PoisonedWatcher => (acyclic_harness::wire::ErrorCode::Storage,
-                "shared root watcher state is poisoned"),
-            AcquisitionRejection::SourceIdentity => (acyclic_harness::wire::ErrorCode::Conflict,
-                "physical root is already registered with another original source identity"),
-            AcquisitionRejection::RootIdentity => (acyclic_harness::wire::ErrorCode::Conflict,
-                "physical root differs from its authenticated original allocation"),
-            AcquisitionRejection::PendingCleanup => (acyclic_harness::wire::ErrorCode::Conflict,
-                "original physical root startup cleanup has not completed"),
-        };
+    fn rejection(&self, (code, reason): (ErrorCode, &'static str), _: &Path) -> RootError {
         RootError::NativeBoundary { code, reason }
     }
 }

@@ -1,6 +1,6 @@
 //! Durable logical Objects v1, backed by private state deltas and immutable bodies.
 pub use super::memory::persistence::LocalOpenError;
-use super::{Error, MemoryObjects, NativeBatchObjects, Object, ObjectsProvider, wire};
+use super::{Error, MemoryObjects, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 use std::path::Path;
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
-
 
 fn spawn_native_read<F>(
     future: F,
@@ -18,8 +17,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = super::GuardedFuture {
-        future: tracing::Instrument::in_current_span(future),
+    let mut future = super::Guarded {
+        value: tracing::Instrument::in_current_span(future),
         _allocation: None,
     };
     future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
@@ -28,30 +27,15 @@ where
     Ok(tokio::spawn(future))
 }
 
-/// Durable capacities and explicit host synchronization policy.
-pub type LocalOptions = crate::LocalObjectsLimits;
-/// Private physical storage reclamation counters; no public Objects history.
-pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
+use crate::{LocalObjectsLimits, LocalObjectsGarbageCollection};
 
-/// Runs `work` on a native blocking worker inside the caller's span, so its spans keep their parent.
 fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> acyclic_native_runtime::NativeCompletion<T> {
-    let span = tracing::Span::current();
-    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), None).expect("unmetered task construction cannot fail")
-}
-
-fn blocking_with_meter<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
 ) -> Result<acyclic_native_runtime::NativeCompletion<T>, NativeObjectsError> {
-    match meter {
-        None => Ok(blocking(work)),
-        Some(meter) => {
-            let span = tracing::Span::current();
-            Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), Some((meter, false)))?)
-        }
-    }
+    let span = tracing::Span::current();
+    Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work),
+        meter.map(|meter| (meter, false)))?)
 }
 
 /// One owned logical store. Clones share admission, retry receipts and ownership.
@@ -61,25 +45,10 @@ pub struct LocalObjects {
     body_io: Arc<RwLock<()>>,
 }
 impl LocalObjects {
-    /// Opens a v1 store and validates every replayed record and referenced segment.
+    /// Opens and validates a store, retaining an optional external ownership anchor.
     pub async fn open(
         root: impl AsRef<Path>,
-        options: LocalOptions,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, None).await
-    }
-    /// Opens while retaining the native composition's external ownership anchor.
-    #[doc(hidden)]
-    pub async fn open_with_ownership_anchor(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
-        anchor: acyclic_native_runtime::OwnershipAnchor,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, Some(anchor)).await
-    }
-    async fn open_inner(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
+        options: LocalObjectsLimits,
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
@@ -88,7 +57,7 @@ impl LocalObjects {
                 core,
                 body_io: Arc::new(RwLock::new(())),
             })
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -113,7 +82,7 @@ impl LocalObjects {
             let lease = Arc::clone(&self.body_io).write_owned().await;
             let core = self.core.clone();
             let worker_meter = meter.clone();
-            blocking_with_meter(move || {
+            blocking(move || {
                 let _lease = lease;
                 let native = worker_meter.is_some();
                 core.compact_local_if_due(worker_meter).map_err(|error| {
@@ -124,7 +93,7 @@ impl LocalObjects {
         }
         let core = self.core.clone();
         let lease = Arc::clone(&self.body_io).read_owned().await;
-        blocking_with_meter(move || {
+        blocking(move || {
             let _lease = lease;
             action(&core)
         }, meter)?.await
@@ -135,7 +104,7 @@ impl LocalObjects {
     pub async fn collect_garbage(
         &self,
         maximum_candidates: u64,
-    ) -> Result<GarbageCollection, LocalOpenError> {
+    ) -> Result<LocalObjectsGarbageCollection, LocalOpenError> {
         if maximum_candidates == 0 {
             return Err(LocalOpenError::Invalid);
         }
@@ -144,7 +113,7 @@ impl LocalObjects {
         blocking(move || {
             let _lease = lease;
             core.collect_local_garbage(maximum_candidates)
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -152,6 +121,78 @@ impl LocalObjects {
 
 #[async_trait::async_trait]
 impl ObjectsProvider for LocalObjects {
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        self.mutate(move |core| Ok(block_on(core.put_batch(requests))))
+            .await
+            .unwrap_or_else(|error| vec![Err(error); count])
+    }
+
+    fn put_batch_native(
+        &self,
+        input: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            if input.data().is_empty() {
+                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
+            }
+            let worker_meter = Arc::clone(&meter);
+            self.mutate_with_meter(Some(meter), move |core| {
+                block_on(core.put_batch_native(input, worker_meter)?)
+            }).await
+        })
+    }
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        let count = requests.len();
+        if count == 0 {
+            return Vec::new();
+        }
+        let core = self.core.clone();
+        let body_io = self.body_io.clone();
+        tokio::spawn(tracing::Instrument::in_current_span(async move {
+            let _lease = body_io.read_owned().await;
+            core.get_batch(requests).await
+        }))
+        .await
+        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
+    }
+
+    fn get_batch_native(
+        &self,
+        input: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            if input.data().is_empty() {
+                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
+            }
+            let core = self.core.clone();
+            let body_io = Arc::clone(&self.body_io);
+            let task_meter = Arc::clone(&meter);
+            spawn_native_read(async move {
+                let input = input;
+                // Detached work retains the original input custody and store root.
+                let _lease = body_io.read_owned().await;
+                core.get_batch_native(input, task_meter)?.await
+            }, &meter)?.await
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        })
+    }
+
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         self.mutate(move |core| block_on(core.create_bucket(query)))
             .await
@@ -280,80 +321,7 @@ impl ObjectsProvider for LocalObjects {
             .await
     }
 }
-#[async_trait::async_trait]
-impl NativeBatchObjects for LocalObjects {
-    async fn put_batch(
-        &self,
-        requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
-    ) -> Vec<Result<wire::ObjectInfo, Error>> {
-        let count = requests.len();
-        if count == 0 {
-            return Vec::new();
-        }
-        self.mutate(move |core| Ok(block_on(core.put_batch(requests))))
-            .await
-            .unwrap_or_else(|error| vec![Err(error); count])
-    }
 
-    fn put_batch_native(
-        &self,
-        input: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            if input.data().is_empty() {
-                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
-            }
-            let worker_meter = Arc::clone(&meter);
-            self.mutate_with_meter(Some(meter), move |core| {
-                block_on(core.put_batch_native(input, worker_meter)?)
-            }).await
-        })
-    }
-    async fn get_batch(
-        &self,
-        requests: Vec<(wire::GetObjectRequest, u64)>,
-    ) -> Vec<Result<Object, Error>> {
-        let count = requests.len();
-        if count == 0 {
-            return Vec::new();
-        }
-        let core = self.core.clone();
-        let body_io = self.body_io.clone();
-        tokio::spawn(tracing::Instrument::in_current_span(async move {
-            let _lease = body_io.read_owned().await;
-            core.get_batch(requests).await
-        }))
-        .await
-        .unwrap_or_else(|_| (0..count).map(|_| Err(wire::ErrorCode::Unavailable.into())).collect())
-    }
-
-    fn get_batch_native(
-        &self,
-        input: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            if input.data().is_empty() {
-                return ObjectsBatch::new(Vec::new(), ReadAllocation::empty(&meter));
-            }
-            let core = self.core.clone();
-            let body_io = Arc::clone(&self.body_io);
-            let task_meter = Arc::clone(&meter);
-            spawn_native_read(async move {
-                let input = input;
-                // Detached work retains the original input custody and store root.
-                let _lease = body_io.read_owned().await;
-                core.get_batch_native(input, task_meter)?.await
-            }, &meter)?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
-        })
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -385,7 +353,7 @@ mod tests {
         }
     }
     async fn create(root: &Path) -> Result<LocalObjects, LocalOpenError> {
-        LocalObjects::open(root, LocalOptions::default()).await
+        LocalObjects::open(root, LocalObjectsLimits::default(), None).await
     }
     #[tokio::test]
     async fn every_logical_operation_passes_and_the_empty_store_reopens()
@@ -493,17 +461,17 @@ mod tests {
             Err(LocalOpenError::AlreadyOwned)
         ));
         drop(provider);
-        let options = LocalOptions {
+        let options = LocalObjectsLimits {
             maximum_bytes: 123,
-            ..LocalOptions::default()
+            ..LocalObjectsLimits::default()
         };
         assert!(matches!(
-            LocalObjects::open(root.path(), options).await,
+            LocalObjects::open(root.path(), options, None).await,
             Err(LocalOpenError::Invalid)
         ));
         let legacy = tempfile::tempdir()?;
         // Historical journal rejection fixture.
-        let limits = LocalOptions::default();
+        let limits = LocalObjectsLimits::default();
         let mut header = b"ACYCLIC-OBJECTS-LOCAL\0\x04".to_vec();
         for limit in [
             limits.maximum_object_bytes,

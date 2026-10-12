@@ -317,7 +317,7 @@ impl McpCatalog {
             if !names.insert(&tool.name) {
                 return Err(Error::Conflict("duplicate MCP tool name".into()));
             }
-            self.definition(tool)?.validate()?;
+            self.definition(tool)?.validate(&mut None)?;
             if tool.input_schema.get("type") != Some(&json!("object")) {
                 return Err(Error::Invalid("MCP input schema must be an object".into()));
             }

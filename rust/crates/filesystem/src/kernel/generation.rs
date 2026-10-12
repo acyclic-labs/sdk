@@ -1,11 +1,10 @@
 //! Canonical immutable volume-generation roots and parent lineage.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, EncodeWorkStep};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, EncodeWorkStep, ReadAllocationStep};
 use super::types::digest_object;
 use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{CancellationToken, WorkBudget, WorkCounters};
-use super::allocation::{AllocationLedger};
+use crate::{CancellationToken, WorkCounters};
 
 const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;
@@ -103,46 +102,29 @@ pub(crate) fn generation_root_encoded_length(root: &GenerationRoot) -> Result<us
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
-/// Actual boundaries of the one canonical parent-buffer decoder.
-pub enum GenerationRootDecodeStep {
-    /// Canonical primitive completion.
-    Wire(super::codec::ReadAllocationStep),
-    /// Admit the parent buffer.
-    /// Admit one parent copy.
-    BeforeParentsAllocation(usize),
-    /// Preserve the failed parent reservation.
-    ReserveFailed(std::collections::TryReserveError),
-    /// Reconcile physical parent capacity.
-    ParentsCapacity(usize),
-    /// Admit one parent copy.
-    BeforeParent,
-    /// Record one completed parent copy.
-    ParentCopied,
-}
-
-/// Uses the canonical decoder with short synchronous admission/completion callbacks.
+/// Decodes one canonical object with before-effect admission.
 pub fn decode_generation_root<E>(
     bytes: &[u8],
     limits: DecodeLimits,
-    mut observe: impl FnMut(GenerationRootDecodeStep) -> Result<(), E>,
+    mut observe: impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<GenerationRoot, E>
 where
     E: From<CanonicalDecodeError>,
 {
     let mut decoder = Decoder::new(
         bytes, DOMAIN, VERSION, limits.maximum_object_bytes,
-        &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
+        &mut observe,
     )?;
     let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(
-        &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
+        &mut observe,
     )?);
     let root_file_id = FileId::from_bytes(decoder.fixed::<16, E>(
-        &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
+        &mut observe,
     )?);
     let file_table = digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(
-        &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
+        &mut observe,
     )?);
-    let parent_count = decoder.u32(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
+    let parent_count = decoder.u32(&mut observe)?;
     if parent_count > MAXIMUM_PARENTS {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: parent_count,
@@ -151,19 +133,15 @@ where
     }
     let parent_count =
         usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-    observe(GenerationRootDecodeStep::BeforeParentsAllocation(parent_count))?;
+    observe(ReadAllocationStep::BeforeCopy((parent_count * std::mem::size_of::<GenerationId>()) as u64))?;
     let mut parents = Vec::new();
-    if let Err(error) = parents.try_reserve_exact(parent_count) {
-        observe(GenerationRootDecodeStep::ReserveFailed(error))?;
-        return Err(CanonicalDecodeError::AllocationFailed.into());
-    }
-    observe(GenerationRootDecodeStep::ParentsCapacity(parents.capacity()))?;
+    super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;
     for _ in 0..parent_count {
-        observe(GenerationRootDecodeStep::BeforeParent)?;
-        parents.push(GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)));
-        observe(GenerationRootDecodeStep::ParentCopied)?;
+        observe(ReadAllocationStep::BeforeItem)?;
+        parents.push(GenerationId::new(Digest::from_bytes(decoder.fixed(&mut observe)?)));
+        observe(ReadAllocationStep::Item)?;
     }
-    let required_features = decoder.u64(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
+    let required_features = decoder.u64(&mut observe)?;
     decoder.finish()?;
     let root = GenerationRoot {
         volume_id,
@@ -195,151 +173,24 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    use super::allocation::KernelAccounting;
-
     accounting.check()?;
     cancellation.check()?;
     let maximum_bytes = MAXIMUM_GENERATION_ROOT_BYTES.min(limits.maximum_object_bytes);
-    let (read, standalone_retained) = match accounting {
-        KernelAccounting::Standalone { allocations, work, budget, .. } => {
-            let (read, retained) = read_root_standalone(
-                objects, generation_root, maximum_bytes, allocations, work, *budget, cancellation,
-            ).await?;
-            (read, Some(retained))
-        }
-        KernelAccounting::BorrowedStandalone { allocations, work, budget, .. } => {
-            let (read, retained) = read_root_standalone(
-                objects, generation_root, maximum_bytes, allocations, work, *budget, cancellation,
-            ).await?;
-            (read, Some(retained))
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { work, .. } => {
-            let read = objects.read_with_native_work(
-                generation_root, maximum_bytes, work, cancellation,
-            ).await.map_err(|error| match error {
-                crate::storage::ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
-                error => error.into(),
-            })?;
-            (read, None)
-        }
-    };
-    let charge_parent_items = !matches!(
-        accounting, KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. },
-    );
+    let (read, retained) = super::file_read::read_object_with_accounting(
+        objects, generation_root, maximum_bytes, accounting, cancellation,
+    ).await.map_err(|error| match error {
+        crate::FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
+        error => error,
+    })?;
     let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
-    let mut admitted_parent_bytes = 0;
-    let root = decode_generation_root(&read, limits, |step| -> Result<(), crate::FsError> {
-        match step {
-            GenerationRootDecodeStep::Wire(step) => {
-                scope.observe(step).map_err(|error| {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if charge_parent_items { return error.into_original_fs_error(); }
-                    match error {
-                        super::file_read::ReadDecodeError::Canonical(error) => error.into(),
-                        super::file_read::ReadDecodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
-                        super::file_read::ReadDecodeError::Accounting(error) => error,
-                    }
-                })?;
-            }
-            GenerationRootDecodeStep::BeforeParentsAllocation(parent_count) => {
-                cancellation.check()?;
-                admitted_parent_bytes = parent_count.checked_mul(std::mem::size_of::<GenerationId>())
-                    .map(crate::foundation::usize_to_u64).ok_or(crate::WorkError::Overflow)?;
-                scope.admit(WorkCounters {
-                    bytes_copied: admitted_parent_bytes,
-                    items_examined: if charge_parent_items { crate::foundation::usize_to_u64(parent_count) } else { 0 },
-                    ..WorkCounters::UNCHARGED
-                })?;
-                scope.observe(super::codec::ReadAllocationStep::Allocate {
-                    bytes: admitted_parent_bytes, operations: u64::from(parent_count != 0),
-                }).map_err(|error| match error {
-                    super::file_read::ReadDecodeError::Canonical(error) => error.into(),
-                    super::file_read::ReadDecodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
-                    super::file_read::ReadDecodeError::Accounting(error) => error,
-                })?;
-            }
-            GenerationRootDecodeStep::ReserveFailed(error) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if charge_parent_items { return Err(crate::NativeTreeMaterializationError::AllocationFailed(error).into()); }
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            GenerationRootDecodeStep::ParentsCapacity(capacity) => {
-                let actual_bytes = capacity.checked_mul(std::mem::size_of::<GenerationId>())
-                    .map(crate::foundation::usize_to_u64).ok_or(crate::WorkError::Overflow)?;
-                scope.observe(super::codec::ReadAllocationStep::Capacity {
-                    admitted_bytes: admitted_parent_bytes, actual_bytes,
-                }).map_err(|error| match error {
-                    super::file_read::ReadDecodeError::Canonical(error) => error.into(),
-                    super::file_read::ReadDecodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
-                    super::file_read::ReadDecodeError::Accounting(error) => error,
-                })?;
-            }
-            GenerationRootDecodeStep::BeforeParent => {
-                cancellation.check()?;
-                scope.admit(WorkCounters {
-                    bytes_copied: crate::foundation::usize_to_u64(std::mem::size_of::<GenerationId>()),
-                    items_examined: u64::from(charge_parent_items), ..WorkCounters::UNCHARGED
-                })?;
-            }
-            GenerationRootDecodeStep::ParentCopied => {
-                scope.record_completed(WorkCounters {
-                    bytes_copied: crate::foundation::usize_to_u64(std::mem::size_of::<GenerationId>()),
-                    items_examined: u64::from(charge_parent_items), ..WorkCounters::UNCHARGED
-                })?;
-            }
-        }
-        Ok(())
-    });
+    let root = decode_generation_root(&read, limits, |step| scope.observe(step));
     let root = match root {
         Ok(root) => Ok((root, scope.into_allocation())),
         Err(error) => { let _retired = scope.release_failed(); Err(error) }
     };
     drop(read);
-    if let Some(retained) = standalone_retained {
-        let mut allocation = super::allocation::KernelOwnedAllocation::Standalone;
-        accounting.release_owned(&mut allocation, retained)?;
-    }
+    super::file_read::release_standalone_read_bytes(retained, accounting)?;
     root
-}
-
-async fn read_root_standalone<S: crate::AsyncObjectStore>(
-    objects: &S,
-    generation_root: ObjectId,
-    maximum_bytes: u64,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(crate::storage::ObjectRead, u64), crate::FsError> {
-    let mut remaining = work.remaining(budget)?;
-    remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
-        .checked_sub(allocations.live_bytes()).ok_or(crate::WorkError::Overflow)?;
-    let receipt = objects.read(generation_root, maximum_bytes, remaining, cancellation).await;
-    let prior = *work;
-    let receipt = match receipt {
-        Ok(receipt) => receipt,
-        Err(failure) => {
-            *work = *failure.work;
-            *work = prior.with_backend(*work, allocations.live_bytes())
-                .map_err(|error| crate::FsError::RootReadWorkMerge {
-                    prior, backend: *work, error,
-                })?;
-            return Err(failure.error.into());
-        }
-    };
-    *work = receipt.work;
-    *work = prior.with_backend(*work, allocations.live_bytes())
-        .map_err(|error| crate::FsError::RootReadWorkMerge {
-            prior, backend: *work, error,
-        })?;
-    let retained = match receipt.value.retention {
-        crate::storage::ObjectReadRetention::Shared => 0,
-        crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-    };
-    allocations.claim_bytes(retained, 0, work, budget)
-        .map_err(|error| error.into_work_or(crate::FsError::Decode(CanonicalDecodeError::AllocationFailed)))?;
-    Ok((receipt.value, retained))
 }
 
 /// Computes the typed object identity and generation identity of one root.

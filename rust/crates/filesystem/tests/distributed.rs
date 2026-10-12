@@ -3,7 +3,7 @@
 
 use acyclic_fs::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityStoreError,
-    CancellationToken, CreateAuthorityOutcome, Digest, DistributedFs, EmbeddedCapabilities, Epoch,
+    CancellationToken, CreateAuthorityOutcome, Digest, EmbeddedCapabilities, Epoch,
     FenceOutcome, ForkOptions, Fs, GenerationFork, GenerationForkSource, GenerationId, Head,
     IdempotencyKey, ObjectId, ObjectKind, OperationFailure, OperationId, ProposedCommit,
     ReplayLimit, Sequence, WorkBudget, WorkspaceDelete, object_digest,
@@ -535,7 +535,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected.clone(), IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
 
     let lineage = |workspace: acyclic_fs::WorkspaceId| {
@@ -580,7 +580,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .fork(
             "child",
             ForkOptions::from_generation(selected, IdempotencyKey::from_bytes([0x51; 16])),
-        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(retry.id(), child.id());
     child.write_text("/child-only", "child").await?;
@@ -609,8 +609,7 @@ async fn distributed_facade_leases_authorize_workspace_publication()
     );
     let workspace = fs.create_workspace("leased", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let parent = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let distributed = DistributedFs::new(fs, ());
-    let operations = distributed.operations();
+    let operations = acyclic_fs::OperationWindowCoordinator::new(fs.operation_window_store());
     let lease = operations
         .begin(workspace.id(), parent.id(), "tool", 1, u64::MAX)
         .await?;

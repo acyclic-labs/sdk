@@ -9,7 +9,7 @@ use tokio::sync::watch;
 
 use super::{History, MemoryOutput, MemoryStream, PathState, Replay, Retained, State, recount};
 use crate::wire_codec::{
-    CanonicalWire, WireFunding, WireMeter,
+    CanonicalWire, WireMeter,
 };
 use crate::{CommitId, Record, StreamError, StreamPath};
 #[cfg(test)]
@@ -56,106 +56,107 @@ impl MemoryStream {
 }
 
 fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<MemoryOutput<Vec<u8>>> {
-    let mut writer = SnapshotWriter { out: Vec::new(), funding: WireFunding::new(meter) };
-    writer.write(MAGIC)?;
-    writer.u64(state.decision)?;
-    writer.u64(state.last_committed_at_micros)?;
-    writer.write(state.hierarchy_version.as_bytes())?;
+    let mut out = Vec::new();
+    let mut funding = MemoryOutput::fund(meter);
+    write(&mut out, &mut funding, MAGIC)?;
+    write_u64(&mut out, &mut funding, state.decision)?;
+    write_u64(&mut out, &mut funding, state.last_committed_at_micros)?;
+    write(&mut out, &mut funding, state.hierarchy_version.as_bytes())?;
     // Each node follows every node it reaches: decoding links backwards.
     let mut indices = Vec::new();
     let mut nodes = Vec::new();
     for path in state.paths.values() {
-        writer.funding.examine(1)?;
+        funding.examine(1)?;
         let mut chain = Vec::new();
         let mut cursor = path.history.clone();
         while let Some(node) = cursor {
-            writer.funding.examine(1)?;
-            if find_node(&indices, Arc::as_ptr(&node), &writer.funding)?.is_ok() { break; }
+            funding.examine(1)?;
+            if find_node(&indices, Arc::as_ptr(&node), &funding)?.is_ok() { break; }
             cursor = match node.as_ref() {
                 History::Batch { parent, .. } => parent.clone(),
                 History::Prefix { source, .. } => source.clone(),
             };
-            writer.funding.ensure_vector(&mut chain, 1)?;
+            funding.ensure_vector(&mut chain, 1)?;
             chain.push(node);
         }
         let chain_bytes = chain.capacity() * std::mem::size_of::<Arc<History>>();
         for node in chain.into_iter().rev() {
             let pointer = Arc::as_ptr(&node);
-            let position = find_node(&indices, pointer, &writer.funding)?
+            let position = find_node(&indices, pointer, &funding)?
                 .expect_err("the canonical chain contains only unseen nodes");
-            writer.funding.ensure_vector(&mut indices, 1)?;
+            funding.ensure_vector(&mut indices, 1)?;
             let shifted = (indices.len() - position) * std::mem::size_of::<(*const History, usize)>();
-            writer.funding.copy_admission(shifted)?;
+            funding.copy_admission(shifted)?;
             indices.insert(position, (pointer, nodes.len()));
-            writer.funding.copy_completed(shifted)?;
-            writer.funding.ensure_vector(&mut nodes, 1)?;
+            funding.copy_completed(shifted)?;
+            funding.ensure_vector(&mut nodes, 1)?;
             nodes.push(node);
         }
-        writer.funding.retire(chain_bytes)?;
+        funding.retire(chain_bytes)?;
     }
-    writer.len(nodes.len())?;
+    write_u64(&mut out, &mut funding, (nodes.len()) as u64)?;
     for node in &nodes {
-        writer.funding.examine(1)?;
+        funding.examine(1)?;
         match node.as_ref() {
             History::Batch { parent, records, .. } => {
-                writer.write(&[NODE_BATCH])?;
-                let reference = node_reference(&indices, parent, &writer.funding)?;
-                writer.len(reference)?;
-                writer.len(records.value.len())?;
+                write(&mut out, &mut funding, &[NODE_BATCH])?;
+                let reference = node_reference(&indices, parent, &funding)?;
+                write_u64(&mut out, &mut funding, (reference) as u64)?;
+                write_u64(&mut out, &mut funding, (records.value.len()) as u64)?;
                 for record in records.value.iter() {
-                    writer.funding.examine(1)?;
-                    writer.u64(record.sequence)?;
-                    writer.write(record.commit_id.as_bytes())?;
-                    writer.u64(record.committed_at_micros)?;
-                    writer.bytes(&record.value)?;
+                    funding.examine(1)?;
+                    write_u64(&mut out, &mut funding, record.sequence)?;
+                    write(&mut out, &mut funding, record.commit_id.as_bytes())?;
+                    write_u64(&mut out, &mut funding, record.committed_at_micros)?;
+                    write_bytes(&mut out, &mut funding, &record.value)?;
                 }
             }
             History::Prefix { source, tail, .. } => {
-                writer.write(&[NODE_PREFIX])?;
-                let reference = node_reference(&indices, source, &writer.funding)?;
-                writer.len(reference)?;
-                writer.u64(*tail)?;
+                write(&mut out, &mut funding, &[NODE_PREFIX])?;
+                let reference = node_reference(&indices, source, &funding)?;
+                write_u64(&mut out, &mut funding, (reference) as u64)?;
+                write_u64(&mut out, &mut funding, *tail)?;
             }
         }
     }
-    writer.len(state.paths.len())?;
+    write_u64(&mut out, &mut funding, (state.paths.len()) as u64)?;
     for (path, stream) in &state.paths {
-        writer.funding.examine(1)?;
-        writer.bytes(path.as_str().as_bytes())?;
-        let reference = node_reference(&indices, &stream.history, &writer.funding)?;
-        writer.len(reference)?;
-        writer.u64(stream.tail)?;
+        funding.examine(1)?;
+        write_bytes(&mut out, &mut funding, path.as_str().as_bytes())?;
+        let reference = node_reference(&indices, &stream.history, &funding)?;
+        write_u64(&mut out, &mut funding, (reference) as u64)?;
+        write_u64(&mut out, &mut funding, stream.tail)?;
     }
     let node_bytes = nodes.capacity() * std::mem::size_of::<Arc<History>>();
     drop(nodes);
-    writer.funding.retire(node_bytes)?;
+    funding.retire(node_bytes)?;
     let index_bytes = indices.capacity() * std::mem::size_of::<(*const History, usize)>();
     drop(indices);
-    writer.funding.retire(index_bytes)?;
-    writer.len(state.retained.len())?;
+    funding.retire(index_bytes)?;
+    write_u64(&mut out, &mut funding, (state.retained.len()) as u64)?;
     for retained in &state.retained {
-        writer.funding.examine(1)?;
+        funding.examine(1)?;
         let replay = retained.replay.as_ref()
             .and_then(|key| Some((key, state.replays.get(key)?)));
         let commit = retained.commit.as_ref().and_then(|commit| state.commits.get(commit));
-        writer.write(&[
+        write(&mut out, &mut funding, &[
             if replay.is_some() { RETAINS_REPLAY } else { 0 }
                 | if commit.is_some() { RETAINS_COMMIT } else { 0 },
         ])?;
         if let Some((key, replay)) = replay {
-            writer.message(&CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
+            write_message(&mut out, &mut funding, &CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
         }
         if let Some(envelope) = commit {
-            writer.message(&CanonicalWire::Envelope(envelope.envelope().expect("a commit index contains an envelope")))?;
+            write_message(&mut out, &mut funding, &CanonicalWire::Envelope(envelope.envelope().expect("a commit index contains an envelope")))?;
         }
     }
-    Ok(writer.funding.finish(writer.out))
+    Ok(funding.map(|_| out))
 }
 
 fn node_reference(
     indices: &[(*const History, usize)],
     node: &Option<Arc<History>>,
-    funding: &WireFunding<'_>,
+    funding: &MemoryOutput<WireMeter<'_>>,
 ) -> std::io::Result<usize> {
     let Some(node) = node else { return Ok(0); };
     match find_node(indices, Arc::as_ptr(node), funding)? {
@@ -167,7 +168,7 @@ fn node_reference(
 fn find_node(
     indices: &[(*const History, usize)],
     pointer: *const History,
-    funding: &WireFunding<'_>,
+    funding: &MemoryOutput<WireMeter<'_>>,
 ) -> std::io::Result<Result<usize, usize>> {
     let mut low = 0;
     let mut high = indices.len();
@@ -184,57 +185,52 @@ fn find_node(
     Ok(Err(low))
 }
 
-struct SnapshotWriter<'a> {
-    out: Vec<u8>,
-    funding: WireFunding<'a>,
+fn write(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &[u8]) -> std::io::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value {
+        meter.admit_codec(value.len() as u64, value.len() as u64, 0)?;
+    }
+    funding.ensure_vector(out, value.len())?;
+    out.extend_from_slice(value);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value {
+        meter.record_codec(value.len() as u64, value.len() as u64, 0)?;
+        meter.check()?;
+    }
+    Ok(())
 }
 
-impl SnapshotWriter<'_> {
-    fn write(&mut self, value: &[u8]) -> std::io::Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() {
-            meter.admit_codec(value.len() as u64, value.len() as u64, 0)?;
-        }
-        self.funding.ensure_vector(&mut self.out, value.len())?;
-        self.out.extend_from_slice(value);
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() {
-            meter.record_codec(value.len() as u64, value.len() as u64, 0)?;
-            meter.check()?;
-        }
-        Ok(())
-    }
+fn write_u64(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: u64) -> std::io::Result<()> {
+    write(out, funding, &value.to_le_bytes())
+}
 
-    fn u64(&mut self, value: u64) -> std::io::Result<()> { self.write(&value.to_le_bytes()) }
-    fn len(&mut self, value: usize) -> std::io::Result<()> { self.u64(value as u64) }
-    fn bytes(&mut self, value: &[u8]) -> std::io::Result<()> {
-        self.len(value.len())?;
-        self.write(value)
-    }
+fn write_bytes(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &[u8]) -> std::io::Result<()> {
+    write_u64(out, funding, value.len() as u64)?;
+    write(out, funding, value)
+}
 
-    fn message(&mut self, value: &CanonicalWire<'_>) -> std::io::Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() { meter.admit_examination(1, 0)?; }
-        let length = value.encoded_len(None, None)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() {
-            meter.record_examination(1, 0)?;
-            meter.check()?;
-        }
-        self.len(length)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() {
-            meter.admit_codec(length as u64, length as u64, 0)?;
-        }
-        self.funding.ensure_vector(&mut self.out, length)?;
-        value.encode(&mut self.out)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(meter) = self.funding.meter() {
-            meter.record_codec(length as u64, length as u64, 0)?;
-            meter.check()?;
-        }
-        Ok(())
+fn write_message(out: &mut Vec<u8>, funding: &mut MemoryOutput<WireMeter<'_>>, value: &CanonicalWire<'_>) -> std::io::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value { meter.admit_examination(1, 0)?; }
+    let length = value.encoded_len(None, None)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value {
+        meter.record_examination(1, 0)?;
+        meter.check()?;
     }
+    write_u64(out, funding, length as u64)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value {
+        meter.admit_codec(length as u64, length as u64, 0)?;
+    }
+    funding.ensure_vector(out, length)?;
+    value.encode(out)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(meter) = funding.value {
+        meter.record_codec(length as u64, length as u64, 0)?;
+        meter.check()?;
+    }
+    Ok(())
 }
 
 fn decode(encoded: &[u8]) -> Option<State> {

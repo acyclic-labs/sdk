@@ -436,7 +436,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let fork: acyclic_harness::fork::ForkRequest =
                 serde_json::from_value(request.request.payload.clone())
                     .map_err(|error| Error::Invalid(format!("invalid exact fork request: {error}")))?;
-            fork.validate()?;
+            fork.validate(&mut None)?;
             writeln!(output, "preparation-attempt operation={} caller-task={} new-child-agent={} child-admission-operation={} fork-operation={}",
                 request.operation, request.parent, fork.child_agent,
                 request.request.child.operation_id, fork.operation_id)
@@ -494,8 +494,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let binding = native.caller_binding(request.caller).await?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(
-                &native.stream, &binding.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &binding.authority, &(verifier), &mut None)?;
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
@@ -504,7 +503,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
                 maximum_bytes: terminal::MAX_FRAME_BYTES as u64,
-            }).await?;
+            }, None).await?;
             return Ok(format!("history-json={}\n", serde_json::to_string(&page)
                 .map_err(|error| Error::Invalid(error.to_string()))?));
         }
@@ -531,7 +530,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                 .ok_or_else(|| Error::Unsupported("original parent history verifier unavailable".into()))?;
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &parent.issuer, parent.key, parent.authority.clone()).verifier(&mut None).expect("verifier copy");
-            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, verifier)?;
+            let reader = acyclic_harness::store::HistoryReader::new(&native.stream, &parent.authority, &(verifier), &mut None)?;
             let messages = reader.inherited_conversation_page(
                 &request.seed, child.agent()?, request.after_sequence,
                 acyclic_harness::store::HistoryReadLimits {

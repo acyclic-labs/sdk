@@ -876,7 +876,7 @@ mod tests {
 
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("example", "filesystem", "1")?,
+                ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
                 "custom-turn",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
@@ -941,7 +941,7 @@ mod tests {
         let tools = Arc::new(ForbiddenStockTools::default());
         let bundle = HarnessBuilder::new()
             .model(
-                Model::new("example", "stock", "1", Value::Null)?,
+                Model::new("example".into(), "stock".into(), "1".into(), Value::Null)?,
                 model.clone(),
             )
             .tool(Tool {
@@ -984,7 +984,7 @@ mod tests {
     #[tokio::test]
     async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
         assert!(HarnessBuilder::new().build().is_err());
-        let model = Model::new("example", "model", "1", Value::Null)?;
+        let model = Model::new("example".into(), "model".into(), "1".into(), Value::Null)?;
         struct Provider;
         impl ModelProvider for Provider {
             fn generate<'a>(
@@ -1036,7 +1036,7 @@ mod tests {
         let issuer =
             crate::core::AuthorityIssuer::new("builder-owner", [81; 32], authority.clone());
         let mut schemas = crate::core::SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             "example.builder",
             1,
             json!({"type":"object"}),

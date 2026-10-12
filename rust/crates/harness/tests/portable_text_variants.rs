@@ -60,7 +60,7 @@ impl ContentResidencyVerifier for ReaderSpy {
     reason = "one actual admitted live task retains positive and pre-I/O negative controls"
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
-    let provider = ProviderRef::new("text-variants", "filesystem", "1")?;
+    let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::new();
     let volume = VolumeRef::new(

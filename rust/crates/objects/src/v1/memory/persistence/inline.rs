@@ -32,8 +32,8 @@ impl Journal {
             }
             StoredBody::Composite { parts, length } => {
                 let mut output = Vec::new();
-                publication.reserve(&mut output, parts.values.len())?;
-                for body in parts.values.iter() {
+                publication.reserve(&mut output, parts.value.len())?;
+                for body in parts.value.iter() {
                     output.push(self.prepare_inline(body, bytes, publication)?);
                 }
                 composite_publication(output, *length, publication)
@@ -82,10 +82,10 @@ impl Journal {
                         // Compaction closes this handle before journal replacement.
                         let bytes = match &publication.meter {
                             Some(meter) => futures::executor::block_on(
-                                crate::physical::read_body_at_native(
+                                crate::physical::read_body_at(
                                     &self.root, &digest, length,
                                     &LocalBodyLocation::Journal { offset },
-                                    0, length, Arc::clone(meter),
+                                    0, length, BodyReadMode::Native(Arc::clone(meter)),
                                 ),
                             )?,
                             None => self.root.read_journal_body(offset, &digest, length)
@@ -227,7 +227,7 @@ fn journal_bodies(
             out.insert((*offset, *digest), *length);
         }
         StoredBody::Composite { parts, .. } => {
-            for part in parts.values.iter() {
+            for part in parts.value.iter() {
                 journal_bodies(part, out, publication)?;
             }
         }

@@ -77,8 +77,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const contracts = await NativeContracts.create();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
-    // This adapter has no bounded native-media implementation. Reject the whole
-    // request before resolving any supported files; callers can select another adapter.
+    // Reject unsupported native media before resolving any files.
     for (const message of request.messages) {
       const parts = Array.isArray(message.content) ? message.content : [message.content];
       for (const part of parts) {

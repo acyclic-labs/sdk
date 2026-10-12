@@ -1,6 +1,7 @@
 //! SDK boundaries on the original native ledger, without another budget/meter.
 
-use super::HistoryIo;
+use super::{HistoryCursor, HistoryIo, HistoryPage, HistoryReadLimits, HistoryReader};
+use acyclic_stream::StreamProvider;
 use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, NativeWorkReservation, WorkCounters};
 use std::mem::size_of;
@@ -172,14 +173,13 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.retain(bytes)?;
         Ok(())
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> {
+    fn release_owned(&mut self, bytes: u64) -> Result<()> {
         self.custody.release(bytes).map_err(|error| self.native_error(error))
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.work.admit_retained(bytes).map_err(|error| self.native_error(error))
     }
-    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
         Ok(Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
     }
@@ -263,7 +263,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
-        let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
+        let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>, bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
         let value = crate::filesystem::retain_decoded(decoded);
         let incoming = io.into_native_custody(retained)?;
@@ -487,7 +487,6 @@ impl HistoryIo for AcceptedCompletionIo {
             ..WorkCounters::default()
         }).map_err(Self::native_error)
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         if bytes <= self.available_pool_bytes() { Ok(()) }
@@ -955,7 +954,7 @@ mod tests {
         assert_eq!(work.receipt(), prefix.checked_add(maximum).expect("actual additive prefix"));
         assert_eq!(io.completion_work().expect("completed pure original prefix"),
             durable.checked_add(work.receipt()).expect("durable and actual completed prefix"));
-        io.release_record(3).expect("virtual cleanup remains cancellation independent");
+        io.release_owned(3).expect("virtual cleanup remains cancellation independent");
         let pool = io.into_custody();
         assert_eq!(pool.bytes(), 16, "virtual cleanup must not release the real pool");
         assert!(pool.matches_work(&work));
@@ -1178,7 +1177,7 @@ mod tests {
         assert_eq!(work.receipt(), prefix.checked_add(maximum).expect("actual malformed prefix"));
         assert_eq!(io.retained, 0, "failed retention leaves no virtual record claim");
         assert_eq!(io.custody.bytes(), 4);
-        assert!(matches!(io.release_record(5), Err(Error::NativeBoundary { .. })));
+        assert!(matches!(io.release_owned(5), Err(Error::NativeBoundary { .. })));
         io.retain_owned(4).expect("existing pool remains usable");
         assert!(matches!(io.retain_owned(1), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.take_native_custody(5), Err(Error::NativeBoundary { .. })));
@@ -1259,4 +1258,64 @@ mod tests {
         assert_eq!(io.custody.bytes(), 16);
         assert_eq!(work.receipt(), prefix);
     }
+}
+
+impl<P: StreamProvider> HistoryReader<P> {
+    /// Pins the original committed cut using the caller's native ledger.
+    pub async fn pin_with_native_work(
+        &self,
+        after_revision: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
+        Ok((cursor, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated bounded page on the same native ledger.
+    pub async fn read_page_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let page = self.read_page(cursor, limits, Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((page, native_io.into_custody()))
+    }
+
+    /// Reads the original authenticated immutable operation locator and event.
+    pub async fn operation_event_bounded_with_native_work(
+        &self,
+        operation: crate::OperationId,
+        maximum_bytes: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<Event>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let (event, _) = self.operation_event(operation, maximum_bytes, &mut Some(&mut native_io)).await?;
+        native_io.return_staged_output()?;
+        Ok((event, native_io.into_custody()))
+    }
+
+    /// Projects the archived effect through the original bounded state engine.
+    pub async fn effect_with_native_work(
+        &self,
+        cursor: &HistoryCursor,
+        effect: crate::EffectId,
+        limits: HistoryReadLimits,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
+        let mut native_io = super::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let state = self.effect(
+            cursor, effect, limits, Some(&mut native_io),
+        ).await?.map(|(state, _)| state);
+        native_io.return_staged_output()?;
+        Ok((state, native_io.into_custody()))
+    }
+
 }

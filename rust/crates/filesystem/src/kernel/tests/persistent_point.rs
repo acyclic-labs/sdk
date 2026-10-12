@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
@@ -8,7 +9,7 @@ use crate::kernel::{
     TreeEntry, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore};
+use crate::storage::{ObjectKind, };
 use acyclic_stream::OwnedBytes;
 
 fn record(byte: u8) -> FileRecord {
@@ -24,17 +25,16 @@ fn record(byte: u8) -> FileRecord {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
@@ -109,22 +109,20 @@ fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std:
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_point_uses_the_original_counters_and_retires_scratch()
+#[tokio::test]
+async fn native_point_uses_the_original_counters_and_retires_scratch()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]))?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (value, allocation) = crate::async_storage::poll_immediate(
-        lookup_async_with_accounting::<_, FileTableFormat>(
+    let (value, allocation) = lookup_async_with_accounting::<_, FileTableFormat>(
             &store, root, &record(2).file_id, DecodeLimits::default(),
             &mut accounting, &cancellation, None,
-        ),
-    )?;
+        ).await?;
     assert_eq!(value, Some(record(2)));
     assert_eq!(original.receipt().page_reads, 1);
     assert!(original.receipt().backend_read_operations > 0);
@@ -134,23 +132,21 @@ fn native_point_uses_the_original_counters_and_retires_scratch()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_point_denies_scratch_before_provider_work()
+#[tokio::test]
+async fn native_point_denies_scratch_before_provider_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1)]))?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1)])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(error, _)| error)?;
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let result = crate::async_storage::poll_immediate(
-        lookup_async_with_accounting::<_, FileTableFormat>(
+    let result = lookup_async_with_accounting::<_, FileTableFormat>(
             &store, root, &record(1).file_id, DecodeLimits::default(),
             &mut accounting, &cancellation, None,
-        ),
-    );
+        ).await;
     assert!(result.is_err());
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);

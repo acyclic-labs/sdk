@@ -9,7 +9,7 @@ use reqwest::{
 
 /// HTTP configuration, encoding, or remote service failure.
 #[derive(Debug, thiserror::Error)]
-pub enum Error {
+pub enum Error<E = wire::Error> {
     /// Invalid endpoint, credential, bound, or request path.
     #[error("invalid HTTP client configuration or request")]
     InvalidArgument,
@@ -28,13 +28,13 @@ pub enum Error {
         /// HTTP response status.
         status: u16,
         /// Decoded wire error, including service codes unknown to this SDK.
-        detail: Option<wire::Error>,
+        detail: Option<E>,
         /// Exact response body, including empty or malformed error payloads.
         raw_details: Vec<u8>,
     },
 }
 
-impl Error {
+impl<E> Error<E> {
     /// Stable classification for tracing's `error.kind`.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
@@ -49,7 +49,8 @@ impl Error {
 }
 
 /// Plain HTTP is admitted only for `localhost` and loopback IP literals.
-fn loopback(endpoint: &Url) -> bool {
+#[doc(hidden)]
+pub fn loopback(endpoint: &Url) -> bool {
     endpoint.host_str().is_some_and(|host| {
         host == "localhost"
             || host
@@ -121,16 +122,6 @@ impl Client {
         })
     }
 
-    async fn call<I: Message, O: Message + Default>(
-        &self,
-        route: &'static str,
-        input: &str,
-        output: &str,
-        request: &I,
-    ) -> Result<O, Error> {
-        self.call_at(route, route, input, output, request).await
-    }
-
     /// Calls `route`, an instance of the static `template` that spans record.
     #[cfg_attr(
         not(target_arch = "wasm32"),
@@ -146,7 +137,7 @@ impl Client {
             )
         )
     )]
-    async fn call_at<I: Message, O: Message + Default>(
+    async fn call<I: Message, O: Message + Default>(
         &self,
         template: &'static str,
         route: &str,
@@ -154,7 +145,43 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
-        let result = self.exchange(route, input, output, request).await;
+        let result = async {
+            let descriptor = self
+                .descriptors
+                .get_message_by_name(input)
+                .ok_or(Error::MalformedResponse)?;
+            let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+                .map_err(|_| Error::InvalidArgument)?;
+            let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
+            let mut response = self
+                .transport
+                .post(
+                    self.endpoint
+                        .join(route)
+                        .map_err(|_| Error::InvalidArgument)?,
+                )
+                .header(AUTHORIZATION, self.authorization.clone())
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await?;
+            let status = response.status();
+            #[cfg(not(target_arch = "wasm32"))]
+            tracing::Span::current().record("http.status", status.as_u16());
+            let bytes = response_body(&mut response, self.maximum).await?.ok_or(Error::ResponseTooLarge)?;
+            if !status.is_success() {
+                let detail = self
+                    .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
+                    .ok()
+                    .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
+                return Err(Error::Service {
+                    status: status.as_u16(),
+                    detail,
+                    raw_details: bytes,
+                });
+            }
+            self.decode(output, &bytes)
+        }.await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let span = tracing::Span::current();
@@ -166,50 +193,6 @@ impl Client {
             };
         }
         result
-    }
-
-    async fn exchange<I: Message, O: Message + Default>(
-        &self,
-        route: &str,
-        input: &str,
-        output: &str,
-        request: &I,
-    ) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(input)
-            .ok_or(Error::MalformedResponse)?;
-        let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-            .map_err(|_| Error::InvalidArgument)?;
-        let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
-        let mut response = self
-            .transport
-            .post(
-                self.endpoint
-                    .join(route)
-                    .map_err(|_| Error::InvalidArgument)?,
-            )
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status();
-        #[cfg(not(target_arch = "wasm32"))]
-        tracing::Span::current().record("http.status", status.as_u16());
-        let bytes = response_body(&mut response, self.maximum).await?.ok_or(Error::ResponseTooLarge)?;
-        if !status.is_success() {
-            let detail = self
-                .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
-                .ok()
-                .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
-            return Err(Error::Service {
-                status: status.as_u16(),
-                detail,
-                raw_details: bytes,
-            });
-        }
-        self.decode(output, &bytes)
     }
 
     fn decode<O: Message + Default>(&self, name: &str, bytes: &[u8]) -> Result<O, Error> {
@@ -229,8 +212,9 @@ impl Client {
         &self,
         request: &wire::PublishVersionRequest,
     ) -> Result<wire::PublishVersionResponse, Error> {
+        let route = HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1;
         self.call(
-            HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1,
+            route, route,
             "acyclic.workers.v1.PublishVersionRequest",
             "acyclic.workers.v1.PublishVersionResponse",
             request,
@@ -243,8 +227,9 @@ impl Client {
         &self,
         request: &wire::SelectDeploymentRequest,
     ) -> Result<wire::SelectDeploymentResponse, Error> {
+        let route = HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1,
+            route, route,
             "acyclic.workers.v1.SelectDeploymentRequest",
             "acyclic.workers.v1.SelectDeploymentResponse",
             request,
@@ -257,8 +242,9 @@ impl Client {
         &self,
         request: &wire::SubmitJobRequest,
     ) -> Result<wire::SubmitJobResponse, Error> {
+        let route = HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1,
+            route, route,
             "acyclic.workers.v1.SubmitJobRequest",
             "acyclic.workers.v1.SubmitJobResponse",
             request,
@@ -271,8 +257,9 @@ impl Client {
         &self,
         request: &wire::InspectJobRequest,
     ) -> Result<wire::InspectJobResponse, Error> {
+        let route = HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1,
+            route, route,
             "acyclic.workers.v1.InspectJobRequest",
             "acyclic.workers.v1.InspectJobResponse",
             request,
@@ -285,8 +272,9 @@ impl Client {
         &self,
         request: &wire::CancelJobRequest,
     ) -> Result<wire::CancelJobResponse, Error> {
+        let route = HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1;
         self.call(
-            HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1,
+            route, route,
             "acyclic.workers.v1.CancelJobRequest",
             "acyclic.workers.v1.CancelJobResponse",
             request,
@@ -306,7 +294,7 @@ impl Client {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         let template = HTTP_ROUTES.get(5).ok_or(Error::InvalidArgument)?.1;
-        self.call_at(
+        self.call(
             template,
             &template.replace("{sha256hex}", &digest),
             "acyclic.workers.v1.InvokeVersionRequest",
@@ -323,7 +311,7 @@ impl Client {
     ) -> Result<wire::InvokeResponse, Error> {
         crate::validate_invoke_deployment(request).map_err(|_| Error::InvalidArgument)?;
         let template = HTTP_ROUTES.get(6).ok_or(Error::InvalidArgument)?.1;
-        self.call_at(
+        self.call(
             template,
             &template.replace("{alias}", &request.alias),
             "acyclic.workers.v1.InvokeDeploymentRequest",
