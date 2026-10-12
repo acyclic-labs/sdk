@@ -1,5 +1,6 @@
 //! Native composition of existing local providers, task admission and wire handles.
 #![allow(missing_docs, reason = "private binary configuration and composition, not a public SDK contract")]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -19,7 +20,7 @@ use acyclic_harness::{
     model::{ModelContent, ModelMessage, ModelRole},
     resources::ProviderRef,
     resource_preparation::ResourcePreparationRequest,
-    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
+    runtime::{RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
     scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, HistoryReader, StreamAggregate},
     wire,

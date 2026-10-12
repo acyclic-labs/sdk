@@ -1,4 +1,5 @@
 //! Public consumer: explicitly approved native execution and receipt-only recovery.
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, WorkBudget};
 use acyclic_harness::{
@@ -29,7 +30,7 @@ use acyclic_harness::{
         stdio::{McpStdioMethod, McpStdioRequest},
     },
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
     scheduler::{LeaseFence, SessionLimits},
     store::StreamAggregate,
     workflow::{

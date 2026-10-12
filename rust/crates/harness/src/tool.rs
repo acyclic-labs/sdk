@@ -544,32 +544,20 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: acyclic_stream::ProviderPlatform {
     /// Produces the complete serialized `ToolResultContent` envelope without effects.
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)>;
 
     /// Rejects an unaudited projector before dispatch, not after its effects.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_projection(
         &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
+        _work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        Err(Error::NativeBoundary {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if _work.is_some() { return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "tool projection has no native producer",
-        })
-    }
-
-    /// Produces a paid SDK projection without invoking an ordinary allocating projector.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self,
-        _invocation: &ToolInvocation,
-        _result: &ToolResult,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "tool projection has no native producer",
-        })
+        }); }
+        Ok(())
     }
 }
 
@@ -578,27 +566,18 @@ pub trait ToolProjection: acyclic_stream::ProviderPlatform {
 pub struct JsonToolProjection;
 
 impl ToolProjection for JsonToolProjection {
-    fn project(&self, _invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        schema::project_json(&result.value)
+    fn project(&self, _invocation: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        schema::project_json(&result.value, work)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_projection(
         &self,
-        work: &acyclic_fs::NativeMaterializationWork,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        work.remaining()?;
+        if let Some(work) = work { work.remaining()?; }
         Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn project_with_native_work(
-        &self,
-        _invocation: &ToolInvocation,
-        result: &ToolResult,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        schema::project_json_with_native_work(&result.value, work)
     }
 }
 
@@ -753,7 +732,7 @@ impl ToolRegistry {
             });
         }
         executor.supports_native_execution(work)?;
-        projection.supports_native_projection(work)?;
+        projection.supports_native_projection(Some(work))?;
         let original_quota = custody.bytes();
         custody.absorb(&mut definition.1)?;
         let mut published = false;

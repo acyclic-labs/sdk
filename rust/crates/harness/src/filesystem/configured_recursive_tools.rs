@@ -494,7 +494,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 context.operation_id(), ProjectSourceSnapshot { project: chosen.project.clone(), generation,
                     native_snapshot: chosen.native_snapshot.clone() }, allocation.limits.work, allocation.limits.bytes).await?)
         } else { None };
-        let source = recursive_fork_source(runtime.as_ref(), self.filesystem.clone(), &self.stream, &parent,
+        let source = recursive_fork_source(self.filesystem.clone(), &self.stream, &parent,
             verifier(&caller.owner)?, caller.owner.scope.clone(), context.task(), RecursiveSourceSnapshot {
                 task: caller.task, project: caller.project.clone(), project_generation: project,
                 private_volume: caller.private_volume.clone(), private_generation: private,

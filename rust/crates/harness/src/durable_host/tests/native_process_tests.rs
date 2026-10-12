@@ -1,3 +1,4 @@
+use crate::runtime::TaskSpawner as _;
 use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::filesystem::NativeProcessStopKind;
@@ -810,8 +811,8 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
         fixture.owner.task_binding().0, fixture.owner.task_binding().1, &work,
     ).await?;
     let guard = context.volume_callback_guard_with_native_work(&fixture.owner, &work).await?;
-    let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?;
-    let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?;
+    let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?.0;
+    let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?.0;
     let mount_work = work.clone();
     assert!(callback.check(&mount_work).expect("original callback admission").await.is_ok());
     assert!(writable_callback.check(&mount_work).expect("original writable callback admission").await.is_ok());
@@ -1264,7 +1265,7 @@ where
                     acyclic_fs::MemoryLazyWorkspaceStore::default()).await
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let lazy = lazy.into_arc_with_native_work(work)?;
-                let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?;
+                let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?.0;
                 let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;

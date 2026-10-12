@@ -1,3 +1,4 @@
+use acyclic_harness::runtime::TaskSpawner as _;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::{policy, work};
@@ -15,7 +16,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope},
+    runtime::{RuntimeScope},
     scheduler::{LeaseFence, ResourceSnapshot},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
